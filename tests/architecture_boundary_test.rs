@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -50,14 +51,24 @@ fn strip_cfg_test_modules(source: &str) -> String {
         // 只认 `mod tests` 会漏掉任何自定义命名的测试模块（本仓常按内容命名，
         // 例如 `mod quic_port_probe_tests`），于是测试代码被当成生产代码报违规。
         // 判据应是「带 #[cfg(test)] 的任意 mod」——模块叫什么与它是不是测试无关。
-        if pending_cfg_test && (trimmed.starts_with("mod ") || trimmed.starts_with("pub mod ")) {
+        let declaration = if pending_cfg_test {
+            mod_declaration(trimmed)
+        } else {
+            None
+        };
+        if let Some(declaration) = declaration {
+            pending_cfg_test = false;
+            // 外联的 `mod name;` 没有花括号体：模块在另一个文件里，由
+            // `cfg_test_module_files` 整份排除；声明之后的行仍是本文件的生产代码。
+            if declaration.outline {
+                continue;
+            }
             in_test_module = true;
             brace_depth += line.matches('{').count() as i32;
             brace_depth -= line.matches('}').count() as i32;
             if brace_depth <= 0 {
                 brace_depth = 1;
             }
-            pending_cfg_test = false;
             continue;
         }
 
@@ -69,6 +80,161 @@ fn strip_cfg_test_modules(source: &str) -> String {
     }
 
     out
+}
+
+/// 一行开头的模块声明 `mod name;` 或 `mod name {`，可见性任意
+/// （`pub`、`pub(crate)`、`pub(super)`、`pub(in path)`）。
+struct ModDeclaration<'a> {
+    name: &'a str,
+    /// 以 `;` 结尾：模块体在另一个文件里。
+    outline: bool,
+}
+
+fn mod_declaration(trimmed: &str) -> Option<ModDeclaration<'_>> {
+    let mut rest = trimmed;
+    if let Some(after_pub) = rest.strip_prefix("pub") {
+        rest = if let Some(scope) = after_pub.trim_start().strip_prefix('(') {
+            &scope[scope.find(')')? + 1..]
+        } else if after_pub.starts_with(char::is_whitespace) {
+            after_pub
+        } else {
+            return None;
+        };
+    }
+    let after_mod = rest.trim_start().strip_prefix("mod")?;
+    if !after_mod.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let after_mod = after_mod.trim_start();
+    let name = take_ident(after_mod)?;
+    let outline = after_mod[name.len()..].trim_start().starts_with(';');
+    Some(ModDeclaration { name, outline })
+}
+
+/// 文件里的外联模块声明 `mod name;`，连同紧挨着它的 `#[cfg(test)]` 与 `#[path = "..."]`。
+struct OutlineModule {
+    line: usize,
+    name: String,
+    path: Option<String>,
+    cfg_test: bool,
+}
+
+fn outline_modules(source: &str) -> Vec<OutlineModule> {
+    let mut modules = Vec::new();
+    let mut cfg_test = false;
+    let mut path = None;
+    for (idx, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed == "#[cfg(test)]" {
+            cfg_test = true;
+            continue;
+        }
+        if let Some(attribute) = trimmed.strip_prefix("#[") {
+            let value = attribute
+                .strip_suffix(']')
+                .and_then(|attribute| attribute.strip_prefix("path"))
+                .and_then(|rest| rest.trim_start().strip_prefix('='));
+            if let Some(value) = value {
+                path = Some(value.trim().trim_matches('"').to_string());
+            }
+            continue;
+        }
+        if let Some(declaration) = mod_declaration(trimmed)
+            && declaration.outline
+        {
+            modules.push(OutlineModule {
+                line: idx + 1,
+                name: declaration.name.to_string(),
+                path: path.take(),
+                cfg_test,
+            });
+        }
+        cfg_test = false;
+        path = None;
+    }
+    modules
+}
+
+/// 外联模块的源文件：`#[path]` 相对声明文件所在目录；否则 `mod.rs` / `lib.rs` / `main.rs`
+/// 的子模块与它同目录，`foo.rs` 的子模块在 `foo/` 下，各自是 `name.rs` 或 `name/mod.rs`。
+fn outline_module_file(declaring_file: &Path, module: &OutlineModule) -> PathBuf {
+    let dir = declaring_file
+        .parent()
+        .expect("source file has a directory");
+    let candidates = match &module.path {
+        Some(path) => vec![dir.join(path)],
+        None => {
+            let stem = declaring_file
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default();
+            let base = if matches!(stem, "mod" | "lib" | "main") {
+                dir.to_path_buf()
+            } else {
+                dir.join(stem)
+            };
+            vec![
+                base.join(format!("{}.rs", module.name)),
+                base.join(&module.name).join("mod.rs"),
+            ]
+        }
+    };
+    let found = candidates.iter().find(|candidate| candidate.is_file());
+    let found = found.unwrap_or_else(|| {
+        panic!(
+            "{}:{} declares mod {} but none of {:?} exists",
+            declaring_file.display(),
+            module.line,
+            module.name,
+            candidates
+        )
+    });
+    fs::canonicalize(found).expect("canonicalize module file")
+}
+
+/// 整份只在测试里编译的源文件：`#[cfg(test)]` 修饰的外联模块对应的文件，以及这些文件
+/// 再声明的子模块（测试模块下面的一切都只在测试里编译，子模块不必再写 `#[cfg(test)]`）。
+/// 返回规范化路径。
+fn cfg_test_module_files(files: &[PathBuf]) -> BTreeSet<PathBuf> {
+    let mut pending = Vec::new();
+    for file in files {
+        let source = fs::read_to_string(file).expect("read Rust source");
+        for module in outline_modules(&source) {
+            if module.cfg_test {
+                pending.push(outline_module_file(file, &module));
+            }
+        }
+    }
+
+    let mut test_files = BTreeSet::new();
+    while let Some(file) = pending.pop() {
+        if !test_files.insert(file.clone()) {
+            continue;
+        }
+        let source = fs::read_to_string(&file).expect("read test module source");
+        for module in outline_modules(&source) {
+            pending.push(outline_module_file(&file, &module));
+        }
+    }
+    test_files
+}
+
+/// 目录下的生产源码：去掉整份只在测试里编译的文件，其余文件剥掉内联测试模块与行注释。
+fn production_sources_under(root: &Path) -> Vec<(PathBuf, String)> {
+    let files = rust_files_under(root);
+    let test_files = cfg_test_module_files(&files);
+    files
+        .into_iter()
+        .filter(|file| {
+            let canonical = fs::canonicalize(file).expect("canonicalize source file");
+            !test_files.contains(&canonical)
+        })
+        .map(|file| {
+            let source = fs::read_to_string(&file).expect("read Rust source");
+            let production = strip_line_comments(&strip_cfg_test_modules(&source));
+            (file, production)
+        })
+        .collect()
 }
 
 fn strip_line_comments(source: &str) -> String {
@@ -395,30 +561,196 @@ fn social_production_code_uses_spi_for_core_extension_boundaries() {
         return;
     }
 
-    let allowed_roots = ["spi", "model", "prelude"];
-    let mut violations = Vec::new();
-
-    for file in rust_files_under(&social_src) {
-        let source = fs::read_to_string(&file).expect("read social source");
-        let production_source = strip_line_comments(&strip_cfg_test_modules(&source));
-        for reference in collect_core_sdk_references(&production_source) {
-            if !allowed_roots.contains(&reference.root.as_str()) {
-                violations.push(format!(
-                    "{}:{} uses flare_im_core_sdk::{} outside the extension facade: {}",
-                    file.display(),
-                    reference.line,
-                    reference.root,
-                    reference.snippet
-                ));
-            }
-        }
-    }
+    let violations: Vec<_> = core_sdk_facade_violations(&social_src)
+        .into_iter()
+        .map(|violation| {
+            format!(
+                "{}:{} uses flare_im_core_sdk::{} outside the extension facade: {}",
+                violation.file.display(),
+                violation.line,
+                violation.root,
+                violation.snippet
+            )
+        })
+        .collect();
 
     assert!(
         violations.is_empty(),
         "social production code may only use flare_im_core_sdk::{{spi, model, prelude}}:\n{}",
         violations.join("\n")
     );
+}
+
+/// 扩展门面：核心之外的生产代码只经这几个根用核心 SDK。
+const CORE_SDK_FACADE_ROOTS: [&str; 3] = ["spi", "model", "prelude"];
+
+struct FacadeViolation {
+    file: PathBuf,
+    line: usize,
+    root: String,
+    snippet: String,
+}
+
+fn core_sdk_facade_violations(src: &Path) -> Vec<FacadeViolation> {
+    let mut violations = Vec::new();
+    for (file, production_source) in production_sources_under(src) {
+        for reference in collect_core_sdk_references(&production_source) {
+            if !CORE_SDK_FACADE_ROOTS.contains(&reference.root.as_str()) {
+                violations.push(FacadeViolation {
+                    file: file.clone(),
+                    line: reference.line,
+                    root: reference.root,
+                    snippet: reference.snippet,
+                });
+            }
+        }
+    }
+    violations
+}
+
+/// 临时源码树：给门面检查喂固定的文件布局，结束时删掉。
+struct SourceTree {
+    root: PathBuf,
+}
+
+impl SourceTree {
+    fn new(name: &str, files: &[(&str, &str)]) -> Self {
+        let root =
+            std::env::temp_dir().join(format!("core-sdk-boundary-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for (path, source) in files {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().expect("fixture file has a directory"))
+                .expect("create fixture directory");
+            fs::write(&path, source).expect("write fixture file");
+        }
+        Self { root }
+    }
+
+    /// 门面检查报出的 (相对路径, 根)，按路径排序。
+    fn violations(&self) -> Vec<(String, String)> {
+        let mut found: Vec<_> = core_sdk_facade_violations(&self.root)
+            .into_iter()
+            .map(|violation| {
+                let file = violation
+                    .file
+                    .strip_prefix(&self.root)
+                    .expect("violation inside the fixture")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (file, violation.root)
+            })
+            .collect();
+        found.sort();
+        found
+    }
+}
+
+impl Drop for SourceTree {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn pairs(items: &[(&str, &str)]) -> Vec<(String, String)> {
+    items
+        .iter()
+        .map(|(file, root)| (file.to_string(), root.to_string()))
+        .collect()
+}
+
+#[test]
+fn facade_check_excludes_cfg_test_outline_modules_as_whole_files() {
+    let tree = SourceTree::new(
+        "cfg-test-outline",
+        &[
+            (
+                "lib.rs",
+                "pub mod names;\npub mod store;\n#[cfg(test)]\npub(crate) mod test_support;\n",
+            ),
+            (
+                "names.rs",
+                "pub fn name() {}\n\n#[cfg(test)]\nmod cases;\n\n#[cfg(test)]\n#[path = \"names_tests.rs\"]\nmod tests;\n",
+            ),
+            (
+                "names/cases.rs",
+                "use flare_im_core_sdk::model::Elem;\nuse flare_im_core_sdk::Result;\n",
+            ),
+            (
+                "names_tests.rs",
+                "use flare_im_core_sdk::event::EventBus;\n",
+            ),
+            ("store/mod.rs", "#[cfg(test)]\nmod golden_tests;\n"),
+            (
+                "store/golden_tests.rs",
+                "use flare_im_core_sdk::content::ContentBuilder;\n",
+            ),
+            (
+                "test_support/mod.rs",
+                "mod fixtures;\nuse flare_im_core_sdk::Result;\n",
+            ),
+            (
+                "test_support/fixtures.rs",
+                "use flare_im_core_sdk::client::ImClient;\n",
+            ),
+        ],
+    );
+
+    assert_eq!(tree.violations(), pairs(&[]));
+}
+
+#[test]
+fn facade_check_still_checks_outline_modules_without_cfg_test() {
+    let tree = SourceTree::new(
+        "plain-outline",
+        &[
+            (
+                "lib.rs",
+                "pub mod geo;\n#[cfg(feature = \"extra\")]\nmod extra;\n",
+            ),
+            (
+                "geo/mod.rs",
+                "#[cfg(test)]\nmod golden_tests;\nmod location;\n\npub async fn wait() {\n    flare_im_core_sdk::delay(LIMIT).await;\n}\n",
+            ),
+            (
+                "geo/golden_tests.rs",
+                "use flare_im_core_sdk::content::ContentBuilder;\n",
+            ),
+            (
+                "geo/location.rs",
+                "use flare_im_core_sdk::event::EventBus;\nuse flare_im_core_sdk::spi::delay;\n",
+            ),
+            ("extra.rs", "use flare_im_core_sdk::client::ImClient;\n"),
+        ],
+    );
+
+    assert_eq!(
+        tree.violations(),
+        pairs(&[
+            ("extra.rs", "client"),
+            ("geo/location.rs", "event"),
+            ("geo/mod.rs", "delay"),
+        ])
+    );
+}
+
+#[test]
+fn facade_check_still_strips_inline_cfg_test_modules() {
+    let source = "pub fn wait() {}\n\n#[cfg(test)]\nmod tests {\n    use flare_im_core_sdk::event::EventBus;\n\n    fn helper() {\n        let _ = 1;\n    }\n}\n\npub fn after() {}\n";
+    assert_eq!(
+        strip_cfg_test_modules(source),
+        "pub fn wait() {}\n\n\npub fn after() {}\n"
+    );
+
+    let tree = SourceTree::new(
+        "cfg-test-inline",
+        &[(
+            "lib.rs",
+            "use flare_im_core_sdk::spi::delay;\n\n#[cfg(test)]\nmod tests {\n    use flare_im_core_sdk::event::EventBus;\n}\n\npub fn connect() {\n    let _ = flare_im_core_sdk::client::ImClient::new();\n}\n",
+        )],
+    );
+
+    assert_eq!(tree.violations(), pairs(&[("lib.rs", "client")]));
 }
 
 #[test]
