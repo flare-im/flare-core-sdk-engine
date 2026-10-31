@@ -5,6 +5,7 @@ use crate::application::sync_task::ConversationUserSettingsPatch;
 use crate::application::{ConversationLocalLifecycle, LocalConversationVisibility};
 use crate::domain::{
     ConversationIdentityService, ConversationReadService, ConversationStore, SyncCursorStore,
+    TimelineCoverageStore,
 };
 use crate::kernel::{CurrentUserIdStore, SessionSyncRunner};
 use crate::model::conversation::ConversationType;
@@ -16,6 +17,7 @@ use crate::shared::error::{ErrorCode, FlareError, Result};
 pub struct ConversationCommandUseCase {
     store: Arc<dyn ConversationStore>,
     cursors: Option<Arc<dyn SyncCursorStore>>,
+    timeline_coverage: Option<Arc<dyn TimelineCoverageStore>>,
     current_user_id: CurrentUserIdStore,
     identity_service: ConversationIdentityService,
     read_service: ConversationReadService,
@@ -33,6 +35,7 @@ impl ConversationCommandUseCase {
         Self {
             store,
             cursors,
+            timeline_coverage: None,
             current_user_id,
             identity_service: ConversationIdentityService,
             read_service: ConversationReadService,
@@ -41,6 +44,15 @@ impl ConversationCommandUseCase {
                 .map(|sync| Arc::clone(sync) as Arc<dyn SessionSyncRunner>),
             settings_sync,
         }
+    }
+
+    /// 清空本地记录时把 `[1, 清空水位]` 写进已证实区间。
+    pub fn with_timeline_coverage(
+        mut self,
+        timeline_coverage: Arc<dyn TimelineCoverageStore>,
+    ) -> Self {
+        self.timeline_coverage = Some(timeline_coverage);
+        self
     }
 
     async fn after_user_settings_write(
@@ -368,6 +380,7 @@ impl ConversationCommandUseCase {
         let cleared = ConversationLocalLifecycle::clear_history_boundary_with_ports(
             self.store.as_ref(),
             self.cursors.as_deref(),
+            self.timeline_coverage.as_deref(),
             &user_id,
             conversation_id,
             LocalConversationVisibility::Keep,
@@ -470,6 +483,7 @@ mod tests {
         ConversationCommandUseCase {
             store,
             cursors: None,
+            timeline_coverage: None,
             current_user_id: Arc::new(RwLock::new("hugo".to_string())),
             identity_service: ConversationIdentityService,
             read_service: ConversationReadService,

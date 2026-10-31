@@ -37,6 +37,17 @@ pub trait SessionSyncRunner: Send + Sync {
     {
         Box::pin(async { Ok(false) })
     }
+    /// 取 `after_seq` 之后的一页并写入它证明的区间，不推进同步游标（围绕某条消息打开时间线用）。
+    /// 返回服务端是否还有更新的。
+    fn request_message_page_after_seq_detached(
+        &self,
+        _conversation_id: &str,
+        _after_seq: u64,
+        _limit: i32,
+    ) -> Pin<Box<dyn std::future::Future<Output = crate::shared::error::Result<bool>> + Send + '_>>
+    {
+        Box::pin(async { Ok(false) })
+    }
     fn send_read_ack(
         &self,
         conversation_id: &str,
@@ -194,6 +205,9 @@ pub struct SyncRunContext {
     pub scope: SyncScope,
     pub visibility: SyncVisibility,
     pub reason: SyncReason,
+    /// 这一轮拉到的页是否推进同步游标。只有围绕某条消息取的页为 false：
+    /// 它只写消息与已证实区间，游标留在原处。
+    pub advances_cursor: bool,
 }
 
 impl SyncRunContext {
@@ -210,6 +224,15 @@ impl SyncRunContext {
             scope,
             visibility,
             reason,
+            advances_cursor: true,
+        }
+    }
+
+    /// 不推进同步游标的单页（静默）：落库与写区间照常，游标不动。
+    pub fn detached_page() -> Self {
+        Self {
+            advances_cursor: false,
+            ..Self::silent_gap_repair()
         }
     }
 
@@ -282,6 +305,7 @@ impl SyncRunContext {
                 SyncReason::WarmStartupCalibration => SyncReason::WarmStartupCalibration,
                 _ => SyncReason::BackgroundCatchUp,
             },
+            advances_cursor: self.advances_cursor,
         }
     }
 

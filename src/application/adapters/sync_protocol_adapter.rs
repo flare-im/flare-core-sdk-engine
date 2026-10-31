@@ -684,7 +684,8 @@ impl SyncProtocolAdapter {
         );
 
         // I2：服务端明示增量窗口已失效 → 放弃本页增量回放，切快照重建（游标置服务端水位）。
-        if snapshot_cutover_required(sc.stale.as_ref(), sc.hints.as_ref()) {
+        // 不推进游标的页不做重建：重建会把游标挪到服务端水位。
+        if run.advances_cursor && snapshot_cutover_required(sc.stale.as_ref(), sc.hints.as_ref()) {
             tracing::warn!(
                 conversation_id = %conversation_id,
                 stale = ?sc.stale,
@@ -715,7 +716,13 @@ impl SyncProtocolAdapter {
             .await?
             .map(|c| crate::domain::sync_visibility_floor(&c))
             .unwrap_or(0);
-        let decode_after_seq = cursor_seq.min(requested_after_seq).max(cleared_floor);
+        // 不推进游标的页从请求位点起算：它可能在游标之上，也可能远在游标之下。
+        let decode_after_seq = if run.advances_cursor {
+            cursor_seq.min(requested_after_seq)
+        } else {
+            requested_after_seq
+        }
+        .max(cleared_floor);
 
         tracing::debug!(
             conversation_id = %conversation_id,
@@ -748,7 +755,17 @@ impl SyncProtocolAdapter {
                 item_count = sc.items.len(),
                 "冷启 tail 页按快照采信：游标推到服务端水位，旧史留给按需回溯"
             );
-            if !user_id.is_empty() {
+            // 尾页证明从页内最小 seq 到水位，不从 1 起：更旧的历史留给往旧翻页时回填。
+            self.sync_apply_use_case
+                .record_coverage(
+                    conversation_id,
+                    crate::domain::timeline::tail_page_range(
+                        applied.min_item_seq,
+                        applied.remote_max_seq.max(applied.max_item_seq),
+                    ),
+                )
+                .await;
+            if !user_id.is_empty() && run.advances_cursor {
                 self.save_watermark_cursor(&user_id, conversation_id, applied.remote_max_seq)
                     .await?;
             }
@@ -767,7 +784,7 @@ impl SyncProtocolAdapter {
                 "消息同步未到达远端水位，保留 cursor 在连续位点并等待后续补偿"
             );
         }
-        if applied.max_seq > cursor_seq && !user_id.is_empty() {
+        if applied.max_seq > cursor_seq && !user_id.is_empty() && run.advances_cursor {
             self.save_cursor_with_remote(
                 &user_id,
                 conversation_id,
@@ -995,6 +1012,20 @@ impl SessionSyncRunner for SyncProtocolAdapter {
         Box::pin(async move {
             self.sync_conversation_backfill_before_seq(&id, before_seq, limit)
                 .await
+        })
+    }
+
+    fn request_message_page_after_seq_detached(
+        &self,
+        conversation_id: &str,
+        after_seq: u64,
+        limit: i32,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<bool>> + Send + '_>> {
+        let id = conversation_id.to_string();
+        Box::pin(async move {
+            self.sync_conversation_page_after_seq_detached(&id, after_seq, limit)
+                .await
+                .map(|(_, has_more)| has_more)
         })
     }
 
@@ -1870,8 +1901,31 @@ impl SyncProtocolAdapter {
         if applied.has_decoded_items {
             self.transition_sync(&run, SyncTransition::DataReceived);
         }
+        // 落库之后才写它证明的区间：还有更早则 [页内最小 seq, before - 1]，否则 [1, before - 1]。
+        self.sync_apply_use_case
+            .record_backfill_coverage(conversation_id, before_seq, &sc)
+            .await;
         self.transition_sync(&run, SyncTransition::SyncDone);
         Ok(has_more)
+    }
+
+    /// 取 `after_seq` 之后的一页：消息落库、写入它证明的区间，**不推进同步游标**。
+    ///
+    /// 围绕某条消息打开时间线时向新的方向取页用它：那一页可能远在游标之下，推进游标会把它
+    /// 挪到孤岛上，之后的实时消息和缺口补拉都会错位。返回（页内连续到的 seq, 服务端是否还有更新的）。
+    pub async fn sync_conversation_page_after_seq_detached(
+        &self,
+        conversation_id: &str,
+        after_seq: u64,
+        limit: i32,
+    ) -> Result<(u64, bool)> {
+        let run = SyncRunContext::detached_page();
+        self.transition_sync(&run, SyncTransition::SyncRequested);
+        let page_limit = if limit > 0 { limit } else { DEFAULT_SYNC_LIMIT };
+        let (max_seq, has_more, _next_cursor) = self
+            .request_single_page(&run, conversation_id, after_seq, page_limit, String::new())
+            .await?;
+        Ok((max_seq, has_more))
     }
 
     pub async fn sync_conversation_from_seq_with_context(
@@ -2146,3 +2200,7 @@ mod tests {
         assert!(single.has_more);
     }
 }
+
+#[cfg(test)]
+#[path = "sync_protocol_adapter_coverage_tests.rs"]
+mod coverage_tests;

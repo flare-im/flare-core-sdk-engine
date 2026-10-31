@@ -8,12 +8,13 @@ use std::sync::Arc;
 use crate::application::usecases::{
     ConversationCommandUseCase, ConversationViewAssembler, MessageViewAssembler,
 };
+use crate::domain::{TimelineCoverage, TimelineCoverageStore};
 use crate::kernel::CurrentUserIdStore;
 use crate::kernel::event::{ConversationEvent, EventBus, SdkEvent};
 use crate::model::conversation::ConversationType;
 use crate::model::{
     BootstrapHomeTimelineRequest, Conversation, ConversationListQuery,
-    ConversationTimelineSnapshot, HomeTimelineSnapshot, OpenConversationTimelineRequest,
+    ConversationTimelineSnapshot, HomeTimelineSnapshot, IMMessage, OpenConversationTimelineRequest,
     TimelineSyncState, normalized_conversation_limit, normalized_message_limit,
 };
 use crate::shared::error::{ErrorCode, FlareError, Result};
@@ -24,6 +25,7 @@ pub struct ConversationApi {
     command_use_case: Arc<ConversationCommandUseCase>,
     view_assembler: Arc<ConversationViewAssembler>,
     message_view_assembler: Arc<MessageViewAssembler>,
+    timeline_coverage: Arc<dyn TimelineCoverageStore>,
     bus: EventBus,
     current_user_id: CurrentUserIdStore,
 }
@@ -33,6 +35,7 @@ impl ConversationApi {
         command_use_case: Arc<ConversationCommandUseCase>,
         view_assembler: Arc<ConversationViewAssembler>,
         message_view_assembler: Arc<MessageViewAssembler>,
+        timeline_coverage: Arc<dyn TimelineCoverageStore>,
         bus: EventBus,
         current_user_id: CurrentUserIdStore,
     ) -> Self {
@@ -40,6 +43,7 @@ impl ConversationApi {
             command_use_case,
             view_assembler,
             message_view_assembler,
+            timeline_coverage,
             bus,
             current_user_id,
         }
@@ -158,13 +162,18 @@ impl ConversationApi {
     }
 
     /// SDK 统一会话快照：读取最近消息窗口，并依赖 conversation.get 的投影修复返回一致会话摘要。
+    ///
+    /// 窗口由新到旧取：比最高已证实 seq 新的行（刚由实时推送写入的头部未证实行）与待发送行照收，
+    /// 其余的行必须落在接着最新的那一段已证实区间里，碰到区间外的行就停，不把隔着缺口的旧行
+    /// 接到窗口下面。`has_more`（视图的 hasOlder）只由区间与窗口之下的本地行决定，不再按
+    /// 「本地页装满没有」或「最旧一条是不是 seq 1」去猜。
     pub async fn open_timeline(
         &self,
         request: OpenConversationTimelineRequest,
     ) -> Result<ConversationTimelineSnapshot> {
         self.ensure_session_active().await?;
         let conversation_id = request.conversation_id.trim();
-        let limit = normalized_message_limit(request.message_limit);
+        let limit = normalized_message_limit(request.message_limit) as usize;
         if conversation_id.is_empty() {
             return Ok(ConversationTimelineSnapshot {
                 conversation: None,
@@ -172,27 +181,35 @@ impl ConversationApi {
                 has_more: false,
             });
         }
-        let mut messages = self
+        // 多读一行：判断窗口之下本地还有没有行。
+        let rows = self
             .message_view_assembler
-            .list(conversation_id, 0, limit)
+            .list(conversation_id, 0, limit as u32 + 1)
             .await?;
-        messages.sort_by(crate::model::IMMessage::compare_for_timeline_asc);
         let conversation = self.view_assembler.get(conversation_id).await?;
-        // has_more 不能只看"本地这一页装满没有"。
-        //
-        // list() 读的是本地库，新设备/清过缓存的客户端本地可能只有几十条，
-        // 于是 len() < limit 就报 has_more=false，UI 直接显示"没有更多消息了"，
-        // 用户再也翻不到历史——而服务端可能有上百万条。load_older 本身有
-        // request_message_backfill_before_seq 的回填能力，只是永远没机会被调到。
-        //
-        // 真正的判据是"最旧的那条是不是已经到了会话起点"：没到就说明更早的
-        // 还在服务端。宁可多放行一次（回填拉回空页后 has_more 自然转 false），
-        // 也不能把用户永久挡在历史之外。
-        let reached_start = messages
-            .first()
-            .map(|first| first.conversation_seq <= Self::TIMELINE_FIRST_SEQ)
-            .unwrap_or(true);
-        let has_more = messages.len() >= limit as usize || !reached_start;
+        let coverage = self
+            .coverage_with_floor(conversation_id, conversation.as_ref())
+            .await?;
+        let highest = coverage.highest_proven_seq();
+        let latest = coverage.latest_range();
+        let mut messages = Vec::with_capacity(limit.min(rows.len()));
+        let mut rows_below = false;
+        for row in rows {
+            if messages.len() == limit {
+                rows_below = true;
+                break;
+            }
+            let seq = row.conversation_seq;
+            let joins_latest =
+                seq == 0 || seq > highest || latest.is_some_and(|range| range.contains(seq));
+            if !joins_latest {
+                rows_below = true;
+                break;
+            }
+            messages.push(row);
+        }
+        messages.sort_by(IMMessage::compare_for_timeline_asc);
+        let has_more = window_has_older(&messages, rows_below, &coverage, conversation.as_ref());
         Ok(ConversationTimelineSnapshot {
             conversation,
             messages,
@@ -200,9 +217,34 @@ impl ConversationApi {
         })
     }
 
-    /// 会话内第一条消息的 seq。服务端从 1 开始分配，因此本地最旧一条的 seq
-    /// 若大于它，就说明更早的历史还没同步下来。
-    const TIMELINE_FIRST_SEQ: u64 = 1;
+    /// 已证实区间，并入会话的可见下限：本地清空水位与服务端历史可见起点之下没有可见消息。
+    async fn coverage_with_floor(
+        &self,
+        conversation_id: &str,
+        conversation: Option<&Conversation>,
+    ) -> Result<TimelineCoverage> {
+        let floor = conversation
+            .map(crate::domain::sync_visibility_floor)
+            .unwrap_or(0);
+        Ok(self
+            .timeline_coverage
+            .coverage(conversation_id)
+            .await?
+            .with_visibility_floor(floor))
+    }
+
+    /// 往旧翻页用：会话摘要（本地投影）与并入可见下限后的已证实区间。
+    pub(crate) async fn timeline_paging_state(
+        &self,
+        conversation_id: &str,
+    ) -> Result<(Option<Conversation>, TimelineCoverage)> {
+        self.ensure_session_active().await?;
+        let conversation = self.view_assembler.get(conversation_id).await?;
+        let coverage = self
+            .coverage_with_floor(conversation_id, conversation.as_ref())
+            .await?;
+        Ok((conversation, coverage))
+    }
 
     pub(crate) async fn hydrate_timeline_messages(
         &self,
@@ -213,20 +255,71 @@ impl ConversationApi {
             .await
     }
 
-    pub(crate) async fn timeline_page(
+    /// 区间内读本地：seq 落在 `[from_seq, before_seq)` 的行，由新到旧最多 `limit` 行。
+    /// 第二项说明这一段里本地是否还有更旧的行。区间之外的行一律不读——不越过缺口。
+    pub(crate) async fn timeline_rows_in_range(
         &self,
         conversation_id: &str,
+        from_seq: u64,
         before_seq: u64,
-        limit: u32,
-    ) -> Result<Vec<crate::model::IMMessage>> {
+        limit: usize,
+    ) -> Result<(Vec<IMMessage>, bool)> {
         self.ensure_session_active().await?;
         let conversation_id = conversation_id.trim();
-        if conversation_id.is_empty() {
-            return Ok(Vec::new());
+        let from_seq = from_seq.max(1);
+        if conversation_id.is_empty() || before_seq <= from_seq || limit == 0 {
+            return Ok((Vec::new(), false));
         }
-        self.message_view_assembler
-            .list(conversation_id, before_seq, normalized_message_limit(limit))
-            .await
+        let rows = self
+            .message_view_assembler
+            .list(conversation_id, before_seq, limit as u32 + 1)
+            .await?;
+        let mut in_range = rows
+            .into_iter()
+            .filter(|message| (from_seq..before_seq).contains(&message.conversation_seq))
+            .collect::<Vec<_>>();
+        let more = in_range.len() > limit;
+        in_range.truncate(limit);
+        Ok((in_range, more))
+    }
+
+    /// 在窗口的 seq 范围内重读（事件触发的刷新）：seq 不小于 `oldest_seq` 的行与待发送行，
+    /// 由新到旧最多 `limit` 行。窗口之下的行不读进来，所以重读不会改变 `has_more`，
+    /// 除非窗口从旧的一端被截掉。
+    pub(crate) async fn reload_timeline_window(
+        &self,
+        conversation_id: &str,
+        oldest_seq: u64,
+        limit: usize,
+    ) -> Result<ConversationTimelineSnapshot> {
+        self.ensure_session_active().await?;
+        let conversation_id = conversation_id.trim();
+        let limit = limit.max(1);
+        let rows = self
+            .message_view_assembler
+            .list(conversation_id, 0, limit.saturating_add(1) as u32)
+            .await?;
+        let conversation = self.view_assembler.get(conversation_id).await?;
+        let coverage = self
+            .coverage_with_floor(conversation_id, conversation.as_ref())
+            .await?;
+        let mut messages = Vec::with_capacity(limit.min(rows.len()));
+        let mut rows_below = false;
+        for row in rows {
+            let seq = row.conversation_seq;
+            if (seq != 0 && seq < oldest_seq) || messages.len() == limit {
+                rows_below = true;
+                break;
+            }
+            messages.push(row);
+        }
+        messages.sort_by(IMMessage::compare_for_timeline_asc);
+        let has_more = window_has_older(&messages, rows_below, &coverage, conversation.as_ref());
+        Ok(ConversationTimelineSnapshot {
+            conversation,
+            messages,
+            has_more,
+        })
     }
 
     pub async fn mark_read(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
@@ -321,51 +414,205 @@ impl ConversationApi {
     }
 }
 
+/// 窗口之下还有没有可见消息（视图的 hasOlder）：只由已证实区间与窗口之下的本地行决定。
+/// 空窗口按会话已知的最新 seq（摘要 `max_seq` 与最高已证实 seq 取大）之上一位判断，
+/// 所以会话 `max_seq` 不超过可见下限时为 false。
+pub(crate) fn window_has_older(
+    messages: &[IMMessage],
+    rows_below: bool,
+    coverage: &TimelineCoverage,
+    conversation: Option<&Conversation>,
+) -> bool {
+    match messages
+        .iter()
+        .map(|message| message.conversation_seq)
+        .filter(|seq| *seq > 0)
+        .min()
+    {
+        Some(oldest) => coverage.has_older(oldest, rows_below),
+        None => {
+            let newest_known = conversation
+                .map(|conversation| conversation.max_seq)
+                .unwrap_or(0)
+                .max(coverage.highest_proven_seq());
+            coverage.has_older(newest_known.saturating_add(1), rows_below)
+        }
+    }
+}
+
 #[cfg(test)]
-mod timeline_has_more_tests {
+mod open_timeline_tests {
     use super::*;
+    use crate::domain::{ConversationWriter, MessageWriter, SeqRange};
+    use crate::infrastructure::persistence::{MemoryTimelineCoverageStore, MemoryUserProfileStore};
+    use crate::storage::{MemoryConversationStore, MemoryMessageStore};
+    use flare_proto::common::Message as ProtoMessage;
 
-    /// 复刻 open_timeline 里的判据。直接调 open_timeline 需要活的会话与本地库，
-    /// 而这里要锁的是"怎么算 has_more"这条规则本身。
-    fn has_more(loaded: usize, limit: usize, oldest_seq: Option<u64>) -> bool {
-        let reached_start = oldest_seq
-            .map(|seq| seq <= ConversationApi::TIMELINE_FIRST_SEQ)
-            .unwrap_or(true);
-        loaded >= limit || !reached_start
+    struct Fixture {
+        api: ConversationApi,
+        messages: Arc<MemoryMessageStore>,
+        conversations: Arc<MemoryConversationStore>,
+        coverage: Arc<MemoryTimelineCoverageStore>,
     }
 
-    /// 本地只同步了一小段时，绝不能报"没有更多"。
-    ///
-    /// 这是修复前的真实故障：服务端 100 万条，新设备本地只有 36 条，
-    /// len() < limit 就判 has_more=false，UI 显示"没有更多消息了"，
-    /// 用户永远翻不到历史——而 load_older 的服务端回填能力一次都没被调用。
-    #[test]
-    fn partial_local_window_still_reports_more_history() {
-        assert!(
-            has_more(36, 40, Some(999_965)),
-            "本地最旧一条 seq=999965 远未到会话起点，必须放行回填"
+    fn fixture() -> Fixture {
+        let messages = Arc::new(MemoryMessageStore::new());
+        let conversations = Arc::new(MemoryConversationStore::new());
+        let coverage = Arc::new(MemoryTimelineCoverageStore::new());
+        let user: CurrentUserIdStore = Arc::new(tokio::sync::RwLock::new("me".to_string()));
+        let profiles = Arc::new(MemoryUserProfileStore::new());
+        let api = ConversationApi::new(
+            Arc::new(ConversationCommandUseCase::new(
+                conversations.clone(),
+                user.clone(),
+                None,
+                None,
+            )),
+            Arc::new(ConversationViewAssembler::new(
+                conversations.clone(),
+                profiles.clone(),
+            )),
+            Arc::new(MessageViewAssembler::new(messages.clone(), profiles)),
+            coverage.clone(),
+            EventBus::new(),
+            user,
+        );
+        Fixture {
+            api,
+            messages,
+            conversations,
+            coverage,
+        }
+    }
+
+    impl Fixture {
+        async fn conversation(&self, max_seq: u64, visible_after_seq: u64) {
+            self.conversations
+                .save_one(&Conversation {
+                    conversation_id: "c1".into(),
+                    channel_id: "c1".into(),
+                    conversation_type: ConversationType::Group,
+                    max_seq,
+                    visible_after_seq,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+        }
+
+        async fn rows(&self, seqs: impl IntoIterator<Item = u64>) {
+            let rows = seqs
+                .into_iter()
+                .map(|seq| {
+                    IMMessage::new(ProtoMessage {
+                        conversation_id: "c1".into(),
+                        server_id: format!("s{seq}"),
+                        client_msg_id: format!("m{seq}"),
+                        conversation_seq: seq,
+                        ..Default::default()
+                    })
+                })
+                .collect::<Vec<_>>();
+            self.messages.save_batch(&rows).await.unwrap();
+        }
+
+        async fn covered(&self, from: u64, to: u64) {
+            self.coverage
+                .add("c1", SeqRange::new(from, to).unwrap())
+                .await
+                .unwrap();
+        }
+
+        async fn open(&self, limit: u32) -> (Vec<u64>, bool) {
+            let snapshot = self
+                .api
+                .open_timeline(OpenConversationTimelineRequest {
+                    conversation_id: "c1".into(),
+                    message_limit: limit,
+                })
+                .await
+                .unwrap();
+            (
+                snapshot
+                    .messages
+                    .iter()
+                    .map(|message| message.conversation_seq)
+                    .collect(),
+                snapshot.has_more,
+            )
+        }
+    }
+
+    /// 新设备本地只同步了最新一小段：没有区间证明到起点，绝不能报「没有更多」。
+    #[tokio::test]
+    async fn a_partial_local_window_without_proof_still_has_older() {
+        let f = fixture();
+        f.conversation(1_000_000, 0).await;
+        f.rows(999_965..=1_000_000).await;
+        let (window, has_older) = f.open(40).await;
+        assert_eq!(window.len(), 36);
+        assert!(has_older);
+    }
+
+    /// 会话第一条消息是 seq 3（1、2 是已读回执）：区间证明到 1，就没有更早的了。
+    #[tokio::test]
+    async fn the_start_is_proven_by_the_ranges_not_by_seq_one() {
+        let f = fixture();
+        f.conversation(12, 0).await;
+        f.rows(3..=12).await;
+        f.covered(1, 12).await;
+        assert_eq!(f.open(40).await, ((3..=12).collect(), false));
+        assert_eq!(
+            f.open(4).await,
+            ((9..=12).collect(), true),
+            "older local rows below the window are older messages"
         );
     }
 
-    /// 真到起点了才收口，否则用户会看到永远转不完的"加载更多"。
-    #[test]
-    fn reaching_first_seq_stops_paging() {
-        assert!(
-            !has_more(36, 40, Some(1)),
-            "最旧一条已是 seq=1，确实没有更早的了"
+    #[tokio::test]
+    async fn an_empty_window_has_older_only_above_the_visibility_floor() {
+        let f = fixture();
+        assert_eq!(f.open(40).await, (vec![], false), "unknown conversation");
+        f.conversation(30, 30).await;
+        assert_eq!(f.open(40).await, (vec![], false), "cleared through max_seq");
+        f.conversation(31, 30).await;
+        assert_eq!(
+            f.open(40).await,
+            (vec![], true),
+            "one message above the floor"
         );
     }
 
-    /// 空会话不该声称还有历史。
-    #[test]
-    fn empty_timeline_has_no_more() {
-        assert!(!has_more(0, 40, None));
+    /// 冷启动只拿到尾页 [980, 1000]，本地还有上次留下的 [1, 36]：窗口只含 980 之后。
+    #[tokio::test]
+    async fn the_window_stops_at_the_gap_below_the_latest_range() {
+        let f = fixture();
+        f.conversation(1000, 0).await;
+        f.rows((1..=36).chain(980..=1000)).await;
+        f.covered(1, 36).await;
+        f.covered(980, 1000).await;
+        assert_eq!(f.open(40).await, ((980..=1000).collect(), true));
     }
 
-    /// 页装满时无条件放行——这是修复前唯一生效的分支，不能回归。
-    #[test]
-    fn full_page_still_reports_more() {
-        assert!(has_more(40, 40, Some(1)), "整页装满说明本地还有更多可翻");
+    /// 实时消息 1001 先于补拉到达：它比最高已证实 seq 新，照常进窗口，下面接着已证实的一段。
+    #[tokio::test]
+    async fn rows_above_the_highest_proven_seq_are_kept() {
+        let f = fixture();
+        f.conversation(1001, 0).await;
+        f.rows((961..=990).chain([1001])).await;
+        f.covered(961, 990).await;
+        let (window, has_older) = f.open(40).await;
+        assert_eq!(window, (961..=990).chain([1001]).collect::<Vec<_>>());
+        assert!(has_older, "the range does not reach the start");
+    }
+
+    #[tokio::test]
+    async fn the_cleared_floor_proves_the_start() {
+        let f = fixture();
+        f.conversation(14, 10).await;
+        f.rows(11..=14).await;
+        f.covered(11, 14).await;
+        assert_eq!(f.open(40).await, ((11..=14).collect(), false));
     }
 }
 
@@ -411,6 +658,7 @@ mod total_unread_tests {
                 Arc::new(MemoryMessageStore::new()),
                 profiles,
             )),
+            Arc::new(crate::infrastructure::persistence::MemoryTimelineCoverageStore::new()),
             EventBus::new(),
             user,
         );

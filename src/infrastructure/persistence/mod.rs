@@ -12,6 +12,7 @@ pub mod empty_stores;
 pub mod memory;
 pub mod memory_im;
 pub mod minimal_provider;
+pub mod timeline_coverage;
 
 /// 待发送队列：内存 + 后端分层（推荐与 sqlite 组合使用）
 pub mod layered;
@@ -29,12 +30,16 @@ pub use layered::LayeredPendingSendStore;
 pub use memory::{MemoryPendingSendStore, MemoryUserProfileStore};
 pub use memory_im::in_memory_im_provider;
 pub use minimal_provider::in_memory_empty_im_provider;
+pub use timeline_coverage::{
+    CursorBackedTimelineCoverageStore, MemoryTimelineCoverageStore, timeline_coverage_cursor_key,
+};
 
 #[cfg(feature = "storage-sqlite")]
 pub use sqlite::{
     SqliteConversationParticipantRepo, SqliteConversationRepo, SqliteMediaCacheRepo,
-    SqliteMessageRepo, SqlitePendingSendRepo, SqliteSyncCursorRepo, SqliteUploadManifestRepo,
-    SqliteUserFileDownloadRepo, SqliteUserProfileRepo, init_schema as sqlite_init_schema,
+    SqliteMessageRepo, SqlitePendingSendRepo, SqliteSyncCursorRepo, SqliteTimelineCoverageRepo,
+    SqliteUploadManifestRepo, SqliteUserFileDownloadRepo, SqliteUserProfileRepo,
+    init_schema as sqlite_init_schema,
 };
 
 pub(crate) mod search;

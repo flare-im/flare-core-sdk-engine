@@ -965,6 +965,7 @@ pub fn in_memory_im_provider() -> StoreProvider {
         conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: Arc::new(MemorySyncCursorStore::new()),
+        timeline_coverage: Arc::new(super::MemoryTimelineCoverageStore::new()),
         pending_send_reader: Some(pending.clone()),
         pending_send_writer: Some(pending),
         upload_manifest_store: None,

@@ -1,7 +1,7 @@
 use crate::domain::{
     ConversationParticipantStore, ConversationStore, MediaCacheAdmin, MediaCacheStore,
-    MessageStore, PendingSendReader, PendingSendWriter, SyncCursorStore, UploadManifestStore,
-    UserFileDownloadStore, UserProfile, UserReader, UserWriter,
+    MessageStore, PendingSendReader, PendingSendWriter, SyncCursorStore, TimelineCoverageStore,
+    UploadManifestStore, UserFileDownloadStore, UserProfile, UserReader, UserWriter,
 };
 use std::sync::Arc;
 
@@ -12,6 +12,8 @@ pub struct StoreProvider {
     pub conversations: Arc<dyn ConversationStore>,
     pub conversation_participants: Option<Arc<dyn ConversationParticipantStore>>,
     pub cursors: Arc<dyn SyncCursorStore>,
+    /// 时间线已证实连续区间：有没有更早的消息、往旧翻页何时回填，只由它回答。
+    pub timeline_coverage: Arc<dyn TimelineCoverageStore>,
     pub pending_send_reader: Option<Arc<dyn PendingSendReader>>,
     pub pending_send_writer: Option<Arc<dyn PendingSendWriter>>,
     pub upload_manifest_store: Option<Arc<dyn UploadManifestStore>>,
@@ -90,6 +92,7 @@ impl Clone for StoreProvider {
             conversations: self.conversations.clone(),
             conversation_participants: self.conversation_participants.clone(),
             cursors: self.cursors.clone(),
+            timeline_coverage: self.timeline_coverage.clone(),
             pending_send_reader: self.pending_send_reader.clone(),
             pending_send_writer: self.pending_send_writer.clone(),
             upload_manifest_store: self.upload_manifest_store.clone(),

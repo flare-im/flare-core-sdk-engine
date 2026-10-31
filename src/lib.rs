@@ -69,8 +69,9 @@ pub mod storage {
         ConversationReader, ConversationStore, ConversationWriter, MediaCacheAdmin,
         MediaCacheEntryVo, MediaCacheStatsVo, MediaCacheStore, MessageReader, MessageStore,
         MessageWriter, OperationApplyResult, PendingSendReader, PendingSendVo, PendingSendWriter,
-        SyncCursorReader, SyncCursorVo, SyncCursorWriter, UserFileDownloadStore, UserReader,
-        UserWriter, set_local_cleared_through_seq,
+        SeqRange, SyncCursorReader, SyncCursorVo, SyncCursorWriter, TimelineCoverage,
+        TimelineCoverageStore, UserFileDownloadStore, UserReader, UserWriter,
+        set_local_cleared_through_seq,
     };
     pub use crate::domain::{MemberKey, ParticipantDisplaySnapshot, stored_name_is_an_id};
     pub use crate::domain::{
@@ -82,7 +83,8 @@ pub mod storage {
     #[cfg(feature = "storage-sqlite")]
     pub use crate::infrastructure::persistence::sqlite::SqlitePluginCommandRepo;
     pub use crate::infrastructure::persistence::{
-        MemoryPendingSendStore, MemorySyncCursorStore, MemoryUserProfileStore, StoreProvider,
+        CursorBackedTimelineCoverageStore, MemoryPendingSendStore, MemorySyncCursorStore,
+        MemoryTimelineCoverageStore, MemoryUserProfileStore, StoreProvider,
         in_memory_empty_im_provider, in_memory_im_provider,
     };
     pub use crate::platform::ports::storage::{

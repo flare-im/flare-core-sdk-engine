@@ -9,6 +9,9 @@ pub(crate) struct AppliedSingleConversationPage {
     /// 服务端以 skip/tombstone 证明「此 seq 没有消息」的位点：本地不会有对应消息行，
     /// 存游标时必须当作已物化，否则游标永远越不过去。
     pub absent_seqs: Vec<u64>,
+    /// 页内已落库 item 的最小、最大 seq（没有时为 0）：冷启动尾页按它们写区间。
+    pub min_item_seq: u64,
+    pub max_item_seq: u64,
 }
 
 #[derive(Debug, Clone)]

@@ -7,6 +7,16 @@
 
 ### 新增
 
+- 时间线已证实连续区间：每个会话一组已合并的闭区间 `[from, to]`（seq），区间内每个 seq 本地有行，或已被
+  服务端证明没有可见消息。`TimelineCoverageStore`（`StoreProvider::timeline_coverage`）有 SQLite（新表
+  `timeline_coverage`）、浏览器（存进同步游标键值 `timeline_coverage:<会话 id>`，经宿主 `saveCursor` 持久化、
+  随 `loadSnapshot` 载回，宿主不用改）与内存三种实现。写入来源：连续同步页 `[after+1, 连续到的 seq]`、游标推进
+  `[c+1, c']`、冷启动尾页（页内最小 seq 到水位，不从 1 起）、冷启 bundle 与 gap-too-large 重建的快照行（行内最小
+  到最大 seq）、回填页（还有更早为 `[页内最小 seq, before-1]`，否则 `[1, before-1]`）、本地清空记录 `[1, F]`；
+  单条实时推送不写，本地删除、撤回、过期不改区间。删除会话（连同本地消息）时一并删掉它的区间。
+- 不推进游标的向新页：`SyncRunContext::detached_page()`（`advances_cursor = false`）与
+  `SessionSyncRunner::request_message_page_after_seq_detached`，取 `after_seq` 之后的一页，消息落库、写入区间，
+  同步游标留在原处。
 - 插件下行的两个类型化事件：`SdkEvent::Plugin(PluginEvent::Realtime)`（插件经宿主能力
   `im.realtime.deliver` 投递的实时包：`pluginId`、`packetType`、`conversationId`、JSON 对象 `payload`、
   `deliveryId`、`expiresAtMs`；过期包与 payload 不是 JSON 对象的包直接丢弃）与
@@ -55,6 +65,16 @@
 
 ### 修复
 
+- 时间线视图的 `hasMore`（hasOlder）只由已证实区间、可见下限与窗口之下的本地行决定，不再按「本地页装满没有」或
+  「最旧一条是不是 seq 1」去猜：会话第一条消息的 seq 大于 1（前面是已读回执等事件）、新成员只能看到下限之后的
+  历史、清空过记录的会话，翻到起点后不再一直显示「加载更多」。事件触发的重读改为在窗口的 seq 范围内重读，不再
+  按打开时的「最新窗口」整窗替换：到达起点后表情、撤回、删除、同步完成不会让「加载更多」重新出现，超过 100 行的
+  窗口也不会被截短。`conversation.open_timeline` 用同一规则。
+- `view.timeline.load_older` 只在区间内读本地，碰到区间边界以边界为锚回填，窗口紧挨缺口时以窗口最旧一行为锚
+  回填；回填失败时窗口不变并返回错误，不越过缺口去读更旧的本地行（此前本地页装满就不回填，会从 seq 990 直接跳到
+  seq 36）。打开时的最新窗口同样停在缺口处，只有比最高已证实 seq 新的行（刚收到的实时消息）照常显示。
+- `sync.conversation_history_backfill` 从接着最新消息的那段区间的起点往旧补，不再从本地全局最旧一条往前补；没有
+  任何区间时从会话已知最新 seq 之上开始。
 - 名字列不再写入 id 或写死的文案：首条消息建出的壳会话、修复单聊 channel、新建会话、未命名的成员集合群
   （原为 `群聊(<id>、<id>)`）、消息落库顺带建出与从消息补出的会话、会话展示快照的 id 与中文兜底
   （「群聊 / 单聊 / 系统通知…」）、单聊从资料取名、把备注复制进名字列、资料变化时回写单聊名字与最后发送者名，

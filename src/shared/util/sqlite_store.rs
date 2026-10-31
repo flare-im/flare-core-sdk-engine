@@ -14,8 +14,9 @@ use crate::FlareError;
 use crate::domain::{MediaCacheAdmin, MediaCacheStore, UserFileDownloadStore};
 use crate::infrastructure::persistence::{
     SqliteConversationParticipantRepo, SqliteConversationRepo, SqliteMediaCacheRepo,
-    SqliteMessageRepo, SqlitePendingSendRepo, SqliteSyncCursorRepo, SqliteUploadManifestRepo,
-    SqliteUserFileDownloadRepo, SqliteUserProfileRepo, StoreProvider, sqlite_init_schema,
+    SqliteMessageRepo, SqlitePendingSendRepo, SqliteSyncCursorRepo, SqliteTimelineCoverageRepo,
+    SqliteUploadManifestRepo, SqliteUserFileDownloadRepo, SqliteUserProfileRepo, StoreProvider,
+    sqlite_init_schema,
 };
 use crate::platform::ports::storage::{
     SecureKeyDescriptor, SecureKeyStore, load_or_create_local_database_key,
@@ -107,6 +108,7 @@ pub async fn open_sqlite_store_provider_with_security(
             pool.clone(),
         ))),
         cursors: Arc::new(SqliteSyncCursorRepo::new(pool.clone())),
+        timeline_coverage: Arc::new(SqliteTimelineCoverageRepo::new(pool.clone())),
         pending_send_reader: Some(pending_repo.clone()),
         pending_send_writer: Some(pending_repo),
         upload_manifest_store: Some(upload_manifest_repo),

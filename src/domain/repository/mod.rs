@@ -10,6 +10,7 @@ pub use plugin_command_repository::{
     PluginCommandStore,
 };
 mod sync_cursor_repository;
+mod timeline_coverage_repository;
 mod upload_manifest_repository;
 mod user_file_download_repository;
 mod user_repository;
@@ -30,6 +31,7 @@ pub(crate) use message_repository::{
 };
 pub use pending_send_repository::{PendingSendReader, PendingSendWriter};
 pub use sync_cursor_repository::{SyncCursorReader, SyncCursorStore, SyncCursorWriter};
+pub use timeline_coverage_repository::TimelineCoverageStore;
 pub use upload_manifest_repository::UploadManifestStore;
 pub use user_file_download_repository::UserFileDownloadStore;
 pub use user_repository::{UserReader, UserWriter};

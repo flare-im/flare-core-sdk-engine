@@ -1217,6 +1217,12 @@ impl ConversationWriter for SqliteConversationRepo {
             .execute(&mut *tx)
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        // 消息删掉了，证明这段历史完整的区间也要删掉。
+        sqlx::query("DELETE FROM timeline_coverage WHERE conversation_id = ?")
+            .bind(conversation_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         sqlx::query("DELETE FROM conversations WHERE conversation_id = ?")
             .bind(conversation_id)
             .execute(&mut *tx)

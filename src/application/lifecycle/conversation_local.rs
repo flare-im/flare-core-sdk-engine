@@ -3,7 +3,11 @@
 //! 该能力只处理 IM core 通用语义：本地历史清理水位、单会话同步游标、会话可见性。
 //! 好友删除、重新加好友、业务重置等上层动作只负责选择目标会话 ID。
 
-use crate::domain::{ConversationStore, SyncCursorStore, SyncCursorVo, local_cleared_through_seq};
+use crate::domain::timeline::cleared_history_range;
+use crate::domain::{
+    ConversationStore, SyncCursorStore, SyncCursorVo, TimelineCoverageStore,
+    local_cleared_through_seq,
+};
 use crate::infrastructure::persistence::StoreProvider;
 use crate::shared::error::Result;
 use crate::shared::util::now_millis;
@@ -33,6 +37,7 @@ impl ConversationLocalLifecycle {
         Self::clear_history_boundary_with_ports(
             stores.conversations.as_ref(),
             Some(stores.cursors.as_ref()),
+            Some(stores.timeline_coverage.as_ref()),
             current_user_id,
             conversation_id,
             visibility,
@@ -43,6 +48,7 @@ impl ConversationLocalLifecycle {
     pub async fn clear_history_boundary_with_ports(
         conversations: &dyn ConversationStore,
         cursors: Option<&dyn SyncCursorStore>,
+        timeline_coverage: Option<&dyn TimelineCoverageStore>,
         current_user_id: &str,
         conversation_id: &str,
         visibility: LocalConversationVisibility,
@@ -69,6 +75,10 @@ impl ConversationLocalLifecycle {
         conversations
             .clear_local_chat_history(conversation_id, watermark)
             .await?;
+        // 清空水位及以下不再有可见消息：翻到水位之上第一条即到头，不再回填。
+        if let (Some(store), Some(range)) = (timeline_coverage, cleared_history_range(watermark)) {
+            store.add(conversation_id, range).await?;
+        }
 
         match visibility {
             LocalConversationVisibility::Keep => {}

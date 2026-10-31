@@ -694,12 +694,15 @@ impl IMClientBuilder {
                 return Err(err);
             }
         }
-        let conversation_command_use_case = Arc::new(ConversationCommandUseCase::new(
-            store_ref.conversations.clone(),
-            current_user_id.clone(),
-            Some(sync_handler.clone()),
-            Some(store_ref.cursors.clone()),
-        ));
+        let conversation_command_use_case = Arc::new(
+            ConversationCommandUseCase::new(
+                store_ref.conversations.clone(),
+                current_user_id.clone(),
+                Some(sync_handler.clone()),
+                Some(store_ref.cursors.clone()),
+            )
+            .with_timeline_coverage(store_ref.timeline_coverage.clone()),
+        );
         let conversation_view_assembler = Arc::new(
             ConversationViewAssembler::new(store_ref.conversations.clone(), profile_reader)
                 .with_current_user(current_user_id.clone()),
@@ -709,6 +712,7 @@ impl IMClientBuilder {
             conversation_command_use_case,
             conversation_view_assembler,
             message_view_assembler.clone(),
+            store_ref.timeline_coverage.clone(),
             bus.clone(),
             current_user_id.clone(),
         ));

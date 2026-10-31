@@ -312,7 +312,7 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-/// 创建所有仓储所需表（messages / conversations / pending_sends / user_profiles / sync_cursors / sync_conversation_cursors）
+/// 创建所有仓储所需表（messages / conversations / pending_sends / user_profiles / sync_cursors / sync_conversation_cursors / timeline_coverage）
 pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
     super::plugin_command_repo::init_schema(pool).await?;
     sqlx::query(
@@ -593,6 +593,19 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
             last_seq INTEGER NOT NULL DEFAULT 0,
             synced_at INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, conversation_id)
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    // 时间线已证实连续区间：每行一段 [from_seq, to_seq]，同一会话的行互不重叠、互不相邻。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS timeline_coverage (
+            conversation_id TEXT NOT NULL,
+            from_seq INTEGER NOT NULL,
+            to_seq INTEGER NOT NULL,
+            PRIMARY KEY (conversation_id, from_seq)
         )"#,
     )
     .execute(pool)

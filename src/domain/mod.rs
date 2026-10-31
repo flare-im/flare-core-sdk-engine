@@ -14,6 +14,7 @@ mod pending_send;
 mod repository;
 mod sync;
 mod sync_cursor;
+pub mod timeline;
 mod upload_manifest;
 mod user_profile;
 
@@ -36,6 +37,7 @@ pub(crate) use repository::plugin_command_repository::{command_error, valid_key}
 pub use repository::*;
 pub use sync::*;
 pub use sync_cursor::SyncCursorVo;
+pub use timeline::{SeqRange, TimelineCoverage};
 pub use upload_manifest::{
     DirectUploadTransportKindVo, MediaUploadManifestVo, MediaUploadPartVo, UploadManifestState,
     UploadSourceKind,

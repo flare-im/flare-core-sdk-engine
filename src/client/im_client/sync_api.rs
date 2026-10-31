@@ -341,8 +341,11 @@ impl IMClient {
 
     /// 将单个会话的服务端历史消息补齐到本地消息库。
     ///
-    /// 该方法不扩大当前 UI timeline view 的窗口，只复用同步协议写入本地 store，适合登录后
-    /// 做跨端历史一致性补偿。
+    /// 从已证实区间的边界往旧补：接着最新消息的那一段区间从哪里开始，就以那里为 `before`
+    /// 回填，每页之后按扩展后的区间接着补，直到到达起点、服务端说没有更早的或页数用完。
+    /// 不从本地全局最旧一条往前补——那样会越过中间的缺口。没有任何区间时从会话已知的最新
+    /// seq 之上开始。该方法不扩大当前 UI timeline view 的窗口，只复用同步协议写入本地 store，
+    /// 适合登录后做跨端历史一致性补偿。
     #[tracing::instrument(skip(self), fields(conversation_id = %conversation_id, limit, max_pages))]
     pub async fn backfill_conversation_history(
         &self,
@@ -390,49 +393,32 @@ impl IMClient {
             );
         }
 
-        if oldest_before <= 1 {
-            return Ok(ConversationHistoryBackfillResponse {
-                conversation_id: conversation_id.to_string(),
-                pages_loaded: 0,
-                oldest_seq_before: oldest_before,
-                oldest_seq_after: oldest_before,
-                has_more: false,
-                completed: true,
-            });
-        }
-
-        let mut cursor = oldest_before;
+        let mut boundary = history_backfill_boundary(&stores, conversation_id).await?;
         let mut pages_loaded = 0;
-        let mut has_more = true;
+        let mut has_more = boundary > 1;
 
-        while pages_loaded < max_pages && cursor > 1 {
+        while pages_loaded < max_pages && boundary > 1 {
             has_more = match runner
-                .request_message_backfill_before_seq(conversation_id, cursor, limit)
+                .request_message_backfill_before_seq(conversation_id, boundary, limit)
                 .await
             {
                 Ok(has_more) => has_more,
                 Err(error) => {
                     tracing::warn!(
                         conversation_id = %conversation_id,
-                        cursor,
+                        boundary,
                         error = %error,
                         "history backfill page request failed; returning partial progress"
                     );
                     break;
                 }
             };
-            let next_oldest = stores
-                .messages
-                .oldest_conversation_seq(conversation_id)
-                .await?
-                .unwrap_or(cursor);
-
-            if next_oldest >= cursor {
+            let next_boundary = history_backfill_boundary(&stores, conversation_id).await?;
+            if next_boundary >= boundary {
                 break;
             }
-
             pages_loaded += 1;
-            cursor = next_oldest;
+            boundary = next_boundary;
 
             if !has_more {
                 break;
@@ -443,8 +429,8 @@ impl IMClient {
             .messages
             .oldest_conversation_seq(conversation_id)
             .await?
-            .unwrap_or(cursor);
-        let completed = oldest_after <= 1 || !has_more;
+            .unwrap_or(oldest_before);
+        let completed = boundary <= 1 || !has_more;
 
         Ok(ConversationHistoryBackfillResponse {
             conversation_id: conversation_id.to_string(),
@@ -466,5 +452,131 @@ impl IMClient {
             .await?
             .typing(conversation_id, is_typing)
             .await
+    }
+}
+
+/// 历史补齐的 `before`：接着最新消息的那一段已证实区间（并入可见下限）的起点；
+/// 为 1 表示已到会话起点。没有任何区间时取会话已知最新 seq 之上一位。
+async fn history_backfill_boundary(
+    stores: &crate::infrastructure::persistence::StoreProvider,
+    conversation_id: &str,
+) -> Result<u64> {
+    let conversation = stores.conversations.get(conversation_id).await?;
+    let floor = conversation
+        .as_ref()
+        .map(crate::domain::sync_visibility_floor)
+        .unwrap_or(0);
+    let coverage = stores
+        .timeline_coverage
+        .coverage(conversation_id)
+        .await?
+        .with_visibility_floor(floor);
+    if let Some(latest) = coverage.latest_range()
+        && latest.to > floor
+    {
+        return Ok(latest.from);
+    }
+    // 最新一页里可能先是待发送行（seq 为 0），取页内最大的 seq。
+    let newest_local = stores
+        .messages
+        .get_by_conversation(conversation_id, 0, 16)
+        .await?
+        .iter()
+        .map(|message| message.conversation_seq)
+        .max()
+        .unwrap_or(0);
+    let max_seq = conversation
+        .as_ref()
+        .map(|conversation| conversation.max_seq)
+        .unwrap_or(0);
+    let newest = newest_local.max(max_seq);
+    if newest <= floor {
+        return Ok(1);
+    }
+    Ok(newest.saturating_add(1))
+}
+
+#[cfg(test)]
+mod history_backfill_tests {
+    use super::history_backfill_boundary;
+    use crate::domain::SeqRange;
+    use crate::infrastructure::persistence::{StoreProvider, in_memory_im_provider};
+    use crate::model::{Conversation, IMMessage};
+    use flare_proto::common::Message as ProtoMessage;
+
+    async fn stores(max_seq: u64, visible_after_seq: u64, rows: &[u64]) -> StoreProvider {
+        let stores = in_memory_im_provider();
+        stores
+            .conversations
+            .save_one(&Conversation {
+                conversation_id: "c1".into(),
+                channel_id: "c1".into(),
+                max_seq,
+                visible_after_seq,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let rows = rows
+            .iter()
+            .map(|seq| {
+                IMMessage::new(ProtoMessage {
+                    conversation_id: "c1".into(),
+                    server_id: format!("s{seq}"),
+                    client_msg_id: format!("m{seq}"),
+                    conversation_seq: *seq,
+                    ..Default::default()
+                })
+            })
+            .collect::<Vec<_>>();
+        if !rows.is_empty() {
+            stores.messages.save_batch(&rows).await.unwrap();
+        }
+        stores
+    }
+
+    async fn cover(stores: &StoreProvider, from: u64, to: u64) {
+        stores
+            .timeline_coverage
+            .add("c1", SeqRange::new(from, to).unwrap())
+            .await
+            .unwrap();
+    }
+
+    /// 本地还有更旧的孤岛 [1, 36]：补齐从接着最新的那段区间的起点 980 开始，不从最旧一条开始。
+    #[tokio::test]
+    async fn backfill_starts_at_the_latest_range_not_at_the_oldest_local_row() {
+        let stores = stores(1000, 0, &[1, 36, 980, 1000]).await;
+        cover(&stores, 1, 36).await;
+        cover(&stores, 980, 1000).await;
+        assert_eq!(history_backfill_boundary(&stores, "c1").await.unwrap(), 980);
+    }
+
+    #[tokio::test]
+    async fn backfill_is_done_when_the_latest_range_starts_at_one() {
+        let stores = stores(12, 0, &[3, 12]).await;
+        cover(&stores, 1, 12).await;
+        assert_eq!(history_backfill_boundary(&stores, "c1").await.unwrap(), 1);
+    }
+
+    /// 没有任何区间：从会话已知最新 seq 之上开始；清空到 max_seq 的会话已经补完。
+    #[tokio::test]
+    async fn without_ranges_backfill_starts_above_the_newest_known_seq() {
+        let stores_with_rows = stores(50, 0, &[41, 45]).await;
+        assert_eq!(
+            history_backfill_boundary(&stores_with_rows, "c1")
+                .await
+                .unwrap(),
+            51
+        );
+        let cleared = stores(30, 30, &[]).await;
+        assert_eq!(history_backfill_boundary(&cleared, "c1").await.unwrap(), 1);
+        let cleared_then_new = stores(34, 30, &[31, 34]).await;
+        assert_eq!(
+            history_backfill_boundary(&cleared_then_new, "c1")
+                .await
+                .unwrap(),
+            35
+        );
     }
 }

@@ -245,6 +245,16 @@ impl ViewApi {
         });
     }
 
+    /// 往旧翻一页。窗口最旧一行为 `O`、页大小 `L`：
+    ///
+    /// 1. `O-1` 落在某段区间 `[r, ..]` 里：读本地 seq 在 `[r, O-1]` 内、由新到旧的 `L` 行；
+    ///    不够 `L` 行而 `r = 1` 就是到了起点；`r > 1` 则以 `before = r` 回填缺的行数，区间扩展后
+    ///    在新的区间内接着读。
+    /// 2. `O-1` 不在任何区间里（窗口紧挨着一个洞）：以 `before = O` 回填，写入区间后再读本地。
+    /// 3. 回填失败（离线、超时、服务端错误）：窗口不变，返回错误。不越过缺口去读更旧的本地行。
+    /// 4. 窗口里没有已发送的行：以会话已知最新 seq 之上一位为 `O`。
+    ///
+    /// `has_more`（hasOlder）只由区间与窗口之下的本地行决定。
     pub async fn load_older_timeline(
         &self,
         request: LoadOlderTimelineViewRequest,
@@ -257,7 +267,7 @@ impl ViewApi {
             ));
         }
         let requested_limit = normalized_message_limit(request.message_limit) as usize;
-        let (conversation_id, before_seq, page_limit) = {
+        let (conversation_id, oldest_seq, page_limit) = {
             let views = self.inner.views.read().await;
             // view 已关闭（用户切走会话 / silent_refresh 替换了 view）是无害竞态：
             // 加载更多历史对已关闭的 timeline 无意义，静默返回"无更多"而非报错打断 UI。
@@ -278,18 +288,9 @@ impl ViewApi {
                     update: None,
                 });
             }
-            let before_seq = oldest_positive_seq(&registration.last_snapshot);
-            let Some(before_seq) = before_seq else {
-                return Ok(ViewLoadOlderResponse {
-                    view_id,
-                    loaded_count: 0,
-                    has_more: false,
-                    update: None,
-                });
-            };
             (
                 registration.request.conversation_id.clone(),
-                before_seq,
+                oldest_positive_seq(&registration.last_snapshot),
                 requested_limit.min(MAX_TIMELINE_WINDOW_MESSAGES - current_len),
             )
         };
@@ -303,29 +304,9 @@ impl ViewApi {
             });
         }
 
-        let mut older = self
-            .inner
-            .conversation_api
-            .timeline_page(&conversation_id, before_seq, page_limit as u32)
+        let page = self
+            .read_older_page(&conversation_id, oldest_seq, page_limit)
             .await?;
-        let mut backfill_has_more = false;
-        if older.len() < page_limit
-            && before_seq > 1
-            && let Some(sync) = &self.inner.session_sync
-        {
-            backfill_has_more = sync
-                .request_message_backfill_before_seq(
-                    &conversation_id,
-                    before_seq,
-                    page_limit as i32,
-                )
-                .await?;
-            older = self
-                .inner
-                .conversation_api
-                .timeline_page(&conversation_id, before_seq, page_limit as u32)
-                .await?;
-        }
 
         let (loaded_count, has_more, update) = {
             let mut views = self.inner.views.write().await;
@@ -339,9 +320,12 @@ impl ViewApi {
                 });
             };
             let old = registration.last_snapshot.clone();
-            let page_was_full = older.len() >= page_limit || backfill_has_more;
-            let (mut new, loaded_count) =
-                expand_timeline_snapshot(&old, &older, page_was_full, MAX_TIMELINE_WINDOW_MESSAGES);
+            let (mut new, loaded_count) = expand_timeline_snapshot(
+                &old,
+                &page.messages,
+                page.has_older,
+                MAX_TIMELINE_WINDOW_MESSAGES,
+            );
             if new.messages.len() >= MAX_TIMELINE_WINDOW_MESSAGES {
                 new.has_more = false;
             }
@@ -361,6 +345,99 @@ impl ViewApi {
             has_more,
             update,
         })
+    }
+
+    /// 读窗口之下的一页（规则见 [`Self::load_older_timeline`]）。只读区间内的本地行；
+    /// 碰到区间边界就回填，回填失败直接返回错误，已读到的行也不并入。
+    async fn read_older_page(
+        &self,
+        conversation_id: &str,
+        oldest_seq: Option<u64>,
+        limit: usize,
+    ) -> Result<OlderPage> {
+        let api = &self.inner.conversation_api;
+        let (conversation, mut coverage) = api.timeline_paging_state(conversation_id).await?;
+        let window_oldest = match oldest_seq {
+            Some(seq) => seq,
+            None => conversation
+                .as_ref()
+                .map(|conversation| conversation.max_seq)
+                .unwrap_or(0)
+                .max(coverage.highest_proven_seq())
+                .saturating_add(1),
+        };
+        let mut messages: Vec<IMMessage> = Vec::with_capacity(limit);
+        let mut backfills = 0;
+        loop {
+            let lowest = messages
+                .last()
+                .map(|message| message.conversation_seq)
+                .unwrap_or(window_oldest);
+            if lowest <= 1 {
+                return Ok(OlderPage {
+                    messages,
+                    has_older: false,
+                });
+            }
+            let before = match coverage.range_containing(lowest - 1) {
+                Some(range) => {
+                    let (rows, more) = api
+                        .timeline_rows_in_range(
+                            conversation_id,
+                            range.from,
+                            lowest,
+                            limit - messages.len(),
+                        )
+                        .await?;
+                    messages.extend(rows);
+                    if messages.len() >= limit || range.from == 1 {
+                        let oldest = messages
+                            .last()
+                            .map(|message| message.conversation_seq)
+                            .unwrap_or(lowest);
+                        return Ok(OlderPage {
+                            messages,
+                            has_older: coverage.has_older(oldest, more),
+                        });
+                    }
+                    range.from
+                }
+                None => lowest,
+            };
+            if backfills == MAX_BACKFILLS_PER_PAGE {
+                return Ok(OlderPage {
+                    messages,
+                    has_older: true,
+                });
+            }
+            backfills += 1;
+            self.backfill_before(conversation_id, before, limit - messages.len())
+                .await?;
+            let (_, extended) = api.timeline_paging_state(conversation_id).await?;
+            let progressed = extended.range_containing(before - 1).is_some();
+            coverage = extended;
+            if !progressed {
+                // 服务端没有证明任何东西（不该发生）：不再重复请求，留给下一次往旧翻页。
+                return Ok(OlderPage {
+                    messages,
+                    has_older: true,
+                });
+            }
+        }
+    }
+
+    async fn backfill_before(
+        &self,
+        conversation_id: &str,
+        before_seq: u64,
+        limit: usize,
+    ) -> Result<()> {
+        let Some(sync) = &self.inner.session_sync else {
+            return Err(FlareError::localized(ErrorCode::NotConnected, "未配置同步"));
+        };
+        sync.request_message_backfill_before_seq(conversation_id, before_seq, limit.max(1) as i32)
+            .await
+            .map(|_| ())
     }
 
     pub async fn open_conversation_list(
@@ -417,6 +494,26 @@ impl ViewApi {
                 conversation_id: request.conversation_id.clone(),
                 message_limit: request.message_limit,
             })
+            .await
+    }
+
+    /// 事件触发的重读：在窗口的 seq 范围内重读，不再用打开时的「最新窗口」去整窗替换，
+    /// 所以窗口不会缩回、`has_more` 也不会因为重读回跳。窗口里还没有已发送的行时按打开处理。
+    async fn reload_timeline(
+        &self,
+        request: &OpenTimelineViewRequest,
+        oldest_seq: Option<u64>,
+    ) -> Result<ConversationTimelineSnapshot> {
+        let Some(oldest_seq) = oldest_seq else {
+            return self.timeline_snapshot(request).await;
+        };
+        self.inner
+            .conversation_api
+            .reload_timeline_window(
+                &request.conversation_id,
+                oldest_seq,
+                normalized_timeline_window_limit(request.message_limit),
+            )
             .await
     }
 
@@ -500,7 +597,13 @@ impl ViewApi {
                             .filter(|(_, view)| {
                                 target.matches_timeline(&view.request.conversation_id)
                             })
-                            .map(|(view_id, view)| (view_id.clone(), view.request.clone()))
+                            .map(|(view_id, view)| {
+                                (
+                                    view_id.clone(),
+                                    view.request.clone(),
+                                    oldest_positive_seq(&view.last_snapshot),
+                                )
+                            })
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default(),
@@ -516,9 +619,12 @@ impl ViewApi {
             )
         };
 
-        for (view_id, request) in timelines {
-            match self.timeline_snapshot(&request).await {
-                Ok(snapshot) => self.publish_timeline_refresh(view_id, snapshot).await,
+        for (view_id, request, oldest_seq) in timelines {
+            match self.reload_timeline(&request, oldest_seq).await {
+                Ok(snapshot) => {
+                    self.publish_timeline_refresh(view_id, snapshot, oldest_seq)
+                        .await
+                }
                 Err(error) => tracing::warn!(
                     target = "flare_sdk.view",
                     view_id,
@@ -647,13 +753,34 @@ impl ViewApi {
     async fn publish_timeline_refresh(
         &self,
         view_id: String,
-        snapshot: ConversationTimelineSnapshot,
+        mut snapshot: ConversationTimelineSnapshot,
+        reloaded_from: Option<u64>,
     ) {
         let update = {
             let mut views = self.inner.views.write().await;
             let Some(registration) = views.timelines.get_mut(&view_id) else {
                 return;
             };
+            // 重读期间往旧翻页并入了更旧的行：这些行与它们算出的 has_more 保留。
+            if let Some(reloaded_from) = reloaded_from
+                && oldest_positive_seq(&registration.last_snapshot)
+                    .is_some_and(|oldest| oldest < reloaded_from)
+            {
+                snapshot.messages.extend(
+                    registration
+                        .last_snapshot
+                        .messages
+                        .iter()
+                        .filter(|message| {
+                            message.conversation_seq > 0 && message.conversation_seq < reloaded_from
+                        })
+                        .cloned(),
+                );
+                snapshot
+                    .messages
+                    .sort_by(IMMessage::compare_for_timeline_asc);
+                snapshot.has_more = registration.last_snapshot.has_more;
+            }
             let update = timeline_view_update(&view_id, &registration.last_snapshot, &snapshot);
             registration.last_snapshot = snapshot;
             update
@@ -1012,10 +1139,19 @@ fn oldest_positive_seq(snapshot: &ConversationTimelineSnapshot) -> Option<u64> {
         .min()
 }
 
+/// 往旧翻到的一页（由新到旧）与它之下还有没有可见消息。
+struct OlderPage {
+    messages: Vec<IMMessage>,
+    has_older: bool,
+}
+
+/// 一次往旧翻页最多回填几次：正常一次就够（服务端回满一页或到达起点），多的只是兜底。
+const MAX_BACKFILLS_PER_PAGE: usize = 3;
+
 fn expand_timeline_snapshot(
     snapshot: &ConversationTimelineSnapshot,
     older: &[IMMessage],
-    page_was_full: bool,
+    has_older: bool,
     max_window: usize,
 ) -> (ConversationTimelineSnapshot, u32) {
     let mut messages = snapshot.messages.clone();
@@ -1031,24 +1167,17 @@ fn expand_timeline_snapshot(
         }
     }
     messages.sort_by(IMMessage::compare_for_latest_window_desc);
+    let truncated = messages.len() > max_window;
     messages.truncate(max_window);
-    let has_more = page_was_full && oldest_positive_seq_for_messages(&messages).unwrap_or(0) > 1;
     messages.sort_by(IMMessage::compare_for_timeline_asc);
     (
         ConversationTimelineSnapshot {
             conversation: snapshot.conversation.clone(),
             messages,
-            has_more,
+            has_more: has_older || truncated,
         },
         loaded_count,
     )
-}
-
-fn oldest_positive_seq_for_messages(messages: &[IMMessage]) -> Option<u64> {
-    messages
-        .iter()
-        .filter_map(|message| (message.conversation_seq > 0).then_some(message.conversation_seq))
-        .min()
 }
 
 fn timeline_view_update(
@@ -1541,3 +1670,7 @@ mod tests {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "view_paging_tests.rs"]
+mod paging_tests;

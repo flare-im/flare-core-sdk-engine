@@ -689,6 +689,7 @@ mod tests {
             conversations: conversations.clone(),
             conversation_participants: None,
             cursors: Arc::new(NoopSyncCursorStore),
+            timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
             pending_send_reader: None,
             pending_send_writer: None,
             upload_manifest_store: None,

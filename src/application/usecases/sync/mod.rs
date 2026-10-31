@@ -1,3 +1,4 @@
+mod coverage;
 mod decoding;
 mod event_applier;
 mod models;
@@ -12,9 +13,10 @@ use models::{AppliedConversationIncremental, AppliedSingleConversationPage, Repl
 use crate::application::notification::{
     NotificationInboundPipeline, partition_notification_durability,
 };
+use crate::domain::timeline::{contiguous_page_range, cursor_advance_range, snapshot_rows_range};
 use crate::domain::{
-    ConversationIdRewrite, ConversationIdentityService, SyncCursorVo, filter_messages_after_clear,
-    local_cleared_through_seq,
+    ConversationIdRewrite, ConversationIdentityService, SeqRange, SyncCursorVo,
+    filter_messages_after_clear, local_cleared_through_seq,
 };
 use crate::infrastructure::persistence::StoreProvider;
 use crate::kernel::ReliableSendQueuePort;
@@ -127,6 +129,14 @@ impl SyncApplyUseCase {
             .await?;
 
         let safe_max_seq = max_contiguous_seq(known_seq, &applied_item_seqs);
+        // 连续同步页证明 (known_seq, safe_max_seq]：其中每个 seq 都已落库成消息、应用成事件，
+        // 或由 skip/tombstone 证明没有消息。
+        self.record_coverage(
+            conversation_id,
+            contiguous_page_range(known_seq, safe_max_seq),
+        )
+        .await;
+        let (min_item_seq, max_item_seq) = seq_bounds(&applied_item_seqs);
         let has_seq_gap = response.max_conversation_seq > safe_max_seq;
         if has_seq_gap {
             tracing::warn!(
@@ -147,6 +157,8 @@ impl SyncApplyUseCase {
             next_cursor: response.next_cursor.clone(),
             has_seq_gap,
             absent_seqs: decoded.absent_item_seqs,
+            min_item_seq,
+            max_item_seq,
         })
     }
 
@@ -158,6 +170,9 @@ impl SyncApplyUseCase {
         user_id: &str,
         row: flare_proto::common::SnapshotConversationRow,
     ) -> Result<u64> {
+        // 快照行是会话最新的若干条消息，证明它们之间没有别的消息（不延到水位）。
+        let proven =
+            snapshot_rows_range(row.messages.iter().map(|message| message.conversation_seq));
         // 按值消费：快照行的消息 move 进收敛管线（冷启 bundle 每页 50×30 条，免整页深拷贝）。
         let messages: Vec<IMMessage> = row.messages.into_iter().map(IMMessage::new).collect();
         self.persist_converged_messages(user_id, &row.conversation_id, messages)
@@ -179,6 +194,7 @@ impl SyncApplyUseCase {
                 "快照切换：覆盖本地未读/已读失败（消息已落库，游标仍可推进）"
             );
         }
+        self.record_coverage(&row.conversation_id, proven).await;
         Ok(row.last_conversation_seq)
     }
 
@@ -459,7 +475,14 @@ impl SyncApplyUseCase {
             return Ok(());
         }
         self.persist_cursor_and_push_remote(user_id, conversation_id, safe_last_seq, update_remote)
-            .await
+            .await?;
+        // 游标从 floor 推进到 safe_last_seq：其间每个 seq 刚刚逐个证明过。
+        self.record_coverage(
+            conversation_id,
+            cursor_advance_range(floor_seq, safe_last_seq),
+        )
+        .await;
+        Ok(())
     }
 
     /// 水位/检查点型游标保存（**不做连续性钳制**）：
@@ -593,6 +616,38 @@ impl SyncApplyUseCase {
 
         Ok(max_contiguous_seq(floor_seq, &seqs).min(target_seq))
     }
+
+    /// 写入一段已证实区间。失败只告警：宁可漏标，漏标的代价是多一次回填。
+    pub(crate) async fn record_coverage(&self, conversation_id: &str, range: Option<SeqRange>) {
+        coverage::record_range(
+            self.stores.timeline_coverage.as_ref(),
+            conversation_id,
+            range,
+        )
+        .await;
+    }
+
+    /// 回填页（`before = before_seq`）落库之后写入它证明的区间。
+    pub(crate) async fn record_backfill_coverage(
+        &self,
+        conversation_id: &str,
+        before_seq: u64,
+        page: &SingleConversationSyncRes,
+    ) {
+        coverage::record_backfill_page(
+            self.stores.timeline_coverage.as_ref(),
+            conversation_id,
+            before_seq,
+            page,
+        )
+        .await;
+    }
+}
+
+/// 页内已落库 item 的最小、最大 seq；没有时为 (0, 0)。
+fn seq_bounds(seqs: &[u64]) -> (u64, u64) {
+    let positive = || seqs.iter().copied().filter(|seq| *seq > 0);
+    (positive().min().unwrap_or(0), positive().max().unwrap_or(0))
 }
 
 fn max_contiguous_seq(known_seq: u64, seqs: &[u64]) -> u64 {

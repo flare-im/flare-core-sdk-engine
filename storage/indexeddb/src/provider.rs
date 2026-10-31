@@ -12,9 +12,10 @@ use flare_im_core_sdk::model::message::ReactionEntry;
 use flare_im_core_sdk::plugin::platform::state::SharedState;
 use flare_im_core_sdk::plugin::platform::ui::PluginMessageState;
 use flare_im_core_sdk::storage::{
-    ConversationReader, ConversationWriter, MemberKey, MessageReader, MessageStore, MessageWriter,
-    OperationApplyResult, ParticipantDisplaySnapshot, PendingSendReader, PendingSendVo,
-    PendingSendWriter, SyncCursorReader, SyncCursorWriter, stored_name_is_an_id,
+    ConversationReader, ConversationWriter, CursorBackedTimelineCoverageStore, MemberKey,
+    MessageReader, MessageStore, MessageWriter, OperationApplyResult, ParticipantDisplaySnapshot,
+    PendingSendReader, PendingSendVo, PendingSendWriter, SyncCursorReader, SyncCursorWriter,
+    TimelineCoverageStore, stored_name_is_an_id,
 };
 use flare_im_core_sdk::storage::{MemoryConversationStore, MemoryMessageStore};
 use flare_im_core_sdk::storage::{MemoryPendingSendStore, MemoryUserProfileStore};
@@ -81,6 +82,7 @@ struct PersistingConversationStore {
     user_id: String,
     inner: Arc<MemoryConversationStore>,
     messages: Arc<MemoryMessageStore>,
+    timeline_coverage: Arc<dyn TimelineCoverageStore>,
 }
 
 struct PersistingSyncCursorStore {
@@ -165,11 +167,13 @@ impl PersistingConversationStore {
         user_id: String,
         inner: Arc<MemoryConversationStore>,
         messages: Arc<MemoryMessageStore>,
+        timeline_coverage: Arc<dyn TimelineCoverageStore>,
     ) -> Self {
         Self {
             user_id,
             inner,
             messages,
+            timeline_coverage,
         }
     }
 }
@@ -725,6 +729,8 @@ impl ConversationWriter for PersistingConversationStore {
 
     async fn delete(&self, conversation_id: &str) -> Result<()> {
         self.inner.delete(conversation_id).await?;
+        // 宿主删会话时连同它的消息一起删；证明这段历史完整的区间不能留下。
+        self.timeline_coverage.clear(conversation_id).await?;
         let user_id = self.user_id.clone();
         let conversation_id = conversation_id.to_string();
         spawn_persist(async move {
@@ -979,6 +985,10 @@ pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
         pending_inner,
     ));
     let user_profiles = Arc::new(MemoryUserProfileStore::new());
+    let cursors = Arc::new(PersistingSyncCursorStore::new(user_id.clone(), cursors));
+    // 区间存进同步游标键值：经宿主 saveCursor 持久化，随 loadSnapshot 的游标一起载回。
+    let timeline_coverage: Arc<dyn TimelineCoverageStore> =
+        Arc::new(CursorBackedTimelineCoverageStore::new(cursors.clone()));
 
     StoreProvider {
         plugin_commands: Some(Arc::new(
@@ -992,12 +1002,14 @@ pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
             conversations.clone(),
         )),
         conversations: Arc::new(PersistingConversationStore::new(
-            user_id.clone(),
+            user_id,
             conversations,
             messages,
+            timeline_coverage.clone(),
         )),
         conversation_participants: None,
-        cursors: Arc::new(PersistingSyncCursorStore::new(user_id, cursors)),
+        cursors,
+        timeline_coverage,
         pending_send_reader: Some(pending.clone()),
         pending_send_writer: Some(pending),
         upload_manifest_store: None,
