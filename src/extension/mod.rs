@@ -278,6 +278,17 @@ pub trait ExtensionStore: Send + Sync {
 
     /// The identity cache's profiles of [user_ids], by user id; a user it does not hold is left out.
     async fn get_user_profiles(&self, user_ids: &[String]) -> Result<HashMap<String, UserProfile>>;
+
+    /// Stores what accounts are called inside conversations (group nicknames); an empty
+    /// nickname clears one. Returns the conversations whose names may have changed, for
+    /// the caller to publish as updated.
+    async fn save_participant_display(
+        &self,
+        snapshots: &[crate::domain::ParticipantDisplaySnapshot],
+    ) -> Result<Vec<String>> {
+        let _ = snapshots;
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Clone)]
@@ -440,6 +451,13 @@ impl ExtensionStore for CoreExtensionStore {
             .user_profiles_or_memory()
             .get_many(user_ids)
             .await
+    }
+
+    async fn save_participant_display(
+        &self,
+        snapshots: &[crate::domain::ParticipantDisplaySnapshot],
+    ) -> Result<Vec<String>> {
+        self.stores.apply_participant_display(snapshots).await
     }
 }
 

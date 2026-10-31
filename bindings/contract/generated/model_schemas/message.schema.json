@@ -146,6 +146,76 @@
       ],
       "type": "object"
     },
+    "DisplayName": {
+      "description": "The final name of a person or a conversation, ready for the kit to render.\n\nWire (camelCase JSON, tagged by `kind`):\n- `{\"kind\":\"named\",\"text\":\"Alice\",\"source\":\"alias\"}`\n- `{\"kind\":\"members\",\"names\":[\"Zhang San\",\"Li Si\"],\"total\":12}`: an unnamed\n  group titled by up to three of its named members (never the current user);\n  `total` counts every member, the current user included.\n- `{\"kind\":\"unnamed\",\"entity\":\"person\",\"idTail\":\"9876\"}`: `idTail` is\n  [`id_tail`] of the id, empty when there is no id (and for unnamed groups).",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "named",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/NameSource"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "members",
+              "type": "string"
+            },
+            "names": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "total": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "names",
+            "total"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "entity": {
+              "$ref": "#/$defs/NameEntity"
+            },
+            "idTail": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "unnamed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "entity",
+            "idTail"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Elem": {
       "description": "解码后的消息内容枚举；JSON 为 `#[serde(tag = \"contentType\", rename_all = \"snake_case\")]`。",
       "oneOf": [
@@ -899,6 +969,55 @@
       ],
       "type": "object"
     },
+    "NameEntity": {
+      "description": "What an unnamed value names; follows [`ConversationType`].",
+      "enum": [
+        "person",
+        "group",
+        "system",
+        "ai",
+        "customer",
+        "channel",
+        "broadcast",
+        "temp"
+      ],
+      "type": "string"
+    },
+    "NameSource": {
+      "description": "Where a [`DisplayName::Named`] text came from. For tests and diagnostics only:\nhosts render every named value the same way.",
+      "oneOf": [
+        {
+          "const": "alias",
+          "description": "The private label the current user gave the account.",
+          "type": "string"
+        },
+        {
+          "const": "memberNickname",
+          "description": "The account's name inside this conversation.",
+          "type": "string"
+        },
+        {
+          "const": "profile",
+          "description": "The account's own name in the identity cache.",
+          "type": "string"
+        },
+        {
+          "const": "snapshot",
+          "description": "The sender name a message carried when it was sent.",
+          "type": "string"
+        },
+        {
+          "const": "remark",
+          "description": "The private label the current user gave the conversation.",
+          "type": "string"
+        },
+        {
+          "const": "name",
+          "description": "The conversation's business name.",
+          "type": "string"
+        }
+      ]
+    },
     "NotificationElem": {
       "properties": {
         "body": {
@@ -1537,6 +1656,18 @@
         "string",
         "null"
       ]
+    },
+    "sender": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DisplayName"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "发送者名：别名、群会话里的会话内昵称、资料名、发送时快照（`sender_name`），都没有时为\n结构化的「无名」。读取时由核心投影，不落库；SDK 交出的消息都带它。"
     },
     "senderAvatar": {
       "type": "string"

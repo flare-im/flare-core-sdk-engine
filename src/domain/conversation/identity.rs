@@ -214,7 +214,7 @@ impl ConversationIdentityService {
                 let mut summary = Conversation::from_conversation_id(conversation_id);
                 summary.conversation_type = *conversation_type;
                 summary.channel_id = source_id.to_string();
-                summary.display_name = source_id.to_string();
+                // 新建会话不带名字：source_id 是对端或群的 id，不是名字。
                 summary.business_type = conversation_type.as_str().to_string();
                 (summary, true)
             }
@@ -232,7 +232,10 @@ impl ConversationIdentityService {
         let mut summary = Conversation::from_conversation_id(conversation_id.to_string());
         summary.conversation_type = conversation_type;
         summary.business_type = business_type.to_string();
-        summary.display_name = display_name.unwrap_or(channel_id.as_str()).to_string();
+        summary.display_name = crate::domain::business_name(
+            display_name.unwrap_or_default(),
+            &[&channel_id, conversation_id],
+        );
         summary.channel_id = channel_id;
         summary
     }
@@ -288,6 +291,45 @@ fn requires_source_id(conversation_type: &ConversationType) -> bool {
 mod tests {
     use super::*;
     use crate::model::conversation::ConversationType;
+
+    #[test]
+    fn new_conversations_store_no_id_as_their_name() {
+        let service = ConversationIdentityService;
+        let (single, _) = service.merge_or_create(
+            None,
+            "1A_cid".to_string(),
+            "me",
+            "peer",
+            &ConversationType::Single,
+        );
+        assert_eq!(single.channel_id, "peer");
+        assert_eq!(single.display_name, "");
+
+        let local = service.build_local_conversation(
+            "2A_cid",
+            None,
+            ConversationType::Group,
+            "group",
+            "g1".to_string(),
+        );
+        assert_eq!(local.display_name, "");
+        let id_named = service.build_local_conversation(
+            "2A_cid",
+            Some("g1"),
+            ConversationType::Group,
+            "group",
+            "g1".to_string(),
+        );
+        assert_eq!(id_named.display_name, "");
+        let named = service.build_local_conversation(
+            "2A_cid",
+            Some(" Ride "),
+            ConversationType::Group,
+            "group",
+            "g1".to_string(),
+        );
+        assert_eq!(named.display_name, "Ride");
+    }
 
     #[test]
     fn repair_single_chat_channel_overwrites_wrong_peer_with_hint() {

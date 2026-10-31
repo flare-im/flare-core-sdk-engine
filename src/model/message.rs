@@ -30,6 +30,7 @@ use crate::content::message_elem::{
     elem_preview_storage_payload, elem_to_message_content,
 };
 use crate::content::preview_storage::is_redundant_content_text_extra;
+use crate::domain::display_name::DisplayName;
 use prost::Message as ProstMessage;
 
 /// 从下行 `Message.attributes` 推断是否已编辑（与 storage writer 写入的 `messageFsmState`、`currentEditVersion` 对齐）。
@@ -211,6 +212,11 @@ pub struct IMMessage {
     /// SDK计算展示名
     pub sender_display_name: String,
 
+    /// 发送者名：别名、群会话里的会话内昵称、资料名、发送时快照（`sender_name`），都没有时为
+    /// 结构化的「无名」。读取时由核心投影，不落库；SDK 交出的消息都带它。
+    #[serde(default)]
+    pub sender: Option<DisplayName>,
+
     // ==============================
     // Reply / Quote
     // ==============================
@@ -288,7 +294,7 @@ impl Serialize for IMMessage {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("IMMessage", 34)?;
+        let mut state = serializer.serialize_struct("IMMessage", 35)?;
         state.serialize_field("serverId", &self.server_id)?;
         state.serialize_field("clientMsgId", &self.client_msg_id)?;
         state.serialize_field("conversationId", &self.conversation_id)?;
@@ -307,6 +313,9 @@ impl Serialize for IMMessage {
         state.serialize_field("senderName", &self.sender_name)?;
         state.serialize_field("senderAvatar", &self.sender_avatar)?;
         state.serialize_field("senderDisplayName", &self.sender_display_name)?;
+        if let Some(sender) = &self.sender {
+            state.serialize_field("sender", sender)?;
+        }
         if let Some(reply_to) = &self.reply_to {
             state.serialize_field("replyTo", reply_to)?;
         }
@@ -425,6 +434,16 @@ impl IMMessage {
                 quote_preview = Some(preview);
             }
         }
+        let sender = crate::domain::resolve_person_name(
+            &message.sender_id,
+            &crate::domain::PersonNameCandidates {
+                snapshot: &message.sender_name,
+                ..Default::default()
+            },
+            Some(super::conversation::ConversationType::from_proto_int(
+                message.conversation_type,
+            )),
+        );
         Self {
             server_id: message.server_id,
             conversation_id: message.conversation_id,
@@ -458,6 +477,7 @@ impl IMMessage {
             extensions: message.extensions,
             reactions,
             sender_display_name: String::new(),
+            sender: Some(sender),
             version: 0,
             updated_at: 0,
             local_state: MessageLocalState {
@@ -469,6 +489,21 @@ impl IMMessage {
                 sort_ts: created_at,
             },
         }
+    }
+
+    /// 消息自己能说明的发送者名：发送时快照，没有就是结构化的「无名」。
+    /// 读取时的投影（别名、会话内昵称、资料名）由视图组装覆盖它。
+    pub fn snapshot_sender(&self) -> DisplayName {
+        crate::domain::resolve_person_name(
+            &self.sender_id,
+            &crate::domain::PersonNameCandidates {
+                snapshot: &self.sender_name,
+                ..Default::default()
+            },
+            Some(super::conversation::ConversationType::from_proto_int(
+                self.conversation_type,
+            )),
+        )
     }
 
     /// 填充发送者资料（显示名称）；头像使用 proto 的 sender_avatar。

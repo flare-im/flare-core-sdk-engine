@@ -14,6 +14,7 @@ pub use delivery::{
     MessageDeliveryService, PendingDispatchDecision, REASON_MAX_RETRIES_EXCEEDED,
     REASON_ORPHAN_RECOVERED, REASON_PENDING_ANOTHER_ACCOUNT, REASON_RECONCILED_FAILED,
     REASON_SEND_FAILED_BEFORE_ACK_MAX_RETRIES, REASON_TIMEOUT_AFTER_RETRIES, RetryDecision,
+    SEND_FAILURE_OPERATION, SendFailure,
 };
 pub use draft::MessageDraftService;
 pub(crate) use edit_policy::inbound_edit_allowed;

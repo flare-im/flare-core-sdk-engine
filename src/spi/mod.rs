@@ -12,6 +12,7 @@ pub use crate::domain::{
 pub use crate::application::{
     InboundNotificationView, LocalConversationClearResult, LocalConversationVisibility,
     NotificationDispatchReport, NotificationHandleResult, NotificationHandler,
+    ParticipantDisplayProjectionApplier,
 };
 pub use crate::client::token_provider::ConnectTokenRefresher;
 pub use crate::domain::UserProfile;
@@ -20,6 +21,11 @@ pub use crate::domain::conversation::id::{
     generate_customer_conversation_id, generate_system_conversation_id,
     generate_temp_conversation_id, is_group_chat_conversation, is_single_chat_conversation,
     validate_conversation_id,
+};
+pub use crate::domain::display_name::{
+    ConversationTitleInput, DisplayName, MAX_TITLE_MEMBER_NAMES, NameEntity, NameSource,
+    ParticipantDisplaySnapshot, PersonNameCandidates, id_tail, resolve_conversation_title,
+    resolve_person_name,
 };
 pub use crate::extension::capability::{SdkCapabilityPlugin, SdkCapabilityRegistry};
 pub use crate::extension::encryption::{

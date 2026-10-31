@@ -505,13 +505,13 @@
       "text": "err Eof: EOF while parsing an object at line 1 column 437"
     },
     {
-      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid length 0, expected struct IMMessage with 31 elements",
-      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid length 0, expected struct IMMessage with 31 elements; missing message",
-      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid length 0, expected struct IMMessage with 31 elements at line 1 column 2; missing message",
+      "binding list": "err 错误 [INVALID_PARAMETER] invalid sourceMessages: invalid length 0, expected struct IMMessage with 32 elements",
+      "binding params": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid length 0, expected struct IMMessage with 32 elements; missing message",
+      "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: invalid length 0, expected struct IMMessage with 32 elements at line 1 column 2; missing message",
       "input": "[]",
       "name": "message, an array",
-      "text": "err Data: invalid length 0, expected struct IMMessage with 31 elements at line 1 column 2",
-      "value": "err Data: invalid length 0, expected struct IMMessage with 31 elements"
+      "text": "err Data: invalid length 0, expected struct IMMessage with 32 elements at line 1 column 2",
+      "value": "err Data: invalid length 0, expected struct IMMessage with 32 elements"
     },
     {
       "binding text": "err 错误 [INVALID_PARAMETER] missing or invalid JSON message: expected value at line 1 column 1; invalid params JSON: expected value at line 1 column 1",

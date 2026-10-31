@@ -140,9 +140,10 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         SdkEvent::Message(MessageEvent::SendFailed {
             client_msg_id,
             reason,
+            error,
         }) => (
             "message.send_failed",
-            json!({ "clientMsgId": client_msg_id, "reason": reason }),
+            json!({ "clientMsgId": client_msg_id, "reason": reason, "error": error }),
         ),
         SdkEvent::Message(MessageEvent::Recalled {
             conversation_id,
@@ -460,6 +461,28 @@ mod tests {
     use super::*;
     use flare_im_core_sdk::EventBus;
     use flare_im_core_sdk::model::SendAck;
+
+    /// `message.send_failed` carries the old `reason` text and the structured `error`, as the
+    /// shared golden lays it out.
+    #[test]
+    fn send_failed_event_wire_matches_the_shared_golden() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../flare-im-core-client-sdk/sdk-spec/golden/events/send_failed_with_error.json",
+        );
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let golden: Value = flare_im_core_sdk::serde_json::from_str(&text).expect("golden json");
+        let error: flare_im_core_sdk::event::SendFailure =
+            flare_im_core_sdk::serde_json::from_value(golden["error"].clone()).expect("error");
+        let event = SdkEvent::Message(MessageEvent::SendFailed {
+            client_msg_id: golden["clientMsgId"].as_str().unwrap().to_string(),
+            reason: golden["reason"].as_str().unwrap().to_string(),
+            error,
+        });
+        let (name, payload) = sdk_event_payload(&event).expect("send failed payload");
+        assert_eq!(name, "message.send_failed");
+        assert_eq!(payload, golden);
+    }
 
     #[test]
     fn send_ack_event_uses_client_msg_id_when_ack_id_is_absent() {

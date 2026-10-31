@@ -182,8 +182,16 @@ impl MessageBuildApi {
             if MessageBuilderService::forward_sender_name(source).is_some() {
                 continue;
             }
-            if let Some(profile) = profiles.get(source.sender_id.trim()) {
-                source.sender_display_name = profile.display_name().to_owned();
+            // 人名解析链（别名、资料名）；没有名字就不写，展示端按无名渲染，不把 id 当名字。
+            if let Some(profile) = profiles.get(source.sender_id.trim())
+                && let Some(name) = crate::domain::resolve_person_name(
+                    &source.sender_id,
+                    &profile.name_candidates(),
+                    None,
+                )
+                .text()
+            {
+                source.sender_display_name = name.to_owned();
             }
         }
         Ok(())
@@ -803,6 +811,9 @@ mod forward_sender_tests {
             .save_batch(&[
                 UserProfile::new("u-carol").with_nickname("Lab Carol"),
                 UserProfile::new("u-dave"),
+                UserProfile::new("u-fay")
+                    .with_nickname("Fay")
+                    .with_alias("Fay from the lab"),
             ])
             .await
             .expect("profiles");
@@ -834,6 +845,7 @@ mod forward_sender_tests {
                     source("u-dave", ""),
                     source("u-erin", ""),
                     source("u-bob", "Lab Bob"),
+                    source("u-fay", ""),
                 ],
             )
             .await
@@ -846,7 +858,16 @@ mod forward_sender_tests {
             .iter()
             .map(|item| item.source_sender_name.as_deref())
             .collect();
-        assert_eq!(names, vec![Some("Lab Carol"), None, None, Some("Lab Bob")]);
+        assert_eq!(
+            names,
+            vec![
+                Some("Lab Carol"),
+                None,
+                None,
+                Some("Lab Bob"),
+                Some("Fay from the lab")
+            ]
+        );
     }
 
     /// The forwardability the test catalog declares: only these contributions.

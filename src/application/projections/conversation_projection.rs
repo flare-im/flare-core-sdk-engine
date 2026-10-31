@@ -347,7 +347,7 @@ impl ConversationProjectionApplier {
             current_user_id,
             None,
         );
-        conversation.display_name = Self::shell_display_name(message, &conversation);
+        // 壳会话不带名字：消息里只有 id，名字由业务快照或会话摘要给，标题在读取时投影。
         self.stores.conversations.save_one(&conversation).await?;
         Ok(())
     }
@@ -369,37 +369,21 @@ impl ConversationProjectionApplier {
         if sender.is_empty() || (!me.is_empty() && sender == me) {
             return false;
         }
+        let previous_channel = conversation.channel_id.clone();
         if ConversationIdentityService::repair_single_chat_channel(
             conversation,
             current_user_id,
             Some(sender),
         ) {
             conversation.conversation_type = ConversationType::Single;
-            if conversation.display_name.trim().is_empty() || conversation.display_name == me {
-                conversation.display_name = sender.to_string();
-            }
+            // 修好 channel 后名字列里若是 id（旧 channel、本人或对端），清掉而不是换成另一个 id。
+            conversation.display_name = crate::domain::business_name(
+                &conversation.display_name,
+                &[&previous_channel, me, sender, &conversation.conversation_id],
+            );
             return true;
         }
         false
-    }
-
-    fn shell_display_name(message: &IMMessage, conversation: &Conversation) -> String {
-        if conversation.conversation_type.is_single_chat_conversation() {
-            if !conversation.channel_id.trim().is_empty() {
-                return conversation.channel_id.clone();
-            }
-            if !message.sender_name.trim().is_empty() {
-                return message.sender_name.clone();
-            }
-            if !message.sender_id.trim().is_empty() {
-                return message.sender_id.clone();
-            }
-        } else if !message.channel_id.trim().is_empty() {
-            return message.channel_id.clone();
-        } else if !message.sender_name.trim().is_empty() {
-            return message.sender_name.clone();
-        }
-        conversation.conversation_id.clone()
     }
 }
 
@@ -997,6 +981,45 @@ mod tests {
             updated.conversation_type,
             crate::model::conversation::ConversationType::Single
         );
+        assert_eq!(
+            updated.display_name, "",
+            "the repaired name column must not hold an id"
+        );
+    }
+
+    /// 首条消息建出的壳会话不带名字：消息里只有 id。
+    #[tokio::test]
+    async fn first_message_shell_conversations_store_no_name() {
+        use crate::model::conversation::ConversationType;
+        let (conversations, stores) = stores();
+        let applier = ConversationProjectionApplier::new(stores, EventBus::new());
+        let message = |conversation_id: &str, kind: ConversationType, channel: &str| {
+            let mut message = IMMessage::new(flare_proto::common::Message::default());
+            message.server_id = format!("server-{conversation_id}");
+            message.conversation_id = conversation_id.to_string();
+            message.conversation_type = kind.to_proto_int();
+            message.channel_id = channel.to_string();
+            message.sender_id = "peer".to_string();
+            message.sender_name = "Peer at send time".to_string();
+            message.conversation_seq = 1;
+            message.created_at = 1_000;
+            message
+        };
+        applier
+            .apply_messages(
+                &[
+                    message("1A-new", ConversationType::Single, "peer"),
+                    message("1A-blank", ConversationType::Single, ""),
+                    message("2A-new", ConversationType::Group, "g1"),
+                ],
+                "me",
+            )
+            .await
+            .unwrap();
+        for conversation_id in ["1A-new", "1A-blank", "2A-new"] {
+            let created = conversations.get(conversation_id).await.unwrap().unwrap();
+            assert_eq!(created.display_name, "", "{conversation_id}");
+        }
     }
 
     #[tokio::test]

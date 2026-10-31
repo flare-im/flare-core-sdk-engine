@@ -12,9 +12,9 @@ use flare_im_core_sdk::model::message::ReactionEntry;
 use flare_im_core_sdk::plugin::platform::state::SharedState;
 use flare_im_core_sdk::plugin::platform::ui::PluginMessageState;
 use flare_im_core_sdk::storage::{
-    ConversationReader, ConversationWriter, MessageReader, MessageStore, MessageWriter,
-    OperationApplyResult, PendingSendReader, PendingSendVo, PendingSendWriter, SyncCursorReader,
-    SyncCursorWriter,
+    ConversationReader, ConversationWriter, MemberKey, MessageReader, MessageStore, MessageWriter,
+    OperationApplyResult, ParticipantDisplaySnapshot, PendingSendReader, PendingSendVo,
+    PendingSendWriter, SyncCursorReader, SyncCursorWriter, stored_name_is_an_id,
 };
 use flare_im_core_sdk::storage::{MemoryConversationStore, MemoryMessageStore};
 use flare_im_core_sdk::storage::{MemoryPendingSendStore, MemoryUserProfileStore};
@@ -635,6 +635,10 @@ impl ConversationReader for PersistingConversationStore {
             .await?;
         self.inner.list().await
     }
+
+    async fn member_nicknames(&self, pairs: &[MemberKey]) -> Result<HashMap<MemberKey, String>> {
+        self.inner.member_nicknames(pairs).await
+    }
 }
 
 #[async_trait]
@@ -808,6 +812,32 @@ impl ConversationWriter for PersistingConversationStore {
     async fn get_local_max_seq(&self, conversation_id: &str) -> Result<u64> {
         self.inner.get_local_max_seq(conversation_id).await
     }
+
+    /// Member nicknames stay in memory: business SDKs write them again after a reload.
+    async fn save_member_nicknames(
+        &self,
+        snapshots: &[ParticipantDisplaySnapshot],
+    ) -> Result<Vec<String>> {
+        self.inner.save_member_nicknames(snapshots).await
+    }
+
+    async fn apply_user_profile_snapshot(
+        &self,
+        user_id: &str,
+        nickname: &str,
+        avatar_url: &str,
+    ) -> Result<Vec<String>> {
+        let affected = self
+            .inner
+            .apply_user_profile_snapshot(user_id, nickname, avatar_url)
+            .await?;
+        for conversation_id in &affected {
+            if let Some(conversation) = self.inner.get(conversation_id).await? {
+                persist_conversation_spawn(&self.user_id, conversation);
+            }
+        }
+        Ok(affected)
+    }
 }
 
 #[async_trait]
@@ -917,8 +947,21 @@ pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
             let _ = MessageWriter::save_batch(messages.as_ref(), &snapshot.messages).await;
         }
         if !snapshot.conversations.is_empty() {
+            // Stores written before names were projected may hold an id as the name; the
+            // memory store clears it on save, and the cleared rows are written back once.
+            let id_named: Vec<String> = snapshot
+                .conversations
+                .iter()
+                .filter(|conversation| stored_name_is_an_id(conversation))
+                .map(|conversation| conversation.conversation_id.clone())
+                .collect();
             let _ = ConversationWriter::save_batch(conversations.as_ref(), &snapshot.conversations)
                 .await;
+            for conversation_id in id_named {
+                if let Ok(Some(conversation)) = conversations.get(&conversation_id).await {
+                    persist_conversation_spawn(user_id, conversation);
+                }
+            }
         }
         for (key, value) in snapshot.cursors {
             let _ = SyncCursorWriter::save_raw(cursors.as_ref(), &key, &value).await;

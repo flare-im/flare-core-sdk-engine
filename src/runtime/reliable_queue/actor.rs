@@ -573,6 +573,7 @@ async fn mark_send_failed_and_publish(
     st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
         client_msg_id: entry.client_msg_id.clone(),
         reason: reason.to_string(),
+        error: crate::domain::SendFailure::local_reason(reason),
     }));
     Ok(())
 }
@@ -670,6 +671,7 @@ async fn handle_send_attempt_finished(
             st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
                 client_msg_id: entry.client_msg_id,
                 reason: reason.to_string(),
+                error: crate::domain::SendFailure::local_reason(reason),
             }));
             try_send_next(st).await?;
         }
@@ -754,6 +756,9 @@ async fn recover_pending_for_current_user(st: &mut QueueState) -> Result<Vec<Str
         st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
             client_msg_id: client_msg_id.clone(),
             reason: crate::domain::REASON_PENDING_ANOTHER_ACCOUNT.to_string(),
+            error: crate::domain::SendFailure::local_reason(
+                crate::domain::REASON_PENDING_ANOTHER_ACCOUNT,
+            ),
         }));
     }
     affected.extend(cross_account_ids);
@@ -771,6 +776,7 @@ async fn recover_pending_for_current_user(st: &mut QueueState) -> Result<Vec<Str
         st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
             client_msg_id: client_msg_id.clone(),
             reason: REASON_ORPHAN_RECOVERED.to_string(),
+            error: crate::domain::SendFailure::local_reason(REASON_ORPHAN_RECOVERED),
         }));
     }
     affected.extend(orphan_ids);
@@ -839,6 +845,7 @@ async fn check_timeout(st: &mut QueueState) -> Result<()> {
                     st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
                         client_msg_id: entry.client_msg_id,
                         reason: reason.to_string(),
+                        error: crate::domain::SendFailure::local_reason(reason),
                     }));
                 }
                 RetryDecision::Retry { next_retry_count } => {
@@ -917,6 +924,7 @@ async fn check_awaiting_durable_timeout(st: &mut QueueState) -> Result<()> {
                 st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
                     client_msg_id: entry.client_msg_id,
                     reason: reason.to_string(),
+                    error: crate::domain::SendFailure::local_reason(reason),
                 }));
             }
         }
@@ -975,6 +983,7 @@ async fn reconcile_in_flight_terminal_states(st: &mut QueueState) -> Result<bool
                 st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
                     client_msg_id: entry.client_msg_id.clone(),
                     reason: reason.to_string(),
+                    error: crate::domain::SendFailure::local_reason(reason),
                 }));
                 progressed = true;
             }
@@ -1037,6 +1046,7 @@ async fn reconcile_awaiting_durable_terminal_states(st: &mut QueueState) -> Resu
                 st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
                     client_msg_id: entry.client_msg_id.clone(),
                     reason: reason.to_string(),
+                    error: crate::domain::SendFailure::local_reason(reason),
                 }));
                 progressed = true;
             }
@@ -1150,6 +1160,7 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
                     st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
                         client_msg_id: entry.client_msg_id.clone(),
                         reason: reason.to_string(),
+                        error: crate::domain::SendFailure::local_reason(reason),
                     }));
                     made_progress = true;
                     continue;
@@ -1174,6 +1185,7 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
                     st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
                         client_msg_id: entry.client_msg_id.clone(),
                         reason: reason.to_string(),
+                        error: crate::domain::SendFailure::local_reason(reason),
                     }));
                     made_progress = true;
                     continue;
@@ -1297,6 +1309,8 @@ async fn apply_ack_and_publish(
     }
     let reason = MessageDeliveryService::error_message_from_ack(&ack)
         .unwrap_or_else(|| "send ack missing accepted result".to_string());
+    let error = MessageDeliveryService::send_failure_from_ack(&ack)
+        .unwrap_or_else(|| crate::domain::SendFailure::local_reason(&reason));
     let client_msg_id = ack.client_msg_id.clone();
     st.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
         ack: Box::new(ack),
@@ -1304,6 +1318,7 @@ async fn apply_ack_and_publish(
     st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
         client_msg_id,
         reason,
+        error,
     }));
     AckApplyResult::Terminal
 }
@@ -2125,6 +2140,79 @@ mod tests {
         }
     }
 
+    /// A server rejection reaches the host with its typed reason: `SendFailed.error` carries
+    /// `ErrorDetail.reason` as the machine reason, and the old `reason` text stays as it was.
+    #[cfg(feature = "storage-sqlite")]
+    #[tokio::test]
+    async fn a_rejected_send_reports_the_server_reason_as_the_machine_reason() {
+        let bus = EventBus::new();
+        let mut receiver = bus.subscribe_raw();
+        let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlite_init_schema(&pool).await.unwrap();
+        let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
+        let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
+        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
+        let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader: pending_store.clone(),
+            pending_writer: pending_store.clone(),
+            sender: dummy_sender(),
+            message_store,
+            conversation_store,
+            current_user_id,
+            bus,
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+            max_in_flight: Some(32),
+            metrics: MetricsRecorder::disabled(),
+        });
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.client_msg_id = "client-card".to_string();
+        message.server_id = "client-card".to_string();
+        message.conversation_id = "conv-card".to_string();
+        message.sender_id = "u1".to_string();
+        queue.enqueue(message).await.unwrap();
+        assert!(matches!(
+            published(&mut receiver, "optimistic message event"),
+            SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
+        ));
+
+        queue
+            .on_ack(SendAck {
+                client_msg_id: "client-card".to_string(),
+                conversation_id: "conv-card".to_string(),
+                result: Some(send_ack::Result::Error(ErrorDetail {
+                    code: ProtoErrorCode::PermissionDenied as i32,
+                    reason: "SOCIAL_CARD_SCOPE_FRIENDS".to_string(),
+                    message: "only friends can share this card".to_string(),
+                    track: String::new(),
+                })),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        handled(&queue).await;
+
+        assert!(matches!(
+            published(&mut receiver, "the rejecting ack"),
+            SdkEvent::Message(MessageEvent::SendAck { .. })
+        ));
+        match published(&mut receiver, "send failed") {
+            SdkEvent::Message(MessageEvent::SendFailed {
+                client_msg_id,
+                reason,
+                error,
+            }) => {
+                assert_eq!(client_msg_id, "client-card");
+                assert_eq!(reason, "only friends can share this card");
+                assert_eq!(error.machine_reason, "SOCIAL_CARD_SCOPE_FRIENDS");
+                assert_eq!(error.code, "PERMISSION_DENIED");
+                assert_eq!(error.message, "only friends can share this card");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
     #[cfg(feature = "storage-sqlite")]
     #[tokio::test]
     async fn recover_pending_for_current_user_publishes_orphan_failures() {
@@ -2166,9 +2254,13 @@ mod tests {
             SdkEvent::Message(MessageEvent::SendFailed {
                 client_msg_id,
                 reason,
+                error,
             }) => {
                 assert_eq!(client_msg_id, "orphan-1");
                 assert!(reason.contains("orphan"));
+                assert_eq!(error.code, "MESSAGE_SEND_FAILED");
+                assert_eq!(error.machine_reason, "");
+                assert_eq!(error.message, reason);
             }
             other => panic!("unexpected event: {other:?}"),
         }

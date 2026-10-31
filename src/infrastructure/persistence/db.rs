@@ -52,6 +52,14 @@ impl StoreProvider {
             .await
     }
 
+    /// 写入会话内成员昵称（社交业务里的群昵称）；返回名字可能随之变化的会话。
+    pub async fn apply_participant_display(
+        &self,
+        snapshots: &[crate::domain::ParticipantDisplaySnapshot],
+    ) -> crate::Result<Vec<String>> {
+        crate::application::ParticipantDisplayProjectionApplier::apply_batch(self, snapshots).await
+    }
+
     pub async fn apply_user_profile(&self, profile: &UserProfile) -> crate::Result<Vec<String>> {
         self.save_user_profiles(std::slice::from_ref(profile))
             .await?;
@@ -64,20 +72,12 @@ impl StoreProvider {
     ) -> crate::Result<Vec<String>> {
         if let Some(participants) = &self.conversation_participants {
             participants
-                .patch_user_display(
-                    &profile.user_id,
-                    profile.display_name(),
-                    &profile.avatar_url,
-                )
+                .patch_user_avatar(&profile.user_id, &profile.avatar_url)
                 .await?;
         }
 
         self.conversations
-            .apply_user_profile_snapshot(
-                &profile.user_id,
-                profile.display_name(),
-                &profile.avatar_url,
-            )
+            .apply_user_profile_snapshot(&profile.user_id, &profile.nickname, &profile.avatar_url)
             .await
     }
 }

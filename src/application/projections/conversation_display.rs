@@ -1,7 +1,8 @@
 //! Conversation display projection.
 //!
-//! Core owns the deterministic conversation title/avatar projection. Business SDKs
-//! provide typed snapshots; UI should render `Conversation.display_name` directly.
+//! Business SDKs provide typed snapshots of a conversation's business name, avatar and
+//! remark. The name column only stores a business name; the title a host renders is
+//! projected when the conversation is read (`Conversation.title`).
 
 use crate::infrastructure::persistence::StoreProvider;
 use crate::model::Conversation;
@@ -104,24 +105,11 @@ impl ConversationDisplayProjectionApplier {
             conversation.avatar_url = profile.avatar_url.trim().to_string();
         }
 
-        let profile_name = peer_profile
-            .as_ref()
-            .map(|profile| profile.display_name())
-            .and_then(normalize_text);
-        let existing_name_allowed =
-            snapshot.display_name.trim().is_empty() && snapshot.remark.is_none();
+        // 名字列只存快照给的业务名：单聊的名字来自对端人名（读取时投影），不从资料取名写进来；
+        // 备注另存在 `remark`；没有新名字时保留已存的业务名。
         let primary_name = normalize_text(&snapshot.display_name)
-            .or(profile_name)
-            .or_else(|| {
-                if existing_name_allowed {
-                    normalize_text(&conversation.display_name)
-                } else {
-                    None
-                }
-            });
+            .or_else(|| normalize_text(&conversation.display_name));
         conversation.display_name = resolve_display_name(
-            conversation.conversation_type,
-            conversation.remark.as_deref(),
             primary_name.as_deref(),
             &conversation.channel_id,
             &conversation.conversation_id,
@@ -162,64 +150,109 @@ fn normalize_text(value: &str) -> Option<String> {
     }
 }
 
+/// 名字列存什么：业务名本身；它等于对端、群或会话自己的 id 时不是名字，存空串。
+///
+/// 不回落到 id，也不写占位文案：没有名字时由读取时的投影给出结构化的「无名」
+/// （[`crate::domain::resolve_conversation_title`]），文案在 UI Kit。
 pub fn resolve_display_name(
-    conversation_type: ConversationType,
-    remark: Option<&str>,
     primary_name: Option<&str>,
     channel_id: &str,
     conversation_id: &str,
 ) -> String {
-    if let Some(value) = remark.and_then(normalize_text) {
-        return value;
-    }
-    if let Some(value) = primary_name.and_then(normalize_text) {
-        return value;
-    }
-    if let Some(value) = normalize_text(channel_id) {
-        return value;
-    }
-    if let Some(value) = normalize_text(conversation_id) {
-        return value;
-    }
-    match conversation_type {
-        ConversationType::Group => "群聊",
-        ConversationType::Ai => "AI",
-        ConversationType::System => "系统通知",
-        ConversationType::Customer => "客服",
-        ConversationType::Temp => "临时会话",
-        ConversationType::Channel => "频道",
-        ConversationType::Broadcast => "广播",
-        ConversationType::Single | ConversationType::Unspecified => "单聊",
-    }
-    .to_string()
+    crate::domain::business_name(
+        primary_name.unwrap_or_default(),
+        &[channel_id, conversation_id],
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_display_name;
+    use super::{
+        ConversationDisplayProjectionApplier, ConversationDisplaySnapshot, resolve_display_name,
+    };
+    use crate::domain::{ConversationReader, ConversationWriter, UserProfile, UserWriter};
+    use crate::infrastructure::persistence::in_memory_im_provider;
+    use crate::model::Conversation;
     use crate::model::conversation::ConversationType;
 
     #[test]
-    fn remark_has_highest_priority() {
-        let name = resolve_display_name(
-            ConversationType::Single,
-            Some("备注名"),
-            Some("好友昵称"),
-            "u2",
-            "cid",
+    fn the_business_name_is_stored_as_given() {
+        assert_eq!(
+            resolve_display_name(Some(" 研发群 "), "g1", "cid"),
+            "研发群"
         );
-        assert_eq!(name, "备注名");
     }
 
     #[test]
-    fn group_name_wins_before_channel_id() {
-        let name = resolve_display_name(ConversationType::Group, None, Some("研发群"), "g1", "cid");
-        assert_eq!(name, "研发群");
+    fn without_a_name_nothing_is_stored() {
+        assert_eq!(resolve_display_name(None, "u2", "cid"), "");
+        assert_eq!(resolve_display_name(Some("  "), "u2", "cid"), "");
+        assert_eq!(resolve_display_name(None, "", ""), "");
     }
 
     #[test]
-    fn single_falls_back_to_channel_id() {
-        let name = resolve_display_name(ConversationType::Single, None, None, "u2", "cid");
-        assert_eq!(name, "u2");
+    fn an_id_is_never_stored_as_a_name() {
+        assert_eq!(resolve_display_name(Some("u2"), "u2", "cid"), "");
+        assert_eq!(resolve_display_name(Some("cid"), "u2", "cid"), "");
+    }
+
+    /// 单聊的名字来自对端人名的读取时投影：资料名、备注都不写进名字列。
+    #[tokio::test]
+    async fn single_chat_snapshot_stores_neither_the_profile_name_nor_the_remark() {
+        let stores = in_memory_im_provider();
+        stores
+            .user_profiles_writer_or_memory()
+            .save_batch(&[UserProfile::new("u2").with_nickname("Bob")])
+            .await
+            .unwrap();
+        let mut snapshot =
+            ConversationDisplaySnapshot::new("1A_cid", ConversationType::Single, "u2");
+        snapshot.remark = Some("好友备注".to_string());
+        snapshot.create_if_missing = true;
+        ConversationDisplayProjectionApplier::apply(&stores, snapshot)
+            .await
+            .unwrap();
+        let stored = stores.conversations.get("1A_cid").await.unwrap().unwrap();
+        assert_eq!(stored.display_name, "");
+        assert_eq!(stored.remark.as_deref(), Some("好友备注"));
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_name_equal_to_the_channel_id_is_not_stored() {
+        let stores = in_memory_im_provider();
+        let mut snapshot =
+            ConversationDisplaySnapshot::new("2A_cid", ConversationType::Group, "g1");
+        snapshot.display_name = "g1".to_string();
+        snapshot.create_if_missing = true;
+        ConversationDisplayProjectionApplier::apply(&stores, snapshot)
+            .await
+            .unwrap();
+        let stored = stores.conversations.get("2A_cid").await.unwrap().unwrap();
+        assert_eq!(stored.display_name, "");
+    }
+
+    #[tokio::test]
+    async fn an_empty_snapshot_name_keeps_the_stored_business_name() {
+        let stores = in_memory_im_provider();
+        stores
+            .conversations
+            .save_one(&Conversation {
+                conversation_id: "2A_cid".to_string(),
+                conversation_type: ConversationType::Group,
+                channel_id: "g1".to_string(),
+                display_name: "研发群".to_string(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut snapshot =
+            ConversationDisplaySnapshot::new("2A_cid", ConversationType::Group, "g1");
+        snapshot.members_count = Some(9);
+        ConversationDisplayProjectionApplier::apply(&stores, snapshot)
+            .await
+            .unwrap();
+        let stored = stores.conversations.get("2A_cid").await.unwrap().unwrap();
+        assert_eq!(stored.display_name, "研发群");
+        assert_eq!(stored.members_count, 9);
     }
 }

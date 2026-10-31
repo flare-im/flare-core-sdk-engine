@@ -54,7 +54,10 @@ pub enum MessageEvent {
     /// 消息发送失败（client_msg_id + 原因）
     SendFailed {
         client_msg_id: String,
+        /// 原因文案（沿用至今的字符串，给人看）。
         reason: String,
+        /// 结构化原因：服务端拒发时带 `ErrorDetail.reason`（`machine_reason`），本地失败给本地 code。
+        error: crate::domain::SendFailure,
     },
     /// 消息被撤回（会话 id + 撤回事件体）
     Recalled {

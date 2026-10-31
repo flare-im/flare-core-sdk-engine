@@ -23,21 +23,13 @@ impl UserProfileProjectionApplier {
     ) -> Result<Vec<String>> {
         if let Some(participants) = &stores.conversation_participants {
             participants
-                .patch_user_display(
-                    &profile.user_id,
-                    profile.display_name(),
-                    &profile.avatar_url,
-                )
+                .patch_user_avatar(&profile.user_id, &profile.avatar_url)
                 .await?;
         }
 
         stores
             .conversations
-            .apply_user_profile_snapshot(
-                &profile.user_id,
-                profile.display_name(),
-                &profile.avatar_url,
-            )
+            .apply_user_profile_snapshot(&profile.user_id, &profile.nickname, &profile.avatar_url)
             .await
     }
 }

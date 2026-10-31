@@ -181,13 +181,16 @@ impl ConversationCommandUseCase {
         // (穿 WAL/NATS/投递),大群直接压垮管线。ad-hoc 用户集合群无外部频道名,channel_id 取恒定大小的
         // conversation_id(merge_or_create 默认会把 source_id=group_key 当 channel_id,这里覆盖回收)。
         conversation.channel_id = conversation.conversation_id.clone();
-        if let Some(name) = display_name.map(str::trim).filter(|name| !name.is_empty()) {
-            conversation.display_name = name.to_string();
-        } else if conversation.display_name.trim().is_empty()
-            || conversation.display_name == group_key
-        {
-            conversation.display_name = format!("群聊({})", members.join("、"));
-        }
+        // 没起名的成员集合群名字列留空：标题在读取时用成员名拼接（resolve_conversation_title）。
+        let name = display_name.unwrap_or(conversation.display_name.as_str());
+        conversation.display_name = crate::domain::business_name(
+            name,
+            &[
+                &group_key,
+                &conversation.channel_id,
+                &conversation.conversation_id,
+            ],
+        );
         conversation.members_count = members.len() as u32;
         let participants = members
             .iter()
@@ -522,5 +525,29 @@ mod tests {
         let stored = store.get("conv-read").await.unwrap().unwrap();
         assert_eq!(stored.unread_count, 0);
         assert_eq!(stored.last_read_seq, 8);
+    }
+
+    /// 没起名的成员集合群不写名字：标题在读取时由成员名拼接，名字列里不放 id。
+    #[tokio::test]
+    async fn an_unnamed_member_set_group_stores_no_name() {
+        let store = Arc::new(MemoryConversationStore::new());
+        let use_case = command_use_case(
+            Arc::clone(&store),
+            Arc::new(FakeSessionSyncRunner {
+                fail_read_ack: false,
+            }),
+        );
+        let ids = ["alice".to_string(), "bob".to_string()];
+        let unnamed = use_case.get_group_by_user_ids(&ids, None).await.unwrap();
+        assert_eq!(unnamed.display_name, "");
+        assert_eq!(unnamed.member_preview.len(), 3);
+
+        let named = use_case
+            .get_group_by_user_ids(&ids, Some(" Weekend ride "))
+            .await
+            .unwrap();
+        assert_eq!(named.display_name, "Weekend ride");
+        let again = use_case.get_group_by_user_ids(&ids, None).await.unwrap();
+        assert_eq!(again.display_name, "Weekend ride", "a given name is kept");
     }
 }

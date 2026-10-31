@@ -1,6 +1,7 @@
 //! 用户资料（显示名称、头像）— 用于消息/会话展示
 //!
-//! 可由 SyncTask 同步或本地缓存填充；未命中时展示 user_id。
+//! 可由 SyncTask 同步或本地缓存填充。名字由 [`crate::domain::resolve_person_name`] 决定，
+//! 没有名字时投影为结构化的「无名」，不把 user_id 当名字。
 
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +14,9 @@ pub struct UserProfile {
     pub nickname: String,
     /// 头像 URL
     pub avatar_url: String,
+    /// 当前用户给这个账号起的私有标签（社交业务里的好友备注）；人名解析链里排第一。
+    #[serde(default)]
+    pub alias: String,
 }
 
 impl UserProfile {
@@ -21,6 +25,7 @@ impl UserProfile {
             user_id: user_id.into(),
             nickname: String::new(),
             avatar_url: String::new(),
+            alias: String::new(),
         }
     }
 
@@ -32,6 +37,20 @@ impl UserProfile {
     pub fn with_avatar(mut self, avatar_url: impl Into<String>) -> Self {
         self.avatar_url = avatar_url.into();
         self
+    }
+
+    pub fn with_alias(mut self, alias: impl Into<String>) -> Self {
+        self.alias = alias.into();
+        self
+    }
+
+    /// 这个人的名字候选（别名、资料名）；会话内昵称与发送时快照由调用方补上。
+    pub fn name_candidates(&self) -> crate::domain::PersonNameCandidates<'_> {
+        crate::domain::PersonNameCandidates {
+            alias: &self.alias,
+            profile_name: &self.nickname,
+            ..Default::default()
+        }
     }
 
     /// 展示名：有 nickname 用 nickname，否则用 user_id（与 display_name 语义一致）

@@ -11,8 +11,9 @@ use crate::content::message_elem::{
     MessagePreviewElem, decoded_content_to_elem, elem_preview_storage_payload,
 };
 use crate::domain::{
-    ConversationReader, ConversationWriter, ReadPosition, local_cleared_through_seq,
-    preserve_local_remark, preserve_local_single_chat_channel, set_local_cleared_through_seq,
+    ConversationReader, ConversationWriter, MemberKey, ParticipantDisplaySnapshot, ReadPosition,
+    business_name, local_cleared_through_seq, preserve_local_remark,
+    preserve_local_single_chat_channel, set_local_cleared_through_seq,
 };
 use crate::model::conversation::{ConversationLocalState, ConversationType};
 use crate::model::search::escaped_like_contains;
@@ -256,13 +257,7 @@ impl SqliteConversationRepo {
                        lm.conversation_id
                    ),
                    0,
-                   COALESCE(
-                       NULLIF(TRIM(lm.channel_id), ''),
-                       NULLIF(TRIM(lm.sender_display_name), ''),
-                       NULLIF(TRIM(lm.sender_name), ''),
-                       NULLIF(TRIM(lm.sender_id), ''),
-                       lm.conversation_id
-                   ),
+                   '',
                    '',
                    NULL,
                    NULL,
@@ -455,6 +450,7 @@ impl SqliteConversationRepo {
             channel_id,
             members_count: members_count.max(0) as u32,
             display_name,
+            title: None,
             avatar_url,
             remark,
             description,
@@ -464,6 +460,7 @@ impl SqliteConversationRepo {
             last_message_preview,
             last_message,
             last_sender_nickname,
+            last_sender: None,
             last_sender_avatar_url,
             unread_count: unread_count.max(0) as u32,
             last_read_seq: last_read_seq.max(0) as u64,
@@ -662,6 +659,41 @@ impl ConversationReader for SqliteConversationRepo {
         }
         Ok(out)
     }
+
+    async fn member_nicknames(&self, pairs: &[MemberKey]) -> Result<HashMap<MemberKey, String>> {
+        let mut out = HashMap::new();
+        // 两个变量一对，按 SQLite 变量上限分块。
+        for chunk in pairs.chunks(super::SQLITE_IN_CHUNK / 2) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let mut builder = QueryBuilder::<Sqlite>::new(
+                "SELECT conversation_id, user_id, nickname FROM conversation_member_nicknames WHERE ",
+            );
+            for (index, (conversation_id, user_id)) in chunk.iter().enumerate() {
+                if index > 0 {
+                    builder.push(" OR ");
+                }
+                builder.push("(conversation_id = ");
+                builder.push_bind(conversation_id);
+                builder.push(" AND user_id = ");
+                builder.push_bind(user_id);
+                builder.push(")");
+            }
+            let rows = builder
+                .build()
+                .fetch_all(&self.pool)
+                .await
+                .map_err(sqlx_err)?;
+            for row in rows {
+                let conversation_id: String = row.try_get("conversation_id").map_err(sqlx_err)?;
+                let user_id: String = row.try_get("user_id").map_err(sqlx_err)?;
+                let nickname: String = row.try_get("nickname").map_err(sqlx_err)?;
+                out.insert((conversation_id, user_id), nickname);
+            }
+        }
+        Ok(out)
+    }
 }
 
 #[async_trait]
@@ -813,14 +845,6 @@ impl ConversationWriter for SqliteConversationRepo {
                 let prev_remark = row.try_get::<Option<String>, _>("remark").unwrap_or(None);
                 merged.remark =
                     preserve_local_remark(merged.remark.as_deref(), prev_remark.as_deref());
-                if let Some(remark) = merged
-                    .remark
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|remark| !remark.is_empty())
-                {
-                    merged.display_name = remark.to_string();
-                }
 
                 let prev_channel_id = row
                     .try_get::<Option<String>, _>("channel_id")
@@ -861,6 +885,12 @@ impl ConversationWriter for SqliteConversationRepo {
             merged.unread_count = merged
                 .unread_count
                 .min(ReadPosition::from_conversation(&merged).unread_upper_bound());
+
+            // 名字列只存业务名：等于自己 id（对端、群或会话 id）的值不是名字。
+            merged.display_name = business_name(
+                &merged.display_name,
+                &[&merged.channel_id, &merged.conversation_id],
+            );
 
             let ext_json = serde_json::to_string(&merged.ext).unwrap_or_default();
             // 成员预览：来源不带就沿用库里已有的，绝不清空。
@@ -1177,6 +1207,11 @@ impl ConversationWriter for SqliteConversationRepo {
             .execute(&mut *tx)
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        sqlx::query("DELETE FROM conversation_member_nicknames WHERE conversation_id = ?")
+            .bind(conversation_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         sqlx::query("DELETE FROM sync_conversation_cursors WHERE conversation_id = ?")
             .bind(conversation_id)
             .execute(&mut *tx)
@@ -1208,6 +1243,8 @@ impl ConversationWriter for SqliteConversationRepo {
         let Some(mut source) = self.get(from).await? else {
             return Ok(());
         };
+        // 旧行的名字可能是它自己的 id；换到新 id 下就再也认不出来，所以先按旧 id 清掉。
+        source.display_name = business_name(&source.display_name, &[&source.channel_id, from]);
         source.conversation_id = to.to_string();
         let merged = match self.get(to).await? {
             Some(target) => merge_identity_conversation(target, source),
@@ -1292,20 +1329,96 @@ impl ConversationWriter for SqliteConversationRepo {
         Ok(out)
     }
 
+    async fn save_member_nicknames(
+        &self,
+        snapshots: &[ParticipantDisplaySnapshot],
+    ) -> Result<Vec<String>> {
+        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
+        let now = crate::shared::util::id::now_millis() as i64;
+        let mut changed: Vec<String> = Vec::new();
+        for snapshot in snapshots
+            .iter()
+            .filter_map(ParticipantDisplaySnapshot::normalized)
+        {
+            let previous: Option<String> = sqlx::query_scalar(
+                r#"SELECT nickname FROM conversation_member_nicknames
+                   WHERE conversation_id = ? AND user_id = ?"#,
+            )
+            .bind(&snapshot.conversation_id)
+            .bind(&snapshot.user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(sqlx_err)?;
+            if snapshot.nickname.is_empty() {
+                if previous.is_none() {
+                    continue;
+                }
+                sqlx::query(
+                    r#"DELETE FROM conversation_member_nicknames
+                       WHERE conversation_id = ? AND user_id = ?"#,
+                )
+                .bind(&snapshot.conversation_id)
+                .bind(&snapshot.user_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(sqlx_err)?;
+            } else {
+                if previous.as_deref() == Some(snapshot.nickname.as_str()) {
+                    continue;
+                }
+                sqlx::query(
+                    r#"INSERT INTO conversation_member_nicknames
+                           (conversation_id, user_id, nickname, updated_at)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(conversation_id, user_id) DO UPDATE SET
+                           nickname = excluded.nickname,
+                           updated_at = excluded.updated_at"#,
+                )
+                .bind(&snapshot.conversation_id)
+                .bind(&snapshot.user_id)
+                .bind(&snapshot.nickname)
+                .bind(now)
+                .execute(&mut *tx)
+                .await
+                .map_err(sqlx_err)?;
+            }
+            if !changed.contains(&snapshot.conversation_id) {
+                changed.push(snapshot.conversation_id);
+            }
+        }
+        tx.commit().await.map_err(sqlx_err)?;
+        Ok(changed)
+    }
+
     async fn apply_user_profile_snapshot(
         &self,
         user_id: &str,
-        nickname: &str,
+        _nickname: &str,
         avatar_url: &str,
     ) -> Result<Vec<String>> {
+        let user_id = user_id.trim();
+        if user_id.is_empty() {
+            return Ok(Vec::new());
+        }
+        // 成员预览按 JSON 存，`"userId":"<id>"` 用 instr 精确找（不像 LIKE 有通配符）。
+        let preview_needle = format!(
+            "\"userId\":{}",
+            serde_json::to_string(user_id).unwrap_or_default()
+        );
         let rows = sqlx::query(
             r#"SELECT conversation_id
                FROM conversations
                WHERE (conversation_type = 1 AND channel_id = ?)
-                  OR last_sender_id = ?"#,
+                  OR last_sender_id = ?
+                  OR (conversation_type = 2
+                      AND TRIM(COALESCE(remark, '')) IN ('', TRIM(channel_id), TRIM(conversation_id))
+                      AND TRIM(display_name) IN ('', TRIM(channel_id), TRIM(conversation_id))
+                      AND instr(COALESCE(member_preview, ''), ?) > 0)
+               ORDER BY conversation_id"#,
         )
         .bind(user_id)
         .bind(user_id)
+        .bind(&preview_needle)
         .fetch_all(&self.pool)
         .await
         .map_err(sqlx_err)?;
@@ -1314,20 +1427,12 @@ impl ConversationWriter for SqliteConversationRepo {
         let now = crate::shared::util::id::now_millis() as i64;
         for row in rows {
             let conversation_id: String = row.try_get("conversation_id").map_err(sqlx_err)?;
-            affected.push(conversation_id.clone());
+            // 名字在读取时投影，这里只同步头像，不回写名字列。
             sqlx::query(
                 r#"UPDATE conversations SET
-                   display_name = CASE
-                       WHEN conversation_type = 1 AND channel_id = ? AND TRIM(COALESCE(remark, '')) = '' THEN ?
-                       ELSE display_name
-                   END,
                    avatar_url = CASE
                        WHEN conversation_type = 1 AND channel_id = ? THEN ?
                        ELSE avatar_url
-                   END,
-                   last_sender_nickname = CASE
-                       WHEN last_sender_id = ? THEN ?
-                       ELSE last_sender_nickname
                    END,
                    last_sender_avatar_url = CASE
                        WHEN last_sender_id = ? THEN ?
@@ -1337,18 +1442,15 @@ impl ConversationWriter for SqliteConversationRepo {
                    WHERE conversation_id = ?"#,
             )
             .bind(user_id)
-            .bind(nickname)
-            .bind(user_id)
             .bind(avatar_url)
-            .bind(user_id)
-            .bind(nickname)
             .bind(user_id)
             .bind(avatar_url)
             .bind(now)
-            .bind(conversation_id)
+            .bind(&conversation_id)
             .execute(&self.pool)
             .await
             .map_err(sqlx_err)?;
+            affected.push(conversation_id);
         }
         Ok(affected)
     }
@@ -1455,7 +1557,10 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].conversation_id, "conv-orphan");
         assert_eq!(listed[0].channel_id, "peer-1");
-        assert_eq!(listed[0].display_name, "peer-1");
+        assert_eq!(
+            listed[0].display_name, "",
+            "a conversation rebuilt from messages has only ids, no name"
+        );
         assert_eq!(listed[0].last_message_id.as_deref(), Some("msg-orphan-2"));
         assert_eq!(listed[0].last_sender_id.as_deref(), Some("peer-1"));
         assert_eq!(listed[0].last_message_at, Some(20_000));
@@ -1546,6 +1651,127 @@ mod tests {
         let loaded = repo.get("conv-1").await.unwrap().unwrap();
         assert_eq!(loaded.remark.as_deref(), Some("我的备注"));
         assert_eq!(loaded.channel_id, "peer-u2");
+    }
+
+    /// 名字列只存业务名：写入时等于自己 id 的名字一律存空串，真名字照存。
+    #[tokio::test]
+    async fn save_batch_never_stores_an_id_as_the_name() {
+        let repo = repo().await;
+        let mut by_channel = conversation("1A_peer", 1, "hi");
+        by_channel.channel_id = "u_peer".to_string();
+        by_channel.display_name = "u_peer".to_string();
+        let mut by_id = conversation("2A_self", 1, "hi");
+        by_id.channel_id = "g_1".to_string();
+        by_id.display_name = " 2A_self ".to_string();
+        let mut named = conversation("2A_named", 1, "hi");
+        named.channel_id = "g_2".to_string();
+        named.display_name = "0401".to_string();
+        repo.save_batch(&[by_channel, by_id, named]).await.unwrap();
+        assert_eq!(repo.get("1A_peer").await.unwrap().unwrap().display_name, "");
+        assert_eq!(repo.get("2A_self").await.unwrap().unwrap().display_name, "");
+        assert_eq!(
+            repo.get("2A_named").await.unwrap().unwrap().display_name,
+            "0401"
+        );
+    }
+
+    /// 资料变化：返回对端是此人的单聊、最后一条由此人发出的会话、此人在成员预览里的无名群；
+    /// 只同步头像，名字列与旧的最后发送者名都不回写。
+    #[tokio::test]
+    async fn a_profile_change_reports_the_conversations_showing_the_person_and_writes_no_name() {
+        use crate::model::ConversationParticipant;
+        use crate::model::conversation::ConversationType;
+        let repo = repo().await;
+        let member = |id: &str| ConversationParticipant {
+            user_id: id.to_string(),
+            ..Default::default()
+        };
+        let mut single = conversation("1A_bob", 1, "hi");
+        single.conversation_type = ConversationType::Single;
+        single.channel_id = "u_bob".to_string();
+        single.last_sender_id = Some("me".to_string());
+        if let Some(last) = single.last_message.as_mut() {
+            last.sender_id = "me".to_string();
+        }
+        let mut sent_by_bob = conversation("2A_named", 2, "hi");
+        sent_by_bob.conversation_type = ConversationType::Group;
+        sent_by_bob.channel_id = "g_named".to_string();
+        sent_by_bob.display_name = "Design team".to_string();
+        sent_by_bob.last_sender_id = Some("u_bob".to_string());
+        sent_by_bob.last_sender_nickname = "Bob before".to_string();
+        let mut unnamed = conversation("2A_unnamed", 3, "hi");
+        unnamed.conversation_type = ConversationType::Group;
+        unnamed.channel_id = "g_unnamed".to_string();
+        unnamed.member_preview = vec![member("me"), member("u_bob")];
+        let mut named_with_bob = conversation("2A_named_bob", 4, "hi");
+        named_with_bob.conversation_type = ConversationType::Group;
+        named_with_bob.channel_id = "g_nb".to_string();
+        named_with_bob.display_name = "Ride".to_string();
+        named_with_bob.member_preview = vec![member("me"), member("u_bob")];
+        let mut unrelated = conversation("2A_other", 5, "hi");
+        unrelated.conversation_type = ConversationType::Group;
+        unrelated.channel_id = "g_other".to_string();
+        unrelated.member_preview = vec![member("me"), member("u_bobby")];
+        repo.save_batch(&[single, sent_by_bob, unnamed, named_with_bob, unrelated])
+            .await
+            .unwrap();
+
+        let affected = repo
+            .apply_user_profile_snapshot("u_bob", "Bob", "https://flare.test/bob.png")
+            .await
+            .unwrap();
+        assert_eq!(affected, vec!["1A_bob", "2A_named", "2A_unnamed"]);
+        let single = repo.get("1A_bob").await.unwrap().unwrap();
+        assert_eq!(
+            single.display_name, "",
+            "the name column stays a business name"
+        );
+        assert_eq!(single.avatar_url, "https://flare.test/bob.png");
+        let sent = repo.get("2A_named").await.unwrap().unwrap();
+        assert_eq!(sent.last_sender_nickname, "Bob before");
+        assert_eq!(sent.last_sender_avatar_url, "https://flare.test/bob.png");
+    }
+
+    #[tokio::test]
+    async fn member_nicknames_are_stored_apart_from_members_and_read_in_one_batch() {
+        use crate::domain::ParticipantDisplaySnapshot;
+        let repo = repo().await;
+        let changed = repo
+            .save_member_nicknames(&[
+                ParticipantDisplaySnapshot::new("2A_g", "u_a", "Group Ann"),
+                ParticipantDisplaySnapshot::new("2A_g", "u_b", "u_b"),
+                ParticipantDisplaySnapshot::new("2A_h", "u_a", "Other Ann"),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(changed, vec!["2A_g", "2A_h"]);
+        let again = repo
+            .save_member_nicknames(&[ParticipantDisplaySnapshot::new("2A_g", "u_a", "Group Ann")])
+            .await
+            .unwrap();
+        assert!(again.is_empty(), "an unchanged nickname changes nothing");
+        let pairs = vec![
+            ("2A_g".to_string(), "u_a".to_string()),
+            ("2A_g".to_string(), "u_b".to_string()),
+            ("2A_h".to_string(), "u_a".to_string()),
+        ];
+        let found = repo.member_nicknames(&pairs).await.unwrap();
+        assert_eq!(
+            found.len(),
+            2,
+            "a nickname equal to the user id is not stored"
+        );
+        assert_eq!(found.get(&pairs[0]).map(String::as_str), Some("Group Ann"));
+        assert_eq!(found.get(&pairs[2]).map(String::as_str), Some("Other Ann"));
+
+        let cleared = repo
+            .save_member_nicknames(&[ParticipantDisplaySnapshot::new("2A_g", "u_a", "")])
+            .await
+            .unwrap();
+        assert_eq!(cleared, vec!["2A_g"]);
+        assert!(repo.member_nicknames(&pairs[..1]).await.unwrap().is_empty());
+        repo.delete("2A_h").await.unwrap();
+        assert!(repo.member_nicknames(&pairs[2..]).await.unwrap().is_empty());
     }
 
     #[tokio::test]

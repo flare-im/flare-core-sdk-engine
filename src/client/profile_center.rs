@@ -1,10 +1,15 @@
 use serde::{Deserialize, Serialize};
 
+use crate::domain::{DisplayName, PersonNameCandidates, resolve_person_name};
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileCenterSummary {
     pub user_id: String,
     pub display_name: String,
+    /// 「我」页显示的名字：人名解析链的结果，没有名字时为结构化的「无名」，不回落到 user_id。
+    #[serde(default)]
+    pub name: DisplayName,
     pub avatar_url: Option<String>,
     pub bio: Option<String>,
     pub im_connected: bool,
@@ -19,6 +24,7 @@ impl ProfileCenterSummary {
         let user_id = user_id.into();
         Self {
             display_name: user_id.clone(),
+            name: DisplayName::unnamed(crate::domain::NameEntity::Person, &user_id),
             user_id,
             ..Self::default()
         }
@@ -27,6 +33,14 @@ impl ProfileCenterSummary {
     pub fn normalized(mut self) -> Self {
         self.user_id = self.user_id.trim().to_owned();
         self.display_name = self.display_name.trim().to_owned();
+        self.name = resolve_person_name(
+            &self.user_id,
+            &PersonNameCandidates {
+                profile_name: &self.display_name,
+                ..Default::default()
+            },
+            None,
+        );
         if self.display_name.is_empty() {
             self.display_name = self.user_id.clone();
         }
@@ -162,8 +176,34 @@ mod tests {
 
         assert_eq!(summary.user_id, "user-1");
         assert_eq!(summary.display_name, "user-1");
+        assert_eq!(
+            summary.name,
+            DisplayName::unnamed(crate::domain::NameEntity::Person, "user-1"),
+            "the name never falls back to the user id"
+        );
         assert_eq!(summary.avatar_url, None);
         assert_eq!(summary.bio.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn summary_name_is_the_profile_name() {
+        let summary = ProfileCenterSummary {
+            user_id: "user-1".to_owned(),
+            display_name: " Hugo ".to_owned(),
+            ..ProfileCenterSummary::default()
+        }
+        .normalized();
+        assert_eq!(
+            summary.name,
+            DisplayName::named("Hugo", crate::domain::NameSource::Profile)
+        );
+        let id_named = ProfileCenterSummary {
+            user_id: "user-1".to_owned(),
+            display_name: "user-1".to_owned(),
+            ..ProfileCenterSummary::default()
+        }
+        .normalized();
+        assert!(!id_named.name.is_named());
     }
 
     #[test]

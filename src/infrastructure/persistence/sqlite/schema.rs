@@ -3,7 +3,7 @@
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use sqlx::{Row, SqlitePool};
 
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 fn db_err(e: sqlx::Error) -> FlareError {
     FlareError::localized(ErrorCode::DatabaseError, e.to_string())
@@ -247,6 +247,25 @@ async fn migrate_to_v3(pool: &SqlitePool) -> Result<()> {
     backfill_messages_fts(pool).await
 }
 
+/// v4：名字列只存业务名。之前的版本会把对端 id、群 id 或会话 id 写进 `display_name`；
+/// 这是本地缓存，名字随会话摘要同步回来，所以这里一次性清空，不在读侧猜「像不像 id」。
+async fn migrate_to_v4(pool: &SqlitePool) -> Result<()> {
+    clear_id_display_names(pool).await.map(|_| ())
+}
+
+pub(crate) async fn clear_id_display_names(pool: &SqlitePool) -> Result<u64> {
+    let done = sqlx::query(
+        r#"UPDATE conversations SET display_name = ''
+           WHERE display_name != ''
+             AND (TRIM(display_name) = TRIM(channel_id)
+                  OR TRIM(display_name) = TRIM(conversation_id))"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(done.rows_affected())
+}
+
 async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     let mut version = current_user_version(pool).await?;
     if version > CURRENT_SCHEMA_VERSION {
@@ -279,6 +298,14 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         }
         set_user_version(pool, 3).await?;
         version = 3;
+    }
+
+    if version < 4 {
+        if !upgraded_from_empty {
+            migrate_to_v4(pool).await?;
+        }
+        set_user_version(pool, 4).await?;
+        version = 4;
     }
 
     debug_assert_eq!(version, CURRENT_SCHEMA_VERSION);
@@ -518,7 +545,30 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
         r#"CREATE TABLE IF NOT EXISTS user_profiles (
             user_id TEXT PRIMARY KEY,
             nickname TEXT NOT NULL DEFAULT '',
-            avatar_url TEXT NOT NULL DEFAULT ''
+            avatar_url TEXT NOT NULL DEFAULT '',
+            alias TEXT NOT NULL DEFAULT ''
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+    ensure_column(
+        pool,
+        "user_profiles",
+        "alias",
+        "alias TEXT NOT NULL DEFAULT ''",
+    )
+    .await?;
+
+    // 账号在某个会话里的名字（社交业务里的群昵称），由业务 SDK 写入；与成员同步分开存，
+    // 成员整页替换时不会把它冲掉。
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS conversation_member_nicknames (
+            conversation_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            nickname TEXT NOT NULL,
+            updated_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (conversation_id, user_id)
         )"#,
     )
     .execute(pool)
@@ -695,6 +745,67 @@ mod tests {
     use crate::domain::ConversationReader;
     use sqlx::SqlitePool;
 
+    /// v3 的库里名字列可能存着 id（对端、群、会话 id）；升到 v4 一次清空，真名字不动。
+    #[tokio::test]
+    async fn v4_clears_names_that_are_ids_and_keeps_real_ones() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        init_schema(&pool).await.unwrap();
+        for (conversation_id, conversation_type, channel_id, display_name) in [
+            ("1A_peer", 1, "u_peer", "u_peer"),
+            ("2A_group", 2, "g_1", " g_1 "),
+            ("2A_self", 2, "g_2", "2A_self"),
+            ("2A_named", 2, "g_3", "Design team"),
+            ("1A_digits", 1, "u_9", "0401"),
+        ] {
+            sqlx::query(
+                r#"INSERT INTO conversations (
+                       conversation_id, conversation_type, business_type, channel_id, members_count,
+                       display_name, avatar_url, updated_at, created_at
+                   ) VALUES (?, ?, 'chat', ?, 0, ?, '', 1, 1)"#,
+            )
+            .bind(conversation_id)
+            .bind(conversation_type)
+            .bind(channel_id)
+            .bind(display_name)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query("PRAGMA user_version = 3")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE user_profiles DROP COLUMN alias")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        init_schema(&pool).await.unwrap();
+
+        assert_eq!(current_user_version(&pool).await.unwrap(), 4);
+        assert!(
+            column_exists(&pool, "user_profiles", "alias")
+                .await
+                .unwrap()
+        );
+        let names: Vec<(String, String)> = sqlx::query_as(
+            "SELECT conversation_id, display_name FROM conversations ORDER BY conversation_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            names,
+            vec![
+                ("1A_digits".to_string(), "0401".to_string()),
+                ("1A_peer".to_string(), String::new()),
+                ("2A_group".to_string(), String::new()),
+                ("2A_named".to_string(), "Design team".to_string()),
+                ("2A_self".to_string(), String::new()),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn init_schema_migrates_legacy_v1_messages_without_conversation_seq() {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -722,7 +833,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert_eq!(current_user_version(&pool).await.unwrap(), 3);
+        assert_eq!(current_user_version(&pool).await.unwrap(), 4);
 
         sqlx::query(
             r#"INSERT INTO messages (

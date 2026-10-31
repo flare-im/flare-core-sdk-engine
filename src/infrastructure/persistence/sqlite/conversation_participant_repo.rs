@@ -117,6 +117,7 @@ impl ConversationParticipantStore for SqliteConversationParticipantRepo {
                     attributes: parse_attributes(&attributes),
                     joined_at: joined_at.max(0) as u64,
                     nickname: row.try_get("nickname").map_err(sqlx_err)?,
+                    name: None,
                 })
             })
             .collect()
@@ -135,12 +136,10 @@ impl ConversationParticipantStore for SqliteConversationParticipantRepo {
         Ok(value.unwrap_or_default().max(0) as u64)
     }
 
-    async fn patch_user_display(
-        &self,
-        user_id: &str,
-        nickname: &str,
-        avatar_url: &str,
-    ) -> Result<()> {
+    async fn patch_user_avatar(&self, user_id: &str, avatar_url: &str) -> Result<()> {
+        if avatar_url.trim().is_empty() {
+            return Ok(());
+        }
         let rows = sqlx::query(
             r#"SELECT conversation_id, attributes
                FROM conversation_participants
@@ -156,19 +155,13 @@ impl ConversationParticipantStore for SqliteConversationParticipantRepo {
             let conversation_id: String = row.try_get("conversation_id").map_err(sqlx_err)?;
             let attributes_raw: String = row.try_get("attributes").map_err(sqlx_err)?;
             let mut attributes = parse_attributes(&attributes_raw);
-            if !avatar_url.trim().is_empty() {
-                attributes.insert("avatar_url".to_string(), avatar_url.to_string());
-            }
-            attributes
-                .entry("nickname".to_string())
-                .or_insert_with(|| nickname.to_string());
+            attributes.insert("avatar_url".to_string(), avatar_url.to_string());
             let attributes_json = serde_json::to_string(&attributes).unwrap_or_default();
             sqlx::query(
                 r#"UPDATE conversation_participants
-                   SET nickname = ?, attributes = ?, updated_at = ?
+                   SET attributes = ?, updated_at = ?
                    WHERE conversation_id = ? AND user_id = ?"#,
             )
-            .bind(nickname)
             .bind(attributes_json)
             .bind(now)
             .bind(conversation_id)
@@ -178,5 +171,39 @@ impl ConversationParticipantStore for SqliteConversationParticipantRepo {
             .map_err(sqlx_err)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 资料变化只同步头像：成员昵称是这个人在会话里的名字，不被资料名（更不会被 id）盖掉。
+    #[tokio::test]
+    async fn a_profile_change_keeps_member_nicknames() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        super::super::schema::init_schema(&pool).await.unwrap();
+        let repo = SqliteConversationParticipantRepo::new(pool);
+        repo.save_page(
+            "2A_g",
+            &[ConversationParticipant {
+                user_id: "u_a".to_string(),
+                nickname: "Group Ann".to_string(),
+                ..Default::default()
+            }],
+            1,
+            true,
+        )
+        .await
+        .unwrap();
+        repo.patch_user_avatar("u_a", "https://flare.test/a.png")
+            .await
+            .unwrap();
+        let members = repo.list("2A_g", 0, 10).await.unwrap();
+        assert_eq!(members[0].nickname, "Group Ann");
+        assert_eq!(
+            members[0].attributes.get("avatar_url").map(String::as_str),
+            Some("https://flare.test/a.png")
+        );
     }
 }

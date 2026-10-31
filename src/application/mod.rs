@@ -30,7 +30,7 @@ pub use notification::{
 };
 pub use projections::{
     ConversationDisplayProjectionApplier, ConversationDisplaySnapshot,
-    UserProfileProjectionApplier, resolve_display_name,
+    ParticipantDisplayProjectionApplier, UserProfileProjectionApplier, resolve_display_name,
 };
 pub use queries::{
     GetConversationQuery, GetConversationsQuery, GetMessagesQuery, SearchMessagesQuery,

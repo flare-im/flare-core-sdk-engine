@@ -15,7 +15,9 @@ mod user_file_download_repository;
 mod user_repository;
 
 pub use conversation_participant_repository::ConversationParticipantStore;
-pub use conversation_repository::{ConversationReader, ConversationStore, ConversationWriter};
+pub use conversation_repository::{
+    ConversationReader, ConversationStore, ConversationWriter, MemberKey,
+};
 pub use media_cache_admin::MediaCacheAdmin;
 pub use media_cache_repository::MediaCacheStore;
 pub use message_repository::{

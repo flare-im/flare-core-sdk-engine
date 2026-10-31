@@ -637,7 +637,8 @@ impl IMClientBuilder {
         );
         let message_view_assembler = Arc::new(
             MessageViewAssembler::new(store_ref.messages.clone(), profile_reader.clone())
-                .with_read_summaries(read_summaries.clone()),
+                .with_read_summaries(read_summaries.clone())
+                .with_member_names(store_ref.conversations.clone()),
         );
         let media_api = Arc::new(MediaApi::from_session_handler(
             media_service,
@@ -699,10 +700,10 @@ impl IMClientBuilder {
             Some(sync_handler.clone()),
             Some(store_ref.cursors.clone()),
         ));
-        let conversation_view_assembler = Arc::new(ConversationViewAssembler::new(
-            store_ref.conversations.clone(),
-            profile_reader,
-        ));
+        let conversation_view_assembler = Arc::new(
+            ConversationViewAssembler::new(store_ref.conversations.clone(), profile_reader)
+                .with_current_user(current_user_id.clone()),
+        );
 
         let conversation_api = Arc::new(ConversationApi::new(
             conversation_command_use_case,

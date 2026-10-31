@@ -2,6 +2,10 @@ use crate::model::message::MessageLocalState;
 use crate::model::message::MessageStatus;
 use crate::model::message::{IMMessage, SendAck};
 use flare_proto::common::{ErrorCode as ProtoErrorCode, SendAccepted, SendAckDurability, send_ack};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+use crate::shared::error::{ErrorCode, FlareError};
 
 pub const REASON_PENDING_ANOTHER_ACCOUNT: &str = "pending message belongs to another account";
 pub const REASON_MAX_RETRIES_EXCEEDED: &str = "max retries exceeded";
@@ -18,6 +22,74 @@ pub const RETRYABLE_ACK_BACKOFF_MAX_MS: u64 = 30_000;
 
 /// 租户被停用或删除中的类型化原因；它不是暂时性的，重发只会再被拒。
 const TENANT_UNAVAILABLE_REASON: &str = "TENANT_UNAVAILABLE";
+
+/// The operation a send failure belongs to.
+pub const SEND_FAILURE_OPERATION: &str = "message.send";
+
+/// Why a message could not be sent, for hosts to act on without parsing text.
+///
+/// Wire (camelCase): `{code, machineReason, message, operation, retryable, details}`.
+/// - `code`: the core error code wire name; for a server rejection it is mapped from
+///   `ErrorDetail.code` (`PERMISSION_DENIED`), for a local failure it says what went
+///   wrong on this side (`OPERATION_TIMEOUT`, `MESSAGE_SEND_FAILED`).
+/// - `machineReason`: the server's typed reason, `ErrorDetail.reason` as sent (for
+///   example a PreSend rejection `SOCIAL_CARD_SCOPE_FRIENDS`); empty for local failures.
+/// - `message`: for people, never to be parsed.
+/// - `details`: `remoteCode` (the server's numeric code) when the server rejected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendFailure {
+    pub code: String,
+    #[serde(default)]
+    pub machine_reason: String,
+    pub message: String,
+    pub operation: String,
+    pub retryable: bool,
+    #[serde(default)]
+    pub details: BTreeMap<String, String>,
+}
+
+impl SendFailure {
+    /// A failure on this side, with no server reason.
+    pub fn local(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code: code.as_str().to_owned(),
+            machine_reason: String::new(),
+            message: message.into(),
+            operation: SEND_FAILURE_OPERATION.to_owned(),
+            retryable: false,
+            details: BTreeMap::new(),
+        }
+    }
+
+    /// The local failure behind one of the queue's reason strings: timeouts are
+    /// `OPERATION_TIMEOUT`, everything else `MESSAGE_SEND_FAILED`.
+    pub fn local_reason(reason: &str) -> Self {
+        let code = if reason == REASON_TIMEOUT_AFTER_RETRIES || reason.contains("timeout") {
+            ErrorCode::OperationTimeout
+        } else {
+            ErrorCode::MessageSendFailed
+        };
+        Self::local(code, reason)
+    }
+
+    /// The failure an SDK error stands for. A server code the error carries in its
+    /// params (`machineReason`) travels as the machine reason.
+    pub fn from_error(error: &FlareError) -> Self {
+        let code = error.code().unwrap_or(ErrorCode::InternalError);
+        let mut failure = Self::local(code, error.to_string());
+        failure.retryable = error.is_retryable();
+        if let FlareError::Localized {
+            params: Some(params),
+            ..
+        } = error
+            && let Some(reason) = params.get("machineReason")
+        {
+            failure.machine_reason = reason.trim().to_owned();
+        }
+        failure
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryLocalSnapshot {
@@ -316,6 +388,24 @@ impl MessageDeliveryService {
         }
     }
 
+    /// The structured failure of a rejected SendAck: the server's code, its typed reason
+    /// (`ErrorDetail.reason`) and message. `None` when the ack is not a rejection.
+    pub fn send_failure_from_ack(ack: &SendAck) -> Option<SendFailure> {
+        let Some(send_ack::Result::Error(error)) = ack.result.as_ref() else {
+            return None;
+        };
+        let message = Self::error_message_from_ack(ack).unwrap_or_default();
+        let code = crate::shared::error::from_rpc_status(error.code, message.clone())
+            .code()
+            .unwrap_or(ErrorCode::GeneralError);
+        let mut failure = SendFailure::local(code, message);
+        failure.machine_reason = error.reason.trim().to_owned();
+        failure
+            .details
+            .insert("remoteCode".to_owned(), error.code.to_string());
+        Some(failure)
+    }
+
     pub fn merge_incoming_as_sent(local: Option<&IMMessage>, incoming: &IMMessage) -> IMMessage {
         let mut merged = incoming.clone();
         merged.local_state = MessageLocalState {
@@ -371,7 +461,7 @@ impl MessageDeliveryService {
 mod tests {
     use super::{
         DeliveryLocalSnapshot, InFlightReconcileDecision, IncomingMessageConvergenceDecision,
-        MessageDeliveryService, PendingDispatchDecision, RetryDecision,
+        MessageDeliveryService, PendingDispatchDecision, RetryDecision, SendFailure,
     };
     use crate::model::message::SendAck;
     use crate::model::message::{IMMessage, MessageStatus};
@@ -579,6 +669,80 @@ mod tests {
             MessageDeliveryService::error_message_from_ack(&ack).as_deref(),
             Some("pre_send rejected: SOCIAL_BLOCKED")
         );
+    }
+
+    /// 服务端拒发时，结构化原因带上 `ErrorDetail.reason`：宿主按它分辨名片范围、敏感词、
+    /// 插件等 PreSend 拒绝，不去解析文案。
+    #[test]
+    fn a_rejected_ack_keeps_the_server_reason_as_the_machine_reason() {
+        let ack = error_ack_with(
+            21,
+            "SOCIAL_CARD_SCOPE_FRIENDS",
+            "only friends can share this card",
+        );
+        let failure = MessageDeliveryService::send_failure_from_ack(&ack).expect("a rejection");
+        assert_eq!(failure.machine_reason, "SOCIAL_CARD_SCOPE_FRIENDS");
+        assert_eq!(failure.code, "PERMISSION_DENIED");
+        assert_eq!(failure.message, "only friends can share this card");
+        assert_eq!(failure.operation, "message.send");
+        assert!(!failure.retryable);
+        assert_eq!(
+            failure.details.get("remoteCode").map(String::as_str),
+            Some("21")
+        );
+        assert_eq!(
+            serde_json::to_value(&failure).unwrap(),
+            serde_json::json!({
+                "code": "PERMISSION_DENIED",
+                "machineReason": "SOCIAL_CARD_SCOPE_FRIENDS",
+                "message": "only friends can share this card",
+                "operation": "message.send",
+                "retryable": false,
+                "details": {"remoteCode": "21"}
+            })
+        );
+        assert!(
+            MessageDeliveryService::send_failure_from_ack(&accepted_ack(
+                SendAckDurability::Persisted
+            ))
+            .is_none()
+        );
+    }
+
+    /// The shared event golden is what the core emits for a server rejection.
+    #[test]
+    fn a_rejected_ack_matches_the_shared_send_failed_golden() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../flare-im-core-client-sdk/sdk-spec/golden/events/send_failed_with_error.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let golden: serde_json::Value = serde_json::from_str(&text).expect("golden json");
+        let error = &golden["error"];
+        let ack = error_ack_with(
+            error["details"]["remoteCode"]
+                .as_str()
+                .and_then(|code| code.parse().ok())
+                .expect("remoteCode"),
+            error["machineReason"].as_str().expect("machineReason"),
+            error["message"].as_str().expect("message"),
+        );
+        let failure = MessageDeliveryService::send_failure_from_ack(&ack).expect("a rejection");
+        assert_eq!(&serde_json::to_value(&failure).unwrap(), error);
+        assert_eq!(
+            MessageDeliveryService::error_message_from_ack(&ack).as_deref(),
+            golden["reason"].as_str()
+        );
+    }
+
+    #[test]
+    fn local_send_failures_carry_a_local_code_and_no_machine_reason() {
+        let timeout = SendFailure::local_reason(super::REASON_TIMEOUT_AFTER_RETRIES);
+        assert_eq!(timeout.code, "OPERATION_TIMEOUT");
+        assert_eq!(timeout.machine_reason, "");
+        assert_eq!(timeout.message, super::REASON_TIMEOUT_AFTER_RETRIES);
+        let other = SendFailure::local_reason(super::REASON_PENDING_ANOTHER_ACCOUNT);
+        assert_eq!(other.code, "MESSAGE_SEND_FAILED");
+        assert_eq!(other.machine_reason, "");
     }
 
     #[test]

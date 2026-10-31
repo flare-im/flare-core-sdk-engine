@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::content::message_elem::{
     MessagePreviewElem, message_preview_from_proto, message_preview_to_proto,
 };
+use crate::domain::display_name::DisplayName;
 
 fn proto_ms_to_u64(ms: i64) -> u64 {
     if ms > 0 { ms as u64 } else { 0 }
@@ -371,11 +372,23 @@ pub struct ConversationParticipant {
     pub attributes: HashMap<String, String>,
     pub joined_at: u64,
     pub nickname: String,
+    /// 成员在这个会话里显示成什么（成员列表、@ 选择用）：别名、会话内昵称、资料名，
+    /// 都没有时为结构化的「无名」。读取时由核心投影，不落库；SDK 交出的成员都带它。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<DisplayName>,
 }
 
 impl From<flare_proto::common::ConversationParticipant> for ConversationParticipant {
     fn from(p: flare_proto::common::ConversationParticipant) -> Self {
         let nickname = p.attributes.get("nickname").cloned().unwrap_or_default();
+        let name = crate::domain::resolve_person_name(
+            &p.user_id,
+            &crate::domain::PersonNameCandidates {
+                member_nickname: &nickname,
+                ..Default::default()
+            },
+            Some(ConversationType::Group),
+        );
         Self {
             user_id: p.user_id,
             roles: p.roles,
@@ -384,6 +397,7 @@ impl From<flare_proto::common::ConversationParticipant> for ConversationParticip
             attributes: p.attributes,
             joined_at: proto_ms_to_u64(p.joined_at),
             nickname,
+            name: Some(name),
         }
     }
 }
@@ -431,8 +445,12 @@ pub struct Conversation {
     // ===============================
     // Display
     // ===============================
-    /// 展示名（列表主标题）
+    /// 业务名（服务端或业务 SDK 给的会话名），可为空，永不为 id；列表标题读 `title`。
     pub display_name: String,
+    /// 列表与聊天头显示的会话标题：备注、单聊对端人名、业务名、无名群的成员名拼接，
+    /// 都没有时为结构化的「无名」。读取时由核心投影，不落库；SDK 交出的会话都带它。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<DisplayName>,
     pub avatar_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remark: Option<String>,
@@ -454,6 +472,10 @@ pub struct Conversation {
     pub last_message: Option<MessagePreviewElem>,
     /// 最后一条消息发送者展示名（列表用）
     pub last_sender_nickname: String,
+    /// 最后一条消息的发送者名（人名解析链，群会话含会话内昵称）；没有最后一条消息时缺省。
+    /// 读取时由核心投影，不落库。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_sender: Option<DisplayName>,
     /// 最后一条消息发送者头像 URL
     pub last_sender_avatar_url: String,
 
@@ -527,6 +549,7 @@ impl Default for Conversation {
             channel_id: String::new(),
             members_count: 0,
             display_name: String::new(),
+            title: None,
             avatar_url: String::new(),
             remark: None,
             description: None,
@@ -536,6 +559,7 @@ impl Default for Conversation {
             last_message_preview: None,
             last_message: None,
             last_sender_nickname: String::new(),
+            last_sender: None,
             last_sender_avatar_url: String::new(),
             unread_count: 0,
             last_read_seq: 0,

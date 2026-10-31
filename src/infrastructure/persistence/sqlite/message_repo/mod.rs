@@ -706,7 +706,7 @@ impl SqliteMessageRepo {
             cts_u = sort_u;
         }
 
-        Ok(IMMessage {
+        let mut message = IMMessage {
             server_id,
             client_msg_id,
             conversation_id,
@@ -724,6 +724,7 @@ impl SqliteMessageRepo {
             sender_name,
             sender_avatar,
             sender_display_name,
+            sender: Default::default(),
             reply_to,
             quote_preview,
             thread_id,
@@ -751,7 +752,9 @@ impl SqliteMessageRepo {
                 upload_progress: upload_progress.clamp(0, 100) as u32,
                 sort_ts: sort_ts.max(0) as u64,
             },
-        })
+        };
+        message.sender = Some(message.snapshot_sender());
+        Ok(message)
     }
 }
 
@@ -852,19 +855,6 @@ async fn refresh_reactions_json_snapshot(pool: &SqlitePool, message_id: &str) ->
     Ok(())
 }
 
-fn conversation_display_name_from_message(message: &IMMessage) -> String {
-    if !message.channel_id.trim().is_empty() {
-        return message.channel_id.trim().to_string();
-    }
-    if !message.sender_name.trim().is_empty() {
-        return message.sender_name.trim().to_string();
-    }
-    if !message.sender_id.trim().is_empty() {
-        return message.sender_id.trim().to_string();
-    }
-    message.conversation_id.trim().to_string()
-}
-
 async fn upsert_conversation_snapshot_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     message: &IMMessage,
@@ -876,7 +866,8 @@ async fn upsert_conversation_snapshot_tx(
 
     let conv_type = ConversationType::from_proto_int(message.conversation_type);
     let conversation_type = conv_type.to_proto_int();
-    let display_name = conversation_display_name_from_message(message);
+    // 消息里只有 id（对端、群、会话），不是名字；名字列交给业务快照与会话摘要。
+    let display_name = "";
     let business_type = if conv_type.is_single_chat_conversation() {
         "single"
     } else {
@@ -997,7 +988,7 @@ async fn upsert_conversation_snapshot_tx(
     .bind(conversation_type)
     .bind(business_type)
     .bind(&message.channel_id)
-    .bind(&display_name)
+    .bind(display_name)
     .bind(last_message_id)
     .bind(last_sender_id)
     .bind(last_message_at)

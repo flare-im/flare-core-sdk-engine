@@ -244,6 +244,7 @@ impl MessageSendUseCase {
                     .publish(SdkEvent::Message(MessageEvent::SendFailed {
                         client_msg_id,
                         reason: error.to_string(),
+                        error: crate::domain::SendFailure::from_error(&error),
                     }));
                 return Err(error);
             }
@@ -274,6 +275,7 @@ impl MessageSendUseCase {
                     .publish(SdkEvent::Message(MessageEvent::SendFailed {
                         client_msg_id: failed.client_msg_id.clone(),
                         reason: error.to_string(),
+                        error: crate::domain::SendFailure::from_error(&error),
                     }));
                 Err(error)
             }

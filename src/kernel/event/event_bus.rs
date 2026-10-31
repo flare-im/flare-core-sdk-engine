@@ -442,6 +442,7 @@ impl EventBus {
                 MessageEvent::SendFailed {
                     client_msg_id,
                     reason,
+                    ..
                 } => {
                     dispatched += dispatch_callbacks_with(
                         &self.on_send_failed,

@@ -42,6 +42,7 @@ pub use serde_json;
 
 /// Event subscription and SDK event payload facade.
 pub mod event {
+    pub use crate::domain::SendFailure;
     pub use crate::kernel::event::*;
 }
 
@@ -71,6 +72,7 @@ pub mod storage {
         SyncCursorReader, SyncCursorVo, SyncCursorWriter, UserFileDownloadStore, UserReader,
         UserWriter, set_local_cleared_through_seq,
     };
+    pub use crate::domain::{MemberKey, ParticipantDisplaySnapshot, stored_name_is_an_id};
     pub use crate::domain::{
         PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,
     };

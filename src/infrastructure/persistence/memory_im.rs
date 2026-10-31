@@ -599,6 +599,7 @@ impl MessageStore for MemoryMessageStore {
 pub struct MemoryConversationStore {
     data: RwLock<HashMap<String, Conversation>>,
     materialized_max_seq: RwLock<HashMap<String, u64>>,
+    member_nicknames: RwLock<HashMap<crate::domain::MemberKey, String>>,
 }
 
 impl MemoryConversationStore {
@@ -606,6 +607,7 @@ impl MemoryConversationStore {
         Self {
             data: RwLock::new(HashMap::new()),
             materialized_max_seq: RwLock::new(HashMap::new()),
+            member_nicknames: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -634,6 +636,21 @@ impl ConversationReader for MemoryConversationStore {
             }
         });
         Ok(list)
+    }
+
+    async fn member_nicknames(
+        &self,
+        pairs: &[crate::domain::MemberKey],
+    ) -> Result<HashMap<crate::domain::MemberKey, String>> {
+        let nicknames = self.member_nicknames.read().await;
+        Ok(pairs
+            .iter()
+            .filter_map(|pair| {
+                nicknames
+                    .get(pair)
+                    .map(|nickname| (pair.clone(), nickname.clone()))
+            })
+            .collect())
     }
 }
 
@@ -741,7 +758,59 @@ impl ConversationWriter for MemoryConversationStore {
             .write()
             .await
             .remove(conversation_id);
+        self.member_nicknames
+            .write()
+            .await
+            .retain(|(conversation, _), _| conversation != conversation_id);
         Ok(())
+    }
+
+    async fn save_member_nicknames(
+        &self,
+        snapshots: &[crate::domain::ParticipantDisplaySnapshot],
+    ) -> Result<Vec<String>> {
+        let mut nicknames = self.member_nicknames.write().await;
+        let mut changed: Vec<String> = Vec::new();
+        for snapshot in snapshots.iter().filter_map(|s| s.normalized()) {
+            let key = (snapshot.conversation_id.clone(), snapshot.user_id.clone());
+            let differs = if snapshot.nickname.is_empty() {
+                nicknames.remove(&key).is_some()
+            } else {
+                nicknames.insert(key, snapshot.nickname.clone()).as_deref()
+                    != Some(snapshot.nickname.as_str())
+            };
+            if differs && !changed.contains(&snapshot.conversation_id) {
+                changed.push(snapshot.conversation_id);
+            }
+        }
+        Ok(changed)
+    }
+
+    async fn apply_user_profile_snapshot(
+        &self,
+        user_id: &str,
+        _nickname: &str,
+        avatar_url: &str,
+    ) -> Result<Vec<String>> {
+        let user_id = user_id.trim();
+        let mut data = self.data.write().await;
+        let mut affected = Vec::new();
+        for conversation in data.values_mut() {
+            if !crate::domain::conversation_shows_person(conversation, user_id) {
+                continue;
+            }
+            if conversation.conversation_type.is_single_chat_conversation()
+                && conversation.channel_id.trim() == user_id
+            {
+                conversation.avatar_url = avatar_url.to_string();
+            }
+            if conversation.last_sender_id.as_deref().map(str::trim) == Some(user_id) {
+                conversation.last_sender_avatar_url = avatar_url.to_string();
+            }
+            affected.push(conversation.conversation_id.clone());
+        }
+        affected.sort();
+        Ok(affected)
     }
 
     async fn merge_conversation_identity(
@@ -759,6 +828,9 @@ impl ConversationWriter for MemoryConversationStore {
             let Some(mut source) = data.remove(from) else {
                 return Ok(());
             };
+            // 旧行的名字可能是它自己的 id；换到新 id 下就再也认不出来，所以先按旧 id 清掉。
+            source.display_name =
+                crate::domain::business_name(&source.display_name, &[&source.channel_id, from]);
             source.conversation_id = to.to_string();
             match data.get_mut(to) {
                 Some(target) => {

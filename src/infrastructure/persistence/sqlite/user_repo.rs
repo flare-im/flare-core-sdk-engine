@@ -17,16 +17,18 @@ impl SqliteUserProfileRepo {
 #[async_trait]
 impl UserReader for SqliteUserProfileRepo {
     async fn get(&self, user_id: &str) -> Result<Option<UserProfile>> {
-        let row: Option<(String, String)> =
-            sqlx::query_as("SELECT nickname, avatar_url FROM user_profiles WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-        Ok(row.map(|(nickname, avatar_url)| UserProfile {
+        let row: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT nickname, avatar_url, alias FROM user_profiles WHERE user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        Ok(row.map(|(nickname, avatar_url, alias)| UserProfile {
             user_id: user_id.to_string(),
             nickname,
             avatar_url,
+            alias,
         }))
     }
 
@@ -51,9 +53,9 @@ impl UserReader for SqliteUserProfileRepo {
         for chunk in unique.chunks(super::SQLITE_IN_CHUNK) {
             let placeholders = super::in_placeholders(chunk.len());
             let sql = format!(
-                "SELECT user_id, nickname, avatar_url FROM user_profiles WHERE user_id IN ({placeholders})"
+                "SELECT user_id, nickname, avatar_url, alias FROM user_profiles WHERE user_id IN ({placeholders})"
             );
-            let mut query = sqlx::query_as::<_, (String, String, String)>(&sql);
+            let mut query = sqlx::query_as::<_, (String, String, String, String)>(&sql);
             for id in chunk {
                 query = query.bind(*id);
             }
@@ -61,13 +63,14 @@ impl UserReader for SqliteUserProfileRepo {
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-            for (user_id, nickname, avatar_url) in rows {
+            for (user_id, nickname, avatar_url, alias) in rows {
                 out.insert(
                     user_id.clone(),
                     UserProfile {
                         user_id,
                         nickname,
                         avatar_url,
+                        alias,
                     },
                 );
             }
@@ -86,12 +89,13 @@ impl UserWriter for SqliteUserProfileRepo {
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         for p in profiles {
             sqlx::query(
-                r#"INSERT OR REPLACE INTO user_profiles (user_id, nickname, avatar_url)
-                   VALUES (?, ?, ?)"#,
+                r#"INSERT OR REPLACE INTO user_profiles (user_id, nickname, avatar_url, alias)
+                   VALUES (?, ?, ?, ?)"#,
             )
             .bind(&p.user_id)
             .bind(&p.nickname)
             .bind(&p.avatar_url)
+            .bind(&p.alias)
             .execute(&mut *tx)
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
@@ -119,6 +123,7 @@ mod tests {
             user_id: user_id.to_string(),
             nickname: nickname.to_string(),
             avatar_url: String::new(),
+            alias: String::new(),
         }
     }
 
@@ -147,6 +152,17 @@ mod tests {
         assert_eq!(map.get("u1").unwrap().display_name(), "Alice");
         assert_eq!(map.get("u2").unwrap().display_name(), "Bob");
         assert!(!map.contains_key("u9"), "missing profile absent");
+    }
+
+    #[tokio::test]
+    async fn aliases_are_stored_with_the_profile() {
+        let repo = repo().await;
+        repo.save_batch(&[profile("u1", "Alice").with_alias("Boss")])
+            .await
+            .unwrap();
+        assert_eq!(repo.get("u1").await.unwrap().unwrap().alias, "Boss");
+        let map = repo.get_many(&["u1".to_string()]).await.unwrap();
+        assert_eq!(map.get("u1").unwrap().alias, "Boss");
     }
 
     #[tokio::test]

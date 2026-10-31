@@ -505,6 +505,27 @@ async fn short_keyword_search_uses_content_fallback_without_metadata_matches() {
     );
 }
 
+/// 消息落库顺带建出的会话不带名字：消息里只有对端、群、会话的 id。
+#[tokio::test]
+async fn a_conversation_created_by_saving_a_message_stores_no_name() {
+    let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlite_init_schema(&pool).await.unwrap();
+    let message_repo = SqliteMessageRepo::new(pool.clone());
+    let conversation_repo = SqliteConversationRepo::new(pool.clone());
+    let mut message = text_message("server-new-1", "1A_new", "peer-7", 1, 1_000, "hi");
+    message.conversation_type = ConversationType::Single.to_proto_int();
+    message.channel_id = "peer-7".to_string();
+    message.sender_name = "Peer at send time".to_string();
+    message_repo.save_one(&message).await.unwrap();
+    let created = conversation_repo
+        .get("1A_new")
+        .await
+        .unwrap()
+        .expect("conversation created");
+    assert_eq!(created.channel_id, "peer-7");
+    assert_eq!(created.display_name, "");
+}
+
 #[tokio::test]
 async fn init_schema_backfills_fts_for_existing_messages() {
     let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
@@ -546,7 +567,7 @@ async fn init_schema_backfills_fts_for_existing_messages() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
 
     let repo = SqliteMessageRepo::new(pool);
     let results = repo.search("searchable", 10).await.unwrap();
@@ -1307,6 +1328,7 @@ async fn timeline_read_resolves_current_identity_then_falls_back() {
             user_id: "u1".into(),
             nickname: "Alice".into(),
             avatar_url: String::new(),
+            alias: String::new(),
         }])
         .await
         .unwrap();

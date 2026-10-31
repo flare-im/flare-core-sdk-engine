@@ -241,6 +241,7 @@ impl SendOutcomes {
                 SdkEvent::Message(MessageEvent::SendFailed {
                     client_msg_id,
                     reason,
+                    ..
                 }) => {
                     sink.failed
                         .lock()

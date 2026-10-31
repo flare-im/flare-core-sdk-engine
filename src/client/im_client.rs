@@ -710,7 +710,8 @@ impl IMClient {
         for client_msg_id in dropped_client_ids {
             bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
                 client_msg_id,
-                reason: "pending queue dropped during login session reset".to_string(),
+                reason: PENDING_DROPPED_ON_LOGIN_RESET.to_string(),
+                error: crate::domain::SendFailure::local_reason(PENDING_DROPPED_ON_LOGIN_RESET),
             }));
         }
         Ok(())
@@ -749,7 +750,8 @@ impl IMClient {
     ///
     /// "读多写少"下身份的写入口:业务同步好友/用户(有变化时)调用本方法把变更写进缓存;
     /// 读路径(消息/会话)直接对缓存批量 join 渲染**当前身份**,无需逐条组装。缓存 miss 时
-    /// 消息回退内嵌的发送时快照(见 `IMMessage::display_name()` 回退链),名字不会掉成裸 ID。
+    /// 消息回退内嵌的发送时快照,再没有就是结构化的「无名」(`sender` / `title`),名字不会是裸 ID。
+    /// `alias`(当前用户给这个人的私有标签,如好友备注)一并写入,人名解析链里排第一。
     ///
     /// IM core 不拥有用户身份;名字/头像的数据源由业务端提供(本方法 push,或 `ProfileProvider` pull)。
     pub async fn upsert_user_profiles(
@@ -780,7 +782,27 @@ impl IMClient {
         }
         Ok(())
     }
+
+    /// 业务端推送会话内成员昵称（社交业务里的群昵称）：时间线与会话列表投影人名时，群与频道
+    /// 会话里它排在别名之后、资料名之前。空昵称表示清除。受影响会话收到 `ConversationUpdated`。
+    pub async fn upsert_participant_display_snapshots(
+        &self,
+        snapshots: Vec<crate::domain::ParticipantDisplaySnapshot>,
+    ) -> Result<()> {
+        let stores = self.stores_async().await?;
+        let affected = stores.apply_participant_display(&snapshots).await?;
+        if let Ok(bus) = self.bus().await {
+            for conversation_id in affected {
+                bus.publish(SdkEvent::Conversation(
+                    crate::kernel::event::ConversationEvent::Updated { conversation_id },
+                ));
+            }
+        }
+        Ok(())
+    }
 }
+
+const PENDING_DROPPED_ON_LOGIN_RESET: &str = "pending queue dropped during login session reset";
 
 fn should_skip_reconnect_for_disconnect_reason(reason: &str) -> bool {
     let lower = reason.trim().to_lowercase();

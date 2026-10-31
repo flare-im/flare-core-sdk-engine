@@ -1,7 +1,13 @@
 use async_trait::async_trait;
 
+use std::collections::HashMap;
+
+use crate::domain::display_name::ParticipantDisplaySnapshot;
 use crate::model::{Conversation, ConversationListQuery};
 use crate::shared::error::Result;
+
+/// `(conversation_id, user_id)`.
+pub type MemberKey = (String, String);
 
 /// 会话查询（只读）
 /// 列表顺序：先置顶（is_pinned DESC），再按 last_message_at 倒序
@@ -25,6 +31,12 @@ pub trait ConversationReader: Send + Sync {
     }
     /// 列表：置顶优先，再按 last_message_at 倒序
     async fn list(&self) -> Result<Vec<Conversation>>;
+    /// 业务 SDK 写入的会话内成员昵称（[`ParticipantDisplaySnapshot`]），一次取回全部 `pairs`；
+    /// 没有昵称的成员不在结果里。
+    async fn member_nicknames(&self, pairs: &[MemberKey]) -> Result<HashMap<MemberKey, String>> {
+        let _ = pairs;
+        Ok(HashMap::new())
+    }
     async fn list_by_query(&self, query: &ConversationListQuery) -> Result<Vec<Conversation>> {
         let keyword = query.normalized_keyword();
         let mut out = self.list().await?;
@@ -108,6 +120,15 @@ pub trait ConversationWriter: Send + Sync {
     async fn update_draft(&self, conversation_id: &str, draft: Option<&str>) -> Result<()>;
     async fn delete(&self, conversation_id: &str) -> Result<()>;
 
+    /// 写入会话内成员昵称；空昵称表示清除。返回存下的昵称确有变化的会话 ID（去重）。
+    async fn save_member_nicknames(
+        &self,
+        snapshots: &[ParticipantDisplaySnapshot],
+    ) -> Result<Vec<String>> {
+        let _ = snapshots;
+        Ok(Vec::new())
+    }
+
     /// 将错误会话 ID 的本地会话状态合并到规范会话 ID，并移除错误行。
     async fn merge_conversation_identity(
         &self,
@@ -163,7 +184,9 @@ pub trait ConversationWriter: Send + Sync {
         Ok(out)
     }
 
-    /// 用户资料变更后，刷新单聊展示名/头像及最后发送者展示字段；返回受影响的会话 ID。
+    /// 用户资料（含别名）变更后，返回名字可能随之变化的会话 ID：对端是此人的单聊、最后一条
+    /// 由此人发出的会话、此人在成员预览里的无名群。名字在读取时投影，这里不回写名字列；
+    /// 只同步单聊头像与最后发送者头像。
     async fn apply_user_profile_snapshot(
         &self,
         user_id: &str,

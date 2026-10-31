@@ -28,6 +28,26 @@ fn validate_required_remote_url(field: &'static str, value: &str) -> Result<()> 
     ))
 }
 
+/// 位置坐标必须是有限数、纬度在 -90..=90、经度在 -180..=180，且不同时为 0。
+///
+/// (0, 0) 视为没有坐标：`LocationContent` 的经纬度不是 optional，未赋值解码出来就是 (0, 0)，
+/// 接收端分不清「真在 (0, 0)」与「没有坐标」，所以发送端不产出它；(0, 100) 这样赤道上的点照常。
+pub fn validate_coordinate(latitude: f64, longitude: f64) -> Result<()> {
+    let valid = latitude.is_finite()
+        && longitude.is_finite()
+        && (-90.0..=90.0).contains(&latitude)
+        && (-180.0..=180.0).contains(&longitude)
+        && !(latitude == 0.0 && longitude == 0.0);
+    if valid {
+        Ok(())
+    } else {
+        Err(FlareError::localized(
+            ErrorCode::InvalidParameter,
+            "sdk.message.location.invalid_coordinate",
+        ))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BuildLocationRequest {
     pub conversation_id: String,
@@ -380,6 +400,7 @@ impl MessageBuilderService {
     }
 
     pub fn build_location(request: BuildLocationRequest) -> Result<IMMessage> {
+        validate_coordinate(request.latitude, request.longitude)?;
         validate_optional_remote_url(
             "sdk.message.location.snapshot_url",
             request.snapshot_url.as_deref(),
@@ -778,6 +799,58 @@ mod tests {
     use crate::content::message_elem::Elem;
     use crate::content::rich_doc_v2::pipeline::CONTENT_SCHEMA_RICH_DOC;
     use flare_proto::common::{ImageFormat, MessageType};
+
+    fn location_at(latitude: f64, longitude: f64) -> Result<IMMessage> {
+        MessageBuilderService::build_location(BuildLocationRequest {
+            conversation_id: "conv-1".to_string(),
+            sender_id: "sender-1".to_string(),
+            longitude,
+            latitude,
+            address: String::new(),
+            title: "Pin".to_string(),
+            zoom: None,
+            snapshot_url: None,
+            snapshot_local_path: None,
+            channel_id: None,
+        })
+    }
+
+    #[test]
+    fn location_coordinates_must_be_a_place() {
+        for (latitude, longitude) in [
+            (f64::NAN, 120.0),
+            (30.0, f64::NAN),
+            (f64::INFINITY, 120.0),
+            (30.0, f64::NEG_INFINITY),
+            (90.000_001, 0.5),
+            (-90.5, 0.5),
+            (30.0, 180.000_001),
+            (30.0, -181.0),
+            (0.0, 0.0),
+            (-0.0, 0.0),
+        ] {
+            let error = location_at(latitude, longitude).expect_err("not a place");
+            assert_eq!(error.code(), Some(ErrorCode::InvalidParameter));
+            assert_eq!(
+                error.reason(),
+                "sdk.message.location.invalid_coordinate",
+                "({latitude}, {longitude})"
+            );
+        }
+    }
+
+    #[test]
+    fn location_coordinates_on_the_equator_or_the_edges_are_places() {
+        for (latitude, longitude) in [
+            (0.0, 100.0),
+            (30.2, 0.0),
+            (90.0, 180.0),
+            (-90.0, -180.0),
+            (30.2, 120.1),
+        ] {
+            location_at(latitude, longitude).expect("a place");
+        }
+    }
 
     fn link_request(url: &str) -> BuildLinkCardRequest {
         BuildLinkCardRequest {

@@ -4,6 +4,7 @@
 //! 由本地 UserProfile 缓存或同步填充，供 UI 列表与详情展示。
 
 pub mod conversation;
+pub mod display_name;
 mod download_manifest;
 mod media_cache;
 mod media_progressive;
@@ -17,6 +18,12 @@ mod upload_manifest;
 mod user_profile;
 
 pub use conversation::*;
+pub use display_name::{
+    ConversationTitleInput, DisplayName, MAX_TITLE_MEMBER_NAMES, NameEntity, NameSource,
+    ParticipantDisplaySnapshot, PersonNameCandidates, business_name, conversation_shows_person,
+    group_is_titled_by_members, id_tail, member_nicknames_apply, real_name,
+    resolve_conversation_title, resolve_person_name, stored_name_is_an_id,
+};
 pub use download_manifest::{DownloadManifestState, MediaDownloadManifestVo, MediaDownloadPartVo};
 pub use media_cache::{
     DEFAULT_MEDIA_CACHE_MAX_BYTES, MediaCacheEntryVo, MediaCacheStatsVo, UserDownloadDirectoryVo,

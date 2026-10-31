@@ -32,9 +32,39 @@
 - `IMClient::server_clock`（绑定层 `connection.server_clock`，返回 `{ offsetMs, estimated }`）：把这份估计交给
   宿主。宿主渲染服务端签发的时刻（插件卡的倒计时与截止、冷却结束时刻）时以「本机时间 + `offsetMs`」为当前时间；
   `estimated` 为 false（没有会话，或本次会话还没收到服务端的载荷帧）时沿用宿主上一次拿到的估计，没有就用本机时钟。
+- 名字投影：会话、消息、成员与「我」页摘要都带上核心投影出的最终名字 `DisplayName`（camelCase JSON，按
+  `kind` 区分：`{kind:"named", text, source}`、`{kind:"members", names, total}`、
+  `{kind:"unnamed", entity, idTail}`）。没有名字时给结构化的「无名」（种类 + id 末四位），不输出 id，也不带
+  任何文案；文案在 UI Kit。新字段：`Conversation.title`、`Conversation.lastSender`、`IMMessage.sender`、
+  `ConversationParticipant.name`、`ProfileCenterSummary.name`。读取时投影、不落库；会话列表的资料只读一次
+  `get_many`（此前每个会话一次 `get`）。
+- 人名解析链与会话标题解析链两个纯函数经 `spi` 导出（`resolve_person_name`、`resolve_conversation_title`、
+  `PersonNameCandidates`、`ConversationTitleInput`、`id_tail`）：人名按别名、群与频道里的会话内昵称、资料名、
+  发送时快照取第一个真名字；会话标题按备注、单聊对端人名、业务名、无名群前三位有名成员（不含本人）取。
+  「不是名字」只有一个判据：去首尾空白后为空，或等于它所属对象自己的 id。
+- `UserProfile.alias`：当前用户给某个账号起的私有标签（社交业务里的好友备注），`upsert_user_profiles`
+  一并写入，人名解析链里排第一。
+- 会话内成员昵称：`ParticipantDisplaySnapshot { conversation_id, user_id, nickname }`，经
+  `ExtensionStore::save_participant_display`、`StoreProvider::apply_participant_display`、
+  `IMClient::upsert_participant_display_snapshots` 批量写入，与成员同步分开存（SQLite 新表
+  `conversation_member_nicknames`；浏览器端只在内存）；群时间线的发送者名批量读它。
+- `MessageEvent::SendFailed` 增加结构化 `error: SendFailure { code, machine_reason, message, operation,
+  retryable, details }`：服务端拒发时 `machine_reason` 取 `ErrorDetail.reason`（例如 PreSend 拒绝码），
+  `code` 为对应的核心错误码名，`details.remoteCode` 为服务端数字码；本地失败给本地 code，`machine_reason`
+  为空。绑定层事件 `message.send_failed` 为 `{clientMsgId, reason, error}`；字符串 `reason` 照旧。
 
 ### 修复
 
+- 名字列不再写入 id 或写死的文案：首条消息建出的壳会话、修复单聊 channel、新建会话、未命名的成员集合群
+  （原为 `群聊(<id>、<id>)`）、消息落库顺带建出与从消息补出的会话、会话展示快照的 id 与中文兜底
+  （「群聊 / 单聊 / 系统通知…」）、单聊从资料取名、把备注复制进名字列、资料变化时回写单聊名字与最后发送者名，
+  都不再往 `display_name` 写 id；写入时等于自己 id（对端、群或会话 id）的名字一律存空串。本地 SQLite
+  升到 v4 时一次清空存量里等于 `channel_id` 或 `conversation_id` 的名字，浏览器端在载入本地快照时清空并写回。
+- 时间线读取不再用 id 盖掉发送时快照：身份缓存里有这个人但没有名字时，`sender_display_name` 不写成 user_id。
+- 资料变化不再覆盖会话成员的昵称（群昵称），只同步头像；受影响会话除单聊对端与最后发送者外，加上此人在成员预览
+  里的无名群，各存储（SQLite、内存、浏览器）都返回受影响会话并发出 `ConversationUpdated`。
+- `build_location` 校验坐标：非有限数、越界或 (0, 0) 返回 `sdk.message.location.invalid_coordinate`
+  （`InvalidParameter`）；(0, 0) 无法与「没有坐标」区分，赤道上的点如 (0, 100) 照常。
 - 未读总数：`bootstrap_home`（及会话列表视图）的 `totalUnread` 此前先截断到首屏条数再求和，且不排除免打扰
   会话，总数随首屏条数变化；改为对全部会话按 `total_unread` 的规则求和。
 - 设备时钟与服务端不一致时，服务端签发的截止时间改按服务端时钟判断：插件目录的 `validUntilMs`（Core 签发为

@@ -61,20 +61,19 @@ pub fn merge_incoming_conversation_summary(
         preserve_local_latest_message(local, incoming, &mut merged);
 
         merged.remark = preserve_local_remark(merged.remark.as_deref(), local.remark.as_deref());
-        if let Some(remark) = merged
-            .remark
-            .as_deref()
-            .map(str::trim)
-            .filter(|remark| !remark.is_empty())
-        {
-            merged.display_name = remark.to_string();
-        }
         merged.channel_id = preserve_local_single_chat_channel(
             local.conversation_type,
             &merged.channel_id,
             &local.channel_id,
         );
     }
+
+    // 名字列只存业务名：等于自己 id（对端、群或会话 id）的值不是名字；备注另存在 `remark`，
+    // 不复制进名字列。
+    merged.display_name = crate::domain::business_name(
+        &merged.display_name,
+        &[&merged.channel_id, &merged.conversation_id],
+    );
 
     let local_cleared_floor = crate::domain::sync_visibility_floor(&merged);
     merged.visible_after_seq = local_cleared_floor;
@@ -188,6 +187,45 @@ mod tests {
     };
     use crate::model::Conversation;
     use crate::model::conversation::ConversationType;
+
+    #[test]
+    fn the_merged_name_column_holds_neither_a_remark_nor_an_id() {
+        let local = Conversation {
+            conversation_id: "1A_cid".to_string(),
+            conversation_type: crate::model::conversation::ConversationType::Single,
+            channel_id: "peer".to_string(),
+            remark: Some("好友备注".to_string()),
+            ..Default::default()
+        };
+        let incoming = Conversation {
+            conversation_id: "1A_cid".to_string(),
+            conversation_type: crate::model::conversation::ConversationType::Single,
+            channel_id: "peer".to_string(),
+            display_name: "peer".to_string(),
+            ..Default::default()
+        };
+        let merged = merge_incoming_conversation_summary(Some(&local), &incoming);
+        assert_eq!(merged.remark.as_deref(), Some("好友备注"));
+        assert_eq!(
+            merged.display_name, "",
+            "neither the remark nor the peer id"
+        );
+
+        let named = Conversation {
+            display_name: " Peer Shop ".to_string(),
+            ..incoming.clone()
+        };
+        let merged = merge_incoming_conversation_summary(Some(&local), &named);
+        assert_eq!(merged.display_name, "Peer Shop");
+        let by_id = Conversation {
+            display_name: "1A_cid".to_string(),
+            ..incoming
+        };
+        assert_eq!(
+            merge_incoming_conversation_summary(None, &by_id).display_name,
+            ""
+        );
+    }
 
     #[test]
     fn preserve_remark_when_incoming_empty() {
