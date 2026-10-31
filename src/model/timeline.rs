@@ -70,6 +70,21 @@ pub struct OpenTimelineViewRequest {
     pub conversation_id: String,
     #[serde(default = "default_message_limit")]
     pub message_limit: u32,
+    /// 围绕某条消息打开（搜索结果、引用、置顶跳转）；不带时打开最新窗口。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<TimelineAnchor>,
+}
+
+/// 定位目标：`message_id` 是服务端 id 或客户端 id，本地找得到就用本地的 seq；找不到时用
+/// 调用方给的 `seq`（搜索结果、引用、置顶都带 seq）。两者都没有时打开失败
+/// （`sdk.view.anchor_not_found`）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineAnchor {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -78,6 +93,21 @@ pub struct LoadOlderTimelineViewRequest {
     pub view_id: String,
     #[serde(default = "default_message_limit")]
     pub message_limit: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadNewerTimelineViewRequest {
+    pub view_id: String,
+    #[serde(default = "default_message_limit")]
+    pub message_limit: u32,
+}
+
+/// 只带视图 id 的时间线请求：`view.timeline.jump_to_latest` 与 `view.timeline.snapshot`。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineViewRequest {
+    pub view_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -93,29 +123,50 @@ pub struct CloseViewRequest {
     pub view_id: String,
 }
 
+/// 时间线视图的窗口：按时间线顺序排列的一段消息行，以及两个方向还有没有、是否接在最新。
+///
+/// - `has_older`：窗口最旧一行之下还有可见消息，只由已证实连续区间回答；
+/// - `has_newer`：窗口之上还有消息，当且仅当没有接在最新；
+/// - `attached_to_latest`：窗口最新一行就是本地最新的已发送行，实时消息会追加进来；
+/// - `anchor_key`：围绕某条消息打开时目标行的行键（[`IMMessage::row_key`]），宿主据此滚到并高亮。
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineViewSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<Conversation>,
+    pub messages: Vec<IMMessage>,
+    pub has_older: bool,
+    pub has_newer: bool,
+    pub attached_to_latest: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "viewType", content = "data", rename_all = "camelCase")]
 #[allow(clippy::large_enum_variant)]
 pub enum ViewSnapshot {
-    Timeline(ConversationTimelineSnapshot),
+    Timeline(TimelineViewSnapshot),
     ConversationList(HomeTimelineSnapshot),
 }
 
+/// 打开视图与 `view.timeline.snapshot` 的返回：视图 id、当前版本号与它对应的快照。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewOpenResponse {
     pub view_id: String,
+    pub revision: u64,
     pub snapshot: ViewSnapshot,
 }
 
+/// 往旧、往新翻页与回到最新的返回。窗口的变化只经 `view.updated` 事件推出；这里只说
+/// 「包含这一页的是版本几」与这一页并入了几行。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct ViewLoadOlderResponse {
+pub struct TimelineViewPageResponse {
     pub view_id: String,
     pub loaded_count: u32,
-    pub has_more: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub update: Option<ViewUpdate>,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -134,6 +185,7 @@ pub enum ViewDeltaKind {
     Move,
 }
 
+/// 会话列表视图增量里的一步（按下标）。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewDeltaOp {
@@ -146,6 +198,11 @@ pub struct ViewDeltaOp {
     pub item: Option<Value>,
 }
 
+/// 视图增量。
+///
+/// 时间线按行键（[`IMMessage::row_key`]）表达，不带下标，可以幂等重放。宿主按顺序应用：
+/// 删 `remove` 里的键；原位替换 `upsert`；`prepend` 放到最前、`append` 放到最后；`reorder`
+/// 非空时按它给出的全部键重排；最后更新三个状态字段与 `conversation`（只在变化时带）。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "viewType",
@@ -158,10 +215,22 @@ pub struct ViewDeltaOp {
 #[allow(clippy::large_enum_variant)]
 pub enum ViewDelta {
     Timeline {
-        ops: Vec<ViewDeltaOp>,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        /// 更旧的行，按时间线顺序。
+        prepend: Vec<IMMessage>,
+        /// 更新的行，按时间线顺序。
+        append: Vec<IMMessage>,
+        /// 已在窗口里的行的新内容，原位替换。
+        upsert: Vec<IMMessage>,
+        /// 移出窗口的行键。
+        remove: Vec<String>,
+        /// 窗口的全部行键（新顺序）；只在顺序变化无法用前四步表达时给。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reorder: Option<Vec<String>>,
+        has_older: bool,
+        has_newer: bool,
+        attached_to_latest: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation: Option<Conversation>,
-        has_more: bool,
     },
     ConversationList {
         ops: Vec<ViewDeltaOp>,
@@ -170,10 +239,13 @@ pub enum ViewDelta {
     },
 }
 
+/// `view.updated` 的载荷。`revision` 按视图严格递增；宿主发现它不等于已应用版本加 1 时，
+/// 取 `view.timeline.snapshot` 整体替换（比已应用版本旧的直接丢弃）。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewUpdate {
     pub view_id: String,
+    pub revision: u64,
     pub kind: ViewUpdateKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<ViewSnapshot>,
@@ -192,7 +264,7 @@ fn default_conversation_limit() -> u32 {
 }
 
 fn default_message_limit() -> u32 {
-    20
+    40
 }
 
 pub fn normalized_conversation_limit(limit: u32) -> u32 {
@@ -209,27 +281,29 @@ mod tests {
     use serde_json::{Value, json};
 
     #[test]
-    fn view_update_omits_absent_optional_fields() {
+    fn timeline_delta_carries_rows_by_key_and_omits_absent_fields() {
         let update = ViewUpdate {
             view_id: "timeline-1".to_string(),
+            revision: 3,
             kind: ViewUpdateKind::Delta,
             snapshot: None,
             delta: Some(ViewDelta::Timeline {
-                ops: vec![ViewDeltaOp {
-                    op: ViewDeltaKind::Insert,
-                    key: "m1".to_string(),
-                    index: 0,
-                    from_index: None,
-                    item: None,
-                }],
+                prepend: Vec::new(),
+                append: Vec::new(),
+                upsert: Vec::new(),
+                remove: vec!["cm-1".to_string()],
+                reorder: None,
+                has_older: true,
+                has_newer: false,
+                attached_to_latest: true,
                 conversation: None,
-                has_more: false,
             }),
         };
 
         let value = serde_json::to_value(update).expect("view update serializes");
 
         assert_eq!(value["viewId"], json!("timeline-1"));
+        assert_eq!(value["revision"], json!(3));
         assert_eq!(value["kind"], json!("delta"));
         assert!(value.get("snapshot").is_none());
 
@@ -238,16 +312,60 @@ mod tests {
             .and_then(Value::as_object)
             .expect("delta object");
         assert_eq!(delta.get("viewType"), Some(&json!("timeline")));
+        assert_eq!(delta.get("remove"), Some(&json!(["cm-1"])));
+        assert_eq!(delta.get("prepend"), Some(&json!([])));
+        assert_eq!(delta.get("hasOlder"), Some(&json!(true)));
+        assert_eq!(delta.get("hasNewer"), Some(&json!(false)));
+        assert_eq!(delta.get("attachedToLatest"), Some(&json!(true)));
         assert!(delta.get("conversation").is_none());
+        assert!(delta.get("reorder").is_none());
+        assert!(delta.get("ops").is_none());
+    }
 
-        let op = delta
-            .get("ops")
-            .and_then(Value::as_array)
-            .and_then(|ops| ops.first())
-            .and_then(Value::as_object)
-            .expect("first delta op");
-        assert!(op.get("fromIndex").is_none());
-        assert!(op.get("item").is_none());
+    #[test]
+    fn open_timeline_view_request_reads_an_optional_anchor() {
+        let plain: OpenTimelineViewRequest =
+            serde_json::from_value(json!({ "conversationId": "c1" })).expect("decodes");
+        assert_eq!(plain.message_limit, 40);
+        assert!(plain.anchor.is_none());
+
+        let anchored: OpenTimelineViewRequest = serde_json::from_value(json!({
+            "conversationId": "c1",
+            "messageLimit": 40,
+            "anchor": { "messageId": "srv-123", "seq": 81234 }
+        }))
+        .expect("decodes");
+        assert_eq!(
+            anchored.anchor,
+            Some(TimelineAnchor {
+                message_id: Some("srv-123".to_string()),
+                seq: Some(81234),
+            })
+        );
+    }
+
+    #[test]
+    fn timeline_view_snapshot_carries_the_window_state() {
+        let snapshot = ViewSnapshot::Timeline(TimelineViewSnapshot {
+            conversation: None,
+            messages: Vec::new(),
+            has_older: false,
+            has_newer: true,
+            attached_to_latest: false,
+            anchor_key: Some("cm-7".to_string()),
+        });
+        let value = serde_json::to_value(snapshot).expect("snapshot serializes");
+        assert_eq!(value["viewType"], json!("timeline"));
+        assert_eq!(
+            value["data"],
+            json!({
+                "messages": [],
+                "hasOlder": false,
+                "hasNewer": true,
+                "attachedToLatest": false,
+                "anchorKey": "cm-7"
+            })
+        );
     }
 
     #[test]

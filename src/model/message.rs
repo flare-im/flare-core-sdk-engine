@@ -758,6 +758,21 @@ impl IMMessage {
         format!("ts:{}:{}", self.conversation_id, self.timeline_sort_ts())
     }
 
+    /// 时间线视图的行键：`client_msg_id`，没有时 `server_id`，两者都没有时 `seq:<会话>:<seq>`。
+    ///
+    /// 发送确认前后都有 `client_msg_id`，所以一行从待发送到已确认键不变，宿主原位更新而不是
+    /// 删掉重建；收到的别人的消息也带发送方的 `client_msg_id`。与 Kit 推行键的规则
+    /// （`clientMsgId || serverId`）相同。只用于视图：存储层去重仍用 [`Self::timeline_key`]。
+    pub fn row_key(&self) -> String {
+        if !self.client_msg_id.is_empty() {
+            return self.client_msg_id.clone();
+        }
+        if !self.server_id.is_empty() {
+            return self.server_id.clone();
+        }
+        format!("seq:{}:{}", self.conversation_id, self.conversation_seq)
+    }
+
     /// 时间线/最新窗口排序时间。
     ///
     /// 已分配 `conversation_seq` 后，服务端顺序是权威，排序时间只作为展示和同 seq 兜底，不再让本地 `sort_ts`
@@ -1168,6 +1183,20 @@ mod tests {
 
         assert_eq!(before_ack, "client:client-1");
         assert_eq!(pending.timeline_key(), "server:server-1");
+    }
+
+    #[test]
+    fn row_key_stays_the_client_id_across_the_ack() {
+        let mut pending = message("client-1", "", 0, 100);
+        assert_eq!(pending.row_key(), "client-1");
+        pending.server_id = "server-1".to_string();
+        pending.conversation_seq = 9;
+        assert_eq!(pending.row_key(), "client-1");
+
+        let received = message("", "server-2", 10, 100);
+        assert_eq!(received.row_key(), "server-2");
+        let bare = message("", "", 11, 100);
+        assert_eq!(bare.row_key(), format!("seq:{}:11", bare.conversation_id));
     }
 
     #[test]

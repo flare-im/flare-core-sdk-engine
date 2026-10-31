@@ -392,7 +392,7 @@
       "core": "SdkEvent::View(ViewUpdate)",
       "cCode": 6001,
       "cCodeName": "FLARE_EVENT_VIEW_UPDATED",
-      "cJson": { "type": "view", "event": "updated", "fields": ["viewId", "kind", "snapshot"] },
+      "cJson": { "type": "view", "event": "updated", "fields": ["viewId", "revision", "kind", "snapshot", "delta"] },
       "tauri": "im://view_updated"
     },
     {

@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use flare_im_core_sdk::model::{
-    Conversation, HomeTimelineSnapshot, TimelineSyncState, ViewDelta, ViewDeltaKind, ViewUpdate,
-    ViewUpdateKind,
+    Conversation, HomeTimelineSnapshot, TimelineSyncState, ViewDelta, ViewUpdate, ViewUpdateKind,
 };
 use flare_im_core_sdk::serde_json::{self, Value, json};
 use std::path::Path;
@@ -71,27 +70,45 @@ pub(crate) fn verify_golden_contracts(root: &Path) -> Result<()> {
             "view_update_delta.json kind must decode as delta",
         );
     }
+    if view_update.revision != 4 {
+        fail(
+            &mut errors,
+            "view_update_delta.json revision must decode as 4",
+        );
+    }
     match &view_update.delta {
-        Some(ViewDelta::Timeline { ops, has_more, .. }) => {
-            if *has_more {
+        Some(ViewDelta::Timeline {
+            prepend,
+            append,
+            upsert,
+            remove,
+            has_older,
+            has_newer,
+            attached_to_latest,
+            ..
+        }) => {
+            if *has_older || *has_newer || !*attached_to_latest {
                 fail(
                     &mut errors,
-                    "view_update_delta.json timeline hasMore must decode as false",
+                    "view_update_delta.json timeline state must decode as hasOlder false, hasNewer false, attachedToLatest true",
                 );
             }
-            if ops.first().map(|op| &op.op) != Some(&ViewDeltaKind::Insert) {
+            if !prepend.is_empty() || !upsert.is_empty() || !remove.is_empty() || append.len() != 1
+            {
                 fail(
                     &mut errors,
-                    "view_update_delta.json first op must decode as insert",
+                    "view_update_delta.json must decode as one appended row",
                 );
             }
-            let first_item = ops.first().and_then(|op| op.item.as_ref());
+            let first_item = append
+                .first()
+                .and_then(|message| serde_json::to_value(message).ok());
             assert_json_field(
                 &mut errors,
-                first_item.unwrap_or(&Value::Null),
-                "timelineKey",
-                json!("client:cm1"),
-                "view_update_delta.json item.timelineKey drifted",
+                first_item.as_ref().unwrap_or(&Value::Null),
+                "clientMsgId",
+                json!("cm1"),
+                "view_update_delta.json appended row clientMsgId (its row key) drifted",
             );
         }
         _ => fail(

@@ -42,9 +42,10 @@ pub use sync::{
 };
 pub use timeline::{
     BootstrapHomeTimelineRequest, CloseViewRequest, CloseViewResponse,
-    ConversationTimelineSnapshot, HomeTimelineSnapshot, LoadOlderTimelineViewRequest,
-    OpenConversationListViewRequest, OpenConversationTimelineRequest, OpenTimelineViewRequest,
-    TimelineSyncState, ViewDelta, ViewDeltaKind, ViewDeltaOp, ViewLoadOlderResponse,
+    ConversationTimelineSnapshot, HomeTimelineSnapshot, LoadNewerTimelineViewRequest,
+    LoadOlderTimelineViewRequest, OpenConversationListViewRequest, OpenConversationTimelineRequest,
+    OpenTimelineViewRequest, TimelineAnchor, TimelineSyncState, TimelineViewPageResponse,
+    TimelineViewRequest, TimelineViewSnapshot, ViewDelta, ViewDeltaKind, ViewDeltaOp,
     ViewOpenResponse, ViewSnapshot, ViewUpdate, ViewUpdateKind, normalized_conversation_limit,
     normalized_message_limit,
 };

@@ -370,6 +370,25 @@ impl MessageReader for PersistingMessageStore {
             .await
     }
 
+    async fn get_by_conversation_after(
+        &self,
+        conversation_id: &str,
+        after_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<IMMessage>> {
+        if let Some(conversation) = self.conversations.get(conversation_id).await? {
+            repair_single_chat_message_alias_for_conversation(
+                &self.user_id,
+                &self.inner,
+                &conversation,
+            )
+            .await?;
+        }
+        self.inner
+            .get_by_conversation_after(conversation_id, after_seq, limit)
+            .await
+    }
+
     async fn search_by_query(
         &self,
         query: &flare_im_core_sdk::model::MessageSearchQuery,

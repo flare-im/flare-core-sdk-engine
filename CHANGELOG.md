@@ -14,6 +14,22 @@
   `[c+1, c']`、冷启动尾页（页内最小 seq 到水位，不从 1 起）、冷启 bundle 与 gap-too-large 重建的快照行（行内最小
   到最大 seq）、回填页（还有更早为 `[页内最小 seq, before-1]`，否则 `[1, before-1]`）、本地清空记录 `[1, F]`；
   单条实时推送不写，本地删除、撤回、过期不改区间。删除会话（连同本地消息）时一并删掉它的区间。
+- 时间线视图的其余部分：
+  - `view.timeline.open` 可带 `anchor: { messageId?, seq? }` 围绕某条消息打开，目标前后各取半页；本地已被区间覆盖
+    时直接读，否则并发发两个请求（以 `before = S+1` 回填半页、以 `after = S` 取半页不推进游标的向新页），快照的
+    `anchorKey` 是目标行的行键；`messageId` 本地找不到又没给 `seq` 时返回 `sdk.view.anchor_not_found`。
+  - 新增 `view.timeline.load_newer`（与往旧对称，碰到区间边界取向新页，接上最高已证实 seq 时窗口接在最新）、
+    `view.timeline.jump_to_latest`（换成最新窗口，以快照推出）与 `view.timeline.snapshot`（当前快照与版本号）。
+  - 快照（`TimelineViewSnapshot`）带 `hasOlder`、`hasNewer`、`attachedToLatest` 与 `anchorKey`；脱离最新的窗口不
+    追加实时消息，只保证 `hasNewer`。在脱离最新的会话里发送消息时，视图先换成最新窗口（待发送行随之推出）。
+  - 按需刷新：撤回、编辑、表情、删除、置顶、标记、保留期、插件状态、已读摘要、发送确认与失败只按 id 重读窗口里
+    涉及的那几行，输出 `upsert` 或 `remove`；不带 id 的事件与同步完成在窗口的 seq 范围内重读；正在输入、在线状态
+    不再重读时间线；会话事件只换会话摘要，可见下限升高时换成最新窗口。
+  - 行键 `IMMessage::row_key()`：`client_msg_id`，没有时 `server_id`，都没有时 `seq:<会话>:<seq>`，发送确认前后
+    不变（只用于视图，存储层去重仍用 `timeline_key`）。
+  - 窗口改为默认 2,000 行的滑动窗口：往旧翻超过时从新的一端裁掉并脱离最新，往新翻与实时追加超过时从旧的一端裁掉。
+  - 消息仓储新增 `MessageReader::get_by_conversation_after`（`seq > after` 升序），SQLite、内存与浏览器实现为单次
+    查询；按 id 批量读走已有的 `get_by_client_msg_ids` / `get_by_message_ids`。
 - 不推进游标的向新页：`SyncRunContext::detached_page()`（`advances_cursor = false`）与
   `SessionSyncRunner::request_message_page_after_seq_detached`，取 `after_seq` 之后的一页，消息落库、写入区间，
   同步游标留在原处。
@@ -71,8 +87,8 @@
   按打开时的「最新窗口」整窗替换：到达起点后表情、撤回、删除、同步完成不会让「加载更多」重新出现，超过 100 行的
   窗口也不会被截短。`conversation.open_timeline` 用同一规则。
 - `view.timeline.load_older` 只在区间内读本地，碰到区间边界以边界为锚回填，窗口紧挨缺口时以窗口最旧一行为锚
-  回填；回填失败时窗口不变并返回错误，不越过缺口去读更旧的本地行（此前本地页装满就不回填，会从 seq 990 直接跳到
-  seq 36）。打开时的最新窗口同样停在缺口处，只有比最高已证实 seq 新的行（刚收到的实时消息）照常显示。
+  回填；回填失败时先把区间内已经读到的连续行并入窗口，再返回错误，不越过缺口去读更旧的本地行（此前本地页装满就
+  不回填，会从 seq 990 直接跳到 seq 36）。打开时的最新窗口同样停在缺口处，只有比最高已证实 seq 新的行（刚收到的实时消息）照常显示。
 - `sync.conversation_history_backfill` 从接着最新消息的那段区间的起点往旧补，不再从本地全局最旧一条往前补；没有
   任何区间时从会话已知最新 seq 之上开始。
 - 名字列不再写入 id 或写死的文案：首条消息建出的壳会话、修复单聊 channel、新建会话、未命名的成员集合群
@@ -186,6 +202,13 @@
   它删掉这条下载记录并返回 `null`，客户端据此把「在文件夹中显示」换回「下载」。
 
 ### 移除
+
+- 时间线视图的旧增量与返回值：`ViewDelta::Timeline` 的 `ops`（insert / update / remove / move 带下标）与 `has_more`
+  换成按行键的 `prepend` / `append` / `upsert` / `remove` / `reorder` 加三个状态字段，`conversation` 只在变化时带；
+  `ViewLoadOlderResponse`（含 `has_more` 与 `update`）换成只有 `{viewId, loadedCount, revision}` 的
+  `TimelineViewPageResponse`，窗口的变化只经 `view.updated` 推出；`ViewUpdate` 与 `ViewOpenResponse` 增加按视图
+  严格递增的 `revision`，宿主发现跳号时取 `view.timeline.snapshot` 整体替换。会话列表视图的增量不变。打开时间线的
+  默认页大小由 20 改为 40。
 
 - 通话专用代码：`rtc_ids`、`call_event`、内置插件 `AvCapabilityPlugin`、`CapabilityApi::rtc_*` 与
   `RtcSfuSubscriptionRequest`、Tauri 命令 `sdk_rtc_ice_config_snapshot`。通话改为托管插件 `flare.call`，

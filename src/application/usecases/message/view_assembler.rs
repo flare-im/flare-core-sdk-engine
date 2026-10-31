@@ -86,6 +86,39 @@ impl MessageViewAssembler {
         Ok(views)
     }
 
+    /// `seq > after_seq` 的消息，按 seq 升序最多 `limit` 条（往新的方向读）。
+    pub async fn list_after(
+        &self,
+        conversation_id: &str,
+        after_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<IMMessage>> {
+        let mut views = self
+            .store
+            .get_by_conversation_after(conversation_id, after_seq, limit)
+            .await?;
+        self.hydrate_messages_for_view(&mut views).await?;
+        Ok(views)
+    }
+
+    /// 按 id 批量读：客户端 id 与服务端 id 各一次批量查询，投影与 [`Self::list`] 相同。
+    /// 找不到的 id 跳过。
+    pub async fn get_many(
+        &self,
+        client_msg_ids: &[String],
+        server_ids: &[String],
+    ) -> Result<Vec<IMMessage>> {
+        let mut views = Vec::with_capacity(client_msg_ids.len() + server_ids.len());
+        if !client_msg_ids.is_empty() {
+            views.extend(self.store.get_by_client_msg_ids(client_msg_ids).await?);
+        }
+        if !server_ids.is_empty() {
+            views.extend(self.store.get_by_message_ids(server_ids).await?);
+        }
+        self.hydrate_messages_for_view(&mut views).await?;
+        Ok(views)
+    }
+
     pub async fn hydrate_messages_for_view(&self, views: &mut [IMMessage]) -> Result<()> {
         self.hydrate_reactions_for_messages(views).await?;
         self.fill_sender_profiles_for_messages(views).await?;

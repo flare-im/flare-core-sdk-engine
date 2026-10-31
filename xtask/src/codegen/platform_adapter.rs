@@ -590,8 +590,8 @@ fn emit_kotlin_map_adapter(spec: &Value, module: &Value) -> String {
             "ViewOpenResponse" => lines.push(format!(
                 "        return viewOpenResponseFromJson(invokeMap(bridge, NativeCallMap.{descriptor}{req}))"
             )),
-            "ViewLoadOlderResponse" => lines.push(format!(
-                "        return viewLoadOlderResponseFromJson(invokeMap(bridge, NativeCallMap.{descriptor}{req}))"
+            "TimelineViewPageResponse" => lines.push(format!(
+                "        return timelineViewPageResponseFromJson(invokeMap(bridge, NativeCallMap.{descriptor}{req}))"
             )),
             "CloseViewResponse" => lines.push(format!(
                 "        return closeViewResponseFromJson(invokeMap(bridge, NativeCallMap.{descriptor}{req}))"
@@ -652,12 +652,12 @@ fn emit_swift_map_adapter(spec: &Value, module: &Value) -> String {
                 ),
                 "        return try viewOpenResponseFromJson(raw)".to_string(),
             ]),
-            "ViewLoadOlderResponse" => lines.extend([
+            "TimelineViewPageResponse" => lines.extend([
                 format!(
                     "        let raw = try await invokeMap(bridge, descriptor: NativeCallMap.{descriptor}, request: {})",
                     swift_adapter_map_request(method, spec)
                 ),
-                "        return try viewLoadOlderResponseFromJson(raw)".to_string(),
+                "        return try timelineViewPageResponseFromJson(raw)".to_string(),
             ]),
             "CloseViewResponse" => lines.extend([
                 format!(
@@ -703,7 +703,7 @@ fn emit_arkts_map_adapter(spec: &Value, module: &Value) -> String {
     for method in child_arr(module, "methods") {
         match str_field(method, "response") {
             "ViewOpenResponse"
-            | "ViewLoadOlderResponse"
+            | "TimelineViewPageResponse"
             | "CloseViewResponse"
             | "Message"
             | "RichDocV2Normalized" => {
@@ -793,11 +793,11 @@ fn emit_arkts_map_adapter(spec: &Value, module: &Value) -> String {
                 ),
                 "    return viewOpenResponseFromJson(raw);".to_string(),
             ]),
-            "ViewLoadOlderResponse" => lines.extend([
+            "TimelineViewPageResponse" => lines.extend([
                 format!(
                     "    const raw = await invokeMap(this.bridge, NativeCallMap.{descriptor}{req});"
                 ),
-                "    return viewLoadOlderResponseFromJson(raw);".to_string(),
+                "    return timelineViewPageResponseFromJson(raw);".to_string(),
             ]),
             "CloseViewResponse" => lines.extend([
                 format!(

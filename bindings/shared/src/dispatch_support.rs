@@ -692,9 +692,10 @@ mod tests {
     use super::*;
     use flare_im_core_sdk::model::{
         CloseViewRequest, CloseViewResponse, ConversationTimelineSnapshot, Elem,
-        HomeTimelineSnapshot, IMMessage, LoadOlderTimelineViewRequest,
-        OpenConversationListViewRequest, OpenTimelineViewRequest, ViewLoadOlderResponse,
-        ViewOpenResponse, ViewUpdate,
+        HomeTimelineSnapshot, IMMessage, LoadNewerTimelineViewRequest,
+        LoadOlderTimelineViewRequest, OpenConversationListViewRequest, OpenTimelineViewRequest,
+        TimelineViewPageResponse, TimelineViewRequest, TimelineViewSnapshot, ViewOpenResponse,
+        ViewUpdate,
     };
     use flare_im_core_sdk::serde;
     use flare_im_core_sdk::serde::de::DeserializeOwned;
@@ -712,12 +713,15 @@ mod tests {
         assert_binding_wire_type::<Elem>();
         assert_binding_wire_type::<OpenTimelineViewRequest>();
         assert_binding_wire_type::<LoadOlderTimelineViewRequest>();
+        assert_binding_wire_type::<LoadNewerTimelineViewRequest>();
+        assert_binding_wire_type::<TimelineViewRequest>();
+        assert_binding_wire_type::<TimelineViewSnapshot>();
         assert_binding_wire_type::<OpenConversationListViewRequest>();
         assert_binding_wire_type::<CloseViewRequest>();
         assert_binding_wire_type::<HomeTimelineSnapshot>();
         assert_binding_wire_type::<ConversationTimelineSnapshot>();
         assert_binding_wire_type::<ViewOpenResponse>();
-        assert_binding_wire_type::<ViewLoadOlderResponse>();
+        assert_binding_wire_type::<TimelineViewPageResponse>();
         assert_binding_wire_type::<ViewUpdate>();
         assert_binding_wire_type::<CloseViewResponse>();
     }

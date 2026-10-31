@@ -322,6 +322,62 @@ impl ConversationApi {
         })
     }
 
+    /// 往新的方向在区间内读本地：seq 落在 `(after_seq, to_seq]` 的行，由旧到新最多 `limit` 行。
+    /// 第二项说明这一段里本地是否还有更新的行。区间之外的行一律不读——不越过缺口。
+    pub(crate) async fn timeline_rows_after(
+        &self,
+        conversation_id: &str,
+        after_seq: u64,
+        to_seq: u64,
+        limit: usize,
+    ) -> Result<(Vec<IMMessage>, bool)> {
+        self.ensure_session_active().await?;
+        let conversation_id = conversation_id.trim();
+        if conversation_id.is_empty() || to_seq <= after_seq || limit == 0 {
+            return Ok((Vec::new(), false));
+        }
+        let rows = self
+            .message_view_assembler
+            .list_after(
+                conversation_id,
+                after_seq,
+                u32::try_from(limit.saturating_add(1)).unwrap_or(u32::MAX),
+            )
+            .await?;
+        let mut in_range = rows
+            .into_iter()
+            .filter(|message| {
+                message.conversation_seq > after_seq && message.conversation_seq <= to_seq
+            })
+            .collect::<Vec<_>>();
+        let more = in_range.len() > limit;
+        in_range.truncate(limit);
+        Ok((in_range, more))
+    }
+
+    /// 按 id 批量重读视图里的几行：有客户端 id 的按客户端 id 读（行键就是它，发送确认前后不变），
+    /// 其余按服务端 id 读。投影与时间线读法相同；找不到的行不返回。
+    pub(crate) async fn timeline_rows_by_id(
+        &self,
+        client_msg_ids: &[String],
+        server_ids: &[String],
+    ) -> Result<Vec<IMMessage>> {
+        self.ensure_session_active().await?;
+        self.message_view_assembler
+            .get_many(client_msg_ids, server_ids)
+            .await
+    }
+
+    /// 定位用：按服务端 id 或客户端 id 找本地的一条消息。
+    pub(crate) async fn find_message(&self, message_id: &str) -> Result<Option<IMMessage>> {
+        self.ensure_session_active().await?;
+        let message_id = message_id.trim();
+        if message_id.is_empty() {
+            return Ok(None);
+        }
+        self.message_view_assembler.get_raw(message_id).await
+    }
+
     pub async fn mark_read(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
         self.ensure_session_active().await?;
         let unread_count = self

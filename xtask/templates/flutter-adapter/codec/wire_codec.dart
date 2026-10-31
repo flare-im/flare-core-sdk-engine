@@ -75,9 +75,15 @@ Map<String, Object?> openConversationTimelineRequestToMap(
 Map<String, Object?> openTimelineViewRequestToMap(
   OpenTimelineViewRequest request,
 ) {
+  final anchor = request.anchor;
   return {
     'conversationId': request.conversationId,
     'messageLimit': request.messageLimit,
+    if (anchor != null)
+      'anchor': {
+        if (anchor.messageId != null) 'messageId': anchor.messageId,
+        if (anchor.seq != null) 'seq': anchor.seq,
+      },
   };
 }
 
@@ -85,6 +91,16 @@ Map<String, Object?> loadOlderTimelineViewRequestToMap(
   LoadOlderTimelineViewRequest request,
 ) {
   return {'viewId': request.viewId, 'messageLimit': request.messageLimit};
+}
+
+Map<String, Object?> loadNewerTimelineViewRequestToMap(
+  LoadNewerTimelineViewRequest request,
+) {
+  return {'viewId': request.viewId, 'messageLimit': request.messageLimit};
+}
+
+Map<String, Object?> timelineViewRequestToMap(TimelineViewRequest request) {
+  return {'viewId': request.viewId};
 }
 
 Map<String, Object?> openConversationListViewRequestToMap(
@@ -488,13 +504,37 @@ String viewTypeFromValue(Object? value, String source) {
   };
 }
 
+TimelineViewSnapshot timelineViewSnapshotFromJson(Object? value) {
+  final json = mapValue(value);
+  final conversationRaw = json['conversation'];
+  final anchorKey = json['anchorKey'];
+  return TimelineViewSnapshot(
+    conversation: conversationRaw is Map
+        ? conversationFromJson(conversationRaw)
+        : null,
+    messages: requiredWireListOfMaps(
+      json['messages'],
+      'messages',
+      'TimelineViewSnapshot',
+    ).map(messageFromJson).toList(growable: false),
+    hasOlder: json['hasOlder'] is bool ? json['hasOlder'] as bool : false,
+    hasNewer: json['hasNewer'] is bool ? json['hasNewer'] as bool : false,
+    attachedToLatest: json['attachedToLatest'] is bool
+        ? json['attachedToLatest'] as bool
+        : false,
+    anchorKey: anchorKey is String && anchorKey.trim().isNotEmpty
+        ? anchorKey
+        : null,
+  );
+}
+
 ViewSnapshot viewSnapshotFromJson(Object? value) {
   final json = mapValue(value);
   final viewType = viewTypeFromValue(json['viewType'], 'ViewSnapshot');
   return ViewSnapshot(
     viewType: viewType,
     data: switch (viewType) {
-      'timeline' => conversationTimelineSnapshotFromJson(json['data']),
+      'timeline' => timelineViewSnapshotFromJson(json['data']),
       'conversationList' => homeTimelineSnapshotFromJson(json['data']),
       _ => throw StateError('unreachable view type: $viewType'),
     },
@@ -505,18 +545,21 @@ ViewOpenResponse viewOpenResponseFromJson(Object? value) {
   final json = mapValue(value);
   return ViewOpenResponse(
     viewId: requiredStringField(json, 'viewId', 'ViewOpenResponse'),
+    revision: requiredIntField(json, 'revision', 'ViewOpenResponse'),
     snapshot: viewSnapshotFromJson(json['snapshot']),
   );
 }
 
-ViewLoadOlderResponse viewLoadOlderResponseFromJson(Object? value) {
+TimelineViewPageResponse timelineViewPageResponseFromJson(Object? value) {
   final json = mapValue(value);
-  final rawUpdate = json['update'];
-  return ViewLoadOlderResponse(
-    viewId: requiredStringField(json, 'viewId', 'ViewLoadOlderResponse'),
-    loadedCount: requiredIntField(json, 'loadedCount', 'ViewLoadOlderResponse'),
-    hasMore: json['hasMore'] is bool ? json['hasMore'] as bool : false,
-    update: rawUpdate is Map ? viewUpdateFromJson(rawUpdate) : null,
+  return TimelineViewPageResponse(
+    viewId: requiredStringField(json, 'viewId', 'TimelineViewPageResponse'),
+    loadedCount: requiredIntField(
+      json,
+      'loadedCount',
+      'TimelineViewPageResponse',
+    ),
+    revision: requiredIntField(json, 'revision', 'TimelineViewPageResponse'),
   );
 }
 
@@ -548,24 +591,61 @@ ViewDeltaOp viewDeltaOpFromJson(Object? value) {
   );
 }
 
+List<String> viewDeltaRowKeys(Object? value, String field) {
+  if (value is! List || value.any((key) => key is! String)) {
+    throw FormatException('ViewDelta.$field must be a list of row keys', value);
+  }
+  return value.cast<String>().toList(growable: false);
+}
+
+/// Timeline deltas work by row key (`clientMsgId`, else `serverId`, else
+/// `seq:<conversationId>:<conversationSeq>`): remove, upsert in place,
+/// prepend, append, then reorder when present. Conversation-list deltas keep
+/// the indexed `ops`.
 ViewDelta viewDeltaFromJson(Object? value) {
   final json = mapValue(value);
+  final viewType = viewTypeFromValue(json['viewType'], 'ViewDelta');
+  if (viewType == 'conversationList') {
+    return ViewDelta(
+      viewType: viewType,
+      ops: requiredWireListOfMaps(
+        json['ops'],
+        'ops',
+        'ViewDelta',
+      ).map(viewDeltaOpFromJson).toList(growable: false),
+      totalUnread: json['totalUnread'] == null
+          ? null
+          : intValue(json['totalUnread']),
+      syncState: json['syncState']?.toString(),
+    );
+  }
+  List<Message> rows(String field) => json[field] == null
+      ? const <Message>[]
+      : requiredWireListOfMaps(
+          json[field],
+          field,
+          'ViewDelta',
+        ).map(messageFromJson).toList(growable: false);
   final rawConversation = json['conversation'];
   return ViewDelta(
-    viewType: viewTypeFromValue(json['viewType'], 'ViewDelta'),
-    ops: requiredWireListOfMaps(
-      json['ops'],
-      'ops',
-      'ViewDelta',
-    ).map(viewDeltaOpFromJson).toList(growable: false),
+    viewType: viewType,
+    prepend: rows('prepend'),
+    append: rows('append'),
+    upsert: rows('upsert'),
+    remove: json['remove'] == null
+        ? const <String>[]
+        : viewDeltaRowKeys(json['remove'], 'remove'),
+    reorder: json['reorder'] == null
+        ? null
+        : viewDeltaRowKeys(json['reorder'], 'reorder'),
+    hasOlder: json['hasOlder'] is bool ? json['hasOlder'] as bool : false,
+    hasNewer: json['hasNewer'] is bool ? json['hasNewer'] as bool : false,
+    attachedToLatest: json['attachedToLatest'] is bool
+        ? json['attachedToLatest'] as bool
+        : false,
     conversation: rawConversation is Map
         ? conversationFromJson(rawConversation)
         : null,
-    hasMore: json['hasMore'] is bool ? json['hasMore'] as bool : null,
-    totalUnread: json['totalUnread'] == null
-        ? null
-        : intValue(json['totalUnread']),
-    syncState: json['syncState']?.toString(),
   );
 }
 
@@ -580,6 +660,7 @@ ViewUpdate viewUpdateFromJson(Object? value) {
   }
   return ViewUpdate(
     viewId: requiredStringField(json, 'viewId', 'ViewUpdate'),
+    revision: requiredIntField(json, 'revision', 'ViewUpdate'),
     kind: kind,
     snapshot: kind == 'delta' ? null : viewSnapshotFromJson(json['snapshot']),
     delta: kind == 'delta' ? viewDeltaFromJson(json['delta']) : null,

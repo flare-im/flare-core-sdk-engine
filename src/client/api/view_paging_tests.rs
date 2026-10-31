@@ -1,410 +1,20 @@
 //! 往旧翻页与 hasOlder：只由已证实连续区间回答。
 //!
-//! 服务端用脚本模拟：回填请求按真实服务端的语义取 `before` 之前最新的一页可见消息、多取一条
-//! 判断 `has_more`，落库后按与同步适配器相同的规则写区间。用例分三组（区间、load_older、
-//! 不回跳），最后一组逐条读 sdk-spec 的 `golden/view/timeline-paging.json`。
+//! 测试台见 `view_test_harness.rs`。用例分三组（区间、load_older、不回跳），最后一组逐条读
+//! sdk-spec 的 `golden/view/timeline-paging.json`（往旧、往新、定位、实时合并各一节）。
 
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
-use flare_proto::common::{
-    Message as ProtoMessage, MessageDeleteEvent, MessageRecallEvent, SingleConversationSyncRes,
-    SyncSliceItem, sync_slice_item::Payload as ItemPayload,
-};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
-use super::{ViewApi, view_refresh_plan};
+use super::harness::{CONVERSATION, Harness, Req, Setup, expand, proto, seqs};
 use crate::application::notification::{NotificationHandlerRegistry, NotificationInboundPipeline};
 use crate::application::services::{EventDeduper, MessageDeduper};
-use crate::application::usecases::{
-    ConversationCommandUseCase, ConversationViewAssembler, MessageViewAssembler, SyncApplyUseCase,
-};
-use crate::client::api::ConversationApi;
-use crate::domain::SeqRange;
-use crate::infrastructure::persistence::{
-    MemoryUserProfileStore, StoreProvider, in_memory_im_provider,
-};
-use crate::kernel::event::{EventBus, MessageEvent, SdkEvent, SyncNotify, SyncPhase};
-use crate::kernel::{
-    AttentionRegistry, CurrentUserIdStore, SessionSyncRunner, SyncReason, SyncRunContext,
-    SyncScope, SyncTrigger, SyncVisibility,
-};
-use crate::model::conversation::ConversationType;
-use crate::model::{
-    Conversation, ConversationParticipant, IMMessage, LoadOlderTimelineViewRequest,
-    OpenTimelineViewRequest,
-};
-use crate::shared::error::{ErrorCode, FlareError, Result};
-
-const CONVERSATION: &str = "c1";
-
-type BoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>;
-
-fn proto(seq: u64) -> ProtoMessage {
-    ProtoMessage {
-        conversation_id: CONVERSATION.into(),
-        server_id: format!("s{seq}"),
-        client_msg_id: format!("m{seq}"),
-        sender_id: "u2".into(),
-        conversation_seq: seq,
-        ..Default::default()
-    }
-}
-
-fn row(seq: u64) -> IMMessage {
-    IMMessage::new(proto(seq))
-}
-
-fn expand(ranges: &[[u64; 2]]) -> Vec<u64> {
-    ranges.iter().flat_map(|[from, to]| *from..=*to).collect()
-}
-
-fn seqs(from: u64, to: u64) -> Vec<u64> {
-    (from..=to).collect()
-}
-
-/// 模拟服务端：持有可见消息的 seq 段，按真实回填语义回页。
-struct ScriptedServer {
-    visible: Vec<(u64, u64)>,
-    offline: AtomicBool,
-    /// 回页时说还有更早、却一条也不给（坏掉的服务端）。
-    empty_pages_with_more: AtomicBool,
-    requests: StdMutex<Vec<(u64, usize)>>,
-    stores: StoreProvider,
-    sync_apply: SyncApplyUseCase,
-}
-
-impl ScriptedServer {
-    /// `before` 之前最新的 `limit` 条可见消息（由新到旧）与是否还有更早的。
-    fn page_before(&self, before: u64, limit: usize) -> (Vec<u64>, bool) {
-        let mut ranges = self.visible.clone();
-        ranges.sort_by_key(|range| std::cmp::Reverse(range.1));
-        let mut seqs = Vec::with_capacity(limit + 1);
-        'ranges: for (from, to) in ranges {
-            let top = to.min(before.saturating_sub(1));
-            if top < from {
-                continue;
-            }
-            for seq in (from..=top).rev() {
-                seqs.push(seq);
-                if seqs.len() > limit {
-                    break 'ranges;
-                }
-            }
-        }
-        let has_more = seqs.len() > limit;
-        seqs.truncate(limit);
-        (seqs, has_more)
-    }
-
-    fn visible_in(&self, from: u64, to: u64) -> Vec<u64> {
-        (from..=to)
-            .filter(|seq| self.visible.iter().any(|(a, b)| a <= seq && seq <= b))
-            .collect()
-    }
-
-    fn take_requests(&self) -> Vec<(u64, usize)> {
-        std::mem::take(&mut *self.requests.lock().unwrap())
-    }
-}
-
-impl SessionSyncRunner for ScriptedServer {
-    fn request_message_sync(&self, _conversation_id: &str) -> BoxFuture<'_, ()> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn request_message_sync_from_seq(
-        &self,
-        _conversation_id: &str,
-        _last_seq: u64,
-        _limit: i32,
-    ) -> BoxFuture<'_, ()> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn request_message_backfill_before_seq(
-        &self,
-        conversation_id: &str,
-        before_seq: u64,
-        limit: i32,
-    ) -> BoxFuture<'_, bool> {
-        let conversation_id = conversation_id.to_string();
-        Box::pin(async move {
-            let limit = limit.max(1) as usize;
-            self.requests.lock().unwrap().push((before_seq, limit));
-            if self.offline.load(Ordering::SeqCst) {
-                return Err(FlareError::localized(ErrorCode::NetworkError, "offline"));
-            }
-            let (seqs, has_more) = if self.empty_pages_with_more.load(Ordering::SeqCst) {
-                (Vec::new(), true)
-            } else {
-                self.page_before(before_seq, limit)
-            };
-            let rows = seqs.iter().copied().map(row).collect::<Vec<_>>();
-            if !rows.is_empty() {
-                self.stores.messages.save_batch(&rows).await?;
-            }
-            let page = SingleConversationSyncRes {
-                conversation_id: conversation_id.clone(),
-                items: seqs
-                    .iter()
-                    .map(|seq| SyncSliceItem {
-                        conversation_seq: *seq,
-                        created_at: 0,
-                        payload: Some(ItemPayload::Message(proto(*seq))),
-                    })
-                    .collect(),
-                has_more,
-                ..Default::default()
-            };
-            self.sync_apply
-                .record_backfill_coverage(&conversation_id, before_seq, &page)
-                .await;
-            Ok(has_more)
-        })
-    }
-
-    fn send_read_ack(&self, _conversation_id: &str, _read_seq: u64) -> BoxFuture<'_, ()> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn request_participants_sync(
-        &self,
-        _conversation_id: &str,
-        _limit: i32,
-    ) -> BoxFuture<'_, Vec<ConversationParticipant>> {
-        Box::pin(async { Ok(Vec::new()) })
-    }
-}
-
-struct Setup<'a> {
-    page_size: u32,
-    max_seq: u64,
-    visible_after_seq: u64,
-    server: &'a [[u64; 2]],
-    local: &'a [[u64; 2]],
-    coverage: &'a [[u64; 2]],
-}
-
-struct Harness {
-    view: ViewApi,
-    stores: StoreProvider,
-    server: Arc<ScriptedServer>,
-    view_id: StdMutex<String>,
-    page_size: u32,
-}
-
-impl Harness {
-    async fn new(setup: Setup<'_>) -> Self {
-        let stores = in_memory_im_provider();
-        stores
-            .conversations
-            .save_one(&Conversation {
-                conversation_id: CONVERSATION.into(),
-                channel_id: CONVERSATION.into(),
-                conversation_type: ConversationType::Group,
-                max_seq: setup.max_seq,
-                visible_after_seq: setup.visible_after_seq,
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let rows = expand(setup.local).into_iter().map(row).collect::<Vec<_>>();
-        if !rows.is_empty() {
-            stores.messages.save_batch(&rows).await.unwrap();
-        }
-        for [from, to] in setup.coverage {
-            stores
-                .timeline_coverage
-                .add(CONVERSATION, SeqRange::new(*from, *to).unwrap())
-                .await
-                .unwrap();
-        }
-
-        let bus = EventBus::new();
-        let user: CurrentUserIdStore = Arc::new(RwLock::new("me".to_string()));
-        let profiles = Arc::new(MemoryUserProfileStore::new());
-        let conversation_api = ConversationApi::new(
-            Arc::new(
-                ConversationCommandUseCase::new(
-                    stores.conversations.clone(),
-                    user.clone(),
-                    None,
-                    Some(stores.cursors.clone()),
-                )
-                .with_timeline_coverage(stores.timeline_coverage.clone()),
-            ),
-            Arc::new(ConversationViewAssembler::new(
-                stores.conversations.clone(),
-                profiles.clone(),
-            )),
-            Arc::new(MessageViewAssembler::new(stores.messages.clone(), profiles)),
-            stores.timeline_coverage.clone(),
-            bus.clone(),
-            user,
-        );
-        let sync_apply = SyncApplyUseCase::new(
-            stores.clone(),
-            bus.clone(),
-            EventDeduper::new(Some(64)),
-            NotificationInboundPipeline::new(
-                Arc::new(NotificationHandlerRegistry::new()),
-                MessageDeduper::new(Some(64)),
-                bus.clone(),
-            ),
-        );
-        let server = Arc::new(ScriptedServer {
-            visible: setup.server.iter().map(|[from, to]| (*from, *to)).collect(),
-            offline: AtomicBool::new(false),
-            empty_pages_with_more: AtomicBool::new(false),
-            requests: StdMutex::new(Vec::new()),
-            stores: stores.clone(),
-            sync_apply,
-        });
-        let view = ViewApi::new(
-            conversation_api,
-            Some(server.clone() as Arc<dyn SessionSyncRunner>),
-            bus,
-            AttentionRegistry::new(),
-        );
-        Self {
-            view,
-            stores,
-            server,
-            view_id: StdMutex::new(String::new()),
-            page_size: setup.page_size,
-        }
-    }
-
-    async fn open(&self) {
-        let response = self
-            .view
-            .open_timeline(OpenTimelineViewRequest {
-                conversation_id: CONVERSATION.into(),
-                message_limit: self.page_size,
-            })
-            .await
-            .unwrap();
-        *self.view_id.lock().unwrap() = response.view_id;
-    }
-
-    async fn load_older(&self) -> Result<u32> {
-        let view_id = self.view_id.lock().unwrap().clone();
-        self.view
-            .load_older_timeline(LoadOlderTimelineViewRequest {
-                view_id,
-                message_limit: self.page_size,
-            })
-            .await
-            .map(|response| response.loaded_count)
-    }
-
-    /// 视图当前持有的窗口（seq 升序）与 hasOlder。
-    async fn window(&self) -> (Vec<u64>, bool) {
-        let view_id = self.view_id.lock().unwrap().clone();
-        let views = self.view.inner.views.read().await;
-        let snapshot = &views
-            .timelines
-            .get(&view_id)
-            .expect("view is open")
-            .last_snapshot;
-        (
-            snapshot
-                .messages
-                .iter()
-                .map(|message| message.conversation_seq)
-                .collect(),
-            snapshot.has_more,
-        )
-    }
-
-    async fn coverage(&self) -> Vec<[u64; 2]> {
-        self.stores
-            .timeline_coverage
-            .coverage(CONVERSATION)
-            .await
-            .unwrap()
-            .ranges()
-            .iter()
-            .map(|range| [range.from, range.to])
-            .collect()
-    }
-
-    async fn refresh(&self, event: SdkEvent) {
-        let plan = view_refresh_plan(&event).expect("the event refreshes timelines");
-        self.view.refresh_open_views(plan).await;
-    }
-
-    /// 一条实时推送：只落库，不写区间，经热路径进窗口。
-    async fn live_message(&self, seq: u64) {
-        let message = row(seq);
-        self.stores
-            .messages
-            .save_batch(std::slice::from_ref(&message))
-            .await
-            .unwrap();
-        self.refresh(SdkEvent::Message(MessageEvent::Received {
-            message: Box::new(message),
-        }))
-        .await;
-    }
-
-    /// 一次同步证明 `[from, to]`：服务端可见的消息落库、写区间，同步完成后视图重读。
-    async fn gap_filled(&self, from: u64, to: u64) {
-        let rows = self
-            .server
-            .visible_in(from, to)
-            .into_iter()
-            .map(row)
-            .collect::<Vec<_>>();
-        if !rows.is_empty() {
-            self.stores.messages.save_batch(&rows).await.unwrap();
-        }
-        self.stores
-            .timeline_coverage
-            .add(CONVERSATION, SeqRange::new(from, to).unwrap())
-            .await
-            .unwrap();
-        self.refresh(sync_finished()).await;
-    }
-
-    async fn event(&self, kind: &str) {
-        let event = match kind {
-            "reaction" => SdkEvent::Message(MessageEvent::ReactionChanged {
-                conversation_id: CONVERSATION.into(),
-                server_msg_id: "s10".into(),
-                user_id: "u2".into(),
-                emoji: "+1".into(),
-                action: 1,
-            }),
-            "recall" => SdkEvent::Message(MessageEvent::Recalled {
-                conversation_id: CONVERSATION.into(),
-                event: MessageRecallEvent::default(),
-            }),
-            "delete" => SdkEvent::Message(MessageEvent::Deleted {
-                conversation_id: CONVERSATION.into(),
-                event: MessageDeleteEvent::default(),
-            }),
-            "syncFinished" => sync_finished(),
-            other => panic!("unknown event kind {other}"),
-        };
-        self.refresh(event).await;
-    }
-}
-
-fn sync_finished() -> SdkEvent {
-    SdkEvent::Sync(SyncNotify::Finished {
-        run: SyncRunContext::new(
-            SyncTrigger::Manual,
-            SyncScope::Global,
-            SyncVisibility::Silent,
-            SyncReason::UserRequested,
-        ),
-        phase: SyncPhase::Background,
-    })
-}
+use crate::infrastructure::persistence::in_memory_im_provider;
+use crate::kernel::event::EventBus;
+use crate::shared::error::{ErrorCode, Result};
 
 // ---- 区间 ---------------------------------------------------------------------------------
 
@@ -512,7 +122,7 @@ async fn load_older_backfills_at_the_range_boundary() {
     .await;
     h.open().await;
     assert_eq!(h.load_older().await.unwrap(), 40);
-    assert_eq!(h.server.take_requests(), vec![(50, 29)]);
+    assert_eq!(h.server.take_requests(), vec![Req::Before(50, 29)]);
     assert_eq!(h.window().await, (seqs(21, 100), true));
     assert_eq!(h.coverage().await, vec![[21, 100]]);
 }
@@ -532,7 +142,7 @@ async fn load_older_backfills_before_a_window_next_to_a_hole() {
     h.open().await;
     assert_eq!(h.window().await, (seqs(61, 100), true));
     h.load_older().await.unwrap();
-    assert_eq!(h.server.take_requests(), vec![(61, 40)]);
+    assert_eq!(h.server.take_requests(), vec![Req::Before(61, 40)]);
     assert_eq!(h.window().await, (seqs(21, 100), true));
 }
 
@@ -555,7 +165,44 @@ async fn a_failed_backfill_keeps_the_window_and_does_not_cross_the_gap() {
     let error = h.load_older().await.expect_err("the backfill fails");
     assert_eq!(error.code(), Some(ErrorCode::NetworkError));
     assert_eq!(h.window().await, before, "the window is unchanged");
-    assert_eq!(h.server.take_requests(), vec![(980, 40)]);
+    assert_eq!(h.server.take_requests(), vec![Req::Before(980, 40)]);
+}
+
+/// 回填失败时，先把区间内已经读到的连续行并入窗口，再在缺口处返回错误：这些行由区间证明
+/// 与窗口连续，不算越过缺口。恢复后从同一个边界接着回填。
+#[tokio::test]
+async fn a_failed_backfill_merges_the_rows_read_inside_the_range_first() {
+    let h = Harness::new(Setup {
+        page_size: 40,
+        max_seq: 100,
+        visible_after_seq: 0,
+        server: &[[1, 100]],
+        local: &[[50, 100]],
+        coverage: &[[50, 100]],
+    })
+    .await;
+    h.open().await;
+    assert_eq!(h.window().await, (seqs(61, 100), true));
+    h.server.offline.store(true, Ordering::SeqCst);
+    let error = h.load_older().await.expect_err("the backfill fails");
+    assert_eq!(error.code(), Some(ErrorCode::NetworkError));
+    assert_eq!(h.server.take_requests(), vec![Req::Before(50, 29)]);
+    assert_eq!(
+        h.window().await,
+        (seqs(50, 100), true),
+        "the rows proven contiguous are in the window"
+    );
+    let updates = h.take_updates();
+    assert_eq!(
+        updates.len(),
+        1,
+        "the merged rows come through view.updated"
+    );
+
+    h.server.offline.store(false, Ordering::SeqCst);
+    assert_eq!(h.load_older().await.unwrap(), 40);
+    assert_eq!(h.server.take_requests(), vec![Req::Before(50, 40)]);
+    assert_eq!(h.window().await, (seqs(10, 100), true));
 }
 
 /// 到达起点：回填说没有更早的，写入 [1, before-1]，hasOlder 变为 false。
@@ -573,7 +220,7 @@ async fn reaching_the_start_turns_has_older_off() {
     h.open().await;
     assert_eq!(h.window().await, (seqs(9, 12), true));
     h.load_older().await.unwrap();
-    assert_eq!(h.server.take_requests(), vec![(9, 40)]);
+    assert_eq!(h.server.take_requests(), vec![Req::Before(9, 40)]);
     assert_eq!(h.window().await, (seqs(3, 12), false));
     assert_eq!(h.coverage().await, vec![[1, 12]]);
 }
@@ -612,7 +259,7 @@ async fn an_empty_window_backfills_above_the_newest_known_seq() {
     h.open().await;
     assert_eq!(h.window().await, (vec![], true));
     h.load_older().await.unwrap();
-    assert_eq!(h.server.take_requests(), vec![(51, 40)]);
+    assert_eq!(h.server.take_requests(), vec![Req::Before(51, 40)]);
     assert_eq!(h.window().await, (seqs(11, 50), true));
 }
 
@@ -631,7 +278,7 @@ async fn a_backfill_that_proves_nothing_is_not_repeated() {
     h.open().await;
     h.server.empty_pages_with_more.store(true, Ordering::SeqCst);
     assert_eq!(h.load_older().await.unwrap(), 0);
-    assert_eq!(h.server.take_requests(), vec![(61, 40)]);
+    assert_eq!(h.server.take_requests(), vec![Req::Before(61, 40)]);
     assert_eq!(h.window().await, (seqs(61, 100), true));
 }
 
@@ -656,7 +303,7 @@ async fn has_older_stays_off_after_the_start_through_events() {
     assert_eq!(h.window().await, (seqs(3, 122), false));
     assert_eq!(
         h.server.take_requests(),
-        vec![(83, 40), (43, 40)],
+        vec![Req::Before(83, 40), Req::Before(43, 40)],
         "two backfills reached the start"
     );
 
@@ -685,11 +332,14 @@ async fn has_older_stays_off_after_the_start_through_events() {
 #[serde(rename_all = "camelCase")]
 struct Vectors {
     schema_version: u32,
-    older_paging: OlderPaging,
+    older_paging: Section,
+    newer_paging: Section,
+    anchors: Section,
+    live_updates: Section,
 }
 
 #[derive(Deserialize)]
-struct OlderPaging {
+struct Section {
     cases: Vec<Case>,
 }
 
@@ -726,6 +376,7 @@ struct CaseLocal {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Step {
     #[serde(rename = "do")]
     action: String,
@@ -733,6 +384,8 @@ struct Step {
     from: Option<u64>,
     to: Option<u64>,
     kind: Option<String>,
+    message_id: Option<String>,
+    client_msg_id: Option<String>,
     expect: Option<Expect>,
 }
 
@@ -740,17 +393,45 @@ struct Step {
 #[serde(rename_all = "camelCase")]
 struct Expect {
     window: Option<Vec<[u64; 2]>>,
+    pending: Option<Vec<String>>,
     has_older: Option<bool>,
+    has_newer: Option<bool>,
+    attached_to_latest: Option<bool>,
+    /// 缺省不查；写成 `null` 表示快照不带 anchorKey。
+    #[serde(default, deserialize_with = "present")]
+    anchor_key: Option<Option<String>>,
     requests: Option<Vec<Request>>,
     coverage: Option<Vec<[u64; 2]>>,
+    /// 这一步推出的更新的 kind，按顺序。
+    updates: Option<Vec<String>>,
     #[serde(default)]
     error: bool,
+    error_reason: Option<String>,
+}
+
+fn present<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]
 struct Request {
-    before: u64,
+    before: Option<u64>,
+    after: Option<u64>,
     limit: usize,
+}
+
+impl Request {
+    fn req(&self) -> Req {
+        match (self.before, self.after) {
+            (Some(before), None) => Req::Before(before, self.limit),
+            (None, Some(after)) => Req::After(after, self.limit),
+            _ => panic!("a request has exactly one of before / after"),
+        }
+    }
 }
 
 /// 向量在本仓同级的客户端 SDK 规格里。
@@ -765,12 +446,34 @@ fn vectors() -> Vectors {
 async fn run_step(h: &Harness, step: &Step, at: &str) -> Result<()> {
     match step.action.as_str() {
         "open" => h.open().await,
+        "openAround" => return h.open_around(step.message_id.as_deref(), step.seq).await,
         "loadOlder" => return h.load_older().await.map(|_| ()),
+        "loadNewer" => return h.load_newer().await.map(|_| ()),
+        "jumpToLatest" => {
+            h.jump_to_latest().await;
+        }
         "offline" => h.server.offline.store(true, Ordering::SeqCst),
         "online" => h.server.offline.store(false, Ordering::SeqCst),
         "liveMessage" => {
             h.live_message(step.seq.expect("liveMessage has a seq"))
                 .await
+        }
+        "send" => {
+            h.send(
+                step.client_msg_id
+                    .as_deref()
+                    .expect("send has a clientMsgId"),
+            )
+            .await
+        }
+        "ack" => {
+            h.ack(
+                step.client_msg_id
+                    .as_deref()
+                    .expect("ack has a clientMsgId"),
+                step.seq.expect("ack has a seq"),
+            )
+            .await
         }
         "gapFilled" => {
             h.gap_filled(
@@ -788,15 +491,8 @@ async fn run_step(h: &Harness, step: &Step, at: &str) -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn older_paging_follows_the_shared_vectors() {
-    let vectors = vectors();
-    assert_eq!(vectors.schema_version, 1);
-    let cases = vectors.older_paging.cases;
-    assert!(
-        cases.len() >= 6,
-        "every older-paging boundary case is listed"
-    );
+async fn run_cases(section: &str, cases: Vec<Case>) {
+    assert!(!cases.is_empty(), "{section} lists its cases");
     for case in cases {
         assert!(!case.boundary_case.is_empty(), "{}", case.name);
         let h = Harness::new(Setup {
@@ -809,31 +505,84 @@ async fn older_paging_follows_the_shared_vectors() {
         })
         .await;
         for (index, step) in case.steps.iter().enumerate() {
-            let at = format!("{} / step {} ({})", case.name, index + 1, step.action);
+            let at = format!(
+                "{section} / {} / step {} ({})",
+                case.name,
+                index + 1,
+                step.action
+            );
             let outcome = run_step(&h, step, &at).await;
             let requests = h.server.take_requests();
+            let updates = h.take_updates();
+            assert_eq!(
+                h.server.cursor_syncs.load(Ordering::SeqCst),
+                0,
+                "{at}: the view never moves the sync cursor"
+            );
             let Some(expect) = &step.expect else {
                 assert!(outcome.is_ok(), "{at}: {outcome:?}");
                 continue;
             };
             assert_eq!(outcome.is_err(), expect.error, "{at}: {outcome:?}");
-            let (window, has_older) = h.window().await;
-            if let Some(expected) = &expect.window {
-                assert_eq!(window, expand(expected), "{at}: window");
-            }
-            if let Some(expected) = expect.has_older {
-                assert_eq!(has_older, expected, "{at}: hasOlder");
+            if let (Some(reason), Err(error)) = (&expect.error_reason, &outcome) {
+                assert_eq!(error.reason(), reason.as_str(), "{at}: error reason");
             }
             if let Some(expected) = &expect.requests {
-                let expected = expected
-                    .iter()
-                    .map(|request| (request.before, request.limit))
-                    .collect::<Vec<_>>();
+                let expected = expected.iter().map(Request::req).collect::<Vec<_>>();
                 assert_eq!(requests, expected, "{at}: requests");
             }
             if let Some(expected) = &expect.coverage {
                 assert_eq!(&h.coverage().await, expected, "{at}: coverage");
             }
+            if let Some(expected) = &expect.updates {
+                let kinds = updates
+                    .iter()
+                    .map(|update| {
+                        serde_json::to_value(&update.kind)
+                            .unwrap()
+                            .as_str()
+                            .unwrap()
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(&kinds, expected, "{at}: updates");
+            }
+            if h.view_id().is_empty() {
+                continue;
+            }
+            let state = h.state().await;
+            if let Some(expected) = &expect.window {
+                assert_eq!(state.seqs, expand(expected), "{at}: window");
+            }
+            if let Some(expected) = &expect.pending {
+                assert_eq!(&state.pending, expected, "{at}: pending rows");
+            }
+            if let Some(expected) = expect.has_older {
+                assert_eq!(state.has_older, expected, "{at}: hasOlder");
+            }
+            if let Some(expected) = expect.has_newer {
+                assert_eq!(state.has_newer, expected, "{at}: hasNewer");
+            }
+            if let Some(expected) = expect.attached_to_latest {
+                assert_eq!(state.attached_to_latest, expected, "{at}: attachedToLatest");
+            }
+            if let Some(expected) = &expect.anchor_key {
+                assert_eq!(&state.anchor_key, expected, "{at}: anchorKey");
+            }
         }
     }
+}
+
+#[tokio::test]
+async fn timeline_paging_follows_the_shared_vectors() {
+    let vectors = vectors();
+    assert_eq!(vectors.schema_version, 1);
+    assert!(
+        vectors.older_paging.cases.len() >= 6,
+        "every older-paging boundary case is listed"
+    );
+    run_cases("olderPaging", vectors.older_paging.cases).await;
+    run_cases("newerPaging", vectors.newer_paging.cases).await;
+    run_cases("anchors", vectors.anchors.cases).await;
+    run_cases("liveUpdates", vectors.live_updates.cases).await;
 }

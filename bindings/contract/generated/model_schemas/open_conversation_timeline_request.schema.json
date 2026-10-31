@@ -5,7 +5,7 @@
       "type": "string"
     },
     "messageLimit": {
-      "default": 20,
+      "default": 40,
       "format": "uint32",
       "minimum": 0,
       "type": "integer"

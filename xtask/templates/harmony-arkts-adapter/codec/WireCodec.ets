@@ -10,6 +10,7 @@ import {
   ConversationType,
   ListConversationsResponse,
   ListMessagesResponse,
+  LoadNewerTimelineViewRequest,
   LoadOlderTimelineViewRequest,
   Message,
   MessageContent,
@@ -30,9 +31,11 @@ import {
   ServerClockResponse,
   SyncConversationSummariesResponse,
   UpdateConversationDraftRequest,
+  TimelineViewPageResponse,
+  TimelineViewRequest,
+  TimelineViewSnapshot,
   ViewDelta,
   ViewDeltaOp,
-  ViewLoadOlderResponse,
   ViewOpenResponse,
   ViewSnapshot,
   ViewUpdate,
@@ -217,16 +220,40 @@ export function openConversationTimelineRequestToMap(request: OpenConversationTi
 }
 
 export function openTimelineViewRequestToMap(request: OpenTimelineViewRequest): Record<string, Object> {
-  return {
+  const out: Record<string, Object> = {
   conversationId: request.conversationId,
   messageLimit: request.messageLimit,
   };
+  if (request.anchor !== undefined) {
+    const anchor: Record<string, Object> = {};
+    if (request.anchor.messageId !== undefined) {
+      anchor['messageId'] = request.anchor.messageId;
+    }
+    if (request.anchor.seq !== undefined) {
+      anchor['seq'] = request.anchor.seq;
+    }
+    out['anchor'] = anchor;
+  }
+  return out;
 }
 
 export function loadOlderTimelineViewRequestToMap(request: LoadOlderTimelineViewRequest): Record<string, Object> {
   return {
   viewId: request.viewId,
   messageLimit: request.messageLimit,
+  };
+}
+
+export function loadNewerTimelineViewRequestToMap(request: LoadNewerTimelineViewRequest): Record<string, Object> {
+  return {
+  viewId: request.viewId,
+  messageLimit: request.messageLimit,
+  };
+}
+
+export function timelineViewRequestToMap(request: TimelineViewRequest): Record<string, Object> {
+  return {
+  viewId: request.viewId,
   };
 }
 
@@ -1248,7 +1275,32 @@ export function viewOpenResponseFromJson(value: Object | undefined): ViewOpenRes
   const json = recordValue(value);
   return {
     viewId: stringValue(field(json, 'viewId')),
+    revision: intValue(field(json, 'revision')),
     snapshot: viewSnapshotFromJson(field(json, 'snapshot')),
+  };
+}
+
+/** Decodes `ViewSnapshot.data` of a timeline view. */
+export function timelineViewSnapshotFromJson(value: Object | undefined): TimelineViewSnapshot {
+  const json = recordValue(value);
+  const conversation = field(json, 'conversation');
+  const anchorKey = field(json, 'anchorKey');
+  return {
+    ...(conversation !== undefined ? { conversation: conversationFromJson(recordValue(conversation)) } : {}),
+    messages: listOfMaps(field(json, 'messages')).map((item) => messageFromJson(item)),
+    hasOlder: field(json, 'hasOlder') === true,
+    hasNewer: field(json, 'hasNewer') === true,
+    attachedToLatest: field(json, 'attachedToLatest') === true,
+    ...(typeof anchorKey === 'string' && anchorKey.trim() !== '' ? { anchorKey } : {}),
+  };
+}
+
+export function timelineViewPageResponseFromJson(value: Object | undefined): TimelineViewPageResponse {
+  const json = recordValue(value);
+  return {
+    viewId: stringValue(field(json, 'viewId')),
+    loadedCount: intValue(field(json, 'loadedCount')),
+    revision: intValue(field(json, 'revision')),
   };
 }
 
@@ -1265,19 +1317,41 @@ export function viewDeltaOpFromJson(value: Object | undefined): ViewDeltaOp {
   };
 }
 
+function viewDeltaRowKeys(value: Object | undefined): string[] {
+  return Array.isArray(value) ? (value as Object[]).filter((key) => typeof key === 'string').map((key) => key as string) : [];
+}
+
+/**
+ * Timeline deltas work by row key (`clientMsgId`, else `serverId`, else
+ * `seq:<conversationId>:<conversationSeq>`): remove, upsert in place, prepend, append, then
+ * reorder when present. Conversation-list deltas keep the indexed `ops`.
+ */
 export function viewDeltaFromJson(value: Object | undefined): ViewDelta {
   const json = recordValue(value);
+  const viewType = stringValue(field(json, 'viewType'));
+  if (viewType === 'conversationList') {
+    const totalUnread = field(json, 'totalUnread');
+    const syncState = field(json, 'syncState');
+    return {
+      viewType,
+      ops: listOfMaps(field(json, 'ops')).map((item) => viewDeltaOpFromJson(item)),
+      ...(totalUnread !== undefined ? { totalUnread: intValue(totalUnread) } : {}),
+      ...(syncState !== undefined ? { syncState: stringValue(syncState) } : {}),
+    };
+  }
   const conversation = field(json, 'conversation');
-  const hasMore = field(json, 'hasMore');
-  const totalUnread = field(json, 'totalUnread');
-  const syncState = field(json, 'syncState');
+  const reorder = field(json, 'reorder');
   return {
-    viewType: stringValue(field(json, 'viewType')),
-    ops: listOfMaps(field(json, 'ops')).map((item) => viewDeltaOpFromJson(item)),
+    viewType,
+    prepend: listOfMaps(field(json, 'prepend')).map((item) => messageFromJson(item)),
+    append: listOfMaps(field(json, 'append')).map((item) => messageFromJson(item)),
+    upsert: listOfMaps(field(json, 'upsert')).map((item) => messageFromJson(item)),
+    remove: viewDeltaRowKeys(field(json, 'remove')),
+    ...(reorder !== undefined && reorder !== null ? { reorder: viewDeltaRowKeys(reorder) } : {}),
+    hasOlder: field(json, 'hasOlder') === true,
+    hasNewer: field(json, 'hasNewer') === true,
+    attachedToLatest: field(json, 'attachedToLatest') === true,
     ...(conversation !== undefined ? { conversation: conversationFromJson(recordValue(conversation)) } : {}),
-    ...(typeof hasMore === 'boolean' ? { hasMore } : {}),
-    ...(totalUnread !== undefined ? { totalUnread: intValue(totalUnread) } : {}),
-    ...(syncState !== undefined ? { syncState: stringValue(syncState) } : {}),
   };
 }
 
@@ -1286,21 +1360,11 @@ export function viewUpdateFromJson(value: Object | undefined): ViewUpdate {
   const kind = stringValue(field(json, 'kind')) === 'delta' ? 'delta' : 'snapshot';
   return {
     viewId: stringValue(field(json, 'viewId')),
+    revision: intValue(field(json, 'revision')),
     kind,
     ...(kind === 'delta'
       ? { delta: viewDeltaFromJson(field(json, 'delta')) }
       : { snapshot: viewSnapshotFromJson(field(json, 'snapshot')) }),
-  };
-}
-
-export function viewLoadOlderResponseFromJson(value: Object | undefined): ViewLoadOlderResponse {
-  const json = recordValue(value);
-  const update = field(json, 'update');
-  return {
-    viewId: stringValue(field(json, 'viewId')),
-    loadedCount: intValue(field(json, 'loadedCount')),
-    hasMore: field(json, 'hasMore') === true,
-    ...(update !== undefined ? { update: viewUpdateFromJson(update) } : {}),
   };
 }
 

@@ -337,6 +337,24 @@ async fn dispatch_view(
             >(request, "load older timeline view request")?;
             crate::dispatch_support::json(api.load_older_timeline(request).await?)
         }
+        "timeline.load_newer" => {
+            let request = crate::dispatch_support::from_value::<
+                flare_im_core_sdk::model::LoadNewerTimelineViewRequest,
+            >(request, "load newer timeline view request")?;
+            crate::dispatch_support::json(api.load_newer_timeline(request).await?)
+        }
+        "timeline.jump_to_latest" => {
+            let request = crate::dispatch_support::from_value::<
+                flare_im_core_sdk::model::TimelineViewRequest,
+            >(request, "jump to latest timeline view request")?;
+            crate::dispatch_support::json(api.jump_to_latest_timeline(request).await?)
+        }
+        "timeline.snapshot" => {
+            let request = crate::dispatch_support::from_value::<
+                flare_im_core_sdk::model::TimelineViewRequest,
+            >(request, "timeline view snapshot request")?;
+            crate::dispatch_support::json(api.timeline_snapshot(request).await?)
+        }
         "conversation_list.open" => {
             let request = crate::dispatch_support::from_value::<
                 flare_im_core_sdk::model::OpenConversationListViewRequest,

@@ -287,6 +287,59 @@ pub trait MessageReader: Send + Sync {
         before_seq: u64,
         limit: u32,
     ) -> Result<Vec<IMMessage>>;
+    /// 往新的方向读：`seq > after_seq` 的已分配序列号的消息，按 seq **升序**最多 `limit` 条
+    /// （时间线视图往新翻页、围绕某条消息打开时用）。与 [`Self::get_by_conversation`] 的翻页读法
+    /// 一样不含待发送行、遵守本地清空水位。
+    ///
+    /// 默认实现借 [`Self::get_by_conversation`] 按 seq 跨度分段往上读，跨度逐段翻倍；
+    /// SQLite 与内存实现覆盖为单次查询。
+    async fn get_by_conversation_after(
+        &self,
+        conversation_id: &str,
+        after_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<IMMessage>> {
+        let limit = limit as usize;
+        let mut out: Vec<IMMessage> = Vec::with_capacity(limit);
+        if limit == 0 {
+            return Ok(out);
+        }
+        // 翻页读法（不是最新窗口）取最新一条已分配序列号的行，得到往上读的终点。
+        let paging_top = (i64::MAX as u64) - 1;
+        let Some(newest) = self
+            .get_by_conversation(conversation_id, paging_top, 1)
+            .await?
+            .first()
+            .map(|message| message.conversation_seq)
+        else {
+            return Ok(out);
+        };
+        let mut low = after_seq;
+        let mut span = limit as u64;
+        while out.len() < limit && low < newest {
+            let high = low.saturating_add(span).min(newest);
+            // (low, high] 里每个 seq 至多一行，所以读 `high - low` 行就能取全这一段。
+            let rows = self
+                .get_by_conversation(
+                    conversation_id,
+                    high.saturating_add(1),
+                    u32::try_from(high - low).unwrap_or(u32::MAX),
+                )
+                .await?;
+            let mut chunk = rows
+                .into_iter()
+                .filter(|message| {
+                    message.conversation_seq > low && message.conversation_seq <= high
+                })
+                .collect::<Vec<_>>();
+            chunk.sort_by_key(|message| message.conversation_seq);
+            out.extend(chunk);
+            low = high;
+            span = span.saturating_mul(2);
+        }
+        out.truncate(limit);
+        Ok(out)
+    }
     /// 本地已落库的最早服务端会话序列号；忽略 `conversation_seq == 0` 的本地待发送消息。
     async fn oldest_conversation_seq(&self, conversation_id: &str) -> Result<Option<u64>> {
         let messages = self

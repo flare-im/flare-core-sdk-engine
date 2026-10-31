@@ -1393,13 +1393,29 @@ function viewTypeFromJson(value: unknown | undefined, context: string): 'timelin
   throw new FlareSdkException('invalidParameter', `invalid view type: ${raw || '<empty>'}`, 'wire.view.decode', { field: `${context}.viewType` });
 }
 
+export function timelineViewSnapshotFromJson(value: unknown | undefined): TimelineViewSnapshot {
+  const json = (value ?? {}) as Record<string, unknown>;
+  const conversation = field(json, 'conversation');
+  const anchorKey = field(json, 'anchorKey');
+  return {
+    ...(conversation !== undefined && conversation !== null && typeof conversation === 'object'
+      ? { conversation: conversationFromJson(conversation as Record<string, unknown>) }
+      : {}),
+    messages: requiredListOfMaps(field(json, 'messages'), 'messages', 'TimelineViewSnapshot').map((item) => messageFromJson(item)),
+    hasOlder: boolValue(field(json, 'hasOlder')),
+    hasNewer: boolValue(field(json, 'hasNewer')),
+    attachedToLatest: boolValue(field(json, 'attachedToLatest')),
+    ...(typeof anchorKey === 'string' && anchorKey.trim() !== '' ? { anchorKey } : {}),
+  };
+}
+
 export function viewSnapshotFromJson(value: unknown | undefined): ViewSnapshot {
   const json = (value ?? {}) as Record<string, unknown>;
   const viewType = viewTypeFromJson(field(json, 'viewType'), 'ViewSnapshot');
   if (viewType === 'timeline') {
     return {
       viewType: 'timeline',
-      data: conversationTimelineSnapshotFromJson(field(json, 'data')),
+      data: timelineViewSnapshotFromJson(field(json, 'data')),
     };
   }
   return {
@@ -1412,18 +1428,17 @@ export function viewOpenResponseFromJson(value: unknown | undefined): ViewOpenRe
   const json = (value ?? {}) as Record<string, unknown>;
   return {
     viewId: requiredStringField(json, 'viewId', 'ViewOpenResponse'),
+    revision: requiredIntField(json, 'revision', 'ViewOpenResponse'),
     snapshot: viewSnapshotFromJson(field(json, 'snapshot')),
   };
 }
 
-export function viewLoadOlderResponseFromJson(value: unknown | undefined): ViewLoadOlderResponse {
+export function timelineViewPageResponseFromJson(value: unknown | undefined): TimelineViewPageResponse {
   const json = (value ?? {}) as Record<string, unknown>;
-  const update = field(json, 'update');
   return {
-    viewId: requiredStringField(json, 'viewId', 'ViewLoadOlderResponse'),
-    loadedCount: requiredIntField(json, 'loadedCount', 'ViewLoadOlderResponse'),
-    hasMore: boolValue(field(json, 'hasMore')),
-    ...(update !== undefined && update !== null ? { update: viewUpdateFromJson(update) } : {}),
+    viewId: requiredStringField(json, 'viewId', 'TimelineViewPageResponse'),
+    loadedCount: requiredIntField(json, 'loadedCount', 'TimelineViewPageResponse'),
+    revision: requiredIntField(json, 'revision', 'TimelineViewPageResponse'),
   };
 }
 
@@ -1453,21 +1468,53 @@ export function viewDeltaOpFromJson(value: unknown | undefined): ViewDeltaOp {
   };
 }
 
+function viewDeltaRowKeys(value: unknown, fieldName: string): string[] {
+  if (!Array.isArray(value) || value.some((key) => typeof key !== 'string')) {
+    throw new FlareSdkException('invalidParameter', `ViewDelta.${fieldName} must be a list of row keys`, 'wire.view.decode', { field: `ViewDelta.${fieldName}`, expected: 'string[]' });
+  }
+  return value as string[];
+}
+
+/**
+ * Timeline deltas work by row key (`clientMsgId`, else `serverId`, else
+ * `seq:<conversationId>:<conversationSeq>`): remove, upsert in place, prepend, append, then
+ * reorder when present. Conversation-list deltas keep the indexed `ops`.
+ */
 export function viewDeltaFromJson(value: unknown | undefined): ViewDelta {
   const json = (value ?? {}) as Record<string, unknown>;
+  const viewType = viewTypeFromJson(field(json, 'viewType'), 'ViewDelta');
   const conversation = field(json, 'conversation');
-  const hasMore = field(json, 'hasMore');
-  const totalUnread = field(json, 'totalUnread');
-  const syncState = field(json, 'syncState');
+  if (viewType === 'conversationList') {
+    const totalUnread = field(json, 'totalUnread');
+    const syncState = field(json, 'syncState');
+    return {
+      viewType,
+      ops: requiredListOfMaps(field(json, 'ops'), 'ops', 'ViewDelta').map((item) => viewDeltaOpFromJson(item)),
+      ...(totalUnread !== undefined ? { totalUnread: intValue(totalUnread) } : {}),
+      ...(syncState !== undefined ? { syncState: timelineSyncStateFromJson(syncState) } : {}),
+    };
+  }
+  const rows = (name: string) => {
+    const list = field(json, name);
+    return list === undefined || list === null
+      ? []
+      : requiredListOfMaps(list, name, 'ViewDelta').map((item) => messageFromJson(item));
+  };
+  const remove = field(json, 'remove');
+  const reorder = field(json, 'reorder');
   return {
-    viewType: viewTypeFromJson(field(json, 'viewType'), 'ViewDelta'),
-    ops: requiredListOfMaps(field(json, 'ops'), 'ops', 'ViewDelta').map((item) => viewDeltaOpFromJson(item)),
+    viewType,
+    prepend: rows('prepend'),
+    append: rows('append'),
+    upsert: rows('upsert'),
+    remove: remove === undefined || remove === null ? [] : viewDeltaRowKeys(remove, 'remove'),
+    ...(reorder !== undefined && reorder !== null ? { reorder: viewDeltaRowKeys(reorder, 'reorder') } : {}),
+    hasOlder: boolValue(field(json, 'hasOlder')),
+    hasNewer: boolValue(field(json, 'hasNewer')),
+    attachedToLatest: boolValue(field(json, 'attachedToLatest')),
     ...(conversation !== undefined && conversation !== null && typeof conversation === 'object'
       ? { conversation: conversationFromJson(conversation as Record<string, unknown>) }
       : {}),
-    ...(hasMore !== undefined ? { hasMore: boolValue(hasMore) } : {}),
-    ...(totalUnread !== undefined ? { totalUnread: intValue(totalUnread) } : {}),
-    ...(syncState !== undefined ? { syncState: timelineSyncStateFromJson(syncState) } : {}),
   };
 }
 
@@ -1480,6 +1527,7 @@ export function viewUpdateFromJson(value: unknown | undefined): ViewUpdate {
   }
   const update: ViewUpdate = {
     viewId: requiredStringField(json, 'viewId', 'ViewUpdate'),
+    revision: requiredIntField(json, 'revision', 'ViewUpdate'),
     kind,
   };
   if (update.kind === 'delta') {

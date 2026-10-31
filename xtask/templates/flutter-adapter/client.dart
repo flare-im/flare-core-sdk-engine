@@ -1032,14 +1032,45 @@ final class _DefaultViewsApi implements ViewsApi {
   }
 
   @override
-  Future<ViewLoadOlderResponse> loadOlderTimeline(
+  Future<TimelineViewPageResponse> loadOlderTimeline(
     LoadOlderTimelineViewRequest request,
   ) async {
     final response = await _bridge.invoke<Object?>(
       NativeCallMap.viewTimelineLoadOlder,
       loadOlderTimelineViewRequestToMap(request),
     );
-    return viewLoadOlderResponseFromJson(response);
+    return timelineViewPageResponseFromJson(response);
+  }
+
+  @override
+  Future<TimelineViewPageResponse> loadNewerTimeline(
+    LoadNewerTimelineViewRequest request,
+  ) async {
+    final response = await _bridge.invoke<Object?>(
+      NativeCallMap.viewTimelineLoadNewer,
+      loadNewerTimelineViewRequestToMap(request),
+    );
+    return timelineViewPageResponseFromJson(response);
+  }
+
+  @override
+  Future<TimelineViewPageResponse> jumpToLatestTimeline(
+    TimelineViewRequest request,
+  ) async {
+    final response = await _bridge.invoke<Object?>(
+      NativeCallMap.viewTimelineJumpToLatest,
+      timelineViewRequestToMap(request),
+    );
+    return timelineViewPageResponseFromJson(response);
+  }
+
+  @override
+  Future<ViewOpenResponse> timelineSnapshot(TimelineViewRequest request) async {
+    final response = await _bridge.invoke<Object?>(
+      NativeCallMap.viewTimelineSnapshot,
+      timelineViewRequestToMap(request),
+    );
+    return viewOpenResponseFromJson(response);
   }
 
   @override

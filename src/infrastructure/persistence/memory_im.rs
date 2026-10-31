@@ -144,6 +144,23 @@ impl MessageReader for MemoryMessageStore {
         Ok(msgs)
     }
 
+    async fn get_by_conversation_after(
+        &self,
+        conversation_id: &str,
+        after_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<IMMessage>> {
+        let data = self.data.read().await;
+        let mut msgs: Vec<_> = data
+            .values()
+            .filter(|m| m.conversation_id == conversation_id && m.conversation_seq > after_seq)
+            .cloned()
+            .collect();
+        msgs.sort_by_key(|m| m.conversation_seq);
+        msgs.truncate(limit as usize);
+        Ok(msgs)
+    }
+
     async fn oldest_conversation_seq(&self, conversation_id: &str) -> Result<Option<u64>> {
         Ok(self
             .data

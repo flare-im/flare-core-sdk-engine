@@ -187,6 +187,42 @@ impl MessageReader for SqliteMessageRepo {
         Ok(out)
     }
 
+    async fn get_by_conversation_after(
+        &self,
+        conversation_id: &str,
+        after_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<IMMessage>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        identity_repair::repair_single_chat_message_alias_for_conversation(
+            &self.pool,
+            conversation_id,
+        )
+        .await?;
+        let cleared_floor = self.local_cleared_floor(conversation_id).await?;
+        let low = i64::try_from(after_seq.max(cleared_floor)).unwrap_or(i64::MAX);
+        let sql = format!(
+            r#"SELECT {} FROM messages
+               WHERE conversation_id = ? AND conversation_seq > 0 AND conversation_seq > ?
+               ORDER BY conversation_seq ASC LIMIT ?"#,
+            MESSAGE_SELECT_COLS
+        );
+        let rows = sqlx::query(&sql)
+            .bind(conversation_id)
+            .bind(low)
+            .bind(limit as i32)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(self.row_to_immessage(&row)?);
+        }
+        Ok(out)
+    }
+
     async fn oldest_conversation_seq(&self, conversation_id: &str) -> Result<Option<u64>> {
         let row: Option<i64> = sqlx::query_scalar(
             r#"SELECT MIN(conversation_seq) FROM messages

@@ -1,3 +1,9 @@
+//! 核心可观察视图：时间线与会话列表。
+//!
+//! 时间线视图持有窗口（哪些行、顺序、往旧往新还有没有、是否接在最新），决定何时读本地、何时
+//! 向服务端回填、何时跨不过缺口，并推出可以照做的增量。所有更新只经 `view.updated` 事件发出，
+//! 每次更新视图的版本号加 1；op 的返回值只说「包含这一页的是版本几」。
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -13,18 +19,29 @@ use crate::kernel::event::{ConversationEvent, EventBus, MessageEvent, SdkEvent, 
 use crate::kernel::{AttentionRegistry, SessionSyncRunner};
 use crate::model::{
     BootstrapHomeTimelineRequest, CloseViewRequest, CloseViewResponse, Conversation,
-    ConversationTimelineSnapshot, HomeTimelineSnapshot, IMMessage, LoadOlderTimelineViewRequest,
+    HomeTimelineSnapshot, IMMessage, LoadNewerTimelineViewRequest, LoadOlderTimelineViewRequest,
     OpenConversationListViewRequest, OpenConversationTimelineRequest, OpenTimelineViewRequest,
-    ViewDelta, ViewDeltaKind, ViewDeltaOp, ViewLoadOlderResponse, ViewOpenResponse, ViewSnapshot,
-    ViewUpdate, ViewUpdateKind, normalized_conversation_limit, normalized_message_limit,
+    TimelineAnchor, TimelineViewPageResponse, TimelineViewRequest, ViewDelta, ViewDeltaKind,
+    ViewDeltaOp, ViewOpenResponse, ViewSnapshot, ViewUpdate, ViewUpdateKind,
+    normalized_conversation_limit, normalized_message_limit,
 };
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use crate::shared::util::{BackgroundTask, delay, spawn_background, spawn_background_task};
 
+#[path = "view_window.rs"]
+mod window;
+
+use window::{
+    CompareRows, MAX_TIMELINE_WINDOW_MESSAGES, TimelineChange, TimelineWindow, append_newer,
+    apply_reread_rows, json_changed, merge_live, prepend_older, timeline_change,
+};
+
 const VIEW_REFRESH_DEBOUNCE: Duration = Duration::from_millis(40);
 const MAX_TIMELINE_VIEWS: usize = 8;
 const MAX_CONVERSATION_LIST_VIEWS: usize = 2;
-const MAX_TIMELINE_WINDOW_MESSAGES: usize = 10_000;
+
+/// 一次往旧或往新翻页最多向服务端要几次：正常一次就够（服务端回满一页或到达端点），多的只是兜底。
+const MAX_FETCHES_PER_PAGE: usize = 3;
 
 #[derive(Clone)]
 pub struct ViewApi {
@@ -85,54 +102,36 @@ struct ViewRegistrations {
 }
 
 struct TimelineViewRegistration {
-    request: OpenTimelineViewRequest,
+    /// 页大小（打开时的 `messageLimit`，往旧往新翻页没给时也用它）。
+    page_size: u32,
     order: u64,
-    last_snapshot: ConversationTimelineSnapshot,
+    revision: u64,
+    window: TimelineWindow,
 }
 
 struct ConversationListViewRegistration {
     request: OpenConversationListViewRequest,
     order: u64,
+    revision: u64,
     last_snapshot: HomeTimelineSnapshot,
 }
 
 impl ViewRegistrations {
-    fn insert_timeline(
-        &mut self,
-        view_id: String,
-        request: OpenTimelineViewRequest,
-        order: u64,
-        last_snapshot: ConversationTimelineSnapshot,
-    ) {
-        let conversation_id = request.conversation_id.clone();
+    /// 同一会话打开两个视图时，后打开的替换先打开的。
+    fn insert_timeline(&mut self, view_id: String, registration: TimelineViewRegistration) {
+        let conversation_id = registration.window.conversation_id.clone();
         self.timelines
-            .retain(|_, view| view.request.conversation_id != conversation_id);
-        self.timelines.insert(
-            view_id,
-            TimelineViewRegistration {
-                request,
-                order,
-                last_snapshot,
-            },
-        );
+            .retain(|_, view| view.window.conversation_id != conversation_id);
+        self.timelines.insert(view_id, registration);
         evict_oldest(&mut self.timelines, MAX_TIMELINE_VIEWS);
     }
 
     fn insert_conversation_list(
         &mut self,
         view_id: String,
-        request: OpenConversationListViewRequest,
-        order: u64,
-        last_snapshot: HomeTimelineSnapshot,
+        registration: ConversationListViewRegistration,
     ) {
-        self.conversation_lists.insert(
-            view_id,
-            ConversationListViewRegistration {
-                request,
-                order,
-                last_snapshot,
-            },
-        );
+        self.conversation_lists.insert(view_id, registration);
         evict_oldest(&mut self.conversation_lists, MAX_CONVERSATION_LIST_VIEWS);
     }
 }
@@ -166,6 +165,47 @@ fn evict_oldest<T: OrderedViewRegistration>(views: &mut HashMap<String, T>, limi
     }
 }
 
+/// 往旧或往新翻到的一页，与翻页途中回填 / 向新取页失败时的错误。
+///
+/// 失败前已经读到的行都在连续区间内（区间证明了它们与窗口之间没有别的消息），先并入窗口，
+/// 再在缺口处把错误交给宿主（Kit 显示 `olderError` / `newerError` 与重试）。
+struct PageRead {
+    messages: Vec<IMMessage>,
+    /// 往旧：窗口之下还有没有；往新不用。
+    has_older: bool,
+    /// 往新：接上了最新（`messages` 之后再并入 `head` 里的头部未证实行与待发送行）。
+    reached_latest: bool,
+    head: Vec<IMMessage>,
+    error: Option<FlareError>,
+}
+
+impl PageRead {
+    fn older(messages: Vec<IMMessage>, has_older: bool) -> Self {
+        Self {
+            messages,
+            has_older,
+            reached_latest: false,
+            head: Vec::new(),
+            error: None,
+        }
+    }
+
+    fn newer(messages: Vec<IMMessage>) -> Self {
+        Self {
+            messages,
+            has_older: true,
+            reached_latest: false,
+            head: Vec::new(),
+            error: None,
+        }
+    }
+
+    fn failed(mut self, error: FlareError) -> Self {
+        self.error = Some(error);
+        self
+    }
+}
+
 impl ViewApi {
     pub fn new(
         conversation_api: ConversationApi,
@@ -192,30 +232,41 @@ impl ViewApi {
         api
     }
 
+    /// 打开时间线视图。不带 `anchor` 时是最新窗口；带 `anchor` 时围绕目标消息打开
+    /// （目标之前、之后各取半页），快照的 `anchorKey` 是目标行的行键。
     pub async fn open_timeline(
         &self,
         request: OpenTimelineViewRequest,
     ) -> Result<ViewOpenResponse> {
-        let request = OpenTimelineViewRequest {
-            conversation_id: request.conversation_id.trim().to_string(),
-            message_limit: normalized_message_limit(request.message_limit),
-        };
+        let conversation_id = request.conversation_id.trim().to_string();
+        let page_size = normalized_message_limit(request.message_limit);
         // 注意力信号：打开的会话升为前台，后续收敛优先补齐它（秒展示）。app 打开会话即自动触发。
         // I5：同时立即定向补拉该会话（P0 中断，不等下一轮收敛）——本地快照仍即时返回不被网络阻塞。
-        if !request.conversation_id.is_empty() {
-            self.inner.attention.open_timeline(&request.conversation_id);
-            self.spawn_foreground_pull(&request.conversation_id);
+        if !conversation_id.is_empty() {
+            self.inner.attention.open_timeline(&conversation_id);
+            self.spawn_foreground_pull(&conversation_id);
         }
-        let snapshot = self.timeline_snapshot(&request).await?;
+        let window = match request.anchor.filter(anchor_is_set) {
+            Some(anchor) => {
+                self.window_around(&conversation_id, page_size, &anchor)
+                    .await?
+            }
+            None => self.latest_window(&conversation_id, page_size).await?,
+        };
+        let snapshot = window.snapshot();
         let (view_id, order) = self.next_view_id("timeline");
         self.inner.views.write().await.insert_timeline(
             view_id.clone(),
-            request,
-            order,
-            snapshot.clone(),
+            TimelineViewRegistration {
+                page_size,
+                order,
+                revision: 1,
+                window,
+            },
         );
         Ok(ViewOpenResponse {
             view_id,
+            revision: 1,
             snapshot: ViewSnapshot::Timeline(snapshot),
         })
     }
@@ -245,116 +296,255 @@ impl ViewApi {
         });
     }
 
+    /// 最新窗口：比最高已证实 seq 新的行与待发送行照收，其余的行必须落在接着最新的那段区间里。
+    async fn latest_window(&self, conversation_id: &str, page_size: u32) -> Result<TimelineWindow> {
+        let snapshot = self
+            .inner
+            .conversation_api
+            .open_timeline(OpenConversationTimelineRequest {
+                conversation_id: conversation_id.to_string(),
+                message_limit: page_size,
+            })
+            .await?;
+        Ok(TimelineWindow {
+            conversation_id: conversation_id.to_string(),
+            conversation: snapshot.conversation,
+            messages: snapshot.messages,
+            has_older: snapshot.has_more,
+            attached_to_latest: true,
+            anchor_key: None,
+        })
+    }
+
+    /// 围绕目标消息的窗口。
+    ///
+    /// - 目标 seq：`messageId` 在本地找得到用本地的 seq，否则用调用方给的 `seq`；两者都没有时
+    ///   `sdk.view.anchor_not_found`。目标是待发送行时它就在最新窗口里。
+    /// - 本地 `[S - 半页, S + 半页]` 已被区间覆盖：直接读本地，不请求。
+    /// - 否则并发发两个请求：以 `before = S + 1` 回填半页（证明 `[m, S]`），以 `after = S` 取
+    ///   半页向新的同步页（证明 `[S + 1, M]`，不推进同步游标）。
+    /// - 窗口新的一端接上最高已证实 seq 时接在最新，否则 `hasNewer`。
+    async fn window_around(
+        &self,
+        conversation_id: &str,
+        page_size: u32,
+        anchor: &TimelineAnchor,
+    ) -> Result<TimelineWindow> {
+        let api = &self.inner.conversation_api;
+        let found = match anchor
+            .message_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            Some(message_id) => api
+                .find_message(message_id)
+                .await?
+                .filter(|message| message.conversation_id.trim() == conversation_id),
+            None => None,
+        };
+        let target_seq = match &found {
+            Some(message) if message.conversation_seq > 0 => message.conversation_seq,
+            Some(pending) => {
+                let mut window = self.latest_window(conversation_id, page_size).await?;
+                let key = pending.row_key();
+                window.anchor_key = window
+                    .messages
+                    .iter()
+                    .any(|message| message.row_key() == key)
+                    .then_some(key);
+                return Ok(window);
+            }
+            None => match anchor.seq.filter(|seq| *seq > 0) {
+                Some(seq) => seq,
+                None => {
+                    return Err(FlareError::localized(
+                        ErrorCode::MessageNotFound,
+                        "sdk.view.anchor_not_found",
+                    ));
+                }
+            },
+        };
+
+        let half = (page_size as u64 / 2).max(1);
+        let (_, coverage) = api.timeline_paging_state(conversation_id).await?;
+        let covered = coverage.range_containing(target_seq).is_some_and(|range| {
+            range.from <= target_seq.saturating_sub(half).max(1)
+                && (range.to >= target_seq.saturating_add(half)
+                    || range.to >= coverage.highest_proven_seq())
+        });
+        if !covered {
+            let Some(sync) = self.inner.session_sync.as_ref() else {
+                return Err(FlareError::localized(ErrorCode::NotConnected, "未配置同步"));
+            };
+            let limit = i32::try_from(half).unwrap_or(i32::MAX);
+            let (older, newer) = futures::future::join(
+                sync.request_message_backfill_before_seq(
+                    conversation_id,
+                    target_seq.saturating_add(1),
+                    limit,
+                ),
+                sync.request_message_page_after_seq_detached(conversation_id, target_seq, limit),
+            )
+            .await;
+            older?;
+            newer?;
+        }
+
+        let (conversation, coverage) = api.timeline_paging_state(conversation_id).await?;
+        let half = half as usize;
+        let (older, rows_below) = match coverage.range_containing(target_seq) {
+            Some(range) => {
+                api.timeline_rows_in_range(
+                    conversation_id,
+                    range.from,
+                    target_seq.saturating_add(1),
+                    half,
+                )
+                .await?
+            }
+            // 服务端没有证明目标所在的那一段：只放目标本身，两头都按还有。
+            None => {
+                let (rows, _) = api
+                    .timeline_rows_in_range(
+                        conversation_id,
+                        target_seq,
+                        target_seq.saturating_add(1),
+                        1,
+                    )
+                    .await?;
+                (rows, true)
+            }
+        };
+        let highest = coverage.highest_proven_seq();
+        let (newer, rows_above, reaches_top) = match coverage.range_containing(target_seq + 1) {
+            Some(range) => {
+                let (rows, more) = api
+                    .timeline_rows_after(conversation_id, target_seq, range.to, half)
+                    .await?;
+                (rows, more, range.to >= highest)
+            }
+            None => (Vec::new(), false, target_seq >= highest),
+        };
+        let attached = !rows_above && reaches_top;
+        let mut messages = older;
+        messages.reverse();
+        messages.extend(newer);
+        let mut window = TimelineWindow {
+            conversation_id: conversation_id.to_string(),
+            conversation,
+            messages,
+            has_older: true,
+            attached_to_latest: false,
+            anchor_key: None,
+        };
+        let oldest = window.oldest_seq().unwrap_or(target_seq.saturating_add(1));
+        window.has_older = coverage.has_older(oldest, rows_below);
+        if attached {
+            let top = window.newest_seq().unwrap_or(target_seq);
+            let head = self.head_rows(conversation_id, top).await?;
+            append_newer(&mut window, &head);
+            window.attached_to_latest = true;
+        }
+        window.anchor_key = window
+            .messages
+            .iter()
+            .find(|message| match &found {
+                Some(target) => message.row_key() == target.row_key(),
+                None => message.conversation_seq == target_seq,
+            })
+            .map(IMMessage::row_key);
+        window.trim_older_end(MAX_TIMELINE_WINDOW_MESSAGES);
+        Ok(window)
+    }
+
+    /// 接上最新时窗口新的一端还要并入的行：`top` 之上的头部未证实行与待发送行。
+    async fn head_rows(&self, conversation_id: &str, top: u64) -> Result<Vec<IMMessage>> {
+        Ok(self
+            .inner
+            .conversation_api
+            .reload_timeline_window(
+                conversation_id,
+                top.saturating_add(1),
+                MAX_TIMELINE_WINDOW_MESSAGES,
+            )
+            .await?
+            .messages)
+    }
+
     /// 往旧翻一页。窗口最旧一行为 `O`、页大小 `L`：
     ///
     /// 1. `O-1` 落在某段区间 `[r, ..]` 里：读本地 seq 在 `[r, O-1]` 内、由新到旧的 `L` 行；
     ///    不够 `L` 行而 `r = 1` 就是到了起点；`r > 1` 则以 `before = r` 回填缺的行数，区间扩展后
     ///    在新的区间内接着读。
     /// 2. `O-1` 不在任何区间里（窗口紧挨着一个洞）：以 `before = O` 回填，写入区间后再读本地。
-    /// 3. 回填失败（离线、超时、服务端错误）：窗口不变，返回错误。不越过缺口去读更旧的本地行。
+    /// 3. 回填失败（离线、超时、服务端错误）：先把区间内已经读到的连续行并入窗口，再返回错误。
+    ///    这些行由区间证明与窗口连续，不算越过缺口；缺口之下的本地行不读。
     /// 4. 窗口里没有已发送的行：以会话已知最新 seq 之上一位为 `O`。
     ///
-    /// `has_more`（hasOlder）只由区间与窗口之下的本地行决定。
+    /// 并入的行只经 `view.updated` 推出；返回值只有并入了几行与包含这一页的版本号。
+    /// 往旧翻超过窗口上限时从新的一端裁掉，窗口随之脱离最新。
     pub async fn load_older_timeline(
         &self,
         request: LoadOlderTimelineViewRequest,
-    ) -> Result<ViewLoadOlderResponse> {
-        let view_id = request.view_id.trim().to_string();
-        if view_id.is_empty() {
-            return Err(FlareError::localized(
-                ErrorCode::InvalidParameter,
-                "viewId is required",
-            ));
-        }
-        let requested_limit = normalized_message_limit(request.message_limit) as usize;
-        let (conversation_id, oldest_seq, page_limit) = {
-            let views = self.inner.views.read().await;
-            // view 已关闭（用户切走会话 / silent_refresh 替换了 view）是无害竞态：
-            // 加载更多历史对已关闭的 timeline 无意义，静默返回"无更多"而非报错打断 UI。
-            let Some(registration) = views.timelines.get(&view_id) else {
-                return Ok(ViewLoadOlderResponse {
-                    view_id,
-                    loaded_count: 0,
-                    has_more: false,
-                    update: None,
-                });
-            };
-            let current_len = registration.last_snapshot.messages.len();
-            if current_len >= MAX_TIMELINE_WINDOW_MESSAGES {
-                return Ok(ViewLoadOlderResponse {
-                    view_id,
-                    loaded_count: 0,
-                    has_more: false,
-                    update: None,
-                });
-            }
-            (
-                registration.request.conversation_id.clone(),
-                oldest_positive_seq(&registration.last_snapshot),
-                requested_limit.min(MAX_TIMELINE_WINDOW_MESSAGES - current_len),
-            )
+    ) -> Result<TimelineViewPageResponse> {
+        let view_id = required_view_id(&request.view_id)?;
+        let page_limit = normalized_message_limit(request.message_limit) as usize;
+        // view 已关闭（用户切走会话 / silent_refresh 替换了 view）是无害竞态：
+        // 加载更多历史对已关闭的 timeline 无意义，静默返回而非报错打断 UI。
+        let Some((conversation_id, oldest_seq)) = self
+            .with_timeline(&view_id, |view| {
+                (
+                    view.window.conversation_id.clone(),
+                    view.window.oldest_seq(),
+                )
+            })
+            .await
+        else {
+            return Ok(closed_page(view_id));
         };
-
-        if page_limit == 0 {
-            return Ok(ViewLoadOlderResponse {
-                view_id,
-                loaded_count: 0,
-                has_more: true,
-                update: None,
-            });
-        }
 
         let page = self
             .read_older_page(&conversation_id, oldest_seq, page_limit)
             .await?;
 
-        let (loaded_count, has_more, update) = {
+        let (loaded_count, revision, update) = {
             let mut views = self.inner.views.write().await;
             // 网络往返期间 view 被关闭同属无害竞态（拉到的历史丢弃即可，用户已切走）。
             let Some(registration) = views.timelines.get_mut(&view_id) else {
-                return Ok(ViewLoadOlderResponse {
-                    view_id,
-                    loaded_count: 0,
-                    has_more: false,
-                    update: None,
-                });
+                return Ok(closed_page(view_id));
             };
-            let old = registration.last_snapshot.clone();
-            let (mut new, loaded_count) = expand_timeline_snapshot(
-                &old,
-                &page.messages,
-                page.has_older,
-                MAX_TIMELINE_WINDOW_MESSAGES,
-            );
-            if new.messages.len() >= MAX_TIMELINE_WINDOW_MESSAGES {
-                new.has_more = false;
+            // 窗口在往返期间被整体换掉（回到最新、清空记录）：这一页接不到新窗口下面。
+            if registration.window.oldest_seq() != oldest_seq {
+                (0, registration.revision, None)
+            } else {
+                let mut next = registration.window.clone();
+                let loaded = prepend_older(&mut next, &page.messages);
+                next.has_older = page.has_older;
+                next.trim_newer_end(MAX_TIMELINE_WINDOW_MESSAGES);
+                let update = commit_timeline(&view_id, registration, next, CompareRows::None);
+                (loaded, registration.revision, update)
             }
-            let has_more = new.has_more;
-            let update = timeline_view_update(&view_id, &old, &new);
-            registration.request.message_limit = registration
-                .request
-                .message_limit
-                .max(new.messages.len() as u32);
-            registration.last_snapshot = new;
-            (loaded_count, has_more, update)
         };
-
-        Ok(ViewLoadOlderResponse {
+        self.publish(update);
+        if let Some(error) = page.error {
+            return Err(error);
+        }
+        Ok(TimelineViewPageResponse {
             view_id,
             loaded_count,
-            has_more,
-            update,
+            revision,
         })
     }
 
     /// 读窗口之下的一页（规则见 [`Self::load_older_timeline`]）。只读区间内的本地行；
-    /// 碰到区间边界就回填，回填失败直接返回错误，已读到的行也不并入。
+    /// 碰到区间边界就回填；回填失败时带上已经读到的行与错误返回。
     async fn read_older_page(
         &self,
         conversation_id: &str,
         oldest_seq: Option<u64>,
         limit: usize,
-    ) -> Result<OlderPage> {
+    ) -> Result<PageRead> {
         let api = &self.inner.conversation_api;
         let (conversation, mut coverage) = api.timeline_paging_state(conversation_id).await?;
         let window_oldest = match oldest_seq {
@@ -374,10 +564,7 @@ impl ViewApi {
                 .map(|message| message.conversation_seq)
                 .unwrap_or(window_oldest);
             if lowest <= 1 {
-                return Ok(OlderPage {
-                    messages,
-                    has_older: false,
-                });
+                return Ok(PageRead::older(messages, false));
             }
             let before = match coverage.range_containing(lowest - 1) {
                 Some(range) => {
@@ -395,33 +582,28 @@ impl ViewApi {
                             .last()
                             .map(|message| message.conversation_seq)
                             .unwrap_or(lowest);
-                        return Ok(OlderPage {
-                            messages,
-                            has_older: coverage.has_older(oldest, more),
-                        });
+                        return Ok(PageRead::older(messages, coverage.has_older(oldest, more)));
                     }
                     range.from
                 }
                 None => lowest,
             };
-            if backfills == MAX_BACKFILLS_PER_PAGE {
-                return Ok(OlderPage {
-                    messages,
-                    has_older: true,
-                });
+            if backfills == MAX_FETCHES_PER_PAGE {
+                return Ok(PageRead::older(messages, true));
             }
             backfills += 1;
-            self.backfill_before(conversation_id, before, limit - messages.len())
-                .await?;
+            if let Err(error) = self
+                .backfill_before(conversation_id, before, limit - messages.len())
+                .await
+            {
+                return Ok(PageRead::older(messages, true).failed(error));
+            }
             let (_, extended) = api.timeline_paging_state(conversation_id).await?;
             let progressed = extended.range_containing(before - 1).is_some();
             coverage = extended;
             if !progressed {
                 // 服务端没有证明任何东西（不该发生）：不再重复请求，留给下一次往旧翻页。
-                return Ok(OlderPage {
-                    messages,
-                    has_older: true,
-                });
+                return Ok(PageRead::older(messages, true));
             }
         }
     }
@@ -440,6 +622,222 @@ impl ViewApi {
             .map(|_| ())
     }
 
+    /// 往新翻一页，与 [`Self::load_older_timeline`] 对称：在覆盖 `N+1` 的区间内读本地更新的行，
+    /// 碰到区间边界就取一页向新的同步页（不推进同步游标）；窗口新的一端接上最高已证实 seq 时
+    /// 接在最新，此后实时消息追加进来。取页失败时先并入已经读到的连续行，再返回错误。
+    /// 已经接在最新时什么也不做。往新翻超过窗口上限时从旧的一端裁掉。
+    pub async fn load_newer_timeline(
+        &self,
+        request: LoadNewerTimelineViewRequest,
+    ) -> Result<TimelineViewPageResponse> {
+        let view_id = required_view_id(&request.view_id)?;
+        let page_limit = normalized_message_limit(request.message_limit) as usize;
+        let Some((conversation_id, newest_seq, attached, revision, page_size)) = self
+            .with_timeline(&view_id, |view| {
+                (
+                    view.window.conversation_id.clone(),
+                    view.window.newest_seq(),
+                    view.window.attached_to_latest,
+                    view.revision,
+                    view.page_size,
+                )
+            })
+            .await
+        else {
+            return Ok(closed_page(view_id));
+        };
+        if attached {
+            return Ok(TimelineViewPageResponse {
+                view_id,
+                loaded_count: 0,
+                revision,
+            });
+        }
+        let Some(newest_seq) = newest_seq else {
+            // 脱离最新却没有已发送的行（不该出现）：直接回到最新。
+            return self
+                .jump_to_latest_inner(view_id, &conversation_id, page_size)
+                .await;
+        };
+
+        let page = self
+            .read_newer_page(&conversation_id, newest_seq, page_limit)
+            .await?;
+
+        let (loaded_count, revision, update) = {
+            let mut views = self.inner.views.write().await;
+            let Some(registration) = views.timelines.get_mut(&view_id) else {
+                return Ok(closed_page(view_id));
+            };
+            if registration.window.attached_to_latest
+                || registration.window.newest_seq() != Some(newest_seq)
+            {
+                (0, registration.revision, None)
+            } else {
+                let mut next = registration.window.clone();
+                let mut loaded = append_newer(&mut next, &page.messages);
+                if page.reached_latest {
+                    loaded += append_newer(&mut next, &page.head);
+                    next.attached_to_latest = true;
+                }
+                next.trim_older_end(MAX_TIMELINE_WINDOW_MESSAGES);
+                let update = commit_timeline(&view_id, registration, next, CompareRows::None);
+                (loaded, registration.revision, update)
+            }
+        };
+        self.publish(update);
+        if let Some(error) = page.error {
+            return Err(error);
+        }
+        Ok(TimelineViewPageResponse {
+            view_id,
+            loaded_count,
+            revision,
+        })
+    }
+
+    /// 读窗口之上的一页（规则见 [`Self::load_newer_timeline`]）。
+    async fn read_newer_page(
+        &self,
+        conversation_id: &str,
+        newest_seq: u64,
+        limit: usize,
+    ) -> Result<PageRead> {
+        let api = &self.inner.conversation_api;
+        let (_, mut coverage) = api.timeline_paging_state(conversation_id).await?;
+        let mut messages: Vec<IMMessage> = Vec::with_capacity(limit);
+        let mut fetches = 0;
+        loop {
+            let top = messages
+                .last()
+                .map(|message| message.conversation_seq)
+                .unwrap_or(newest_seq);
+            let highest = coverage.highest_proven_seq();
+            let after = match coverage.range_containing(top.saturating_add(1)) {
+                Some(range) => {
+                    let (rows, more) = api
+                        .timeline_rows_after(conversation_id, top, range.to, limit - messages.len())
+                        .await?;
+                    messages.extend(rows);
+                    if !more && range.to >= highest {
+                        return self.reach_latest(conversation_id, messages).await;
+                    }
+                    if messages.len() >= limit {
+                        return Ok(PageRead::newer(messages));
+                    }
+                    range.to
+                }
+                // 已在最高已证实 seq 处：之上只有头部未证实行。
+                None if top >= highest => {
+                    return self.reach_latest(conversation_id, messages).await;
+                }
+                None => top,
+            };
+            if fetches == MAX_FETCHES_PER_PAGE {
+                return Ok(PageRead::newer(messages));
+            }
+            fetches += 1;
+            if let Err(error) = self
+                .fetch_after(conversation_id, after, limit - messages.len())
+                .await
+            {
+                return Ok(PageRead::newer(messages).failed(error));
+            }
+            let (_, extended) = api.timeline_paging_state(conversation_id).await?;
+            let progressed = extended.range_containing(after.saturating_add(1)).is_some();
+            coverage = extended;
+            if !progressed {
+                return Ok(PageRead::newer(messages));
+            }
+        }
+    }
+
+    async fn reach_latest(
+        &self,
+        conversation_id: &str,
+        messages: Vec<IMMessage>,
+    ) -> Result<PageRead> {
+        let top = messages
+            .iter()
+            .map(|message| message.conversation_seq)
+            .max()
+            .unwrap_or(0);
+        let mut page = PageRead::newer(messages);
+        page.head = self.head_rows(conversation_id, top).await?;
+        page.reached_latest = true;
+        Ok(page)
+    }
+
+    async fn fetch_after(&self, conversation_id: &str, after_seq: u64, limit: usize) -> Result<()> {
+        let Some(sync) = &self.inner.session_sync else {
+            return Err(FlareError::localized(ErrorCode::NotConnected, "未配置同步"));
+        };
+        sync.request_message_page_after_seq_detached(
+            conversation_id,
+            after_seq,
+            limit.max(1) as i32,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// 窗口直接换成最新窗口（与不带锚点的打开相同），版本号递增并以快照推出。
+    pub async fn jump_to_latest_timeline(
+        &self,
+        request: TimelineViewRequest,
+    ) -> Result<TimelineViewPageResponse> {
+        let view_id = required_view_id(&request.view_id)?;
+        let Some((conversation_id, page_size)) = self
+            .with_timeline(&view_id, |view| {
+                (view.window.conversation_id.clone(), view.page_size)
+            })
+            .await
+        else {
+            return Ok(closed_page(view_id));
+        };
+        self.jump_to_latest_inner(view_id, &conversation_id, page_size)
+            .await
+    }
+
+    async fn jump_to_latest_inner(
+        &self,
+        view_id: String,
+        conversation_id: &str,
+        page_size: u32,
+    ) -> Result<TimelineViewPageResponse> {
+        let latest = self.latest_window(conversation_id, page_size).await?;
+        let loaded_count = latest.messages.len() as u32;
+        let (revision, update) = {
+            let mut views = self.inner.views.write().await;
+            let Some(registration) = views.timelines.get_mut(&view_id) else {
+                return Ok(closed_page(view_id));
+            };
+            let update = replace_timeline(&view_id, registration, latest);
+            (registration.revision, Some(update))
+        };
+        self.publish(update);
+        Ok(TimelineViewPageResponse {
+            view_id,
+            loaded_count,
+            revision,
+        })
+    }
+
+    /// 视图当前的快照与版本号（宿主发现版本号不连续时整体替换用）。
+    pub async fn timeline_snapshot(
+        &self,
+        request: TimelineViewRequest,
+    ) -> Result<ViewOpenResponse> {
+        let view_id = required_view_id(&request.view_id)?;
+        self.with_timeline(&view_id, |view| ViewOpenResponse {
+            view_id: view_id.clone(),
+            revision: view.revision,
+            snapshot: ViewSnapshot::Timeline(view.window.snapshot()),
+        })
+        .await
+        .ok_or_else(|| FlareError::localized(ErrorCode::InvalidParameter, "sdk.view.not_open"))
+    }
+
     pub async fn open_conversation_list(
         &self,
         request: OpenConversationListViewRequest,
@@ -451,12 +849,16 @@ impl ViewApi {
         let (view_id, order) = self.next_view_id("conversation_list");
         self.inner.views.write().await.insert_conversation_list(
             view_id.clone(),
-            request,
-            order,
-            snapshot.clone(),
+            ConversationListViewRegistration {
+                request,
+                order,
+                revision: 1,
+                last_snapshot: snapshot.clone(),
+            },
         );
         Ok(ViewOpenResponse {
             view_id,
+            revision: 1,
             snapshot: ViewSnapshot::ConversationList(snapshot),
         })
     }
@@ -477,44 +879,31 @@ impl ViewApi {
         if let Some(registration) = &closed_timeline {
             self.inner
                 .attention
-                .close_timeline(&registration.request.conversation_id);
+                .close_timeline(&registration.window.conversation_id);
         }
         Ok(CloseViewResponse {
             closed: closed_timeline.is_some() || closed_list,
         })
     }
 
-    async fn timeline_snapshot(
+    async fn with_timeline<T>(
         &self,
-        request: &OpenTimelineViewRequest,
-    ) -> Result<crate::model::ConversationTimelineSnapshot> {
+        view_id: &str,
+        read: impl FnOnce(&TimelineViewRegistration) -> T,
+    ) -> Option<T> {
         self.inner
-            .conversation_api
-            .open_timeline(OpenConversationTimelineRequest {
-                conversation_id: request.conversation_id.clone(),
-                message_limit: request.message_limit,
-            })
+            .views
+            .read()
             .await
+            .timelines
+            .get(view_id)
+            .map(read)
     }
 
-    /// 事件触发的重读：在窗口的 seq 范围内重读，不再用打开时的「最新窗口」去整窗替换，
-    /// 所以窗口不会缩回、`has_more` 也不会因为重读回跳。窗口里还没有已发送的行时按打开处理。
-    async fn reload_timeline(
-        &self,
-        request: &OpenTimelineViewRequest,
-        oldest_seq: Option<u64>,
-    ) -> Result<ConversationTimelineSnapshot> {
-        let Some(oldest_seq) = oldest_seq else {
-            return self.timeline_snapshot(request).await;
-        };
-        self.inner
-            .conversation_api
-            .reload_timeline_window(
-                &request.conversation_id,
-                oldest_seq,
-                normalized_timeline_window_limit(request.message_limit),
-            )
-            .await
+    fn publish(&self, update: Option<ViewUpdate>) {
+        if let Some(update) = update {
+            self.inner.bus.publish(SdkEvent::View(update));
+        }
     }
 
     async fn conversation_list_snapshot(
@@ -579,66 +968,439 @@ impl ViewApi {
         })
     }
 
+    /// 事件驱动的刷新，按实时合并规则：
+    ///
+    /// | 窗口 | 新消息 | 其他消息事件 | 同步完成 / 需要重同步 |
+    /// | --- | --- | --- | --- |
+    /// | 接在最新 | 有序追加，超上限从旧的一端裁掉 | 只按 id 重读涉及的行，`upsert` 或 `remove` | 在窗口的 seq 范围内重读 |
+    /// | 脱离最新 | 不追加，只更新已在窗口里的行 | 同上 | 同上 |
+    ///
+    /// 在脱离最新的会话里发送消息时先回到最新，待发送行随最新窗口一起推出。事件不带消息 id 时
+    /// 退化为在窗口的 seq 范围内重读。会话事件只换会话摘要，可见下限升高（清空记录）时换成最新窗口。
     async fn refresh_open_views(&self, plan: ViewRefreshPlan) {
-        if !plan.hot_messages.is_empty() {
-            self.publish_hot_timeline_messages(&plan.hot_messages, plan.timeline_query.as_ref())
-                .await;
+        if !plan.live.is_empty() {
+            self.refresh_live(&plan.live).await;
         }
+        if !plan.rows.is_empty() {
+            self.refresh_rows(&plan.rows).await;
+        }
+        if let Some(target) = &plan.reread {
+            self.reread_windows(target).await;
+        }
+        if let Some(target) = &plan.headers {
+            self.refresh_headers(target, plan.reread.as_ref()).await;
+        }
+        if plan.refresh_conversation_lists {
+            self.refresh_conversation_lists().await;
+        }
+    }
 
-        let (timelines, conversation_lists) = {
-            let views = self.inner.views.read().await;
-            (
-                plan.timeline_query
-                    .as_ref()
-                    .map(|target| {
-                        views
-                            .timelines
-                            .iter()
-                            .filter(|(_, view)| {
-                                target.matches_timeline(&view.request.conversation_id)
-                            })
-                            .map(|(view_id, view)| {
-                                (
-                                    view_id.clone(),
-                                    view.request.clone(),
-                                    oldest_positive_seq(&view.last_snapshot),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default(),
-                if plan.refresh_conversation_lists {
-                    views
-                        .conversation_lists
-                        .iter()
-                        .map(|(view_id, view)| (view_id.clone(), view.request.clone()))
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                },
-            )
-        };
+    /// 打开的时间线视图：视图 id、会话 id，以及读这一刻的窗口状态。
+    async fn timeline_views<T>(
+        &self,
+        mut select: impl FnMut(&str, &TimelineViewRegistration) -> Option<T>,
+    ) -> Vec<(String, T)> {
+        let views = self.inner.views.read().await;
+        views
+            .timelines
+            .iter()
+            .filter_map(|(view_id, view)| {
+                select(view_id, view).map(|value| (view_id.clone(), value))
+            })
+            .collect()
+    }
 
-        for (view_id, request, oldest_seq) in timelines {
-            match self.reload_timeline(&request, oldest_seq).await {
-                Ok(snapshot) => {
-                    self.publish_timeline_refresh(view_id, snapshot, oldest_seq)
-                        .await
-                }
-                Err(error) => tracing::warn!(
-                    target = "flare_sdk.view",
-                    view_id,
-                    error = %error,
-                    "refresh timeline view failed"
-                ),
+    async fn refresh_live(&self, messages: &[IMMessage]) {
+        let mut by_conversation: HashMap<String, Vec<IMMessage>> = HashMap::new();
+        for message in messages {
+            let conversation_id = message.conversation_id.trim();
+            if !conversation_id.is_empty() {
+                by_conversation
+                    .entry(conversation_id.to_string())
+                    .or_default()
+                    .push(message.clone());
             }
         }
+        // 脱离最新的视图里出现了本机刚发出的待发送行，或接在最新的视图还没有已发送的行：
+        // 换成最新窗口（待发送行已先落库，随最新窗口一起推出）。其余视图做有序合并。
+        let targets = self
+            .timeline_views(|_, view| {
+                let incoming = by_conversation.get(&view.window.conversation_id)?;
+                let own_send = incoming.iter().any(is_local_pending_send);
+                let reset = (!view.window.attached_to_latest && own_send)
+                    || (view.window.attached_to_latest && view.window.oldest_seq().is_none());
+                Some((view.window.conversation_id.clone(), view.page_size, reset))
+            })
+            .await;
+        if targets.is_empty() {
+            return;
+        }
 
-        for (view_id, request) in conversation_lists {
+        let mut hydrated: HashMap<String, (Vec<IMMessage>, Option<Conversation>)> = HashMap::new();
+        for (view_id, (conversation_id, page_size, reset)) in targets {
+            if reset {
+                match self.latest_window(&conversation_id, page_size).await {
+                    Ok(latest) => self.replace_window(&view_id, latest).await,
+                    Err(error) => warn_refresh(&view_id, &error),
+                }
+                continue;
+            }
+            if !hydrated.contains_key(&conversation_id) {
+                let mut rows = by_conversation
+                    .get(&conversation_id)
+                    .cloned()
+                    .unwrap_or_default();
+                if let Err(error) = self
+                    .inner
+                    .conversation_api
+                    .hydrate_timeline_messages(&mut rows)
+                    .await
+                {
+                    warn_refresh(&view_id, &error);
+                    continue;
+                }
+                let header = self
+                    .inner
+                    .conversation_api
+                    .get(&conversation_id)
+                    .await
+                    .unwrap_or_default();
+                hydrated.insert(conversation_id.clone(), (rows, header));
+            }
+            let Some((rows, header)) = hydrated.get(&conversation_id) else {
+                continue;
+            };
+            let touched = rows.iter().map(IMMessage::row_key).collect::<HashSet<_>>();
+            let update = {
+                let mut views = self.inner.views.write().await;
+                let Some(registration) = views.timelines.get_mut(&view_id) else {
+                    continue;
+                };
+                let mut next = registration.window.clone();
+                merge_live(&mut next, rows);
+                if header.is_some() {
+                    next.conversation = header.clone();
+                }
+                next.trim_older_end(MAX_TIMELINE_WINDOW_MESSAGES);
+                commit_timeline(&view_id, registration, next, CompareRows::Keys(&touched))
+            };
+            self.publish(update);
+        }
+    }
+
+    /// 按 id 只重读事件涉及、且在窗口里的那几行。不在窗口里的 id 不读。
+    async fn refresh_rows(&self, ids: &[MessageRef]) {
+        let targets = self
+            .timeline_views(|_, view| {
+                let rows = view
+                    .window
+                    .messages
+                    .iter()
+                    .filter(|message| {
+                        ids.iter().any(|reference| {
+                            reference
+                                .conversation_id
+                                .as_deref()
+                                .is_none_or(|id| id == view.window.conversation_id)
+                                && reference.matches(message)
+                        })
+                    })
+                    .map(|message| {
+                        (
+                            message.row_key(),
+                            message.client_msg_id.clone(),
+                            message.server_id.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let floor = view
+                    .window
+                    .conversation
+                    .as_ref()
+                    .map(crate::domain::sync_visibility_floor)
+                    .unwrap_or(0);
+                (!rows.is_empty()).then_some((rows, floor))
+            })
+            .await;
+        for (view_id, (rows, floor)) in targets {
+            let mut client_ids = Vec::new();
+            let mut server_ids = Vec::new();
+            for (_, client_id, server_id) in &rows {
+                if !client_id.is_empty() {
+                    client_ids.push(client_id.clone());
+                } else {
+                    server_ids.push(server_id.clone());
+                }
+            }
+            let fresh = match self
+                .inner
+                .conversation_api
+                .timeline_rows_by_id(&client_ids, &server_ids)
+                .await
+            {
+                Ok(fresh) => fresh,
+                Err(error) => {
+                    warn_refresh(&view_id, &error);
+                    continue;
+                }
+            };
+            let keys = rows
+                .into_iter()
+                .map(|(key, _, _)| key)
+                .collect::<HashSet<_>>();
+            let update = {
+                let mut views = self.inner.views.write().await;
+                let Some(registration) = views.timelines.get_mut(&view_id) else {
+                    continue;
+                };
+                let mut next = registration.window.clone();
+                apply_reread_rows(&mut next, &keys, &fresh, floor);
+                commit_timeline(&view_id, registration, next, CompareRows::Keys(&keys))
+            };
+            self.publish(update);
+        }
+    }
+
+    /// 在窗口的 seq 范围内重读：接在最新时读窗口最旧一行之上的全部行（含头部未证实行与
+    /// 待发送行），脱离最新时只读窗口两端之间。`hasOlder` 由区间与窗口之下的本地行回答，
+    /// 所以重读不会让它回跳。
+    async fn reread_windows(&self, target: &ViewRefreshTarget) {
+        let targets = self
+            .timeline_views(|_, view| {
+                target
+                    .matches_timeline(&view.window.conversation_id)
+                    .then(|| {
+                        (
+                            view.window.conversation_id.clone(),
+                            view.page_size,
+                            view.window.attached_to_latest,
+                            view.window.oldest_seq(),
+                            view.window.newest_seq(),
+                        )
+                    })
+            })
+            .await;
+        for (view_id, (conversation_id, page_size, attached, oldest, newest)) in targets {
+            let (Some(oldest), Some(newest)) = (oldest, newest) else {
+                if attached {
+                    match self.latest_window(&conversation_id, page_size).await {
+                        Ok(latest) => self.commit_window(&view_id, latest, None).await,
+                        Err(error) => warn_refresh(&view_id, &error),
+                    }
+                }
+                continue;
+            };
+            let reread = if attached {
+                self.inner
+                    .conversation_api
+                    .reload_timeline_window(&conversation_id, oldest, MAX_TIMELINE_WINDOW_MESSAGES)
+                    .await
+                    .map(|snapshot| (snapshot.conversation, snapshot.messages, snapshot.has_more))
+            } else {
+                self.reread_detached(&conversation_id, oldest, newest).await
+            };
+            match reread {
+                Ok((conversation, messages, has_older)) => {
+                    let window = TimelineWindow {
+                        conversation_id: conversation_id.clone(),
+                        conversation,
+                        messages,
+                        has_older,
+                        attached_to_latest: attached,
+                        anchor_key: None,
+                    };
+                    self.commit_window(
+                        &view_id,
+                        window,
+                        Some((oldest, (!attached).then_some(newest))),
+                    )
+                    .await
+                }
+                Err(error) => warn_refresh(&view_id, &error),
+            }
+        }
+    }
+
+    async fn reread_detached(
+        &self,
+        conversation_id: &str,
+        oldest: u64,
+        newest: u64,
+    ) -> Result<(Option<Conversation>, Vec<IMMessage>, bool)> {
+        let api = &self.inner.conversation_api;
+        let (conversation, coverage) = api.timeline_paging_state(conversation_id).await?;
+        let (messages, _) = api
+            .timeline_rows_after(
+                conversation_id,
+                oldest.saturating_sub(1),
+                newest,
+                MAX_TIMELINE_WINDOW_MESSAGES,
+            )
+            .await?;
+        let (below, _) = api
+            .timeline_rows_in_range(conversation_id, 1, oldest, 1)
+            .await?;
+        let oldest_now = messages
+            .first()
+            .map(|message| message.conversation_seq)
+            .unwrap_or(oldest);
+        Ok((
+            conversation,
+            messages,
+            coverage.has_older(oldest_now, !below.is_empty()),
+        ))
+    }
+
+    /// 用重读得到的窗口替换当前窗口。`reread_range` 是重读覆盖的 seq 范围（`newest = None`
+    /// 表示一直到最新）：重读期间往旧、往新翻页并入的范围外的行保留，hasOlder 随之保留。
+    async fn commit_window(
+        &self,
+        view_id: &str,
+        mut fresh: TimelineWindow,
+        reread_range: Option<(u64, Option<u64>)>,
+    ) {
+        let update = {
+            let mut views = self.inner.views.write().await;
+            let Some(registration) = views.timelines.get_mut(view_id) else {
+                return;
+            };
+            let current = &registration.window;
+            fresh.anchor_key = current.anchor_key.clone();
+            if let Some((from, to)) = reread_range {
+                if current.attached_to_latest != fresh.attached_to_latest {
+                    // 重读期间窗口换了方向（回到最新）：这份重读已经过时。
+                    return;
+                }
+                let outside = current
+                    .messages
+                    .iter()
+                    .filter(|message| {
+                        let seq = message.conversation_seq;
+                        seq > 0 && (seq < from || to.is_some_and(|to| seq > to))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if current.oldest_seq().is_some_and(|oldest| oldest < from) {
+                    fresh.has_older = current.has_older;
+                }
+                if !outside.is_empty() {
+                    fresh.messages.extend(outside);
+                    fresh.messages.sort_by(IMMessage::compare_for_timeline_asc);
+                }
+            }
+            if fresh.attached_to_latest {
+                fresh.trim_older_end(MAX_TIMELINE_WINDOW_MESSAGES);
+            } else {
+                fresh.trim_newer_end(MAX_TIMELINE_WINDOW_MESSAGES);
+            }
+            commit_timeline(view_id, registration, fresh, CompareRows::All)
+        };
+        self.publish(update);
+    }
+
+    async fn replace_window(&self, view_id: &str, latest: TimelineWindow) {
+        let update = {
+            let mut views = self.inner.views.write().await;
+            let Some(registration) = views.timelines.get_mut(view_id) else {
+                return;
+            };
+            replace_timeline(view_id, registration, latest)
+        };
+        self.publish(Some(update));
+    }
+
+    /// 会话摘要变了：只换摘要；可见下限升高（本地清空记录、服务端历史可见起点）时，
+    /// 下限之下的行不再可见，换成最新窗口。已在本轮重读过的视图跳过。
+    async fn refresh_headers(
+        &self,
+        target: &ViewRefreshTarget,
+        reread: Option<&ViewRefreshTarget>,
+    ) {
+        let targets = self
+            .timeline_views(|_, view| {
+                let conversation_id = &view.window.conversation_id;
+                (target.matches_timeline(conversation_id)
+                    && !reread.is_some_and(|reread| reread.matches_timeline(conversation_id)))
+                .then(|| (conversation_id.clone(), view.page_size))
+            })
+            .await;
+        for (view_id, (conversation_id, page_size)) in targets {
+            let header = match self.inner.conversation_api.get(&conversation_id).await {
+                Ok(header) => header,
+                Err(error) => {
+                    warn_refresh(&view_id, &error);
+                    continue;
+                }
+            };
+            let floor = header
+                .as_ref()
+                .map(crate::domain::sync_visibility_floor)
+                .unwrap_or(0);
+            let reset = self
+                .with_timeline(&view_id, |view| {
+                    let old_floor = view
+                        .window
+                        .conversation
+                        .as_ref()
+                        .map(crate::domain::sync_visibility_floor)
+                        .unwrap_or(0);
+                    floor > old_floor
+                        && view.window.messages.iter().any(|message| {
+                            message.conversation_seq > 0 && message.conversation_seq <= floor
+                        })
+                })
+                .await
+                .unwrap_or(false);
+            if reset {
+                match self.latest_window(&conversation_id, page_size).await {
+                    Ok(latest) => self.replace_window(&view_id, latest).await,
+                    Err(error) => warn_refresh(&view_id, &error),
+                }
+                continue;
+            }
+            let update = {
+                let mut views = self.inner.views.write().await;
+                let Some(registration) = views.timelines.get_mut(&view_id) else {
+                    continue;
+                };
+                let mut next = registration.window.clone();
+                next.conversation = header;
+                commit_timeline(&view_id, registration, next, CompareRows::None)
+            };
+            self.publish(update);
+        }
+    }
+
+    async fn refresh_conversation_lists(&self) {
+        let lists = {
+            let views = self.inner.views.read().await;
+            views
+                .conversation_lists
+                .iter()
+                .map(|(view_id, view)| (view_id.clone(), view.request.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (view_id, request) in lists {
             match self.conversation_list_snapshot(&request).await {
                 Ok(snapshot) => {
-                    self.publish_conversation_list_refresh(view_id, snapshot)
-                        .await
+                    let update = {
+                        let mut views = self.inner.views.write().await;
+                        let Some(registration) = views.conversation_lists.get_mut(&view_id) else {
+                            continue;
+                        };
+                        let update = conversation_list_view_update(
+                            &view_id,
+                            registration.revision + 1,
+                            &registration.last_snapshot,
+                            &snapshot,
+                        );
+                        if update.is_some() {
+                            registration.revision += 1;
+                        }
+                        registration.last_snapshot = snapshot;
+                        update
+                    };
+                    self.publish(update);
                 }
                 Err(error) => tracing::warn!(
                     target = "flare_sdk.view",
@@ -649,165 +1411,95 @@ impl ViewApi {
             }
         }
     }
+}
 
-    async fn publish_hot_timeline_messages(
-        &self,
-        messages: &[IMMessage],
-        query_target: Option<&ViewRefreshTarget>,
-    ) {
-        let active_conversation_ids = {
-            let views = self.inner.views.read().await;
-            views
-                .timelines
-                .values()
-                .filter(|view| {
-                    !query_target
-                        .map(|target| target.matches_timeline(&view.request.conversation_id))
-                        .unwrap_or(false)
-                })
-                .map(|view| view.request.conversation_id.clone())
-                .collect::<HashSet<_>>()
-        };
-        if active_conversation_ids.is_empty() {
-            return;
+fn anchor_is_set(anchor: &TimelineAnchor) -> bool {
+    anchor
+        .message_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty())
+        || anchor.seq.is_some_and(|seq| seq > 0)
+}
+
+fn required_view_id(view_id: &str) -> Result<String> {
+    let view_id = view_id.trim();
+    if view_id.is_empty() {
+        return Err(FlareError::localized(
+            ErrorCode::InvalidParameter,
+            "viewId is required",
+        ));
+    }
+    Ok(view_id.to_string())
+}
+
+fn closed_page(view_id: String) -> TimelineViewPageResponse {
+    TimelineViewPageResponse {
+        view_id,
+        loaded_count: 0,
+        revision: 0,
+    }
+}
+
+/// 本机刚发出、还没有服务端 seq 的行（发送队列的乐观行，含上传中）。
+fn is_local_pending_send(message: &IMMessage) -> bool {
+    message.conversation_seq == 0 && message.local_state.is_local
+}
+
+fn warn_refresh(view_id: &str, error: &FlareError) {
+    tracing::warn!(
+        target = "flare_sdk.view",
+        view_id,
+        error = %error,
+        "refresh timeline view failed"
+    );
+}
+
+/// 换上新窗口；有变化时版本号加 1 并给出对应的更新。
+fn commit_timeline(
+    view_id: &str,
+    registration: &mut TimelineViewRegistration,
+    next: TimelineWindow,
+    compare: CompareRows<'_>,
+) -> Option<ViewUpdate> {
+    let change = timeline_change(&registration.window, &next, compare);
+    registration.window = next;
+    match change {
+        TimelineChange::None => None,
+        TimelineChange::Delta(delta) => {
+            registration.revision += 1;
+            Some(ViewUpdate {
+                view_id: view_id.to_string(),
+                revision: registration.revision,
+                kind: ViewUpdateKind::Delta,
+                snapshot: None,
+                delta: Some(*delta),
+            })
         }
-
-        let mut hot_messages = messages
-            .iter()
-            .filter(|message| active_conversation_ids.contains(message.conversation_id.trim()))
-            .cloned()
-            .collect::<Vec<_>>();
-        if hot_messages.is_empty() {
-            return;
-        }
-
-        let mut latest_conversations = HashMap::new();
-        for conversation_id in &active_conversation_ids {
-            if !hot_messages
-                .iter()
-                .any(|message| message.conversation_id.trim() == conversation_id)
-            {
-                continue;
-            }
-            match self.inner.conversation_api.get(conversation_id).await {
-                Ok(Some(conversation)) => {
-                    latest_conversations.insert(conversation_id.clone(), conversation);
-                }
-                Ok(None) => {}
-                Err(error) => tracing::warn!(
-                    target = "flare_sdk.view",
-                    conversation_id,
-                    error = %error,
-                    "load hot conversation projection failed"
-                ),
-            }
-        }
-
-        if let Err(error) = self
-            .inner
-            .conversation_api
-            .hydrate_timeline_messages(&mut hot_messages)
-            .await
-        {
-            tracing::warn!(
-                target = "flare_sdk.view",
-                error = %error,
-                "hydrate hot timeline messages failed"
-            );
-            return;
-        }
-
-        let updates = {
-            let mut views = self.inner.views.write().await;
-            let mut updates = Vec::new();
-            for (view_id, registration) in views.timelines.iter_mut() {
-                if query_target
-                    .map(|target| target.matches_timeline(&registration.request.conversation_id))
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
-                let old = registration.last_snapshot.clone();
-                let Some(new) = hot_timeline_snapshot(
-                    &old,
-                    &hot_messages,
-                    registration.request.message_limit,
-                    latest_conversations.get(&registration.request.conversation_id),
-                ) else {
-                    continue;
-                };
-                let update = timeline_view_update(view_id, &old, &new);
-                registration.last_snapshot = new;
-                if let Some(update) = update {
-                    updates.push(update);
-                }
-            }
-            updates
-        };
-
-        for update in updates {
-            self.inner.bus.publish(SdkEvent::View(update));
+        TimelineChange::Snapshot => {
+            registration.revision += 1;
+            Some(timeline_snapshot_update(view_id, registration))
         }
     }
+}
 
-    async fn publish_timeline_refresh(
-        &self,
-        view_id: String,
-        mut snapshot: ConversationTimelineSnapshot,
-        reloaded_from: Option<u64>,
-    ) {
-        let update = {
-            let mut views = self.inner.views.write().await;
-            let Some(registration) = views.timelines.get_mut(&view_id) else {
-                return;
-            };
-            // 重读期间往旧翻页并入了更旧的行：这些行与它们算出的 has_more 保留。
-            if let Some(reloaded_from) = reloaded_from
-                && oldest_positive_seq(&registration.last_snapshot)
-                    .is_some_and(|oldest| oldest < reloaded_from)
-            {
-                snapshot.messages.extend(
-                    registration
-                        .last_snapshot
-                        .messages
-                        .iter()
-                        .filter(|message| {
-                            message.conversation_seq > 0 && message.conversation_seq < reloaded_from
-                        })
-                        .cloned(),
-                );
-                snapshot
-                    .messages
-                    .sort_by(IMMessage::compare_for_timeline_asc);
-                snapshot.has_more = registration.last_snapshot.has_more;
-            }
-            let update = timeline_view_update(&view_id, &registration.last_snapshot, &snapshot);
-            registration.last_snapshot = snapshot;
-            update
-        };
-        if let Some(update) = update {
-            self.inner.bus.publish(SdkEvent::View(update));
-        }
-    }
+/// 整体换成新窗口（回到最新、清空记录），版本号加 1，以快照推出。
+fn replace_timeline(
+    view_id: &str,
+    registration: &mut TimelineViewRegistration,
+    next: TimelineWindow,
+) -> ViewUpdate {
+    registration.window = next;
+    registration.revision += 1;
+    timeline_snapshot_update(view_id, registration)
+}
 
-    async fn publish_conversation_list_refresh(
-        &self,
-        view_id: String,
-        snapshot: HomeTimelineSnapshot,
-    ) {
-        let update = {
-            let mut views = self.inner.views.write().await;
-            let Some(registration) = views.conversation_lists.get_mut(&view_id) else {
-                return;
-            };
-            let update =
-                conversation_list_view_update(&view_id, &registration.last_snapshot, &snapshot);
-            registration.last_snapshot = snapshot;
-            update
-        };
-        if let Some(update) = update {
-            self.inner.bus.publish(SdkEvent::View(update));
-        }
+fn timeline_snapshot_update(view_id: &str, registration: &TimelineViewRegistration) -> ViewUpdate {
+    ViewUpdate {
+        view_id: view_id.to_string(),
+        revision: registration.revision,
+        kind: ViewUpdateKind::Snapshot,
+        snapshot: Some(ViewSnapshot::Timeline(registration.window.snapshot())),
+        delta: None,
     }
 }
 
@@ -818,6 +1510,28 @@ enum ViewRefreshTarget {
 }
 
 impl ViewRefreshTarget {
+    fn conversation(conversation_id: &str) -> Self {
+        let conversation_id = conversation_id.trim();
+        if conversation_id.is_empty() {
+            return Self::All;
+        }
+        Self::Conversations([conversation_id.to_string()].into_iter().collect())
+    }
+
+    fn conversations<'a>(ids: impl IntoIterator<Item = &'a String>) -> Self {
+        let ids = ids
+            .into_iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        if ids.is_empty() {
+            Self::All
+        } else {
+            Self::Conversations(ids)
+        }
+    }
+
     fn matches_timeline(&self, conversation_id: &str) -> bool {
         match self {
             Self::All => true,
@@ -840,388 +1554,233 @@ impl ViewRefreshTarget {
     }
 }
 
+fn merge_target(slot: &mut Option<ViewRefreshTarget>, other: Option<ViewRefreshTarget>) {
+    match (slot.as_mut(), other) {
+        (Some(target), Some(other)) => target.merge(other),
+        (None, Some(other)) => *slot = Some(other),
+        _ => {}
+    }
+}
+
+/// 事件涉及的一条消息：服务端 id 或客户端 id；`conversation_id` 为空时（发送失败）匹配任何视图。
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MessageRef {
+    conversation_id: Option<String>,
+    message_id: String,
+}
+
+impl MessageRef {
+    fn matches(&self, message: &IMMessage) -> bool {
+        message.server_id == self.message_id || message.client_msg_id == self.message_id
+    }
+}
+
+#[derive(Default)]
 struct ViewRefreshPlan {
-    timeline_query: Option<ViewRefreshTarget>,
-    hot_messages: Vec<IMMessage>,
+    /// 新消息（推送、同步、本机发送的乐观行）。
+    live: Vec<IMMessage>,
+    /// 事件涉及的消息：只重读窗口里的这几行。
+    rows: Vec<MessageRef>,
+    /// 在窗口的 seq 范围内重读。
+    reread: Option<ViewRefreshTarget>,
+    /// 只换会话摘要。
+    headers: Option<ViewRefreshTarget>,
     refresh_conversation_lists: bool,
 }
 
 impl ViewRefreshPlan {
-    fn query(target: ViewRefreshTarget) -> Self {
-        Self {
-            timeline_query: Some(target),
-            hot_messages: Vec::new(),
-            refresh_conversation_lists: true,
-        }
-    }
-
-    fn hot_messages(messages: Vec<IMMessage>) -> Option<Self> {
-        (!messages.is_empty()).then_some(Self {
-            timeline_query: None,
-            hot_messages: messages,
-            refresh_conversation_lists: true,
-        })
-    }
-
     fn merge(&mut self, other: ViewRefreshPlan) {
-        match (&mut self.timeline_query, other.timeline_query) {
-            (Some(target), Some(other_target)) => target.merge(other_target),
-            (None, Some(other_target)) => self.timeline_query = Some(other_target),
-            _ => {}
+        self.live.extend(other.live);
+        for reference in other.rows {
+            if !self.rows.contains(&reference) {
+                self.rows.push(reference);
+            }
         }
-        self.hot_messages.extend(other.hot_messages);
+        merge_target(&mut self.reread, other.reread);
+        merge_target(&mut self.headers, other.headers);
         self.refresh_conversation_lists |= other.refresh_conversation_lists;
+    }
+
+    fn lists_only() -> Self {
+        Self {
+            refresh_conversation_lists: true,
+            ..Self::default()
+        }
+    }
+
+    fn reread(target: ViewRefreshTarget) -> Self {
+        Self {
+            reread: Some(target),
+            refresh_conversation_lists: true,
+            ..Self::default()
+        }
+    }
+
+    /// 只重读这些消息；没有可用的 id 时退化为在窗口的 seq 范围内重读该会话。
+    fn rows(conversation_id: Option<&str>, message_ids: &[&str]) -> Self {
+        let rows = message_ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .map(|message_id| MessageRef {
+                conversation_id: conversation_id
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string),
+                message_id: message_id.to_string(),
+            })
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            return Self::reread(
+                conversation_id
+                    .map(ViewRefreshTarget::conversation)
+                    .unwrap_or(ViewRefreshTarget::All),
+            );
+        }
+        Self {
+            rows,
+            refresh_conversation_lists: true,
+            ..Self::default()
+        }
     }
 }
 
 fn view_refresh_plan(event: &SdkEvent) -> Option<ViewRefreshPlan> {
     match event {
-        SdkEvent::Message(MessageEvent::Received { message }) => {
-            ViewRefreshPlan::hot_messages(vec![message.as_ref().clone()])
-        }
-        SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) => {
-            ViewRefreshPlan::hot_messages(messages.clone())
-        }
-        _ => view_refresh_target(event).map(ViewRefreshPlan::query),
-    }
-}
-
-fn view_refresh_target(event: &SdkEvent) -> Option<ViewRefreshTarget> {
-    match event {
-        SdkEvent::Message(MessageEvent::Received { .. } | MessageEvent::ReceivedBatch { .. }) => {
-            None
-        }
-        SdkEvent::Message(event) => Some(message_refresh_target(event)),
-        SdkEvent::Conversation(event) => Some(conversation_refresh_target(event)),
+        SdkEvent::Message(event) => Some(message_refresh_plan(event)),
+        SdkEvent::Conversation(event) => Some(conversation_refresh_plan(event)),
         SdkEvent::Sync(SyncNotify::Finished { .. } | SyncNotify::ResyncNeeded { .. }) => {
-            Some(ViewRefreshTarget::All)
+            Some(ViewRefreshPlan::reread(ViewRefreshTarget::All))
         }
         _ => None,
     }
 }
 
-fn message_refresh_target(event: &MessageEvent) -> ViewRefreshTarget {
-    let mut ids = HashSet::new();
+fn message_refresh_plan(event: &MessageEvent) -> ViewRefreshPlan {
     match event {
-        MessageEvent::Received { message } => insert_non_empty(&mut ids, &message.conversation_id),
-        MessageEvent::ReceivedBatch { messages } => {
-            for message in messages {
-                insert_non_empty(&mut ids, &message.conversation_id);
-            }
+        MessageEvent::Received { message } => ViewRefreshPlan {
+            live: vec![message.as_ref().clone()],
+            refresh_conversation_lists: true,
+            ..ViewRefreshPlan::default()
+        },
+        MessageEvent::ReceivedBatch { messages } => ViewRefreshPlan {
+            live: messages.clone(),
+            refresh_conversation_lists: true,
+            ..ViewRefreshPlan::default()
+        },
+        MessageEvent::SendAck { ack } => {
+            ViewRefreshPlan::rows(Some(&ack.conversation_id), &[&ack.client_msg_id])
         }
-        MessageEvent::SendAck { ack } => insert_non_empty(&mut ids, &ack.conversation_id),
+        MessageEvent::SendFailed { client_msg_id, .. } => {
+            ViewRefreshPlan::rows(None, &[client_msg_id])
+        }
         MessageEvent::Recalled {
-            conversation_id, ..
-        }
-        | MessageEvent::Typing {
-            conversation_id, ..
-        }
-        | MessageEvent::TypingAggregate {
-            conversation_id, ..
-        }
-        | MessageEvent::Edited {
-            conversation_id, ..
+            conversation_id,
+            event,
+        } => ViewRefreshPlan::rows(Some(conversation_id), &[&event.server_msg_id]),
+        MessageEvent::Edited {
+            conversation_id,
+            server_msg_id,
         }
         | MessageEvent::ReactionChanged {
-            conversation_id, ..
-        }
-        | MessageEvent::Deleted {
-            conversation_id, ..
-        }
-        | MessageEvent::ReadReceipt {
-            conversation_id, ..
-        }
-        | MessageEvent::RetentionScheduled {
-            conversation_id, ..
-        }
-        | MessageEvent::RetentionExpired {
-            conversation_id, ..
-        }
-        | MessageEvent::RetentionPurged {
-            conversation_id, ..
-        }
-        | MessageEvent::Pinned {
-            conversation_id, ..
-        }
-        | MessageEvent::Unpinned {
-            conversation_id, ..
-        }
-        | MessageEvent::Marked {
-            conversation_id, ..
-        }
-        | MessageEvent::Unmarked {
-            conversation_id, ..
-        }
-        | MessageEvent::PresenceChanged {
+            conversation_id,
+            server_msg_id,
+            ..
+        } => ViewRefreshPlan::rows(Some(conversation_id), &[server_msg_id]),
+        MessageEvent::Deleted {
+            conversation_id,
+            event,
+        } => ViewRefreshPlan::rows(Some(conversation_id), &[&event.server_msg_id]),
+        MessageEvent::RetentionScheduled {
+            conversation_id,
+            event,
+        } => ViewRefreshPlan::rows(Some(conversation_id), &[&event.server_msg_id]),
+        MessageEvent::RetentionExpired {
+            conversation_id,
+            event,
+        } => ViewRefreshPlan::rows(Some(conversation_id), &[&event.server_msg_id]),
+        MessageEvent::RetentionPurged {
+            conversation_id,
+            event,
+        } => ViewRefreshPlan::rows(Some(conversation_id), &[&event.server_msg_id]),
+        MessageEvent::Pinned {
+            conversation_id,
+            event,
+        } => ViewRefreshPlan::rows(Some(conversation_id), &[&event.server_msg_id]),
+        MessageEvent::Unpinned {
+            conversation_id,
+            event,
+        } => ViewRefreshPlan::rows(Some(conversation_id), &[&event.server_msg_id]),
+        MessageEvent::Marked {
+            conversation_id,
+            event,
+        } => ViewRefreshPlan::rows(Some(conversation_id), &[&event.server_msg_id]),
+        MessageEvent::Unmarked {
+            conversation_id,
+            event,
+        } => ViewRefreshPlan::rows(Some(conversation_id), &[&event.server_msg_id]),
+        MessageEvent::PluginStateChanged {
+            conversation_id,
+            message_id,
+            ..
+        } => ViewRefreshPlan::rows(Some(conversation_id), &[message_id]),
+        MessageEvent::ReadSummariesChanged {
+            conversation_id,
+            message_ids,
+        } => ViewRefreshPlan::rows(
+            Some(conversation_id),
+            &message_ids.iter().map(String::as_str).collect::<Vec<_>>(),
+        ),
+        // 已读回执改的是本人消息的回执投影，涉及的行不止一条，也不带全 id：在窗口范围内重读。
+        MessageEvent::ReadReceipt {
             conversation_id, ..
         }
         | MessageEvent::Custom {
             conversation_id, ..
-        }
-        | MessageEvent::PluginStateChanged {
-            conversation_id, ..
-        }
-        | MessageEvent::ReadSummariesChanged {
-            conversation_id, ..
-        } => insert_non_empty(&mut ids, conversation_id),
-        MessageEvent::SendFailed { .. } => return ViewRefreshTarget::All,
-    }
-    if ids.is_empty() {
-        ViewRefreshTarget::All
-    } else {
-        ViewRefreshTarget::Conversations(ids)
+        } => ViewRefreshPlan::reread(ViewRefreshTarget::conversation(conversation_id)),
+        // 正在输入、在线状态不改时间线的行。
+        MessageEvent::Typing { .. }
+        | MessageEvent::TypingAggregate { .. }
+        | MessageEvent::PresenceChanged { .. } => ViewRefreshPlan::lists_only(),
     }
 }
 
-fn conversation_refresh_target(event: &ConversationEvent) -> ViewRefreshTarget {
-    let mut ids = HashSet::new();
+fn conversation_refresh_plan(event: &ConversationEvent) -> ViewRefreshPlan {
     match event {
         ConversationEvent::Synced { conversation_ids } => {
-            for conversation_id in conversation_ids {
-                insert_non_empty(&mut ids, conversation_id);
-            }
+            ViewRefreshPlan::reread(ViewRefreshTarget::conversations(conversation_ids))
+        }
+        ConversationEvent::Deleted { conversation_id } => {
+            ViewRefreshPlan::reread(ViewRefreshTarget::conversation(conversation_id))
         }
         ConversationEvent::Created { conversation_id }
         | ConversationEvent::Updated { conversation_id }
         | ConversationEvent::UnreadCountChanged {
             conversation_id, ..
-        }
-        | ConversationEvent::Deleted { conversation_id } => {
-            insert_non_empty(&mut ids, conversation_id)
-        }
-    }
-    if ids.is_empty() {
-        ViewRefreshTarget::All
-    } else {
-        ViewRefreshTarget::Conversations(ids)
-    }
-}
-
-fn insert_non_empty(ids: &mut HashSet<String>, value: &str) {
-    let value = value.trim();
-    if !value.is_empty() {
-        ids.insert(value.to_string());
-    }
-}
-
-fn hot_timeline_snapshot(
-    snapshot: &ConversationTimelineSnapshot,
-    incoming: &[IMMessage],
-    limit: u32,
-    latest_conversation: Option<&Conversation>,
-) -> Option<ConversationTimelineSnapshot> {
-    let conversation_id = snapshot
-        .conversation
-        .as_ref()
-        .map(|conversation| conversation.conversation_id.trim())
-        .filter(|id| !id.is_empty())
-        .or_else(|| {
-            snapshot
-                .messages
-                .first()
-                .map(|message| message.conversation_id.trim())
-                .filter(|id| !id.is_empty())
-        })?;
-    let mut messages = snapshot.messages.clone();
-    let original_len = messages.len();
-    // key → index 一次构建：旧实现对每条 incoming 线性扫描且逐元素重算 timeline_key，
-    // 窗口放大到 1 万条后每条新消息是 O(K×W) 次 String 构造。
-    let mut index_by_key: HashMap<String, usize> = messages
-        .iter()
-        .enumerate()
-        .map(|(index, message)| (message.timeline_key(), index))
-        .collect();
-    let mut changed = false;
-    // 就地更新可能改变排序字段（如 ts 补齐）→ 走全量重排兜底；纯追加走有序合并快路径。
-    let mut order_dirty = false;
-
-    for message in incoming
-        .iter()
-        .filter(|message| message.conversation_id.trim() == conversation_id)
-    {
-        let key = message.timeline_key();
-        if let Some(&index) = index_by_key.get(&key) {
-            if json_changed(&messages[index], message) {
-                messages[index] = message.clone();
-                changed = true;
-                if index < original_len {
-                    order_dirty = true;
-                }
-            }
-        } else {
-            index_by_key.insert(key, messages.len());
-            messages.push(message.clone());
-            changed = true;
-        }
-    }
-
-    if !changed {
-        return None;
-    }
-
-    let limit = normalized_timeline_window_limit(limit);
-    let sorted_prefix_intact = !order_dirty
-        && messages[..original_len]
-            .windows(2)
-            .all(|pair| IMMessage::compare_for_timeline_asc(&pair[0], &pair[1]).is_le());
-    if sorted_prefix_intact {
-        // 常态路径（新消息追加）：现有窗口按快照不变式已 ASC 有序，只排 K 条新消息后
-        // 两路有序合并——W log W 全排 → O(W+K)。
-        let appended = messages.split_off(original_len);
-        messages = merge_sorted_timeline(messages, appended);
-    } else {
-        // 兜底（就地更新/前缀失序）：全量 ASC 重排。
-        messages.sort_by(IMMessage::compare_for_timeline_asc);
-    }
-    // 窗口截断 = 保留 ASC 尾部 limit 条（旧实现"desc 截断 + 回排 asc"的等价形式：
-    // `compare_for_latest_window_desc` 是 asc 的严格反序）。
-    let truncated = messages.len() > limit;
-    if truncated {
-        let overflow = messages.len() - limit;
-        messages.drain(..overflow);
-    }
-
-    Some(ConversationTimelineSnapshot {
-        conversation: latest_conversation
-            .cloned()
-            .or_else(|| snapshot.conversation.clone()),
-        messages,
-        has_more: snapshot.has_more || truncated,
-    })
-}
-
-/// 两路有序合并（ASC；tie 时 existing 在前，与稳定全排序对 [existing..., appended...] 的结果一致）。
-fn merge_sorted_timeline(existing: Vec<IMMessage>, mut appended: Vec<IMMessage>) -> Vec<IMMessage> {
-    if appended.is_empty() {
-        return existing;
-    }
-    appended.sort_by(IMMessage::compare_for_timeline_asc);
-    let mut merged = Vec::with_capacity(existing.len() + appended.len());
-    let mut left = existing.into_iter().peekable();
-    let mut right = appended.into_iter().peekable();
-    loop {
-        match (left.peek(), right.peek()) {
-            // 用 if let 取值而非 expect：本 crate 策略禁止生产路径出现
-            // expect/unwrap/panic（见 lib.rs 顶部 deny）。peek 后 next() 必为
-            // Some，但把这个「必然」写成不会 panic 的形式，代价为零。
-            (Some(l), Some(r)) => {
-                let take_left = IMMessage::compare_for_timeline_asc(l, r).is_le();
-                let taken = if take_left { left.next() } else { right.next() };
-                if let Some(v) = taken {
-                    merged.push(v);
-                }
-            }
-            (Some(_), None) => {
-                if let Some(v) = left.next() {
-                    merged.push(v);
-                }
-            }
-            (None, Some(_)) => {
-                if let Some(v) = right.next() {
-                    merged.push(v);
-                }
-            }
-            (None, None) => break,
-        }
-    }
-    merged
-}
-
-fn normalized_timeline_window_limit(limit: u32) -> usize {
-    (limit as usize).clamp(1, MAX_TIMELINE_WINDOW_MESSAGES)
-}
-
-fn oldest_positive_seq(snapshot: &ConversationTimelineSnapshot) -> Option<u64> {
-    snapshot
-        .messages
-        .iter()
-        .filter_map(|message| (message.conversation_seq > 0).then_some(message.conversation_seq))
-        .min()
-}
-
-/// 往旧翻到的一页（由新到旧）与它之下还有没有可见消息。
-struct OlderPage {
-    messages: Vec<IMMessage>,
-    has_older: bool,
-}
-
-/// 一次往旧翻页最多回填几次：正常一次就够（服务端回满一页或到达起点），多的只是兜底。
-const MAX_BACKFILLS_PER_PAGE: usize = 3;
-
-fn expand_timeline_snapshot(
-    snapshot: &ConversationTimelineSnapshot,
-    older: &[IMMessage],
-    has_older: bool,
-    max_window: usize,
-) -> (ConversationTimelineSnapshot, u32) {
-    let mut messages = snapshot.messages.clone();
-    let mut keys = messages
-        .iter()
-        .map(|message| message.timeline_key())
-        .collect::<HashSet<_>>();
-    let mut loaded_count = 0_u32;
-    for message in older {
-        if keys.insert(message.timeline_key()) {
-            messages.push(message.clone());
-            loaded_count += 1;
-        }
-    }
-    messages.sort_by(IMMessage::compare_for_latest_window_desc);
-    let truncated = messages.len() > max_window;
-    messages.truncate(max_window);
-    messages.sort_by(IMMessage::compare_for_timeline_asc);
-    (
-        ConversationTimelineSnapshot {
-            conversation: snapshot.conversation.clone(),
-            messages,
-            has_more: has_older || truncated,
+        } => ViewRefreshPlan {
+            headers: Some(ViewRefreshTarget::conversation(conversation_id)),
+            refresh_conversation_lists: true,
+            ..ViewRefreshPlan::default()
         },
-        loaded_count,
-    )
-}
-
-fn timeline_view_update(
-    view_id: &str,
-    old: &ConversationTimelineSnapshot,
-    new: &ConversationTimelineSnapshot,
-) -> Option<ViewUpdate> {
-    let Some(ops) = keyed_delta_ops(&old.messages, &new.messages, |message| {
-        message.timeline_key().trim().to_string()
-    }) else {
-        return Some(snapshot_update(
-            view_id,
-            ViewSnapshot::Timeline(new.clone()),
-        ));
-    };
-    let side_changed =
-        json_changed(&old.conversation, &new.conversation) || old.has_more != new.has_more;
-    if ops.is_empty() && !side_changed {
-        return None;
     }
-    Some(ViewUpdate {
-        view_id: view_id.to_string(),
-        kind: ViewUpdateKind::Delta,
-        snapshot: None,
-        delta: Some(ViewDelta::Timeline {
-            ops,
-            conversation: new.conversation.clone(),
-            has_more: new.has_more,
-        }),
-    })
 }
 
 fn conversation_list_view_update(
     view_id: &str,
+    revision: u64,
     old: &HomeTimelineSnapshot,
     new: &HomeTimelineSnapshot,
 ) -> Option<ViewUpdate> {
     let Some(ops) = keyed_delta_ops(&old.conversations, &new.conversations, |conversation| {
         conversation.conversation_id.trim().to_string()
     }) else {
-        return Some(snapshot_update(
-            view_id,
-            ViewSnapshot::ConversationList(new.clone()),
-        ));
+        return Some(ViewUpdate {
+            view_id: view_id.to_string(),
+            revision,
+            kind: ViewUpdateKind::Snapshot,
+            snapshot: Some(ViewSnapshot::ConversationList(new.clone())),
+            delta: None,
+        });
     };
     let side_changed =
         old.total_unread != new.total_unread || json_changed(&old.sync_state, &new.sync_state);
@@ -1230,6 +1789,7 @@ fn conversation_list_view_update(
     }
     Some(ViewUpdate {
         view_id: view_id.to_string(),
+        revision,
         kind: ViewUpdateKind::Delta,
         snapshot: None,
         delta: Some(ViewDelta::ConversationList {
@@ -1238,15 +1798,6 @@ fn conversation_list_view_update(
             sync_state: new.sync_state.clone(),
         }),
     })
-}
-
-fn snapshot_update(view_id: &str, snapshot: ViewSnapshot) -> ViewUpdate {
-    ViewUpdate {
-        view_id: view_id.to_string(),
-        kind: ViewUpdateKind::Snapshot,
-        snapshot: Some(snapshot),
-        delta: None,
-    }
 }
 
 fn keyed_delta_ops<T, K>(old: &[T], new: &[T], key: K) -> Option<Vec<ViewDeltaOp>>
@@ -1319,25 +1870,17 @@ where
     Some(ops)
 }
 
-fn json_changed<T: Serialize>(left: &T, right: &T) -> bool {
-    serde_json::to_value(left).ok() != serde_json::to_value(right).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use flare_proto::common::{Message as ProtoMessage, SendAck};
 
     use super::{
-        ForegroundPullGuard, ViewRefreshTarget, ViewRegistrations, expand_timeline_snapshot,
-        hot_timeline_snapshot, oldest_positive_seq, timeline_view_update, view_refresh_plan,
-        view_refresh_target,
+        ForegroundPullGuard, MessageRef, TimelineViewRegistration, TimelineWindow,
+        ViewRefreshTarget, ViewRegistrations, view_refresh_plan,
     };
     use crate::kernel::event::{MessageEvent, SdkEvent, SyncNotify, SyncPhase};
     use crate::kernel::{SyncReason, SyncRunContext, SyncScope, SyncTrigger, SyncVisibility};
-    use crate::model::{
-        Conversation, ConversationTimelineSnapshot, IMMessage, OpenTimelineViewRequest, ViewDelta,
-        ViewDeltaKind, ViewUpdateKind,
-    };
+    use crate::model::IMMessage;
 
     #[test]
     fn foreground_pull_guard_dedups_in_flight_and_releases_on_finish() {
@@ -1351,7 +1894,7 @@ mod tests {
     }
 
     #[test]
-    fn message_batch_refresh_plan_uses_hot_messages_without_timeline_query() {
+    fn message_batch_refresh_plan_carries_live_messages_only() {
         let event = SdkEvent::Message(MessageEvent::ReceivedBatch {
             messages: vec![
                 IMMessage::new(ProtoMessage {
@@ -1362,33 +1905,61 @@ mod tests {
                     conversation_id: "c2".into(),
                     ..Default::default()
                 }),
-                IMMessage::new(ProtoMessage {
-                    conversation_id: "c1".into(),
-                    ..Default::default()
-                }),
             ],
         });
         let plan = view_refresh_plan(&event).expect("message event refreshes views");
-        assert!(plan.timeline_query.is_none());
+        assert!(plan.reread.is_none());
+        assert!(plan.rows.is_empty());
         assert!(plan.refresh_conversation_lists);
-        assert_eq!(plan.hot_messages.len(), 3);
+        assert_eq!(plan.live.len(), 2);
     }
 
     #[test]
-    fn send_ack_refresh_uses_ack_conversation_id() {
+    fn send_ack_rereads_the_acked_row_by_its_client_id() {
         let event = SdkEvent::Message(MessageEvent::SendAck {
             ack: Box::new(SendAck {
                 conversation_id: "c1".into(),
+                client_msg_id: "cm-1".into(),
                 ..Default::default()
             }),
         });
-        let target = view_refresh_target(&event).expect("ack refreshes views");
+        let plan = view_refresh_plan(&event).expect("ack refreshes views");
+        assert_eq!(
+            plan.rows,
+            vec![MessageRef {
+                conversation_id: Some("c1".into()),
+                message_id: "cm-1".into(),
+            }]
+        );
+        assert!(plan.reread.is_none());
+    }
+
+    #[test]
+    fn an_event_without_a_message_id_rereads_the_window_range() {
+        let event = SdkEvent::Message(MessageEvent::Recalled {
+            conversation_id: "c1".into(),
+            event: Default::default(),
+        });
+        let plan = view_refresh_plan(&event).expect("recall refreshes views");
+        assert!(plan.rows.is_empty());
+        let target = plan.reread.expect("window range reread");
         assert!(target.matches_timeline("c1"));
         assert!(!target.matches_timeline("c2"));
     }
 
     #[test]
-    fn sync_finish_refreshes_all_views() {
+    fn typing_does_not_touch_timelines() {
+        let event = SdkEvent::Message(MessageEvent::Typing {
+            conversation_id: "c1".into(),
+            event: Default::default(),
+        });
+        let plan = view_refresh_plan(&event).expect("typing refreshes lists");
+        assert!(plan.live.is_empty() && plan.rows.is_empty());
+        assert!(plan.reread.is_none() && plan.headers.is_none());
+    }
+
+    #[test]
+    fn sync_finish_rereads_all_views() {
         let event = SdkEvent::Sync(SyncNotify::Finished {
             run: SyncRunContext::new(
                 SyncTrigger::Manual,
@@ -1398,7 +1969,8 @@ mod tests {
             ),
             phase: SyncPhase::Background,
         });
-        assert_eq!(view_refresh_target(&event), Some(ViewRefreshTarget::All));
+        let plan = view_refresh_plan(&event).expect("sync finish refreshes views");
+        assert_eq!(plan.reread, Some(ViewRefreshTarget::All));
     }
 
     #[test]
@@ -1432,245 +2004,45 @@ mod tests {
         for index in 0..9 {
             views.insert_timeline(
                 format!("timeline:{index}"),
-                OpenTimelineViewRequest {
-                    conversation_id: format!("c{index}"),
-                    message_limit: 50,
-                },
-                index,
-                empty_timeline_snapshot(),
+                registration(&format!("c{index}"), index),
             );
         }
 
         assert_eq!(views.timelines.len(), 8);
         assert!(!views.timelines.contains_key("timeline:0"));
 
-        views.insert_timeline(
-            "timeline:replacement".to_string(),
-            OpenTimelineViewRequest {
-                conversation_id: "c8".to_string(),
-                message_limit: 50,
-            },
-            10,
-            empty_timeline_snapshot(),
-        );
+        views.insert_timeline("timeline:replacement".to_string(), registration("c8", 10));
 
         assert_eq!(views.timelines.len(), 8);
         assert!(!views.timelines.contains_key("timeline:8"));
         assert!(views.timelines.contains_key("timeline:replacement"));
     }
 
-    #[test]
-    fn timeline_delta_inserts_only_new_message() {
-        let old = ConversationTimelineSnapshot {
-            conversation: None,
-            messages: vec![message("c1", "m1", 1)],
-            has_more: false,
-        };
-        let new = ConversationTimelineSnapshot {
-            conversation: None,
-            messages: vec![message("c1", "m1", 1), message("c1", "m2", 2)],
-            has_more: false,
-        };
-
-        let Some(update) = timeline_view_update("timeline:1", &old, &new) else {
-            panic!("new message should produce a view update");
-        };
-        assert_eq!(update.kind, ViewUpdateKind::Delta);
-        assert!(update.snapshot.is_none());
-        let Some(ViewDelta::Timeline { ops, .. }) = update.delta else {
-            panic!("timeline delta expected");
-        };
-        assert_eq!(ops.len(), 1);
-        assert_eq!(ops[0].op, ViewDeltaKind::Insert);
-        assert_eq!(ops[0].key, "client:m2");
-        assert_eq!(ops[0].index, 1);
-        assert!(ops[0].item.is_some());
-    }
-
-    #[test]
-    fn plugin_state_change_reloads_its_timeline_and_updates_the_card_row() {
-        let event = SdkEvent::Message(MessageEvent::PluginStateChanged {
-            conversation_id: "c1".into(),
-            message_id: "m1".into(),
-            version: 2,
-        });
-        let plan = view_refresh_plan(&event).expect("plugin state refreshes views");
-        let target = plan.timeline_query.expect("timeline is reloaded");
-        assert!(target.matches_timeline("c1"));
-        assert!(!target.matches_timeline("c2"));
-
-        let card = message("c1", "m1", 1);
-        let mut with_state = card.clone();
-        with_state
-            .attributes
-            .insert("pluginStateVersion".into(), "2".into());
-        let snapshot = |messages| ConversationTimelineSnapshot {
-            conversation: None,
-            messages,
-            has_more: false,
-        };
-        let update = timeline_view_update(
-            "timeline:1",
-            &snapshot(vec![card, message("c1", "m2", 2)]),
-            &snapshot(vec![with_state, message("c1", "m2", 2)]),
-        )
-        .expect("an attribute-only change still updates the row");
-        let Some(ViewDelta::Timeline { ops, .. }) = update.delta else {
-            panic!("timeline delta expected");
-        };
-        assert_eq!(ops.len(), 1);
-        assert_eq!(ops[0].op, ViewDeltaKind::Update);
-        assert_eq!(ops[0].key, "client:m1");
-    }
-
-    #[test]
-    fn hot_timeline_snapshot_keeps_latest_window_order_and_limit() {
-        let old = ConversationTimelineSnapshot {
-            conversation: None,
-            messages: vec![message("c1", "m2", 2), message("c1", "m1", 1)],
-            has_more: false,
-        };
-
-        let new = hot_timeline_snapshot(&old, &[message("c1", "m3", 3)], 2, None)
-            .expect("new message should update hot timeline");
-
-        assert_eq!(new.messages.len(), 2);
-        assert_eq!(new.messages[0].timeline_key(), "client:m2");
-        assert_eq!(new.messages[1].timeline_key(), "client:m3");
-        assert!(new.has_more);
-    }
-
-    #[test]
-    fn hot_timeline_snapshot_merges_out_of_order_incoming_into_sorted_window() {
-        // 常态合并路径：已 ASC 有序的窗口 + 乱序 incoming（含中间插入）→ 与全量重排等价。
-        let old = ConversationTimelineSnapshot {
-            conversation: None,
-            messages: vec![message("c1", "m1", 1), message("c1", "m3", 3)],
-            has_more: false,
-        };
-
-        let new = hot_timeline_snapshot(
-            &old,
-            &[message("c1", "m4", 4), message("c1", "m2", 2)],
-            10,
-            None,
-        )
-        .expect("incoming should update hot timeline");
-
-        let keys: Vec<String> = new
-            .messages
-            .iter()
-            .map(|message| message.timeline_key())
-            .collect();
-        assert_eq!(
-            keys,
-            vec!["client:m1", "client:m2", "client:m3", "client:m4"]
-        );
-        assert!(!new.has_more, "window not truncated at limit 10");
-    }
-
-    #[test]
-    fn hot_timeline_snapshot_carries_latest_conversation_projection() {
-        let old = ConversationTimelineSnapshot {
-            conversation: Some(Conversation {
-                conversation_id: "c1".to_string(),
-                last_message_preview: None,
-                ..Default::default()
-            }),
-            messages: vec![message("c1", "m1", 1)],
-            has_more: false,
-        };
-        let latest = Conversation {
-            conversation_id: "c1".to_string(),
-            last_message_preview: Some("hello".to_string()),
-            ..Default::default()
-        };
-
-        let new = hot_timeline_snapshot(&old, &[message("c1", "m2", 2)], 50, Some(&latest))
-            .expect("new message should update hot timeline");
-
-        assert_eq!(
-            new.conversation
-                .as_ref()
-                .and_then(|conversation| conversation.last_message_preview.as_deref()),
-            Some("hello")
-        );
-    }
-
-    #[test]
-    fn hot_timeline_snapshot_preserves_expanded_history_window() {
-        let old = ConversationTimelineSnapshot {
-            conversation: None,
-            messages: (1..=120)
-                .map(|seq| message("c1", &format!("m{seq}"), seq))
-                .collect(),
-            has_more: true,
-        };
-
-        let new = hot_timeline_snapshot(&old, &[message("c1", "m121", 121)], 120, None)
-            .expect("new message should update hot timeline");
-
-        assert_eq!(new.messages.len(), 120);
-        assert_eq!(new.messages[0].timeline_key(), "client:m2");
-        assert_eq!(new.messages[119].timeline_key(), "client:m121");
-        assert!(new.has_more);
-    }
-
-    #[test]
-    fn expand_timeline_snapshot_appends_older_page_without_duplicates() {
-        let old = ConversationTimelineSnapshot {
-            conversation: None,
-            messages: vec![message("c1", "m3", 3), message("c1", "m2", 2)],
-            has_more: true,
-        };
-
-        let (new, loaded_count) = expand_timeline_snapshot(
-            &old,
-            &[message("c1", "m2", 2), message("c1", "m1", 1)],
-            false,
-            500,
-        );
-
-        assert_eq!(loaded_count, 1);
-        assert_eq!(
-            new.messages
-                .iter()
-                .map(IMMessage::timeline_key)
-                .collect::<Vec<_>>(),
-            vec!["client:m1", "client:m2", "client:m3"]
-        );
-        assert!(!new.has_more);
-    }
-
-    #[test]
-    fn oldest_positive_seq_ignores_local_pending_messages() {
-        let snapshot = ConversationTimelineSnapshot {
-            conversation: None,
-            messages: vec![message("c1", "pending", 0), message("c1", "m4", 4)],
-            has_more: true,
-        };
-
-        assert_eq!(oldest_positive_seq(&snapshot), Some(4));
-    }
-
-    fn empty_timeline_snapshot() -> ConversationTimelineSnapshot {
-        ConversationTimelineSnapshot {
-            conversation: None,
-            messages: Vec::new(),
-            has_more: false,
+    fn registration(conversation_id: &str, order: u64) -> TimelineViewRegistration {
+        TimelineViewRegistration {
+            page_size: 50,
+            order,
+            revision: 1,
+            window: TimelineWindow {
+                conversation_id: conversation_id.to_string(),
+                conversation: None,
+                messages: Vec::new(),
+                has_older: false,
+                attached_to_latest: true,
+                anchor_key: None,
+            },
         }
-    }
-
-    fn message(conversation_id: &str, client_msg_id: &str, seq: u64) -> IMMessage {
-        IMMessage::new(ProtoMessage {
-            conversation_id: conversation_id.into(),
-            client_msg_id: client_msg_id.into(),
-            conversation_seq: seq,
-            ..Default::default()
-        })
     }
 }
 
 #[cfg(test)]
+#[path = "view_test_harness.rs"]
+mod harness;
+
+#[cfg(test)]
 #[path = "view_paging_tests.rs"]
 mod paging_tests;
+
+#[cfg(test)]
+#[path = "view_window_tests.rs"]
+mod window_tests;

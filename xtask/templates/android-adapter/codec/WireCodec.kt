@@ -192,11 +192,29 @@ fun openConversationTimelineRequestToMap(request: OpenConversationTimelineReques
 fun openTimelineViewRequestToMap(request: OpenTimelineViewRequest): Map<String, Any?> = buildMap {
     put("conversationId", request.conversationId)
     put("messageLimit", request.messageLimit)
+    request.anchor?.let { anchor ->
+        put(
+            "anchor",
+            buildMap<String, Any?> {
+                anchor.messageId?.let { put("messageId", it) }
+                anchor.seq?.let { put("seq", it) }
+            },
+        )
+    }
 }
 
 fun loadOlderTimelineViewRequestToMap(request: LoadOlderTimelineViewRequest): Map<String, Any?> = buildMap {
     put("viewId", request.viewId)
     put("messageLimit", request.messageLimit)
+}
+
+fun loadNewerTimelineViewRequestToMap(request: LoadNewerTimelineViewRequest): Map<String, Any?> = buildMap {
+    put("viewId", request.viewId)
+    put("messageLimit", request.messageLimit)
+}
+
+fun timelineViewRequestToMap(request: TimelineViewRequest): Map<String, Any?> = buildMap {
+    put("viewId", request.viewId)
 }
 
 fun openConversationListViewRequestToMap(request: OpenConversationListViewRequest): Map<String, Any?> = buildMap {
@@ -1487,7 +1505,31 @@ fun viewOpenResponseFromJson(value: Any?): ViewOpenResponse {
     val json = mapValue(value)
     return ViewOpenResponse(
         viewId = requiredStringField(json, "viewId", "ViewOpenResponse"),
+        revision = requiredLongField(json, "revision", "ViewOpenResponse"),
         snapshot = viewSnapshotFromJson(field(json, "snapshot")),
+    )
+}
+
+/** Decodes `ViewSnapshot.data` of a timeline view. */
+fun timelineViewSnapshotFromJson(value: Any?): TimelineViewSnapshot {
+    val json = mapValue(value)
+    val anchorKey = field(json, "anchorKey") as? String
+    return TimelineViewSnapshot(
+        conversation = field(json, "conversation")?.let { conversationFromJson(mapValue(it)) },
+        messages = requiredListOfMaps(field(json, "messages"), "messages", "TimelineViewSnapshot").map(::messageFromJson),
+        hasOlder = requiredBooleanField(json, "hasOlder", "TimelineViewSnapshot"),
+        hasNewer = requiredBooleanField(json, "hasNewer", "TimelineViewSnapshot"),
+        attachedToLatest = requiredBooleanField(json, "attachedToLatest", "TimelineViewSnapshot"),
+        anchorKey = anchorKey?.takeIf { it.isNotBlank() },
+    )
+}
+
+fun timelineViewPageResponseFromJson(value: Any?): TimelineViewPageResponse {
+    val json = mapValue(value)
+    return TimelineViewPageResponse(
+        viewId = requiredStringField(json, "viewId", "TimelineViewPageResponse"),
+        loadedCount = requiredLongField(json, "loadedCount", "TimelineViewPageResponse").toInt(),
+        revision = requiredLongField(json, "revision", "TimelineViewPageResponse"),
     )
 }
 
@@ -1525,23 +1567,48 @@ fun viewDeltaOpFromJson(value: Any?): ViewDeltaOp {
     )
 }
 
+private fun viewDeltaRowKeys(value: Any?, field: String): List<String> {
+    val list = value as? List<*>
+    if (list == null || list.any { it !is String }) {
+        throw FlareSdkException(
+            SdkErrorCodes.INVALIDPARAMETER,
+            "ViewDelta.$field must be a list of row keys",
+            operation = "wire.view.decode",
+            details = mapOf("field" to "ViewDelta.$field", "expected" to "string[]"),
+        )
+    }
+    return list.map { it as String }
+}
+
+/**
+ * Timeline deltas work by row key (`clientMsgId`, else `serverId`, else
+ * `seq:<conversationId>:<conversationSeq>`): remove, upsert in place, prepend, append, then reorder
+ * when present. Conversation-list deltas keep the indexed `ops`.
+ */
 fun viewDeltaFromJson(value: Any?): ViewDelta {
     val json = mapValue(value)
-    val conversation = field(json, "conversation")
-    val hasMore = field(json, "hasMore")
-    val totalUnread = field(json, "totalUnread")
-    val syncState = field(json, "syncState")
+    val viewType = viewTypeFromJson(field(json, "viewType"), "ViewDelta")
+    if (viewType == "conversationList") {
+        return ViewDelta(
+            viewType = viewType,
+            ops = requiredListOfMaps(field(json, "ops"), "ops", "ViewDelta").map(::viewDeltaOpFromJson),
+            totalUnread = field(json, "totalUnread")?.let(::intValue),
+            syncState = field(json, "syncState")?.let(::stringValue),
+        )
+    }
+    fun rows(name: String): List<Message> =
+        field(json, name)?.let { requiredListOfMaps(it, name, "ViewDelta").map(::messageFromJson) } ?: emptyList()
     return ViewDelta(
-        viewType = viewTypeFromJson(field(json, "viewType"), "ViewDelta"),
-        ops = requiredListOfMaps(
-            field(json, "ops"),
-            "ops",
-            "ViewDelta",
-        ).map(::viewDeltaOpFromJson),
-        conversation = conversation?.let { conversationFromJson(mapValue(it)) },
-        hasMore = hasMore as? Boolean,
-        totalUnread = totalUnread?.let(::intValue),
-        syncState = syncState?.let(::stringValue),
+        viewType = viewType,
+        prepend = rows("prepend"),
+        append = rows("append"),
+        upsert = rows("upsert"),
+        remove = field(json, "remove")?.let { viewDeltaRowKeys(it, "remove") } ?: emptyList(),
+        reorder = field(json, "reorder")?.let { viewDeltaRowKeys(it, "reorder") },
+        hasOlder = field(json, "hasOlder") as? Boolean ?: false,
+        hasNewer = field(json, "hasNewer") as? Boolean ?: false,
+        attachedToLatest = field(json, "attachedToLatest") as? Boolean ?: false,
+        conversation = field(json, "conversation")?.let { conversationFromJson(mapValue(it)) },
     )
 }
 
@@ -1558,20 +1625,10 @@ fun viewUpdateFromJson(value: Any?): ViewUpdate {
     }
     return ViewUpdate(
         viewId = requiredStringField(json, "viewId", "ViewUpdate"),
+        revision = requiredLongField(json, "revision", "ViewUpdate"),
         kind = kind,
         snapshot = if (kind == "delta") null else viewSnapshotFromJson(field(json, "snapshot")),
         delta = if (kind == "delta") viewDeltaFromJson(field(json, "delta")) else null,
-    )
-}
-
-fun viewLoadOlderResponseFromJson(value: Any?): ViewLoadOlderResponse {
-    val json = mapValue(value)
-    val update = field(json, "update")
-    return ViewLoadOlderResponse(
-        viewId = requiredStringField(json, "viewId", "ViewLoadOlderResponse"),
-        loadedCount = requiredLongField(json, "loadedCount", "ViewLoadOlderResponse").toInt(),
-        hasMore = requiredBooleanField(json, "hasMore", "ViewLoadOlderResponse"),
-        update = update?.let(::viewUpdateFromJson),
     )
 }
 

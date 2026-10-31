@@ -261,15 +261,37 @@ func conversationTimelineSnapshotToMap(_ request: ConversationTimelineSnapshot) 
     ]
 }
 func openTimelineViewRequestToMap(_ request: OpenTimelineViewRequest) -> [String: AnySendable] {
-    [
+    var out: [String: AnySendable] = [
         "conversationId": wrapSendable(request.conversationId),
         "messageLimit": wrapSendable(request.messageLimit),
     ]
+    if let anchor = request.anchor {
+        var map: [String: AnySendable] = [:]
+        if let messageId = anchor.messageId {
+            map["messageId"] = wrapSendable(messageId)
+        }
+        if let seq = anchor.seq {
+            map["seq"] = wrapSendable(seq)
+        }
+        out["anchor"] = AnySendable(map.mapValues { $0.value })
+    }
+    return out
 }
 func loadOlderTimelineViewRequestToMap(_ request: LoadOlderTimelineViewRequest) -> [String: AnySendable] {
     [
         "viewId": wrapSendable(request.viewId),
         "messageLimit": wrapSendable(request.messageLimit),
+    ]
+}
+func loadNewerTimelineViewRequestToMap(_ request: LoadNewerTimelineViewRequest) -> [String: AnySendable] {
+    [
+        "viewId": wrapSendable(request.viewId),
+        "messageLimit": wrapSendable(request.messageLimit),
+    ]
+}
+func timelineViewRequestToMap(_ request: TimelineViewRequest) -> [String: AnySendable] {
+    [
+        "viewId": wrapSendable(request.viewId),
     ]
 }
 func openConversationListViewRequestToMap(_ request: OpenConversationListViewRequest) -> [String: AnySendable] {
@@ -291,6 +313,7 @@ func viewSnapshotToMap(_ request: ViewSnapshot) -> [String: AnySendable] {
 func viewOpenResponseToMap(_ request: ViewOpenResponse) -> [String: AnySendable] {
     [
         "viewId": wrapSendable(request.viewId),
+        "revision": wrapSendable(request.revision),
         "snapshot": AnySendable(viewSnapshotToMap(request.snapshot).mapValues { $0.value }),
     ]
 }
@@ -311,13 +334,32 @@ func viewDeltaOpToMap(_ request: ViewDeltaOp) -> [String: AnySendable] {
 func viewDeltaToMap(_ request: ViewDelta) -> [String: AnySendable] {
     var out: [String: AnySendable] = [
         "viewType": wrapSendable(request.viewType),
-        "ops": AnySendable(request.ops.map { viewDeltaOpToMap($0).mapValues { $0.value } }),
     ]
+    if let ops = request.ops {
+        out["ops"] = AnySendable(ops.map { viewDeltaOpToMap($0).mapValues { $0.value } })
+    }
+    for (name, rows) in [("prepend", request.prepend), ("append", request.append), ("upsert", request.upsert)] {
+        if let rows {
+            out[name] = AnySendable(rows.map { messageToWireMap($0).mapValues { $0.value } })
+        }
+    }
+    if let remove = request.remove {
+        out["remove"] = wrapSendable(remove)
+    }
+    if let reorder = request.reorder {
+        out["reorder"] = wrapSendable(reorder)
+    }
+    if let hasOlder = request.hasOlder {
+        out["hasOlder"] = wrapSendable(hasOlder)
+    }
+    if let hasNewer = request.hasNewer {
+        out["hasNewer"] = wrapSendable(hasNewer)
+    }
+    if let attachedToLatest = request.attachedToLatest {
+        out["attachedToLatest"] = wrapSendable(attachedToLatest)
+    }
     if let conversation = request.conversation {
         out["conversation"] = AnySendable(conversationToMap(conversation).mapValues { $0.value })
-    }
-    if let hasMore = request.hasMore {
-        out["hasMore"] = wrapSendable(hasMore)
     }
     if let totalUnread = request.totalUnread {
         out["totalUnread"] = wrapSendable(totalUnread)
@@ -330,6 +372,7 @@ func viewDeltaToMap(_ request: ViewDelta) -> [String: AnySendable] {
 func viewUpdateToMap(_ request: ViewUpdate) -> [String: AnySendable] {
     var out: [String: AnySendable] = [
         "viewId": wrapSendable(request.viewId),
+        "revision": wrapSendable(request.revision),
         "kind": wrapSendable(request.kind),
     ]
     if let snapshot = request.snapshot {
@@ -1366,7 +1409,41 @@ func viewOpenResponseFromJson(_ value: [String: AnySendable]) throws -> ViewOpen
     let json = plainMap(value)
     return ViewOpenResponse(
         viewId: try requiredStringField(json, "viewId", "ViewOpenResponse"),
+        revision: try requiredUInt64Field(json, "revision", "ViewOpenResponse"),
         snapshot: try viewSnapshotFromJson(json["snapshot"])
+    )
+}
+
+/// Decodes `ViewSnapshot.data` of a timeline view.
+public func timelineViewSnapshotFromJson(_ value: [String: AnySendable]) throws -> TimelineViewSnapshot {
+    let json = plainMap(value)
+    let conversation: Conversation?
+    if let rawConversation = json["conversation"] as? [String: Any] {
+        conversation = try conversationFromJson(rawConversation)
+    } else {
+        conversation = nil
+    }
+    var messages: [Message] = []
+    for item in try requiredListOfMaps(json["messages"], "messages", "TimelineViewSnapshot") {
+        messages.append(try messageFromJson(item))
+    }
+    let anchorKey = (json["anchorKey"] as? String).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+    return TimelineViewSnapshot(
+        conversation: conversation,
+        messages: messages,
+        hasOlder: try boolValue(json["hasOlder"]),
+        hasNewer: try boolValue(json["hasNewer"]),
+        attachedToLatest: try boolValue(json["attachedToLatest"]),
+        anchorKey: anchorKey
+    )
+}
+
+func timelineViewPageResponseFromJson(_ value: [String: AnySendable]) throws -> TimelineViewPageResponse {
+    let json = plainMap(value)
+    return TimelineViewPageResponse(
+        viewId: try requiredStringField(json, "viewId", "TimelineViewPageResponse"),
+        loadedCount: UInt32(try requiredUInt64Field(json, "loadedCount", "TimelineViewPageResponse")),
+        revision: try requiredUInt64Field(json, "revision", "TimelineViewPageResponse")
     )
 }
 
@@ -1409,12 +1486,38 @@ func viewDeltaOpFromJson(_ value: Any?) throws -> ViewDeltaOp {
     )
 }
 
+func viewDeltaRowKeys(_ value: Any?, _ field: String) throws -> [String] {
+    guard let list = value as? [Any], list.allSatisfy({ $0 is String }) else {
+        throw FlareSdkException(
+            code: SdkErrorCodes.invalidParameter,
+            message: "ViewDelta.\(field) must be a list of row keys",
+            operation: "wire.view.decode",
+            details: ["field": "ViewDelta.\(field)", "expected": "string[]"]
+        )
+    }
+    return list.compactMap { $0 as? String }
+}
+
+/// Timeline deltas work by row key (`clientMsgId`, else `serverId`, else
+/// `seq:<conversationId>:<conversationSeq>`): remove, upsert in place, prepend, append, then
+/// reorder when present. Conversation-list deltas keep the indexed `ops`.
 func viewDeltaFromJson(_ value: Any?) throws -> ViewDelta {
     let json: [String: Any]
     if let map = value as? [String: AnySendable] {
         json = plainMap(map)
     } else {
         json = value as? [String: Any] ?? [:]
+    }
+    let viewType = try viewTypeFromJson(json["viewType"], "ViewDelta")
+    if viewType == "conversationList" {
+        let rawTotalUnread = json["totalUnread"]
+        let rawSyncState = json["syncState"]
+        return ViewDelta(
+            viewType: viewType,
+            ops: try requiredListOfMaps(json["ops"], "ops", "ViewDelta").map { try viewDeltaOpFromJson($0) },
+            totalUnread: rawTotalUnread == nil ? nil : try intValue(rawTotalUnread),
+            syncState: rawSyncState == nil ? nil : try stringValue(rawSyncState)
+        )
     }
     let rawConversation = json["conversation"]
     let conversation: Conversation?
@@ -1425,16 +1528,23 @@ func viewDeltaFromJson(_ value: Any?) throws -> ViewDelta {
     } else {
         conversation = nil
     }
-    let rawHasMore = json["hasMore"]
-    let rawTotalUnread = json["totalUnread"]
-    let rawSyncState = json["syncState"]
+    func rows(_ name: String) throws -> [Message] {
+        guard json[name] != nil, !(json[name] is NSNull) else { return [] }
+        return try requiredListOfMaps(json[name], name, "ViewDelta").map { try messageFromJson($0) }
+    }
+    let rawRemove = json["remove"]
+    let rawReorder = json["reorder"]
     return ViewDelta(
-        viewType: try viewTypeFromJson(json["viewType"], "ViewDelta"),
-        ops: try requiredListOfMaps(json["ops"], "ops", "ViewDelta").map { try viewDeltaOpFromJson($0) },
-        conversation: conversation,
-        hasMore: rawHasMore == nil ? nil : try boolValue(rawHasMore),
-        totalUnread: rawTotalUnread == nil ? nil : try intValue(rawTotalUnread),
-        syncState: rawSyncState == nil ? nil : try stringValue(rawSyncState)
+        viewType: viewType,
+        prepend: try rows("prepend"),
+        append: try rows("append"),
+        upsert: try rows("upsert"),
+        remove: rawRemove == nil || rawRemove is NSNull ? [] : try viewDeltaRowKeys(rawRemove, "remove"),
+        reorder: rawReorder == nil || rawReorder is NSNull ? nil : try viewDeltaRowKeys(rawReorder, "reorder"),
+        hasOlder: (json["hasOlder"] as? Bool) ?? false,
+        hasNewer: (json["hasNewer"] as? Bool) ?? false,
+        attachedToLatest: (json["attachedToLatest"] as? Bool) ?? false,
+        conversation: conversation
     )
 }
 
@@ -1451,20 +1561,10 @@ func viewUpdateFromJson(_ value: [String: AnySendable]) throws -> ViewUpdate {
     }
     return ViewUpdate(
         viewId: try requiredStringField(json, "viewId", "ViewUpdate"),
+        revision: try requiredUInt64Field(json, "revision", "ViewUpdate"),
         kind: kind,
         snapshot: kind == "delta" ? nil : try viewSnapshotFromJson(json["snapshot"]),
         delta: kind == "delta" ? try viewDeltaFromJson(json["delta"]) : nil
-    )
-}
-
-func viewLoadOlderResponseFromJson(_ value: [String: AnySendable]) throws -> ViewLoadOlderResponse {
-    let json = plainMap(value)
-    let rawUpdate = json["update"]
-    return ViewLoadOlderResponse(
-        viewId: try requiredStringField(json, "viewId", "ViewLoadOlderResponse"),
-        loadedCount: UInt32(try requiredUInt64Field(json, "loadedCount", "ViewLoadOlderResponse")),
-        hasMore: try boolValue(json["hasMore"]),
-        update: rawUpdate == nil ? nil : try viewUpdateFromJson(jsonObjectMap(rawUpdate))
     )
 }
 

@@ -560,9 +560,9 @@ fn emit_typescript_adapter_method_body(method: &Value, spec: &Value, indent: &st
             format!("{indent}const raw = await invokeMap(this.bridge, {call});"),
             format!("{indent}return viewOpenResponseFromJson(raw);"),
         ],
-        "ViewLoadOlderResponse" => vec![
+        "TimelineViewPageResponse" => vec![
             format!("{indent}const raw = await invokeMap(this.bridge, {call});"),
-            format!("{indent}return viewLoadOlderResponseFromJson(raw);"),
+            format!("{indent}return timelineViewPageResponseFromJson(raw);"),
         ],
         "CloseViewResponse" => vec![
             format!("{indent}const raw = await invokeMap(this.bridge, {call});"),
@@ -1620,7 +1620,7 @@ fn module_wire_imports(spec: &Value, module: &Value) -> Vec<String> {
         }
         if matches!(
             str_field(method, "response"),
-            "ViewOpenResponse" | "ViewLoadOlderResponse" | "CloseViewResponse"
+            "ViewOpenResponse" | "TimelineViewPageResponse" | "CloseViewResponse"
         ) {
             imports.insert(ts_model_from_json_fn(str_field(method, "response")));
         }
