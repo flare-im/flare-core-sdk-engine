@@ -578,11 +578,19 @@ private fun sdkErrorPayloadFromEvent(value: Any?): SdkErrorPayload? {
     val json = requiredEventMap(value, "error")
     return SdkErrorPayload(
         code = requiredEventString(json["code"], "error.code"),
+        machineReason = machineReasonFromEvent(json["machineReason"]),
         message = requiredEventString(json["message"], "error.message"),
         operation = optionalEventString(json["operation"], "error.operation"),
         retryable = optionalEventBool(json["retryable"], "error.retryable"),
         details = optionalEventStringMap(json["details"], "error.details"),
     )
+}
+
+/** The server's typed reason; empty for a local failure, which reads as no reason. */
+private fun machineReasonFromEvent(value: Any?): String? = when (value) {
+    null -> null
+    is String -> value.ifEmpty { null }
+    else -> invalidEventField("error.machineReason", "string")
 }
 
 private fun invalidEventCode(eventType: Int): Nothing =

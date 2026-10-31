@@ -349,11 +349,19 @@ private func sdkErrorPayloadFromJson(_ value: Any?) throws -> SdkErrorPayload? {
     }
     return SdkErrorPayload(
         code: try requiredString(json["code"]?.value, "error.code"),
+        machineReason: try machineReason(json["machineReason"]?.value),
         message: try requiredString(json["message"]?.value, "error.message"),
         operation: try optionalString(json["operation"]?.value, "error.operation"),
         retryable: try optionalBool(json["retryable"]?.value, "error.retryable"),
         details: try stringMap(json["details"]?.value, "error.details")
     )
+}
+
+/// The server's typed reason; empty for a local failure, which reads as no reason.
+private func machineReason(_ value: Any?) throws -> String? {
+    guard let value, !(value is NSNull) else { return nil }
+    guard let text = value as? String else { try invalidEventField("error.machineReason", "string") }
+    return text.isEmpty ? nil : text
 }
 
 private func messageMutationFromPayload(_ name: MessageEventName, _ json: [String: AnySendable]) throws -> MessageMutationEvent {

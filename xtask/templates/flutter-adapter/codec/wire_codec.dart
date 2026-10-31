@@ -269,6 +269,7 @@ Conversation conversationFromJson(Map<dynamic, dynamic> rawJson) {
     channelId: requiredStringField(json, 'channelId', 'Conversation'),
     membersCount: intValue(json['membersCount']),
     displayName: stringFieldOrEmpty(json, 'displayName'),
+    title: displayNameFromJson(json['title']),
     avatarUrl: stringFieldOrEmpty(json, 'avatarUrl'),
     remark: json['remark']?.toString(),
     description: json['description']?.toString(),
@@ -280,6 +281,7 @@ Conversation conversationFromJson(Map<dynamic, dynamic> rawJson) {
     lastMessagePreview: json['lastMessagePreview']?.toString(),
     lastMessage: messagePreviewFromJson(json['lastMessage']),
     lastSenderNickname: stringFieldOrEmpty(json, 'lastSenderNickname'),
+    lastSender: displayNameFromJson(json['lastSender']),
     lastSenderAvatarUrl: stringFieldOrEmpty(json, 'lastSenderAvatarUrl'),
     unreadCount: intValue(json['unreadCount']),
     lastReadSeq: intValue(json['lastReadSeq']),
@@ -649,6 +651,7 @@ SdkErrorPayload? sdkErrorPayloadFromJson(Object? value) {
   }
   return SdkErrorPayload(
     code: _requiredSdkErrorString(value, 'code'),
+    machineReason: _sdkErrorMachineReason(value['machineReason']),
     message: _requiredSdkErrorString(value, 'message'),
     operation: _optionalSdkErrorString(value['operation'], 'error.operation'),
     retryable: _optionalSdkErrorBool(value['retryable'], 'error.retryable'),
@@ -662,6 +665,16 @@ String _requiredSdkErrorString(Map<dynamic, dynamic> json, String key) {
   throw FormatException('invalid SDK error payload field: error.$key', {
     'field': 'error.$key',
     'expected': 'non-empty string',
+  });
+}
+
+/// The server's typed reason; empty for a local failure, which reads as no reason.
+String? _sdkErrorMachineReason(Object? value) {
+  if (value == null || value == '') return null;
+  if (value is String) return value;
+  throw FormatException('invalid SDK error payload field: error.machineReason', {
+    'field': 'error.machineReason',
+    'expected': 'string',
   });
 }
 
@@ -752,6 +765,7 @@ Message messageFromJson(Object? value) {
     senderName: stringFieldOrEmpty(json, 'senderName'),
     senderAvatar: stringFieldOrEmpty(json, 'senderAvatar'),
     senderDisplayName: stringFieldOrEmpty(json, 'senderDisplayName'),
+    sender: displayNameFromJson(json['sender']),
     replyTo: json['replyTo']?.toString(),
     quotePreview: json['quotePreview']?.toString(),
     threadId: json['threadId']?.toString(),
@@ -835,6 +849,63 @@ SendMessageResponse sendAckFromJson(Object? value) {
   );
 }
 
+const DisplayName _unknownPersonName = DisplayName(
+  kind: DisplayNameKind.unnamed,
+  entity: NameEntity.person,
+  idTail: '',
+);
+
+/// A projected name: conversation `title` and `lastSender`, message `sender`,
+/// participant `name`. Every value the SDK hands over carries `title`, `sender`
+/// and `name`, and `lastSender` when there is a latest message; the fields stay
+/// optional while hosts move to them, so a value without one (from an older
+/// core) reads as null. It never fails, so a core newer than this package still
+/// yields a name: an unknown `entity` reads as `person`, an unknown `kind`, a
+/// `named` value without text or a value that is not an object reads as an
+/// unnamed person without an id tail, an unknown `source` is dropped. The kits
+/// read names by the same rule.
+DisplayName? displayNameFromJson(Object? value) {
+  if (value == null) return null;
+  if (value is! Map) return _unknownPersonName;
+  final json = mapValue(value);
+  switch (json['kind']) {
+    case 'named':
+      final text = json['text'];
+      if (text is! String) return _unknownPersonName;
+      final source = json['source'];
+      return DisplayName(
+        kind: DisplayNameKind.named,
+        text: text,
+        source: NameSource.values
+            .where((candidate) => candidate.name == source)
+            .firstOrNull,
+      );
+    case 'members':
+      final names = json['names'];
+      final total = json['total'];
+      return DisplayName(
+        kind: DisplayNameKind.members,
+        names: names is List
+            ? names.whereType<String>().toList(growable: false)
+            : const <String>[],
+        total: total is num && total.isFinite && total >= 0 ? total.truncate() : 0,
+      );
+    case 'unnamed':
+      final entity = json['entity'];
+      final idTail = json['idTail'];
+      return DisplayName(
+        kind: DisplayNameKind.unnamed,
+        entity: NameEntity.values
+                .where((candidate) => candidate.name == entity)
+                .firstOrNull ??
+            NameEntity.person,
+        idTail: idTail is String ? idTail : '',
+      );
+    default:
+      return _unknownPersonName;
+  }
+}
+
 MessagePreview? messagePreviewFromJson(Object? value) {
   if (value == null) return null;
   final json = mapValue(value);
@@ -857,6 +928,7 @@ ConversationParticipant conversationParticipantFromJson(Object? value) {
     attributes: stringMap(json['attributes']),
     joinedAt: requiredIntField(json, 'joinedAt', 'ConversationParticipant'),
     nickname: requiredStringField(json, 'nickname', 'ConversationParticipant'),
+    name: displayNameFromJson(json['name']),
   );
 }
 

@@ -150,7 +150,18 @@ func conversationParticipantToMap(_ request: ConversationParticipant) -> [String
         "attributes": wrapSendable(request.attributes),
         "joinedAt": wrapSendable(request.joinedAt),
         "nickname": wrapSendable(request.nickname),
+        "name": wrapSendable(request.name.map { displayNameToMap($0).mapValues { $0.value } }),
     ]
+}
+func displayNameToMap(_ request: DisplayName) -> [String: AnySendable] {
+    var out: [String: AnySendable] = ["kind": AnySendable(request.kind.rawValue)]
+    if let text = request.text { out["text"] = AnySendable(text) }
+    if let source = request.source { out["source"] = AnySendable(source.rawValue) }
+    if let names = request.names { out["names"] = AnySendable(names) }
+    if let total = request.total { out["total"] = AnySendable(total) }
+    if let entity = request.entity { out["entity"] = AnySendable(entity.rawValue) }
+    if let idTail = request.idTail { out["idTail"] = AnySendable(idTail) }
+    return out
 }
 func messagePreviewToMap(_ request: MessagePreview) -> [String: AnySendable] {
     [
@@ -169,6 +180,7 @@ func conversationToMap(_ request: Conversation) -> [String: AnySendable] {
         "channelId": wrapSendable(request.channelId),
         "membersCount": wrapSendable(request.membersCount),
         "displayName": wrapSendable(request.displayName),
+        "title": wrapSendable(request.title.map { displayNameToMap($0).mapValues { $0.value } }),
         "avatarUrl": wrapSendable(request.avatarUrl),
         "remark": wrapSendable(request.remark),
         "description": wrapSendable(request.description),
@@ -178,6 +190,7 @@ func conversationToMap(_ request: Conversation) -> [String: AnySendable] {
         "lastMessagePreview": wrapSendable(request.lastMessagePreview),
         "lastMessage": wrapSendable(request.lastMessage),
         "lastSenderNickname": wrapSendable(request.lastSenderNickname),
+        "lastSender": wrapSendable(request.lastSender.map { displayNameToMap($0).mapValues { $0.value } }),
         "lastSenderAvatarUrl": wrapSendable(request.lastSenderAvatarUrl),
         "unreadCount": wrapSendable(request.unreadCount),
         "lastReadSeq": wrapSendable(request.lastReadSeq),
@@ -797,6 +810,7 @@ func buildWithContentMessageRequestToMap(_ request: BuildWithContentMessageReque
 func sdkErrorPayloadToMap(_ request: SdkErrorPayload) -> [String: AnySendable] {
     [
         "code": wrapSendable(request.code),
+        "machineReason": wrapSendable(request.machineReason),
         "message": wrapSendable(request.message),
         "operation": wrapSendable(request.operation),
         "retryable": wrapSendable(request.retryable),
@@ -1531,6 +1545,52 @@ func messageReceiptViewFromJson(_ value: Any?) -> MessageReceiptView? {
     return MessageReceiptView(status: status, readSummary: readSummary)
 }
 
+private let UNKNOWN_PERSON_NAME = DisplayName(kind: .unnamed, entity: .person, idTail: "")
+
+/// A projected name: conversation `title` and `lastSender`, message `sender`, participant `name`. Every value the SDK
+/// hands over carries `title`, `sender` and `name`, and `lastSender` when there is a latest message; the fields stay
+/// optional while hosts move to them, so a value without one (from an older core) reads as nil. It never fails, so a
+/// core newer than this package still yields a name: an unknown `entity` reads as `person`, an unknown `kind`, a
+/// `named` value without text or a value that is not an object reads as an unnamed person without an id tail, an
+/// unknown `source` is dropped. The kits read names by the same rule.
+func displayNameFromJson(_ value: Any?) -> DisplayName? {
+    guard let value, !(value is NSNull) else { return nil }
+    let json: [String: Any]
+    if let wrapped = value as? [String: AnySendable] {
+        json = plainMap(wrapped)
+    } else if let map = value as? [String: Any] {
+        json = map
+    } else {
+        return UNKNOWN_PERSON_NAME
+    }
+    switch json["kind"] as? String {
+    case DisplayNameKind.named.rawValue:
+        guard let text = json["text"] as? String else { return UNKNOWN_PERSON_NAME }
+        return DisplayName(kind: .named, text: text, source: (json["source"] as? String).flatMap(NameSource.init(rawValue:)))
+    case DisplayNameKind.members.rawValue:
+        return DisplayName(
+            kind: .members,
+            names: (json["names"] as? [Any])?.compactMap { $0 as? String } ?? [],
+            total: displayNameTotal(json["total"])
+        )
+    case DisplayNameKind.unnamed.rawValue:
+        return DisplayName(
+            kind: .unnamed,
+            entity: (json["entity"] as? String).flatMap(NameEntity.init(rawValue:)) ?? .person,
+            idTail: json["idTail"] as? String ?? ""
+        )
+    default:
+        return UNKNOWN_PERSON_NAME
+    }
+}
+
+private func displayNameTotal(_ value: Any?) -> UInt32 {
+    guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return 0 }
+    let total = number.doubleValue
+    guard total.isFinite, total >= 0 else { return 0 }
+    return total >= Double(UInt32.max) ? UInt32.max : UInt32(total.rounded(.towardZero))
+}
+
 func messagePreviewFromJson(_ value: Any?) throws -> MessagePreview? {
     guard let json = value as? [String: Any] else { return nil }
     return try MessagePreview(
@@ -1547,6 +1607,7 @@ func conversationParticipantFromJson(_ json: [String: Any]) throws -> Conversati
         attributes: requiredStringMap(json["attributes"], "attributes", "ConversationParticipant"),
         joinedAt: requiredUInt64Field(json, "joinedAt", "ConversationParticipant"),
         muted: requiredBoolField(json, "muted", "ConversationParticipant"),
+        name: displayNameFromJson(json["name"]),
         nickname: requiredStringField(json, "nickname", "ConversationParticipant"),
         pinned: requiredBoolField(json, "pinned", "ConversationParticipant"),
         roles: requiredStringList(json["roles"], "roles", "ConversationParticipant"),
@@ -1609,6 +1670,7 @@ public func messageFromJson(_ value: Any) throws -> Message {
         quotePreview: json["quotePreview"] as? String,
         reactions: try reactionList(json["reactions"]),
         replyTo: json["replyTo"] as? String,
+        sender: displayNameFromJson(json["sender"]),
         senderAvatar: try requiredStringField(json, "senderAvatar", "Message"),
         senderDisplayName: try requiredStringField(json, "senderDisplayName", "Message"),
         senderId: try requiredStringField(json, "senderId", "Message"),
@@ -1713,6 +1775,7 @@ public func conversationFromJson(_ json: [String: Any]) throws -> Conversation {
         lastMessageId: json["lastMessageId"] as? String,
         lastMessagePreview: json["lastMessagePreview"] as? String,
         lastReadSeq: try requiredUInt64Field(json, "lastReadSeq", "Conversation"),
+        lastSender: displayNameFromJson(json["lastSender"]),
         lastSenderAvatarUrl: try requiredStringField(json, "lastSenderAvatarUrl", "Conversation"),
         lastSenderId: json["lastSenderId"] as? String,
         lastSenderNickname: try requiredStringField(json, "lastSenderNickname", "Conversation"),
@@ -1726,6 +1789,7 @@ public func conversationFromJson(_ json: [String: Any]) throws -> Conversation {
         peerReadSeq: try requiredUInt64Field(json, "peerReadSeq", "Conversation"),
         remark: json["remark"] as? String,
         role: json["role"] as? String,
+        title: displayNameFromJson(json["title"]),
         unreadCount: UInt32(try requiredUInt64Field(json, "unreadCount", "Conversation")),
         updatedAt: try requiredUInt64Field(json, "updatedAt", "Conversation"),
         updatedAtTs: try optionalUInt64Value(json["updatedAtTs"]),

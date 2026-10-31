@@ -80,6 +80,26 @@ fun conversationParticipantToMap(request: ConversationParticipant): Map<String, 
     put("attributes", request.attributes)
     put("joinedAt", request.joinedAt)
     put("nickname", request.nickname)
+    request.name?.let { put("name", displayNameToMap(it)) }
+}
+
+fun nameSourceWireValue(value: NameSource): String = when (value) {
+    NameSource.ALIAS -> "alias"
+    NameSource.MEMBER_NICKNAME -> "memberNickname"
+    NameSource.PROFILE -> "profile"
+    NameSource.SNAPSHOT -> "snapshot"
+    NameSource.REMARK -> "remark"
+    NameSource.NAME -> "name"
+}
+
+fun displayNameToMap(request: DisplayName): Map<String, Any?> = buildMap {
+    put("kind", request.kind.name.lowercase())
+    request.text?.let { put("text", it) }
+    request.source?.let { put("source", nameSourceWireValue(it)) }
+    request.names?.let { put("names", it) }
+    request.total?.let { put("total", it) }
+    request.entity?.let { put("entity", it.name.lowercase()) }
+    request.idTail?.let { put("idTail", it) }
 }
 
 fun messagePreviewToMap(request: MessagePreview): Map<String, Any?> = buildMap {
@@ -97,6 +117,7 @@ fun conversationToMap(request: Conversation): Map<String, Any?> = buildMap {
     put("channelId", request.channelId)
     put("membersCount", request.membersCount)
     put("displayName", request.displayName)
+    request.title?.let { put("title", displayNameToMap(it)) }
     put("avatarUrl", request.avatarUrl)
     request.remark?.let { put("remark", it) }
     request.description?.let { put("description", it) }
@@ -106,6 +127,7 @@ fun conversationToMap(request: Conversation): Map<String, Any?> = buildMap {
     request.lastMessagePreview?.let { put("lastMessagePreview", it) }
     request.lastMessage?.let { put("lastMessage", messagePreviewToMap(it)) }
     put("lastSenderNickname", request.lastSenderNickname)
+    request.lastSender?.let { put("lastSender", displayNameToMap(it)) }
     put("lastSenderAvatarUrl", request.lastSenderAvatarUrl)
     put("unreadCount", request.unreadCount)
     put("lastReadSeq", request.lastReadSeq)
@@ -622,6 +644,7 @@ fun buildWithContentMessageRequestToMap(request: BuildWithContentMessageRequest)
 
 fun sdkErrorPayloadToMap(request: SdkErrorPayload): Map<String, Any?> = buildMap {
     put("code", request.code)
+    request.machineReason?.let { put("machineReason", it) }
     put("message", request.message)
     request.operation?.let { put("operation", it) }
     put("retryable", request.retryable)
@@ -1141,6 +1164,49 @@ fun messageReceiptViewFromJson(value: Any?): MessageReceiptView? {
     return MessageReceiptView(status = status, readSummary = readSummary)
 }
 
+private val UNKNOWN_PERSON_NAME = DisplayName(kind = DisplayNameKind.UNNAMED, entity = NameEntity.PERSON, idTail = "")
+
+/**
+ * A projected name: conversation `title` and `lastSender`, message `sender`, participant `name`. Every value the SDK
+ * hands over carries `title`, `sender` and `name`, and `lastSender` when there is a latest message; the fields stay
+ * optional while hosts move to them, so a value without one (from an older core) reads as null. It never fails, so a
+ * core newer than this package still yields a name: an unknown `entity` reads as `person`, an unknown `kind`, a
+ * `named` value without text or a value that is not an object reads as an unnamed person without an id tail, an
+ * unknown `source` is dropped. The kits read names by the same rule.
+ */
+fun displayNameFromJson(value: Any?): DisplayName? {
+    if (value == null) return null
+    if (value !is Map<*, *>) return UNKNOWN_PERSON_NAME
+    val json = mapValue(value)
+    return when (field(json, "kind")) {
+        "named" -> {
+            val text = field(json, "text") as? String ?: return UNKNOWN_PERSON_NAME
+            DisplayName(
+                kind = DisplayNameKind.NAMED,
+                text = text,
+                source = NameSource.entries.firstOrNull { nameSourceWireValue(it) == field(json, "source") },
+            )
+        }
+        "members" -> DisplayName(
+            kind = DisplayNameKind.MEMBERS,
+            names = (field(json, "names") as? List<*>)?.filterIsInstance<String>() ?: emptyList(),
+            total = displayNameTotal(field(json, "total")),
+        )
+        "unnamed" -> DisplayName(
+            kind = DisplayNameKind.UNNAMED,
+            entity = NameEntity.entries.firstOrNull { it.name.lowercase() == field(json, "entity") } ?: NameEntity.PERSON,
+            idTail = field(json, "idTail") as? String ?: "",
+        )
+        else -> UNKNOWN_PERSON_NAME
+    }
+}
+
+private fun displayNameTotal(value: Any?): Int {
+    val total = (value as? Number)?.toDouble() ?: return 0
+    if (!total.isFinite() || total < 0) return 0
+    return if (total >= Int.MAX_VALUE) Int.MAX_VALUE else total.toInt()
+}
+
 fun messagePreviewFromJson(value: Any?): MessagePreview? {
     val json = mapValue(value)
     if (json.isEmpty()) return null
@@ -1159,6 +1225,7 @@ fun conversationParticipantFromJson(value: Any?): ConversationParticipant {
         attributes = requiredStringMap(field(json, "attributes"), "attributes", "ConversationParticipant"),
         joinedAt = requiredLongField(json, "joinedAt", "ConversationParticipant"),
         muted = requiredBooleanField(json, "muted", "ConversationParticipant"),
+        name = displayNameFromJson(field(json, "name")),
         nickname = requiredStringField(json, "nickname", "ConversationParticipant"),
         pinned = requiredBooleanField(json, "pinned", "ConversationParticipant"),
         roles = requiredStringList(field(json, "roles"), "roles", "ConversationParticipant"),
@@ -1232,6 +1299,7 @@ fun messageFromJson(value: Any?): Message {
         reactions = requiredListOfMaps(field(json, "reactions"), "reactions", "Message").map(::reactionEntryFromJson),
         replyTo = field(json, "replyTo")?.toString(),
         threadId = field(json, "threadId")?.toString(),
+        sender = displayNameFromJson(field(json, "sender")),
         senderAvatar = field(json, "senderAvatar")?.let(::stringValue).orEmpty(),
         senderDisplayName = field(json, "senderDisplayName")?.let(::stringValue).orEmpty(),
         senderId = requiredStringField(json, "senderId", "Message"),
@@ -1363,6 +1431,7 @@ fun conversationFromJson(json: Map<String, Any?>): Conversation {
         lastSenderAvatarUrl = field(json, "lastSenderAvatarUrl")?.let(::stringValue).orEmpty(),
         lastSenderId = field(json, "lastSenderId")?.toString(),
         lastSenderNickname = field(json, "lastSenderNickname")?.let(::stringValue).orEmpty(),
+        lastSender = displayNameFromJson(field(json, "lastSender")),
         maxSeq = requiredLongField(json, "maxSeq", "Conversation"),
         memberPreview = requiredListOfMaps(field(json, "memberPreview"), "memberPreview", "Conversation").map(::conversationParticipantFromJson),
         membersCount = requiredLongField(json, "membersCount", "Conversation").toInt(),
@@ -1373,6 +1442,7 @@ fun conversationFromJson(json: Map<String, Any?>): Conversation {
         peerReadSeq = requiredLongField(json, "peerReadSeq", "Conversation"),
         remark = field(json, "remark")?.toString(),
         role = field(json, "role")?.toString(),
+        title = displayNameFromJson(field(json, "title")),
         unreadCount = requiredLongField(json, "unreadCount", "Conversation").toInt(),
         updatedAt = requiredLongField(json, "updatedAt", "Conversation"),
         updatedAtTs = field(json, "updatedAtTs")?.let { intValue(it) },
