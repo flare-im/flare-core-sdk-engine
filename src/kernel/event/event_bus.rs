@@ -13,6 +13,7 @@ use flare_proto::common::{
 use crate::model::IMMessage;
 use tokio::sync::mpsc;
 
+use super::name_change::{NameChange, NameChangeListeners, NameChangeReceiver};
 use super::selector::EventFilter;
 use super::types::{
     ConnectionEvent, ConversationEvent, MessageEvent, NotificationEvent, SdkEvent, SyncNotify,
@@ -161,6 +162,8 @@ pub struct EventBus {
     routes: Arc<RwLock<Vec<EventRoute>>>,
     // Any
     on_any: Arc<RwLock<Vec<FnAny>>>,
+    /// 名字投影的输入变了（身份缓存、会话内成员昵称）：只交给进程内的视图，不是 `SdkEvent`。
+    name_changes: NameChangeListeners,
     metrics: MetricsRecorder,
 }
 
@@ -272,8 +275,19 @@ impl EventBus {
             on_sync_task_completed,
             routes,
             on_any,
+            name_changes: NameChangeListeners::default(),
             metrics,
         }
+    }
+
+    /// 名字投影的输入变了（身份缓存的资料名与别名、会话内成员昵称）：交给打开中的视图重读受影响
+    /// 的行。只在进程内传递，不经 `publish`，宿主与绑定层都收不到。
+    pub(crate) fn publish_name_change(&self, change: NameChange) {
+        self.name_changes.publish(change);
+    }
+
+    pub(crate) fn subscribe_name_changes(&self) -> NameChangeReceiver {
+        self.name_changes.subscribe()
     }
 
     fn publish_to_subscribers(&self, event: &SdkEvent) -> usize {

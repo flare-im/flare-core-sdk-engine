@@ -18,7 +18,7 @@ use flare_proto::common::{
 };
 use tokio::sync::RwLock;
 
-use super::{ViewApi, view_refresh_plan};
+use super::{ViewApi, ViewRefreshPlan, view_refresh_plan};
 use crate::application::notification::{NotificationHandlerRegistry, NotificationInboundPipeline};
 use crate::application::services::{EventDeduper, MessageDeduper};
 use crate::application::usecases::{
@@ -26,11 +26,9 @@ use crate::application::usecases::{
 };
 use crate::client::api::ConversationApi;
 use crate::domain::{MessageReader, MessageStore, MessageWriter, SeqRange};
-use crate::infrastructure::persistence::{
-    MemoryUserProfileStore, StoreProvider, in_memory_im_provider,
-};
+use crate::infrastructure::persistence::{StoreProvider, in_memory_im_provider};
 use crate::kernel::event::{
-    EventBus, EventReceiver, MessageEvent, SdkEvent, SyncNotify, SyncPhase,
+    EventBus, EventReceiver, MessageEvent, NameChange, SdkEvent, SyncNotify, SyncPhase,
 };
 use crate::kernel::{
     AttentionRegistry, CurrentUserIdStore, SessionSyncRunner, SyncReason, SyncRunContext,
@@ -537,6 +535,8 @@ pub(super) struct WindowState {
 pub(super) struct Harness {
     pub view: ViewApi,
     pub stores: StoreProvider,
+    /// 视图所在的事件总线（端到端用例经它把名字变化送到视图的刷新任务）。
+    pub bus: EventBus,
     pub server: Arc<ScriptedServer>,
     pub reads: Arc<CountingMessageStore>,
     view_id: StdMutex<String>,
@@ -576,7 +576,8 @@ impl Harness {
 
         let bus = EventBus::new();
         let user: CurrentUserIdStore = Arc::new(RwLock::new("me".to_string()));
-        let profiles = Arc::new(MemoryUserProfileStore::new());
+        // 身份缓存与成员昵称都在 stores 里：经扩展存储写入的名字，视图读得到。
+        let profiles = stores.user_profiles_or_memory();
         let reads = Arc::new(CountingMessageStore {
             inner: stores.messages.clone(),
             counts: ReadCounts::default(),
@@ -595,7 +596,10 @@ impl Harness {
                 stores.conversations.clone(),
                 profiles.clone(),
             )),
-            Arc::new(MessageViewAssembler::new(reads.clone(), profiles)),
+            Arc::new(
+                MessageViewAssembler::new(reads.clone(), profiles)
+                    .with_member_names(stores.conversations.clone()),
+            ),
             stores.timeline_coverage.clone(),
             bus.clone(),
             user,
@@ -624,12 +628,13 @@ impl Harness {
         let view = ViewApi::new(
             conversation_api,
             Some(server.clone() as Arc<dyn SessionSyncRunner>),
-            bus,
+            bus.clone(),
             AttentionRegistry::new(),
         );
         Self {
             view,
             stores,
+            bus,
             server,
             reads,
             view_id: StdMutex::new(String::new()),
@@ -829,6 +834,14 @@ impl Harness {
     pub async fn refresh(&self, event: SdkEvent) {
         let plan = view_refresh_plan(&event).expect("the event refreshes views");
         self.view.refresh_open_views(plan).await;
+        self.settle().await;
+    }
+
+    /// 名字投影的输入变了（资料、别名、成员昵称已写入存储）：按刷新任务的计划刷新打开的视图。
+    pub async fn names_changed(&self, change: NameChange) {
+        self.view
+            .refresh_open_views(ViewRefreshPlan::names(change))
+            .await;
         self.settle().await;
     }
 

@@ -40,6 +40,7 @@
 //! ```
 
 mod event_bus;
+mod name_change;
 mod selector;
 mod types;
 
@@ -56,6 +57,8 @@ pub use types::{
     ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent, NotificationEvent,
     PluginEvent, PluginRealtime, ReadinessStage, SdkEvent, SyncNotify, SyncPhase,
 };
+
+pub(crate) use name_change::NameChange;
 
 use std::sync::Arc;
 

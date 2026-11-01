@@ -15,7 +15,9 @@ use serde_json::Value;
 use tokio::sync::{RwLock, mpsc::error::TryRecvError};
 
 use crate::client::api::ConversationApi;
-use crate::kernel::event::{ConversationEvent, EventBus, MessageEvent, SdkEvent, SyncNotify};
+use crate::kernel::event::{
+    ConversationEvent, EventBus, MessageEvent, NameChange, SdkEvent, SyncNotify,
+};
 use crate::kernel::{AttentionRegistry, SessionSyncRunner};
 use crate::model::{
     BootstrapHomeTimelineRequest, CloseViewRequest, CloseViewResponse, Conversation,
@@ -926,17 +928,22 @@ impl ViewApi {
     fn spawn_refresh_worker(&self) -> BackgroundTask {
         let inner = Arc::downgrade(&self.inner);
         let bus = self.inner.bus.clone();
+        // 先订阅再起任务：构造之后、任务第一次运行之前写入的名字也不会漏掉。
+        let name_changes = bus.subscribe_name_changes();
         spawn_background_task(async move {
             let mut rx = bus.subscribe_raw();
             loop {
-                let mut plan = match rx.recv().await {
-                    Ok(event) => {
-                        let Some(plan) = view_refresh_plan(&event) else {
-                            continue;
-                        };
-                        plan
-                    }
-                    Err(_) => break,
+                let mut plan = tokio::select! {
+                    event = rx.recv() => match event {
+                        Ok(event) => {
+                            let Some(plan) = view_refresh_plan(&event) else {
+                                continue;
+                            };
+                            plan
+                        }
+                        Err(_) => break,
+                    },
+                    change = name_changes.recv() => ViewRefreshPlan::names(change),
                 };
                 delay(VIEW_REFRESH_DEBOUNCE).await;
 
@@ -954,6 +961,9 @@ impl ViewApi {
                             break;
                         }
                     }
+                }
+                if let Some(change) = name_changes.try_recv() {
+                    plan.names.merge(change);
                 }
 
                 let Some(inner) = inner.upgrade() else {
@@ -977,6 +987,10 @@ impl ViewApi {
     ///
     /// 在脱离最新的会话里发送消息时先回到最新，待发送行随最新窗口一起推出。事件不带消息 id 时
     /// 退化为在窗口的 seq 范围内重读。会话事件只换会话摘要，可见下限升高（清空记录）时换成最新窗口。
+    ///
+    /// 名字投影的输入变了（身份缓存的资料名与别名、会话内成员昵称）：时间线只按 id 重读窗口里
+    /// 这些人发出的行（成员昵称只看所在会话），会话摘要以他们命名时一并换；会话列表只重读以他们
+    /// 命名的会话。本轮已经在窗口范围内重读、或会整体重读列表的，不再重读一遍。
     async fn refresh_open_views(&self, plan: ViewRefreshPlan) {
         if !plan.live.is_empty() {
             self.refresh_live(&plan.live).await;
@@ -989,6 +1003,13 @@ impl ViewApi {
         }
         if let Some(target) = &plan.headers {
             self.refresh_headers(target, plan.reread.as_ref()).await;
+        }
+        if !plan.names.is_empty() {
+            self.refresh_timeline_names(&plan.names, plan.reread.as_ref(), plan.headers.as_ref())
+                .await;
+            if !plan.refresh_conversation_lists {
+                self.refresh_conversation_list_names(&plan.names).await;
+            }
         }
         if plan.refresh_conversation_lists {
             self.refresh_conversation_lists().await;
@@ -1105,49 +1126,19 @@ impl ViewApi {
                                 && reference.matches(message)
                         })
                     })
-                    .map(|message| {
-                        (
-                            message.row_key(),
-                            message.client_msg_id.clone(),
-                            message.server_id.clone(),
-                        )
-                    })
+                    .map(WindowRow::of)
                     .collect::<Vec<_>>();
-                let floor = view
-                    .window
-                    .conversation
-                    .as_ref()
-                    .map(crate::domain::sync_visibility_floor)
-                    .unwrap_or(0);
-                (!rows.is_empty()).then_some((rows, floor))
+                (!rows.is_empty()).then(|| (rows, visibility_floor(&view.window)))
             })
             .await;
         for (view_id, (rows, floor)) in targets {
-            let mut client_ids = Vec::new();
-            let mut server_ids = Vec::new();
-            for (_, client_id, server_id) in &rows {
-                if !client_id.is_empty() {
-                    client_ids.push(client_id.clone());
-                } else {
-                    server_ids.push(server_id.clone());
-                }
-            }
-            let fresh = match self
-                .inner
-                .conversation_api
-                .timeline_rows_by_id(&client_ids, &server_ids)
-                .await
-            {
-                Ok(fresh) => fresh,
+            let (keys, fresh) = match self.reread_rows(&rows).await {
+                Ok(read) => read,
                 Err(error) => {
                     warn_refresh(&view_id, &error);
                     continue;
                 }
             };
-            let keys = rows
-                .into_iter()
-                .map(|(key, _, _)| key)
-                .collect::<HashSet<_>>();
             let update = {
                 let mut views = self.inner.views.write().await;
                 let Some(registration) = views.timelines.get_mut(&view_id) else {
@@ -1156,6 +1147,179 @@ impl ViewApi {
                 let mut next = registration.window.clone();
                 apply_reread_rows(&mut next, &keys, &fresh, floor);
                 commit_timeline(&view_id, registration, next, CompareRows::Keys(&keys))
+            };
+            self.publish(update);
+        }
+    }
+
+    /// 按 id 重读窗口里的这几行：有客户端 id 的按客户端 id 读（行键就是它），其余按服务端 id 读，
+    /// 各一次批量查询。返回这几行的行键与读到的行（读不到的行已删除或不再可见）。
+    async fn reread_rows(&self, rows: &[WindowRow]) -> Result<(HashSet<String>, Vec<IMMessage>)> {
+        let mut client_ids = Vec::new();
+        let mut server_ids = Vec::new();
+        for row in rows {
+            if !row.client_msg_id.is_empty() {
+                client_ids.push(row.client_msg_id.clone());
+            } else {
+                server_ids.push(row.server_id.clone());
+            }
+        }
+        let fresh = self
+            .inner
+            .conversation_api
+            .timeline_rows_by_id(&client_ids, &server_ids)
+            .await?;
+        Ok((rows.iter().map(|row| row.key.clone()).collect(), fresh))
+    }
+
+    /// 名字变了的人：每个打开的时间线只按 id 重读窗口里他们发出的行（成员昵称只看所在会话），
+    /// 会话摘要以他们命名时（[`shows_renamed_people`]）一并重读摘要，一次提交、版本号加 1；重新
+    /// 投影后内容没变的行不推。本轮已在窗口范围内重读的视图（同步完成等）跳过，已换过摘要的不再读摘要。
+    async fn refresh_timeline_names(
+        &self,
+        change: &NameChange,
+        reread: Option<&ViewRefreshTarget>,
+        headers: Option<&ViewRefreshTarget>,
+    ) {
+        let targets = self
+            .timeline_views(|_, view| {
+                let conversation_id = view.window.conversation_id.as_str();
+                if reread.is_some_and(|target| target.matches_timeline(conversation_id)) {
+                    return None;
+                }
+                let rows = view
+                    .window
+                    .messages
+                    .iter()
+                    .filter(|message| change.renames_sender(conversation_id, message.sender_id()))
+                    .map(WindowRow::of)
+                    .collect::<Vec<_>>();
+                let header = !headers
+                    .is_some_and(|target| target.matches_timeline(conversation_id))
+                    && view
+                        .window
+                        .conversation
+                        .as_ref()
+                        .is_some_and(|conversation| shows_renamed_people(change, conversation));
+                (!rows.is_empty() || header).then(|| {
+                    (
+                        conversation_id.to_string(),
+                        rows,
+                        header,
+                        visibility_floor(&view.window),
+                    )
+                })
+            })
+            .await;
+        for (view_id, (conversation_id, rows, header, floor)) in targets {
+            let (keys, fresh) = if rows.is_empty() {
+                (HashSet::new(), Vec::new())
+            } else {
+                match self.reread_rows(&rows).await {
+                    Ok(read) => read,
+                    Err(error) => {
+                        warn_refresh(&view_id, &error);
+                        continue;
+                    }
+                }
+            };
+            let conversation = if header {
+                match self.inner.conversation_api.get(&conversation_id).await {
+                    Ok(conversation) => conversation,
+                    Err(error) => {
+                        warn_refresh(&view_id, &error);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let update = {
+                let mut views = self.inner.views.write().await;
+                let Some(registration) = views.timelines.get_mut(&view_id) else {
+                    continue;
+                };
+                let mut next = registration.window.clone();
+                if !keys.is_empty() {
+                    apply_reread_rows(&mut next, &keys, &fresh, floor);
+                }
+                if conversation.is_some() {
+                    next.conversation = conversation;
+                }
+                commit_timeline(&view_id, registration, next, CompareRows::Keys(&keys))
+            };
+            self.publish(update);
+        }
+    }
+
+    /// 名字变了的人：每个打开的会话列表只重读以他们命名的会话（[`shows_renamed_people`]），原位
+    /// 换掉，内容变了的推 `update`，版本号加 1。列表里没有受影响的会话时什么也不读。
+    async fn refresh_conversation_list_names(&self, change: &NameChange) {
+        let targets = {
+            let views = self.inner.views.read().await;
+            views
+                .conversation_lists
+                .iter()
+                .filter_map(|(view_id, view)| {
+                    let ids = view
+                        .last_snapshot
+                        .conversations
+                        .iter()
+                        .filter(|conversation| shows_renamed_people(change, conversation))
+                        .map(|conversation| conversation.conversation_id.clone())
+                        .collect::<Vec<_>>();
+                    (!ids.is_empty()).then(|| (view_id.clone(), ids))
+                })
+                .collect::<Vec<_>>()
+        };
+        if targets.is_empty() {
+            return;
+        }
+        let mut ids = targets
+            .iter()
+            .flat_map(|(_, ids)| ids.iter().cloned())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        let fresh = match self.inner.conversation_api.get_multiple(&ids).await {
+            Ok(fresh) => fresh
+                .into_iter()
+                .map(|conversation| (conversation.conversation_id.clone(), conversation))
+                .collect::<HashMap<_, _>>(),
+            Err(error) => {
+                tracing::warn!(
+                    target = "flare_sdk.view",
+                    error = %error,
+                    "refresh conversation list names failed"
+                );
+                return;
+            }
+        };
+        for (view_id, ids) in targets {
+            let update = {
+                let mut views = self.inner.views.write().await;
+                let Some(registration) = views.conversation_lists.get_mut(&view_id) else {
+                    continue;
+                };
+                let mut next = registration.last_snapshot.clone();
+                for conversation in next.conversations.iter_mut() {
+                    if ids.contains(&conversation.conversation_id)
+                        && let Some(fresh) = fresh.get(&conversation.conversation_id)
+                    {
+                        *conversation = fresh.clone();
+                    }
+                }
+                let update = conversation_list_view_update(
+                    &view_id,
+                    registration.revision + 1,
+                    &registration.last_snapshot,
+                    &next,
+                );
+                if update.is_some() {
+                    registration.revision += 1;
+                }
+                registration.last_snapshot = next;
+                update
             };
             self.publish(update);
         }
@@ -1440,6 +1604,54 @@ fn closed_page(view_id: String) -> TimelineViewPageResponse {
     }
 }
 
+/// 窗口里要按 id 重读的一行。
+struct WindowRow {
+    key: String,
+    client_msg_id: String,
+    server_id: String,
+}
+
+impl WindowRow {
+    fn of(message: &IMMessage) -> Self {
+        Self {
+            key: message.row_key(),
+            client_msg_id: message.client_msg_id.clone(),
+            server_id: message.server_id.clone(),
+        }
+    }
+}
+
+/// 窗口所在会话的可见下限（本地清空记录、服务端历史可见起点）：重读到的行在它之下就移出。
+fn visibility_floor(window: &TimelineWindow) -> u64 {
+    window
+        .conversation
+        .as_ref()
+        .map(crate::domain::sync_visibility_floor)
+        .unwrap_or(0)
+}
+
+/// 会话摘要里有取自这次名字变了的人的名字：
+///
+/// - 标题或末条发送者：身份缓存写入时算受影响会话的同一条规则
+///   （[`crate::domain::conversation_shows_person`]），这里直接调用它；
+/// - 摘要带着的成员（成员预览、成员列表）里有这个人：成员的 `name` 也在读取时投影。有名字的群
+///   不以成员命名，却照样带着成员预览；只按标题与末条发送者推，宿主把增量应用到上一版后，
+///   成员的名字仍是旧的，与新快照不一致。
+///
+/// 第二条只决定打开中的视图重读哪些会话；身份缓存写入时发 `ConversationUpdated` 的范围不变。
+fn shows_renamed_people(change: &NameChange, conversation: &Conversation) -> bool {
+    change
+        .people_in(conversation.conversation_id.trim())
+        .any(|user_id| {
+            crate::domain::conversation_shows_person(conversation, user_id)
+                || conversation
+                    .member_preview
+                    .iter()
+                    .chain(conversation.participants.iter())
+                    .any(|member| member.user_id.trim() == user_id)
+        })
+}
+
 /// 本机刚发出、还没有服务端 seq 的行（发送队列的乐观行，含上传中）。
 fn is_local_pending_send(message: &IMMessage) -> bool {
     message.conversation_seq == 0 && message.local_state.is_local
@@ -1585,6 +1797,8 @@ struct ViewRefreshPlan {
     reread: Option<ViewRefreshTarget>,
     /// 只换会话摘要。
     headers: Option<ViewRefreshTarget>,
+    /// 名字变了的人：只重读他们发出的行与以他们命名的会话。
+    names: NameChange,
     refresh_conversation_lists: bool,
 }
 
@@ -1598,7 +1812,15 @@ impl ViewRefreshPlan {
         }
         merge_target(&mut self.reread, other.reread);
         merge_target(&mut self.headers, other.headers);
+        self.names.merge(other.names);
         self.refresh_conversation_lists |= other.refresh_conversation_lists;
+    }
+
+    fn names(change: NameChange) -> Self {
+        Self {
+            names: change,
+            ..Self::default()
+        }
     }
 
     fn lists_only() -> Self {
@@ -2046,3 +2268,7 @@ mod paging_tests;
 #[cfg(test)]
 #[path = "view_window_tests.rs"]
 mod window_tests;
+
+#[cfg(test)]
+#[path = "view_name_tests.rs"]
+mod name_tests;

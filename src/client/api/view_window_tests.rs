@@ -10,7 +10,8 @@ use serde_json::{Value, json};
 use super::harness::{
     ApplyOutcome, CONVERSATION, Harness, HostTimeline, ReadCounts, Req, Setup, row, seqs,
 };
-use crate::kernel::event::{ConversationEvent, MessageEvent, SdkEvent};
+use crate::domain::UserProfile;
+use crate::kernel::event::{ConversationEvent, MessageEvent, NameChange, SdkEvent};
 use crate::model::{
     IMMessage, TimelineViewPageResponse, TimelineViewRequest, ViewDelta, ViewSnapshot, ViewUpdate,
     ViewUpdateKind,
@@ -514,6 +515,30 @@ async fn produced_delta_cases() -> Vec<Value> {
         "going back to the latest is a snapshot",
         async {
             h.jump_to_latest().await;
+        },
+    )
+    .await;
+
+    // 2 是 u3 发的：u2 的资料变了，只有他发出的 1、3 原位换成新名字。
+    let h = Harness::new(setup(3, 3, &[[1, 3]])).await;
+    let mut other = row(2);
+    other.sender_id = "u3".into();
+    h.stores
+        .messages
+        .save_batch(std::slice::from_ref(&other))
+        .await
+        .unwrap();
+    h.open().await;
+    record(
+        &h,
+        &mut cases,
+        "a profile change upserts the rows its person sent",
+        async {
+            h.stores
+                .save_user_profiles(&[UserProfile::new("u2").with_nickname("Bob")])
+                .await
+                .unwrap();
+            h.names_changed(NameChange::users(["u2"])).await;
         },
     )
     .await;

@@ -16,7 +16,7 @@ use crate::application::{
 use crate::domain::{ConversationIdentityService, UserProfile};
 use crate::infrastructure::persistence::StoreProvider;
 use crate::kernel::SyncTask;
-use crate::kernel::event::{ConversationEvent, EventBus, SdkEvent};
+use crate::kernel::event::{ConversationEvent, EventBus, NameChange, SdkEvent};
 use crate::model::{Conversation, IMMessage};
 use crate::shared::error::Result;
 
@@ -303,7 +303,13 @@ impl ExtensionContext {
     }
 
     pub(crate) fn from_core(stores: StoreProvider, bus: EventBus) -> Self {
-        Self::new(Arc::new(CoreExtensionStore { stores }), bus)
+        Self::new(
+            Arc::new(CoreExtensionStore {
+                stores,
+                bus: bus.clone(),
+            }),
+            bus,
+        )
     }
 
     pub fn store(&self) -> Arc<dyn ExtensionStore> {
@@ -383,6 +389,8 @@ pub trait ExtensionLifecycle: Send + Sync {
 
 struct CoreExtensionStore {
     stores: StoreProvider,
+    /// 身份缓存与成员昵称写入后，告诉打开中的视图重读受影响的行。
+    bus: EventBus,
 }
 
 #[async_trait]
@@ -439,11 +447,18 @@ impl ExtensionStore for CoreExtensionStore {
     }
 
     async fn save_user_profiles(&self, profiles: &[UserProfile]) -> Result<()> {
-        self.stores.save_user_profiles(profiles).await
+        self.stores.save_user_profiles(profiles).await?;
+        self.bus.publish_name_change(NameChange::users(
+            profiles.iter().map(|profile| profile.user_id.as_str()),
+        ));
+        Ok(())
     }
 
     async fn apply_user_profile(&self, profile: &UserProfile) -> Result<Vec<String>> {
-        self.stores.apply_user_profile(profile).await
+        let affected = self.stores.apply_user_profile(profile).await?;
+        self.bus
+            .publish_name_change(NameChange::users([profile.user_id.as_str()]));
+        Ok(affected)
     }
 
     async fn get_user_profiles(&self, user_ids: &[String]) -> Result<HashMap<String, UserProfile>> {
@@ -457,7 +472,10 @@ impl ExtensionStore for CoreExtensionStore {
         &self,
         snapshots: &[crate::domain::ParticipantDisplaySnapshot],
     ) -> Result<Vec<String>> {
-        self.stores.apply_participant_display(snapshots).await
+        let changed = self.stores.apply_participant_display(snapshots).await?;
+        self.bus
+            .publish_name_change(NameChange::written_member_nicknames(snapshots, &changed));
+        Ok(changed)
     }
 }
 

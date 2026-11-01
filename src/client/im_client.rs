@@ -772,19 +772,23 @@ impl IMClient {
                 affected.insert(conversation_id);
             }
         }
-        // 通知受影响会话刷新展示;打开中的时间线在下次读取时按缓存重渲染当前身份。
+        // 通知受影响会话刷新展示;打开中的视图只重读这些人发出的行与以他们命名的会话。
         if let Ok(bus) = self.bus().await {
             for conversation_id in affected {
                 bus.publish(SdkEvent::Conversation(
                     crate::kernel::event::ConversationEvent::Updated { conversation_id },
                 ));
             }
+            bus.publish_name_change(crate::kernel::event::NameChange::users(
+                profiles.iter().map(|profile| profile.user_id.as_str()),
+            ));
         }
         Ok(())
     }
 
     /// 业务端推送会话内成员昵称（社交业务里的群昵称）：时间线与会话列表投影人名时，群与频道
-    /// 会话里它排在别名之后、资料名之前。空昵称表示清除。受影响会话收到 `ConversationUpdated`。
+    /// 会话里它排在别名之后、资料名之前。空昵称表示清除。受影响会话收到 `ConversationUpdated`；
+    /// 打开中的这些会话的时间线只重读这些人发出的行。
     pub async fn upsert_participant_display_snapshots(
         &self,
         snapshots: Vec<crate::domain::ParticipantDisplaySnapshot>,
@@ -792,6 +796,9 @@ impl IMClient {
         let stores = self.stores_async().await?;
         let affected = stores.apply_participant_display(&snapshots).await?;
         if let Ok(bus) = self.bus().await {
+            bus.publish_name_change(crate::kernel::event::NameChange::written_member_nicknames(
+                &snapshots, &affected,
+            ));
             for conversation_id in affected {
                 bus.publish(SdkEvent::Conversation(
                     crate::kernel::event::ConversationEvent::Updated { conversation_id },
