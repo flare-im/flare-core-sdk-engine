@@ -450,7 +450,7 @@ impl SqliteConversationRepo {
             channel_id,
             members_count: members_count.max(0) as u32,
             display_name,
-            title: None,
+            title: Default::default(),
             avatar_url,
             remark,
             description,

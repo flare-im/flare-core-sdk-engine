@@ -374,21 +374,28 @@ pub struct ConversationParticipant {
     pub nickname: String,
     /// 成员在这个会话里显示成什么（成员列表、@ 选择用）：别名、会话内昵称、资料名，
     /// 都没有时为结构化的「无名」。读取时由核心投影，不落库；SDK 交出的成员都带它。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<DisplayName>,
+    pub name: DisplayName,
+}
+
+impl ConversationParticipant {
+    /// 成员行自己能说明的名字：会话内昵称，没有就是结构化的「无名」。
+    /// 读取会话时的投影（别名、写入的会话内昵称、资料名）会覆盖它。
+    pub fn nickname_name(user_id: &str, nickname: &str) -> DisplayName {
+        crate::domain::resolve_person_name(
+            user_id,
+            &crate::domain::PersonNameCandidates {
+                member_nickname: nickname,
+                ..Default::default()
+            },
+            Some(ConversationType::Group),
+        )
+    }
 }
 
 impl From<flare_proto::common::ConversationParticipant> for ConversationParticipant {
     fn from(p: flare_proto::common::ConversationParticipant) -> Self {
         let nickname = p.attributes.get("nickname").cloned().unwrap_or_default();
-        let name = crate::domain::resolve_person_name(
-            &p.user_id,
-            &crate::domain::PersonNameCandidates {
-                member_nickname: &nickname,
-                ..Default::default()
-            },
-            Some(ConversationType::Group),
-        );
+        let name = ConversationParticipant::nickname_name(&p.user_id, &nickname);
         Self {
             user_id: p.user_id,
             roles: p.roles,
@@ -397,7 +404,7 @@ impl From<flare_proto::common::ConversationParticipant> for ConversationParticip
             attributes: p.attributes,
             joined_at: proto_ms_to_u64(p.joined_at),
             nickname,
-            name: Some(name),
+            name,
         }
     }
 }
@@ -449,8 +456,7 @@ pub struct Conversation {
     pub display_name: String,
     /// 列表与聊天头显示的会话标题：备注、单聊对端人名、业务名、无名群的成员名拼接，
     /// 都没有时为结构化的「无名」。读取时由核心投影，不落库；SDK 交出的会话都带它。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<DisplayName>,
+    pub title: DisplayName,
     pub avatar_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remark: Option<String>,
@@ -470,7 +476,8 @@ pub struct Conversation {
     pub last_message_preview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message: Option<MessagePreviewElem>,
-    /// 最后一条消息发送者展示名（列表用）
+    /// 旧字段：最后一条消息发送者在身份缓存里的资料名（是真名字时），否则为本地已存的名字或空串，
+    /// 永不为 id。列表读 `last_sender`。
     pub last_sender_nickname: String,
     /// 最后一条消息的发送者名（人名解析链，群会话含会话内昵称）；没有最后一条消息时缺省。
     /// 读取时由核心投影，不落库。
@@ -549,7 +556,7 @@ impl Default for Conversation {
             channel_id: String::new(),
             members_count: 0,
             display_name: String::new(),
-            title: None,
+            title: DisplayName::default(),
             avatar_url: String::new(),
             remark: None,
             description: None,
@@ -699,10 +706,6 @@ impl Conversation {
 
     pub fn last_read_seq(&self) -> u64 {
         self.last_read_seq
-    }
-
-    pub fn last_sender_display_name(&self) -> &str {
-        &self.last_sender_nickname
     }
 
     pub fn last_sender_avatar_url(&self) -> &str {
@@ -936,6 +939,33 @@ mod tests {
                 "{key} must be omitted when absent"
             );
         }
+    }
+
+    /// `title` is on every conversation and `name` on every member the SDK hands over;
+    /// `lastSender` only when there is a latest message.
+    #[test]
+    fn conversation_wire_always_carries_the_title_and_member_names() {
+        use super::ConversationParticipant;
+
+        let mut conversation = Conversation::from_conversation_id("1ATESTCIDVALUE001".to_string());
+        conversation.member_preview = vec![ConversationParticipant::from(
+            flare_proto::common::ConversationParticipant {
+                user_id: "u_ann".to_string(),
+                attributes: [("nickname".to_string(), "Ann".to_string())].into(),
+                ..Default::default()
+            },
+        )];
+        let value = serde_json::to_value(&conversation).expect("serialize conversation");
+
+        assert_eq!(
+            value["title"],
+            serde_json::json!({"kind": "unnamed", "entity": "person", "idTail": ""})
+        );
+        assert!(value.get("lastSender").is_none());
+        assert_eq!(
+            value["memberPreview"][0]["name"],
+            serde_json::json!({"kind": "named", "text": "Ann", "source": "memberNickname"})
+        );
     }
 
     #[test]

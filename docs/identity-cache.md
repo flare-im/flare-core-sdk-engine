@@ -28,11 +28,11 @@
 - `ProfileProvider` trait（`extension/mod.rs:431`）= 业务可注入的**拉取**源，经 builder `add_profile_provider_arc` 注册。
 - `apply_user_profile` / `UserProfileProjectionApplier`（`projections/user_profile.rs`）= 把一个 profile 写进缓存 + patch 会话参与者 + 更新会话展示字段。
 - `UserReader.get`/`get_many` 批量读 join；`UserWriter.save_batch` = upsert 底座。
-- `IMMessage::display_name()` 回退链 `sender_display_name → sender_name → sender_id`（`message.rs:616`）；头像用内嵌 `sender_avatar`。
+- 发送者名是读取时投影的 `IMMessage.sender`（人名解析链：别名、会话内昵称、资料名、发送时快照 `sender_name`，都没有时为结构化的「无名」，不回落到 `sender_id`）；头像用内嵌 `sender_avatar`。
 
 ## 实现归属
 
-- **push upsert API（core）**：`IMClient::upsert_user_profiles(Vec<UserProfile>)`（`im_client.rs:599`）→ 既有 `apply_user_profile`（缓存 + 参与者 + 会话快照）+ 发 `ConversationEvent::Updated` 刷新受影响会话。集成测 `timeline_read_resolves_current_identity_then_falls_back`（命中→Alice、miss→内嵌 Bob、都无→u3）。
+- **push upsert API（core）**：`IMClient::upsert_user_profiles(Vec<UserProfile>)`（`im_client.rs:599`）→ 既有 `apply_user_profile`（缓存 + 参与者 + 会话快照）+ 发 `ConversationEvent::Updated` 刷新受影响会话。集成测 `timeline_read_resolves_current_identity_then_falls_back`（命中→Alice、miss→内嵌 Bob、都无→无名 `{unnamed, person, "u3"}`）。
 - **契约/wire**：`UserProfile` 用 camelCase（wire = `userId`/`nickname`/`avatarUrl`）；`direct_invoke.json` 路由 `user.upsert_profiles`（body 取 `profiles` → `client.upsert_user_profiles`）；typed 方法源在 `sdk-spec/modules/user.json`（method `upsertUserProfiles`、request `UpsertUserProfilesRequest`、response Unit、cApi `flare_sdk_invoke_json`），经 `core-codegen`/`typescript-contract`/`platform-contract` 生成 dispatch + Swift/Kotlin/Dart/TS 桩。
 - **五端接线（web/tauri/iOS/flutter/android）**：SDK 层各端 `client.user.upsertUserProfiles` 可用，均构建通过；web 端到端实测（喂入后显示当前身份，未喂回退发送时快照/ID）。native 各端 adapter 实现 + client 装配为手维护（生成器对新模块不产 DefaultXxxApi/不接 client，属生成器缺口）。
 

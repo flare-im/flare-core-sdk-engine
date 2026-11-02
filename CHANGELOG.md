@@ -203,6 +203,14 @@
 
 ### 移除
 
+- 回落到 id 的名字访问器：`UserProfile::display_name()`（没有资料名时返回 user_id）、`IMMessage::display_name()`、
+  `Conversation::last_sender_display_name()`，以及「我」页摘要的 `ProfileCenterSummary.display_name`（名字只在
+  `name`，`ProfileCenterSummary::with_name_from` 按人名解析链取）。旧字段 `lastSenderNickname` 在缓存里的资料没有
+  名字时不再写成发送者 id，只放真名字或空串。
+- 名字投影的新字段改为必填：`Conversation.title`、`IMMessage.sender`、`ConversationParticipant.name` 不再是
+  `Option`，SDK 交出的值一律带；`lastSender` 仍只在有最后一条消息时带。没有经过读取投影的值带它自己能说明的名字
+  （消息为发送时快照，成员为会话内昵称，都没有时为结构化的「无名」）。宿主发回的消息可以不带 `sender`。
+
 - 时间线视图的旧增量与返回值：`ViewDelta::Timeline` 的 `ops`（insert / update / remove / move 带下标）与 `has_more`
   换成按行键的 `prepend` / `append` / `upsert` / `remove` / `reorder` 加三个状态字段，`conversation` 只在变化时带；
   `ViewLoadOlderResponse`（含 `has_more` 与 `update`）换成只有 `{viewId, loadedCount, revision}` 的

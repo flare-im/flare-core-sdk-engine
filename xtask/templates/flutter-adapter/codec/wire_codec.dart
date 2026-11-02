@@ -285,7 +285,7 @@ Conversation conversationFromJson(Map<dynamic, dynamic> rawJson) {
     channelId: requiredStringField(json, 'channelId', 'Conversation'),
     membersCount: intValue(json['membersCount']),
     displayName: stringFieldOrEmpty(json, 'displayName'),
-    title: displayNameFromJson(json['title']),
+    title: requiredDisplayNameField(json, 'title', 'Conversation'),
     avatarUrl: stringFieldOrEmpty(json, 'avatarUrl'),
     remark: json['remark']?.toString(),
     description: json['description']?.toString(),
@@ -846,7 +846,7 @@ Message messageFromJson(Object? value) {
     senderName: stringFieldOrEmpty(json, 'senderName'),
     senderAvatar: stringFieldOrEmpty(json, 'senderAvatar'),
     senderDisplayName: stringFieldOrEmpty(json, 'senderDisplayName'),
-    sender: displayNameFromJson(json['sender']),
+    sender: requiredDisplayNameField(json, 'sender', 'Message'),
     replyTo: json['replyTo']?.toString(),
     quotePreview: json['quotePreview']?.toString(),
     threadId: json['threadId']?.toString(),
@@ -937,14 +937,12 @@ const DisplayName _unknownPersonName = DisplayName(
 );
 
 /// A projected name: conversation `title` and `lastSender`, message `sender`,
-/// participant `name`. Every value the SDK hands over carries `title`, `sender`
-/// and `name`, and `lastSender` when there is a latest message; the fields stay
-/// optional while hosts move to them, so a value without one (from an older
-/// core) reads as null. It never fails, so a core newer than this package still
-/// yields a name: an unknown `entity` reads as `person`, an unknown `kind`, a
-/// `named` value without text or a value that is not an object reads as an
-/// unnamed person without an id tail, an unknown `source` is dropped. The kits
-/// read names by the same rule.
+/// participant `name`. An absent value reads as null;
+/// [requiredDisplayNameField] reads the names every value carries. A value that
+/// is there never fails, by the rule the kits read names with: an unknown
+/// `entity` reads as `person`, an unknown `kind`, a `named` value without text
+/// or a value that is not an object reads as an unnamed person without an id
+/// tail, an unknown `source` is dropped.
 DisplayName? displayNameFromJson(Object? value) {
   if (value == null) return null;
   if (value is! Map) return _unknownPersonName;
@@ -987,6 +985,22 @@ DisplayName? displayNameFromJson(Object? value) {
   }
 }
 
+/// A name the value always carries: conversation `title`, message `sender`,
+/// participant `name`. The core and this package ship together and the core
+/// writes these on every value, so a value without one is a contract error, as
+/// with any other required field.
+DisplayName requiredDisplayNameField(
+  Map<String, Object?> json,
+  String key,
+  String context,
+) {
+  final name = displayNameFromJson(json[key]);
+  if (name == null) {
+    throw ArgumentError.value(json, context, '$context.$key is required');
+  }
+  return name;
+}
+
 MessagePreview? messagePreviewFromJson(Object? value) {
   if (value == null) return null;
   final json = mapValue(value);
@@ -1009,7 +1023,7 @@ ConversationParticipant conversationParticipantFromJson(Object? value) {
     attributes: stringMap(json['attributes']),
     joinedAt: requiredIntField(json, 'joinedAt', 'ConversationParticipant'),
     nickname: requiredStringField(json, 'nickname', 'ConversationParticipant'),
-    name: displayNameFromJson(json['name']),
+    name: requiredDisplayNameField(json, 'name', 'ConversationParticipant'),
   );
 }
 

@@ -1,12 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{DisplayName, PersonNameCandidates, resolve_person_name};
+use crate::domain::{DisplayName, NameEntity, UserProfile, resolve_person_name};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileCenterSummary {
     pub user_id: String,
-    pub display_name: String,
     /// 「我」页显示的名字：人名解析链的结果，没有名字时为结构化的「无名」，不回落到 user_id。
     #[serde(default)]
     pub name: DisplayName,
@@ -23,27 +22,20 @@ impl ProfileCenterSummary {
     pub fn new(user_id: impl Into<String>) -> Self {
         let user_id = user_id.into();
         Self {
-            display_name: user_id.clone(),
-            name: DisplayName::unnamed(crate::domain::NameEntity::Person, &user_id),
+            name: DisplayName::unnamed(NameEntity::Person, &user_id),
             user_id,
             ..Self::default()
         }
     }
 
+    /// 按身份缓存里本人的资料取名（人名解析链）；资料名为空或等于 user_id 时为「无名」。
+    pub fn with_name_from(mut self, profile: &UserProfile) -> Self {
+        self.name = resolve_person_name(&self.user_id, &profile.name_candidates(), None);
+        self
+    }
+
     pub fn normalized(mut self) -> Self {
         self.user_id = self.user_id.trim().to_owned();
-        self.display_name = self.display_name.trim().to_owned();
-        self.name = resolve_person_name(
-            &self.user_id,
-            &PersonNameCandidates {
-                profile_name: &self.display_name,
-                ..Default::default()
-            },
-            None,
-        );
-        if self.display_name.is_empty() {
-            self.display_name = self.user_id.clone();
-        }
         self.avatar_url = non_empty(self.avatar_url);
         self.bio = non_empty(self.bio);
         self.warning = non_empty(self.warning);
@@ -164,21 +156,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn summary_normalization_uses_user_id_as_display_name_fallback() {
+    fn summary_normalization_trims_and_never_names_the_user_by_id() {
         let summary = ProfileCenterSummary {
-            user_id: " user-1 ".to_owned(),
-            display_name: " ".to_owned(),
             avatar_url: Some(" ".to_owned()),
             bio: Some(" hello ".to_owned()),
-            ..ProfileCenterSummary::default()
+            ..ProfileCenterSummary::new(" user-1 ")
         }
         .normalized();
 
         assert_eq!(summary.user_id, "user-1");
-        assert_eq!(summary.display_name, "user-1");
         assert_eq!(
             summary.name,
-            DisplayName::unnamed(crate::domain::NameEntity::Person, "user-1"),
+            DisplayName::unnamed(NameEntity::Person, "user-1"),
             "the name never falls back to the user id"
         );
         assert_eq!(summary.avatar_url, None);
@@ -186,24 +175,19 @@ mod tests {
     }
 
     #[test]
-    fn summary_name_is_the_profile_name() {
-        let summary = ProfileCenterSummary {
-            user_id: "user-1".to_owned(),
-            display_name: " Hugo ".to_owned(),
-            ..ProfileCenterSummary::default()
-        }
-        .normalized();
+    fn summary_name_follows_the_person_name_chain() {
+        let named = ProfileCenterSummary::new("user-1")
+            .with_name_from(&UserProfile::new("user-1").with_nickname(" Hugo "));
         assert_eq!(
-            summary.name,
+            named.name,
             DisplayName::named("Hugo", crate::domain::NameSource::Profile)
         );
-        let id_named = ProfileCenterSummary {
-            user_id: "user-1".to_owned(),
-            display_name: "user-1".to_owned(),
-            ..ProfileCenterSummary::default()
-        }
-        .normalized();
-        assert!(!id_named.name.is_named());
+        let id_named = ProfileCenterSummary::new("user-1")
+            .with_name_from(&UserProfile::new("user-1").with_nickname("user-1"));
+        assert_eq!(
+            id_named.name,
+            DisplayName::unnamed(NameEntity::Person, "user-1")
+        );
     }
 
     #[test]

@@ -209,13 +209,13 @@ pub struct IMMessage {
 
     pub sender_avatar: String,
 
-    /// SDK计算展示名
+    /// 旧字段：身份缓存里发送者的资料名（是真名字时），否则为空，永不为 id。读发送者名用 `sender`。
     pub sender_display_name: String,
 
     /// 发送者名：别名、群会话里的会话内昵称、资料名、发送时快照（`sender_name`），都没有时为
     /// 结构化的「无名」。读取时由核心投影，不落库；SDK 交出的消息都带它。
     #[serde(default)]
-    pub sender: Option<DisplayName>,
+    pub sender: DisplayName,
 
     // ==============================
     // Reply / Quote
@@ -313,9 +313,7 @@ impl Serialize for IMMessage {
         state.serialize_field("senderName", &self.sender_name)?;
         state.serialize_field("senderAvatar", &self.sender_avatar)?;
         state.serialize_field("senderDisplayName", &self.sender_display_name)?;
-        if let Some(sender) = &self.sender {
-            state.serialize_field("sender", sender)?;
-        }
+        state.serialize_field("sender", &self.wire_sender())?;
         if let Some(reply_to) = &self.reply_to {
             state.serialize_field("replyTo", reply_to)?;
         }
@@ -477,7 +475,7 @@ impl IMMessage {
             extensions: message.extensions,
             reactions,
             sender_display_name: String::new(),
-            sender: Some(sender),
+            sender,
             version: 0,
             updated_at: 0,
             local_state: MessageLocalState {
@@ -488,6 +486,17 @@ impl IMMessage {
                 upload_progress: 0,
                 sort_ts: created_at,
             },
+        }
+    }
+
+    /// wire 上的 `sender`。字段还是默认值（「无名」且没有 id 尾）而消息有发送者 id 或发送时快照时，
+    /// 说明它没经过投影，也不是从 proto 构造的（例如宿主发回的 JSON 不带 `sender`），这时给出发送时快照。
+    /// 投影的结果不会是这个默认值：有发送者 id 时「无名」带 id 尾，有快照时是快照。
+    fn wire_sender(&self) -> std::borrow::Cow<'_, DisplayName> {
+        if self.sender == DisplayName::default() {
+            std::borrow::Cow::Owned(self.snapshot_sender())
+        } else {
+            std::borrow::Cow::Borrowed(&self.sender)
         }
     }
 
@@ -860,17 +869,6 @@ impl IMMessage {
             }
             serde_json::to_string(&p).ok()
         })
-    }
-
-    /// 展示用发送者名称：优先 sender_display_name，否则 sender_name，再否则 sender_id
-    pub fn display_name(&self) -> &str {
-        if !self.sender_display_name.is_empty() {
-            &self.sender_display_name
-        } else if !self.sender_name.is_empty() {
-            &self.sender_name
-        } else {
-            &self.sender_id
-        }
     }
 
     /// 发送者头像 URL（来自 proto sender_avatar）
@@ -1319,6 +1317,39 @@ mod tests {
         assert_eq!(value["localState"]["isLocal"], true);
         assert!(value.get("timeline_key").is_none());
         assert!(value.get("local_state").is_none());
+    }
+
+    /// `sender` is on every message the SDK hands over, even one no view has projected:
+    /// the send-time snapshot, else structured unnamed. A host that sends a message back
+    /// without it still decodes.
+    #[test]
+    fn serialized_message_always_carries_the_sender_name() {
+        let unnamed = message("client-1", "server-1", 7, 1_000);
+        let value = serde_json::to_value(&unnamed).expect("serialize message");
+        assert_eq!(
+            value["sender"],
+            serde_json::json!({"kind": "unnamed", "entity": "person", "idTail": "er-1"})
+        );
+
+        let named = IMMessage::new(ProtoMessage {
+            sender_id: "user-1".to_string(),
+            sender_name: "Alice".to_string(),
+            ..Default::default()
+        });
+        let value = serde_json::to_value(&named).expect("serialize message");
+        assert_eq!(
+            value["sender"],
+            serde_json::json!({"kind": "named", "text": "Alice", "source": "snapshot"})
+        );
+
+        let mut sent_back = value;
+        sent_back.as_object_mut().unwrap().remove("sender");
+        let decoded = IMMessage::from_json_value(sent_back).expect("decode without sender");
+        assert_eq!(
+            serde_json::to_value(&decoded).expect("serialize message")["sender"],
+            serde_json::json!({"kind": "named", "text": "Alice", "source": "snapshot"}),
+            "a message read without its sender carries the send-time snapshot"
+        );
     }
 
     #[test]

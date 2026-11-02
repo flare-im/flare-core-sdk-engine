@@ -184,13 +184,13 @@ impl MessageViewAssembler {
                 })
                 .map(|member| member.nickname.as_str())
                 .unwrap_or_default();
-            view.sender = Some(book.person(
+            view.sender = book.person(
                 &view.conversation_id,
                 ConversationType::from_proto_int(view.conversation_type),
                 &sender_id,
                 row_nickname,
                 &view.sender_name,
-            ));
+            );
         }
         Ok(())
     }
@@ -315,10 +315,9 @@ mod tests {
 
         let view = assembler.get("s1").await.unwrap().expect("message");
         assert_eq!(view.sender_display_name, "", "an id is not a display name");
-        assert_eq!(view.display_name(), "Bob at send time");
         assert_eq!(
             view.sender,
-            Some(DisplayName::named("Bob at send time", NameSource::Snapshot))
+            DisplayName::named("Bob at send time", NameSource::Snapshot)
         );
     }
 
@@ -353,7 +352,7 @@ mod tests {
         let sender_of = |list: &[IMMessage], id: &str| {
             list.iter()
                 .find(|m| m.server_id == id)
-                .and_then(|m| m.sender.clone())
+                .map(|m| m.sender.clone())
                 .expect("projected sender")
         };
         assert_eq!(

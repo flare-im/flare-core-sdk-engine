@@ -8,6 +8,8 @@ import {
   ConversationParticipant,
   Conversation,
   ConversationType,
+  DisplayName,
+  DisplayNameKind,
   ListConversationsResponse,
   ListMessagesResponse,
   LoadNewerTimelineViewRequest,
@@ -21,6 +23,8 @@ import {
   MessageReadSummary,
   MessageReceiptStatus,
   MessageReceiptView,
+  NameEntity,
+  NameSource,
   NetworkChangeRequest,
   NetworkChangeResponse,
   OpenConversationListViewRequest,
@@ -129,6 +133,19 @@ export function conversationParticipantToMap(request: ConversationParticipant): 
   attributes: request.attributes,
   joinedAt: request.joinedAt,
   nickname: request.nickname,
+  name: displayNameToMap(request.name),
+  };
+}
+
+export function displayNameToMap(request: DisplayName): Record<string, Object> {
+  return {
+  kind: request.kind,
+  ...(request.text !== undefined ? { text: request.text } : {}),
+  ...(request.source !== undefined ? { source: request.source } : {}),
+  ...(request.names !== undefined ? { names: request.names } : {}),
+  ...(request.total !== undefined ? { total: request.total } : {}),
+  ...(request.entity !== undefined ? { entity: request.entity } : {}),
+  ...(request.idTail !== undefined ? { idTail: request.idTail } : {}),
   };
 }
 
@@ -150,6 +167,7 @@ export function conversationToMap(request: Conversation): Record<string, Object>
   channelId: request.channelId,
   membersCount: request.membersCount,
   displayName: request.displayName,
+  title: displayNameToMap(request.title),
   avatarUrl: request.avatarUrl,
   ...(request.remark !== undefined ? { remark: request.remark } : {}),
   ...(request.description !== undefined ? { description: request.description } : {}),
@@ -159,6 +177,7 @@ export function conversationToMap(request: Conversation): Record<string, Object>
   ...(request.lastMessagePreview !== undefined ? { lastMessagePreview: request.lastMessagePreview } : {}),
   ...(request.lastMessage !== undefined ? { lastMessage: messagePreviewToMap(request.lastMessage) } : {}),
   lastSenderNickname: request.lastSenderNickname,
+  ...(request.lastSender !== undefined ? { lastSender: displayNameToMap(request.lastSender) } : {}),
   lastSenderAvatarUrl: request.lastSenderAvatarUrl,
   unreadCount: request.unreadCount,
   lastReadSeq: request.lastReadSeq,
@@ -1084,12 +1103,75 @@ export function messagePreviewFromJson(value: Object | undefined): MessagePrevie
   };
 }
 
+const NAME_SOURCE_WIRE_VALUES: NameSource[] = [NameSource.Alias, NameSource.MemberNickname, NameSource.Profile, NameSource.Snapshot, NameSource.Remark, NameSource.Name];
+const NAME_ENTITY_WIRE_VALUES: NameEntity[] = [NameEntity.Person, NameEntity.Group, NameEntity.System, NameEntity.Ai, NameEntity.Customer, NameEntity.Channel, NameEntity.Broadcast, NameEntity.Temp];
+
+function unknownPersonName(): DisplayName {
+  return { kind: DisplayNameKind.Unnamed, entity: NameEntity.Person, idTail: '' };
+}
+
+/**
+ * A projected name: conversation `lastSender`; an absent value reads as undefined. A value that is there never fails,
+ * by the rule the kits read names with: an unknown `entity` reads as `person`, an unknown `kind`, a `named` value
+ * without text or a value that is not an object reads as an unnamed person without an id tail, an unknown `source` is
+ * dropped.
+ */
+export function optionalDisplayNameFromJson(value: Object | undefined): DisplayName | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return unknownPersonName();
+  }
+  const json = value as Record<string, Object>;
+  const kind = field(json, 'kind');
+  if (kind === DisplayNameKind.Named) {
+    const text = field(json, 'text');
+    if (typeof text !== 'string') {
+      return unknownPersonName();
+    }
+    const source = NAME_SOURCE_WIRE_VALUES.find((candidate) => candidate === field(json, 'source'));
+    return source !== undefined
+      ? { kind: DisplayNameKind.Named, text: text as string, source: source }
+      : { kind: DisplayNameKind.Named, text: text as string };
+  }
+  if (kind === DisplayNameKind.Members) {
+    const names = field(json, 'names');
+    const total = field(json, 'total');
+    return {
+      kind: DisplayNameKind.Members,
+      names: Array.isArray(names) ? (names as Object[]).filter((name) => typeof name === 'string').map((name) => name as string) : [],
+      total: typeof total === 'number' && Number.isFinite(total) && (total as number) >= 0 ? Math.trunc(total as number) : 0,
+    };
+  }
+  if (kind === DisplayNameKind.Unnamed) {
+    const entity = NAME_ENTITY_WIRE_VALUES.find((candidate) => candidate === field(json, 'entity'));
+    const idTail = field(json, 'idTail');
+    return {
+      kind: DisplayNameKind.Unnamed,
+      entity: entity !== undefined ? entity : NameEntity.Person,
+      idTail: typeof idTail === 'string' ? idTail as string : '',
+    };
+  }
+  return unknownPersonName();
+}
+
+/**
+ * A name every value carries: conversation `title`, message `sender`, participant `name`. This decoder reads every
+ * field it does not find as that field's default, and this one as an unnamed person without an id tail.
+ */
+export function displayNameFromJson(value: Object | undefined): DisplayName {
+  const name = optionalDisplayNameFromJson(value);
+  return name !== undefined ? name : unknownPersonName();
+}
+
 export function conversationParticipantFromJson(value: Object | undefined): ConversationParticipant {
   const json = recordValue(value);
   return {
     attributes: stringRecord(field(json, 'attributes')),
     joinedAt: intValue(field(json, 'joinedAt')),
     muted: field(json, 'muted') === true,
+    name: displayNameFromJson(field(json, 'name')),
     nickname: stringValue(field(json, 'nickname')),
     pinned: field(json, 'pinned') === true,
     roles: stringList(field(json, 'roles')),
@@ -1160,6 +1242,7 @@ export function messageFromJson(value: Object | undefined): Message {
     reactions: listOfMaps(field(json, 'reactions')).map((item) => reactionEntryFromJson(item)),
     ...(field(json, 'replyTo') !== undefined ? { replyTo: stringValue(field(json, 'replyTo')) } : {}),
     ...(field(json, 'threadId') !== undefined ? { threadId: stringValue(field(json, 'threadId')) } : {}),
+    sender: displayNameFromJson(field(json, 'sender')),
     senderAvatar: String(field(json, 'senderAvatar') ?? ''),
     senderDisplayName: String(field(json, 'senderDisplayName') ?? ''),
     senderId: String(field(json, 'senderId') ?? ''),
@@ -1235,6 +1318,7 @@ export function conversationFromJson(json: Record<string, Object>): Conversation
     ...(field(json, 'lastMessageId') !== undefined ? { lastMessageId: stringValue(field(json, 'lastMessageId')) } : {}),
     ...(field(json, 'lastMessagePreview') !== undefined ? { lastMessagePreview: stringValue(field(json, 'lastMessagePreview')) } : {}),
     lastReadSeq: intValue(field(json, 'lastReadSeq')),
+    ...(optionalDisplayNameFromJson(field(json, 'lastSender')) !== undefined ? { lastSender: optionalDisplayNameFromJson(field(json, 'lastSender')) } : {}),
     lastSenderAvatarUrl: String(field(json, 'lastSenderAvatarUrl') ?? ''),
     ...(field(json, 'lastSenderId') !== undefined ? { lastSenderId: stringValue(field(json, 'lastSenderId')) } : {}),
     lastSenderNickname: String(field(json, 'lastSenderNickname') ?? ''),
@@ -1248,6 +1332,7 @@ export function conversationFromJson(json: Record<string, Object>): Conversation
     peerReadSeq: intValue(field(json, 'peerReadSeq')),
     ...(field(json, 'remark') !== undefined ? { remark: stringValue(field(json, 'remark')) } : {}),
     ...(field(json, 'role') !== undefined ? { role: stringValue(field(json, 'role')) } : {}),
+    title: displayNameFromJson(field(json, 'title')),
     unreadCount: intValue(field(json, 'unreadCount')),
     updatedAt: intValue(field(json, 'updatedAt')),
     updatedAtTs: field(json, 'updatedAtTs') !== undefined ? intValue(field(json, 'updatedAtTs')) : undefined,

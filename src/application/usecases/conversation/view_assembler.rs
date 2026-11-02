@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::application::projections::names::NameRequest;
-use crate::domain::{ConversationStore, UserReader};
+use crate::application::projections::names::{NameBook, NameRequest};
+use crate::domain::{ConversationStore, UserReader, real_name};
 use crate::kernel::CurrentUserIdStore;
 use crate::model::{Conversation, ConversationListQuery};
 use crate::shared::error::Result;
@@ -71,16 +71,7 @@ impl ConversationViewAssembler {
             .await;
         for conversation in conversations.iter_mut() {
             book.project_conversation(conversation, &me);
-            // Legacy fields, as before: the last sender's cached name and avatar.
-            let profile = conversation
-                .last_message()
-                .filter(|last| !last.sender_id.is_empty())
-                .and_then(|last| book.profile(&last.sender_id))
-                .cloned();
-            if let Some(profile) = profile {
-                *conversation = std::mem::take(conversation)
-                    .with_last_sender(profile.display_name(), &profile.avatar_url);
-            }
+            project_legacy_last_sender(conversation, &book);
         }
         conversations
     }
@@ -150,6 +141,30 @@ impl ConversationViewAssembler {
     pub async fn list_raw(&self) -> Result<Vec<Conversation>> {
         self.store.list().await
     }
+}
+
+/// The legacy `last_sender_nickname` and the last sender's avatar. The column holds a
+/// real name or nothing: the cached profile name when it is a name, else what the row
+/// already holds, and never the sender's id. Lists title the last sender by `last_sender`.
+fn project_legacy_last_sender(conversation: &mut Conversation, book: &NameBook) {
+    let Some(sender_id) = conversation
+        .last_message()
+        .map(|last| last.sender_id.trim().to_owned())
+        .filter(|id| !id.is_empty())
+    else {
+        return;
+    };
+    if real_name(&conversation.last_sender_nickname, &[&sender_id]).is_none() {
+        conversation.last_sender_nickname.clear();
+    }
+    let Some(profile) = book.profile(&sender_id) else {
+        return;
+    };
+    let nickname = real_name(&profile.nickname, &[&sender_id])
+        .map(str::to_owned)
+        .unwrap_or_else(|| conversation.last_sender_nickname.clone());
+    let avatar_url = profile.avatar_url.clone();
+    *conversation = std::mem::take(conversation).with_last_sender(nickname, avatar_url);
 }
 
 #[cfg(test)]
@@ -323,10 +338,7 @@ mod tests {
         let by_id = |id: &str| list.iter().find(|c| c.conversation_id == id).unwrap();
 
         let bob = by_id("1A_single_0");
-        assert_eq!(
-            bob.title,
-            Some(DisplayName::named("Bobby", NameSource::Alias))
-        );
+        assert_eq!(bob.title, DisplayName::named("Bobby", NameSource::Alias));
         assert_eq!(
             bob.last_sender,
             Some(DisplayName::named("Bobby", NameSource::Alias))
@@ -338,16 +350,16 @@ mod tests {
         let unnamed = by_id("1A_single_1");
         assert_eq!(
             unnamed.title,
-            Some(DisplayName::unnamed(NameEntity::Person, "u_cai9876"))
+            DisplayName::unnamed(NameEntity::Person, "u_cai9876")
         );
 
         let group = by_id("2A_group_1");
         assert_eq!(
             group.title,
-            Some(DisplayName::Members {
+            DisplayName::Members {
                 names: vec!["Ann".to_string(), "Dan in group".to_string()],
                 total: 4
-            }),
+            },
             "the group name equal to its id is no name; members other than me title it"
         );
         assert_eq!(
@@ -360,9 +372,66 @@ mod tests {
         let names: Vec<_> = group
             .member_preview
             .iter()
-            .map(|m| m.name.clone().expect("projected"))
+            .map(|m| m.name.clone())
             .collect();
         assert_eq!(names[1], DisplayName::named("Ann", NameSource::Profile));
         assert_eq!(names[2], DisplayName::unnamed(NameEntity::Person, "u_cai"));
+    }
+
+    /// The legacy `last_sender_nickname` holds a real name or nothing: a cached profile
+    /// without a name (or named by its id) never writes the id, and a stored id is cleared.
+    #[tokio::test]
+    async fn the_legacy_last_sender_field_never_holds_the_sender_id() {
+        let store = Arc::new(MemoryConversationStore::new());
+        let profiles = Arc::new(CountingProfiles::default());
+        profiles
+            .inner
+            .save_batch(&[
+                UserProfile::new("u_nameless").with_avatar("https://a/nameless.png"),
+                UserProfile::new("u_cai").with_nickname("u_cai"),
+                UserProfile::new("u_bob").with_nickname("Bob"),
+            ])
+            .await
+            .unwrap();
+        let single = |id: &str, sender: &str, stored: &str| Conversation {
+            conversation_id: id.to_string(),
+            conversation_type: ConversationType::Single,
+            channel_id: sender.to_string(),
+            last_message: last_from(sender, 10),
+            last_sender_id: Some(sender.to_string()),
+            last_sender_nickname: stored.to_string(),
+            ..Default::default()
+        };
+        store
+            .save_batch(&[
+                single("1A_nameless", "u_nameless", "Snapshot name"),
+                single("1A_by_id", "u_cai", "u_cai"),
+                single("1A_uncached", "u_gone", "u_gone"),
+                single("1A_named", "u_bob", ""),
+            ])
+            .await
+            .unwrap();
+
+        let assembler = ConversationViewAssembler::new(store, profiles).with_current_user(me());
+        let list = assembler.list(false).await.unwrap();
+        let by_id = |id: &str| list.iter().find(|c| c.conversation_id == id).unwrap();
+
+        let nameless = by_id("1A_nameless");
+        assert_eq!(
+            nameless.last_sender_nickname, "Snapshot name",
+            "a profile without a name keeps the name the row holds"
+        );
+        assert_eq!(nameless.last_sender_avatar_url, "https://a/nameless.png");
+        assert_eq!(
+            by_id("1A_by_id").last_sender_nickname,
+            "",
+            "a profile name equal to the id is no name"
+        );
+        assert_eq!(
+            by_id("1A_uncached").last_sender_nickname,
+            "",
+            "a stored id is no name"
+        );
+        assert_eq!(by_id("1A_named").last_sender_nickname, "Bob");
     }
 }

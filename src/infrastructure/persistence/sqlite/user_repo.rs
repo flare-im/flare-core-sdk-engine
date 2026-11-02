@@ -149,8 +149,8 @@ mod tests {
         let map = repo.get_many(&ids).await.unwrap();
 
         assert_eq!(map.len(), 2, "only found, deduped, non-empty ids");
-        assert_eq!(map.get("u1").unwrap().display_name(), "Alice");
-        assert_eq!(map.get("u2").unwrap().display_name(), "Bob");
+        assert_eq!(map.get("u1").unwrap().nickname, "Alice");
+        assert_eq!(map.get("u2").unwrap().nickname, "Bob");
         assert!(!map.contains_key("u9"), "missing profile absent");
     }
 

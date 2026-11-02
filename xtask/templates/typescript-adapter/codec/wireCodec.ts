@@ -1075,12 +1075,11 @@ function unknownPersonName(): DisplayName {
 }
 
 /**
- * A projected name: conversation `title` and `lastSender`, message `sender`, participant `name`. Every value the SDK
- * hands over carries `title`, `sender` and `name`, and `lastSender` when there is a latest message; the fields stay
- * optional while hosts move to them, so a value without one (from an older core) reads as undefined. It never fails,
- * so a core newer than this package still yields a name: an unknown `entity` reads as `person`, an unknown `kind`, a
- * `named` value without text or a value that is not an object reads as an unnamed person without an id tail, an
- * unknown `source` is dropped. The kits read names by the same rule.
+ * A projected name: conversation `title` and `lastSender`, message `sender`, participant `name`. An absent value reads
+ * as undefined; {@link requiredDisplayNameField} reads the names every value carries. A value that is there never
+ * fails, by the rule the kits read names with: an unknown `entity` reads as `person`, an unknown `kind`, a `named`
+ * value without text or a value that is not an object reads as an unnamed person without an id tail, an unknown
+ * `source` is dropped.
  */
 export function displayNameFromJson(value: unknown | undefined): DisplayName | undefined {
   if (value === undefined || value === null) {
@@ -1124,6 +1123,19 @@ export function displayNameFromJson(value: unknown | undefined): DisplayName | u
   }
 }
 
+/**
+ * A name the value always carries: conversation `title`, message `sender`, participant `name`. The core and this
+ * package ship together and the core writes these on every value, so a value without one is a contract error, as
+ * with any other required field.
+ */
+export function requiredDisplayNameField(json: Record<string, unknown>, key: string, context: string): DisplayName {
+  const name = displayNameFromJson(field(json, key));
+  if (name === undefined) {
+    throw new Error(`${context}.${key} is required`);
+  }
+  return name;
+}
+
 export function messagePreviewFromJson(value: unknown | undefined): MessagePreview | undefined {
   if (value === undefined || value === null || typeof value !== 'object') {
     return undefined;
@@ -1140,7 +1152,6 @@ export function messagePreviewFromJson(value: unknown | undefined): MessagePrevi
 
 export function conversationParticipantFromJson(value: unknown | undefined): ConversationParticipant {
   const json = recordValue(value);
-  const name = displayNameFromJson(field(json, 'name'));
   return {
     userId: requiredStringField(json, 'userId', 'ConversationParticipant'),
     roles: requiredStringList(field(json, 'roles'), 'roles', 'ConversationParticipant'),
@@ -1149,7 +1160,7 @@ export function conversationParticipantFromJson(value: unknown | undefined): Con
     attributes: requiredStringMap(field(json, 'attributes'), 'attributes', 'ConversationParticipant'),
     joinedAt: requiredIntField(json, 'joinedAt', 'ConversationParticipant'),
     nickname: requiredStringField(json, 'nickname', 'ConversationParticipant'),
-    ...(name !== undefined ? { name } : {}),
+    name: requiredDisplayNameField(json, 'name', 'ConversationParticipant'),
   };
 }
 
@@ -1221,7 +1232,6 @@ export function messageFromJson(value: unknown | undefined): Message {
         data: messageContentDataFromJson(rawContent),
       }
     : undefined;
-  const sender = displayNameFromJson(field(json, 'sender'));
   return {
     serverId: requiredStringField(json, 'serverId', 'Message'),
     clientMsgId: requiredStringField(json, 'clientMsgId', 'Message'),
@@ -1238,7 +1248,7 @@ export function messageFromJson(value: unknown | undefined): Message {
     senderName: requiredStringField(json, 'senderName', 'Message'),
     senderAvatar: requiredStringField(json, 'senderAvatar', 'Message'),
     senderDisplayName: requiredStringField(json, 'senderDisplayName', 'Message'),
-    ...(sender !== undefined ? { sender } : {}),
+    sender: requiredDisplayNameField(json, 'sender', 'Message'),
     replyTo: field(json, 'replyTo') as string | undefined,
     quotePreview: field(json, 'quotePreview') as string | undefined,
     threadId: field(json, 'threadId') as string | undefined,
@@ -1304,7 +1314,6 @@ export function conversationFromJson(json: Record<string, unknown>): Conversatio
   if (!(CONVERSATION_TYPE_WIRE_VALUES as string[]).includes(conversationType)) {
     throw new FlareSdkException('invalidParameter', `invalid conversation type: ${conversationType || '<empty>'}`, 'wire.conversation.decode', { field: 'conversationType' });
   }
-  const title = displayNameFromJson(field(json, 'title'));
   const lastSender = displayNameFromJson(field(json, 'lastSender'));
   return {
     conversationId: requiredStringField(json, 'conversationId', 'Conversation'),
@@ -1313,7 +1322,7 @@ export function conversationFromJson(json: Record<string, unknown>): Conversatio
     channelId: requiredStringField(json, 'channelId', 'Conversation'),
     membersCount: requiredIntField(json, 'membersCount', 'Conversation'),
     displayName: requiredStringField(json, 'displayName', 'Conversation'),
-    ...(title !== undefined ? { title } : {}),
+    title: requiredDisplayNameField(json, 'title', 'Conversation'),
     avatarUrl: requiredStringField(json, 'avatarUrl', 'Conversation'),
     remark: field(json, 'remark') as string | undefined,
     description: field(json, 'description') as string | undefined,

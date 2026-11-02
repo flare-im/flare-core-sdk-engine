@@ -109,15 +109,17 @@ impl ConversationParticipantStore for SqliteConversationParticipantRepo {
                 let joined_at: i64 = row.try_get("joined_at").map_err(sqlx_err)?;
                 let muted: i32 = row.try_get("muted").map_err(sqlx_err)?;
                 let pinned: i32 = row.try_get("pinned").map_err(sqlx_err)?;
+                let user_id: String = row.try_get("user_id").map_err(sqlx_err)?;
+                let nickname: String = row.try_get("nickname").map_err(sqlx_err)?;
                 Ok(ConversationParticipant {
-                    user_id: row.try_get("user_id").map_err(sqlx_err)?,
+                    name: ConversationParticipant::nickname_name(&user_id, &nickname),
+                    user_id,
                     roles: parse_roles(&roles),
                     muted: muted != 0,
                     pinned: pinned != 0,
                     attributes: parse_attributes(&attributes),
                     joined_at: joined_at.max(0) as u64,
-                    nickname: row.try_get("nickname").map_err(sqlx_err)?,
-                    name: None,
+                    nickname,
                 })
             })
             .collect()

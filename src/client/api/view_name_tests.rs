@@ -124,10 +124,7 @@ async fn a_profile_change_upserts_only_the_rows_its_person_sent() {
     };
     assert_eq!(keys(upsert), vec!["m1", "m3", "m4", "m6"]);
     for fresh in upsert {
-        assert_eq!(
-            fresh.sender,
-            Some(DisplayName::named("Bob", NameSource::Profile))
-        );
+        assert_eq!(fresh.sender, DisplayName::named("Bob", NameSource::Profile));
     }
     assert!(prepend.is_empty() && append.is_empty() && remove.is_empty());
     assert!(reorder.is_none() && conversation.is_none());
@@ -152,7 +149,7 @@ async fn a_profile_change_upserts_only_the_rows_its_person_sent() {
     assert_eq!(keys(upsert), vec!["m1", "m3", "m4", "m6"]);
     assert_eq!(
         upsert[0].sender,
-        Some(DisplayName::named("Bobby", NameSource::Alias))
+        DisplayName::named("Bobby", NameSource::Alias)
     );
     assert_host_is_the_snapshot(&h).await;
 }
@@ -286,7 +283,7 @@ async fn a_member_nickname_renames_rows_only_in_its_conversation() {
     assert_eq!(keys(upsert), vec!["c1-m1", "c1-m2", "c1-m3"]);
     assert_eq!(
         upsert[0].sender,
-        Some(DisplayName::named("Group Bob", NameSource::MemberNickname))
+        DisplayName::named("Group Bob", NameSource::MemberNickname)
     );
     assert_eq!(
         other_revision().await,
@@ -316,7 +313,7 @@ async fn names_written_through_the_extension_store_reach_the_open_views() {
     assert_eq!(keys(upsert), vec!["m1", "m2", "m3"]);
     assert_eq!(
         upsert[0].sender,
-        Some(DisplayName::named("Bob", NameSource::Profile))
+        DisplayName::named("Bob", NameSource::Profile)
     );
 
     context
@@ -334,7 +331,7 @@ async fn names_written_through_the_extension_store_reach_the_open_views() {
     };
     assert_eq!(
         upsert[0].sender,
-        Some(DisplayName::named("Bobby", NameSource::Alias))
+        DisplayName::named("Bobby", NameSource::Alias)
     );
     assert_host_is_the_snapshot(&h).await;
 }
@@ -506,10 +503,7 @@ async fn conversation_lists_update_the_conversations_named_after_the_person() {
         .iter()
         .find(|conversation| conversation.conversation_id == "1A_u2")
         .unwrap();
-    assert_eq!(
-        single.title,
-        Some(DisplayName::named("Bob", NameSource::Profile))
-    );
+    assert_eq!(single.title, DisplayName::named("Bob", NameSource::Profile));
 
     // 没有以 u9 命名的会话：什么也不推。
     h.names_changed(NameChange::users(["u9"])).await;

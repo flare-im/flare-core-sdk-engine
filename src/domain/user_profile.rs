@@ -52,13 +52,4 @@ impl UserProfile {
             ..Default::default()
         }
     }
-
-    /// 展示名：有 nickname 用 nickname，否则用 user_id（与 display_name 语义一致）
-    pub fn display_name(&self) -> &str {
-        if self.nickname.is_empty() {
-            &self.user_id
-        } else {
-            &self.nickname
-        }
-    }
 }

@@ -189,7 +189,7 @@ impl NameBook {
                 &conversation.last_sender_nickname,
             )
         });
-        conversation.title = Some(title);
+        conversation.title = title;
         conversation.last_sender = last_sender;
         let conversation_id = conversation.conversation_id.clone();
         let conversation_type = conversation.conversation_type;
@@ -198,7 +198,7 @@ impl NameBook {
             .iter_mut()
             .chain(conversation.participants.iter_mut())
         {
-            member.name = Some(self.member_name(&conversation_id, conversation_type, member));
+            member.name = self.member_name(&conversation_id, conversation_type, member);
         }
     }
 

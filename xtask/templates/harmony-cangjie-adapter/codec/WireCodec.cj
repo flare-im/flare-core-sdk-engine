@@ -613,6 +613,224 @@ public func heartbeatEffectiveIntervalResponseFromObject(object: CjJsonObject): 
     )
 }
 
+// A projected name: conversation `title` and `lastSender`, message `sender`, participant `name`. A value that is
+// there never fails, by the rule the kits read names with: an unknown `entity` reads as `person`, an unknown `kind`, a
+// `named` value without text or a value that is not an object reads as an unnamed person without an id tail, an
+// unknown `source` is dropped. This decoder reads every field it does not find as that field's default, and an absent
+// `title`, `sender` or `name` as an unnamed person without an id tail.
+func unknownPersonName(): DisplayName {
+    return DisplayName(
+        kind: DisplayNameKind.Unnamed,
+        text: None,
+        source: None,
+        names: None,
+        total: None,
+        entity: Some(NameEntity.Person),
+        idTail: Some("")
+    )
+}
+
+func jsonStringOrNone(object: CjJsonObject, key: String): ?String {
+    match (object.get(key)) {
+        case Some(value) =>
+            try {
+                return Some(value.asString().getValue())
+            } catch (_) {
+                return None
+            }
+        case None => return None
+    }
+}
+
+func nameSourceFromWire(raw: String): ?NameSource {
+    if (raw == "alias") { return Some(NameSource.Alias) }
+    if (raw == "memberNickname") { return Some(NameSource.MemberNickname) }
+    if (raw == "profile") { return Some(NameSource.Profile) }
+    if (raw == "snapshot") { return Some(NameSource.Snapshot) }
+    if (raw == "remark") { return Some(NameSource.Remark) }
+    if (raw == "name") { return Some(NameSource.Name) }
+    return None
+}
+
+func nameSourceWireValue(value: NameSource): String {
+    return match (value) {
+        case NameSource.Alias => "alias"
+        case NameSource.MemberNickname => "memberNickname"
+        case NameSource.Profile => "profile"
+        case NameSource.Snapshot => "snapshot"
+        case NameSource.Remark => "remark"
+        case NameSource.Name => "name"
+    }
+}
+
+func nameEntityFromWire(raw: String): NameEntity {
+    if (raw == "group") { return NameEntity.Group }
+    if (raw == "system") { return NameEntity.System }
+    if (raw == "ai") { return NameEntity.Ai }
+    if (raw == "customer") { return NameEntity.Customer }
+    if (raw == "channel") { return NameEntity.Channel }
+    if (raw == "broadcast") { return NameEntity.Broadcast }
+    if (raw == "temp") { return NameEntity.Temp }
+    return NameEntity.Person
+}
+
+func nameEntityWireValue(value: NameEntity): String {
+    return match (value) {
+        case NameEntity.Person => "person"
+        case NameEntity.Group => "group"
+        case NameEntity.System => "system"
+        case NameEntity.Ai => "ai"
+        case NameEntity.Customer => "customer"
+        case NameEntity.Channel => "channel"
+        case NameEntity.Broadcast => "broadcast"
+        case NameEntity.Temp => "temp"
+    }
+}
+
+func displayNameKindWireValue(value: DisplayNameKind): String {
+    return match (value) {
+        case DisplayNameKind.Named => "named"
+        case DisplayNameKind.Members => "members"
+        case DisplayNameKind.Unnamed => "unnamed"
+    }
+}
+
+func displayNameTotalFromValue(value: CjJsonValue): UInt32 {
+    try {
+        let total = value.asInt().getValue()
+        if (total < 0) {
+            return 0
+        }
+        if (total > 4294967295) {
+            return UInt32(4294967295)
+        }
+        return UInt32(total)
+    } catch (_) {
+        return 0
+    }
+}
+
+func jsonObjectOrNone(value: CjJsonValue): ?CjJsonObject {
+    try {
+        return Some(value.asObject())
+    } catch (_) {
+        return None
+    }
+}
+
+public func displayNameFromValue(value: CjJsonValue): DisplayName {
+    let object = match (jsonObjectOrNone(value)) {
+        case Some(found) => found
+        case None => return unknownPersonName()
+    }
+    let kind = match (jsonStringOrNone(object, "kind")) {
+        case Some(found) => found
+        case None => ""
+    }
+    if (kind == "named") {
+        return match (jsonStringOrNone(object, "text")) {
+            case Some(text) =>
+                let source: ?NameSource = match (jsonStringOrNone(object, "source")) {
+                    case Some(raw) => nameSourceFromWire(raw)
+                    case None => None
+                }
+                DisplayName(
+                    kind: DisplayNameKind.Named,
+                    text: Some(text),
+                    source: source,
+                    names: None,
+                    total: None,
+                    entity: None,
+                    idTail: None
+                )
+            case None => unknownPersonName()
+        }
+    }
+    if (kind == "members") {
+        let names = match (object.get("names")) {
+            case Some(found) => found.toJsonString()
+            case None => "[]"
+        }
+        let total: UInt32 = match (object.get("total")) {
+            case Some(found) => displayNameTotalFromValue(found)
+            case None => 0
+        }
+        return DisplayName(
+            kind: DisplayNameKind.Members,
+            text: None,
+            source: None,
+            names: Some(names),
+            total: Some(total),
+            entity: None,
+            idTail: None
+        )
+    }
+    if (kind == "unnamed") {
+        let entity = match (jsonStringOrNone(object, "entity")) {
+            case Some(raw) => nameEntityFromWire(raw)
+            case None => NameEntity.Person
+        }
+        let idTail = match (jsonStringOrNone(object, "idTail")) {
+            case Some(found) => found
+            case None => ""
+        }
+        return DisplayName(
+            kind: DisplayNameKind.Unnamed,
+            text: None,
+            source: None,
+            names: None,
+            total: None,
+            entity: Some(entity),
+            idTail: Some(idTail)
+        )
+    }
+    return unknownPersonName()
+}
+
+public func displayNameField(object: CjJsonObject, key: String): DisplayName {
+    return match (object.get(key)) {
+        case Some(value) => displayNameFromValue(value)
+        case None => unknownPersonName()
+    }
+}
+
+public func optionalDisplayNameField(object: CjJsonObject, key: String): ?DisplayName {
+    return match (object.get(key)) {
+        case Some(value) => Some(displayNameFromValue(value))
+        case None => None
+    }
+}
+
+public func displayNameToJson(request: DisplayName): String {
+    let json = CjJsonObject()
+    jsonPutString(json, "kind", displayNameKindWireValue(request.kind))
+    match (request.text) {
+        case Some(value) => jsonPutString(json, "text", value)
+        case None => ()
+    }
+    match (request.source) {
+        case Some(value) => jsonPutString(json, "source", nameSourceWireValue(value))
+        case None => ()
+    }
+    match (request.names) {
+        case Some(value) => jsonPutRaw(json, "names", value)
+        case None => ()
+    }
+    match (request.total) {
+        case Some(value) => jsonPutInt(json, "total", Int64(value))
+        case None => ()
+    }
+    match (request.entity) {
+        case Some(value) => jsonPutString(json, "entity", nameEntityWireValue(value))
+        case None => ()
+    }
+    match (request.idTail) {
+        case Some(value) => jsonPutString(json, "idTail", value)
+        case None => ()
+    }
+    return json.toJsonString()
+}
+
 public func conversationParticipantToJson(request: ConversationParticipant): String {
     let json = CjJsonObject()
     jsonPutString(json, "userId", request.userId)
@@ -622,6 +840,7 @@ public func conversationParticipantToJson(request: ConversationParticipant): Str
     jsonPutRaw(json, "attributes", request.attributes)
     jsonPutInt(json, "joinedAt", Int64(request.joinedAt))
     jsonPutString(json, "nickname", request.nickname)
+    jsonPutRaw(json, "name", displayNameToJson(request.name))
     return json.toJsonString()
 }
 
@@ -637,6 +856,7 @@ public func conversationParticipantFromObject(object: CjJsonObject): Conversatio
     let attributes = jsonRawField(object, "attributes", "{}")
     let joinedAt = UInt64(jsonIntField(object, "joinedAt", 0))
     let nickname = jsonStringField(object, "nickname", "")
+    let name = displayNameField(object, "name")
     return ConversationParticipant(
         userId: userId,
         roles: roles,
@@ -644,7 +864,8 @@ public func conversationParticipantFromObject(object: CjJsonObject): Conversatio
         pinned: pinned,
         attributes: attributes,
         joinedAt: joinedAt,
-        nickname: nickname
+        nickname: nickname,
+        name: name
     )
 }
 
@@ -685,6 +906,7 @@ public func conversationToJson(request: Conversation): String {
     jsonPutString(json, "channelId", request.channelId)
     jsonPutInt(json, "membersCount", Int64(request.membersCount))
     jsonPutString(json, "displayName", request.displayName)
+    jsonPutRaw(json, "title", displayNameToJson(request.title))
     jsonPutString(json, "avatarUrl", request.avatarUrl)
     match (request.remark) {
         case Some(value) => jsonPutString(json, "remark", value)
@@ -715,6 +937,10 @@ public func conversationToJson(request: Conversation): String {
         case None => ()
     }
     jsonPutString(json, "lastSenderNickname", request.lastSenderNickname)
+    match (request.lastSender) {
+        case Some(value) => jsonPutRaw(json, "lastSender", displayNameToJson(value))
+        case None => ()
+    }
     jsonPutString(json, "lastSenderAvatarUrl", request.lastSenderAvatarUrl)
     jsonPutInt(json, "unreadCount", Int64(request.unreadCount))
     jsonPutInt(json, "lastReadSeq", Int64(request.lastReadSeq))
@@ -763,6 +989,7 @@ public func conversationFromObject(object: CjJsonObject): Conversation {
     let channelId = jsonStringField(object, "channelId", "")
     let membersCount = UInt32(jsonIntField(object, "membersCount", 0))
     let displayName = jsonStringField(object, "displayName", "")
+    let title = displayNameField(object, "title")
     let avatarUrl = jsonStringField(object, "avatarUrl", "")
     let remark: ?String = jsonOptionalStringField(object, "remark")
     let description: ?String = jsonOptionalStringField(object, "description")
@@ -775,6 +1002,7 @@ public func conversationFromObject(object: CjJsonObject): Conversation {
             case None => None
         }
     let lastSenderNickname = jsonStringField(object, "lastSenderNickname", "")
+    let lastSender: ?DisplayName = optionalDisplayNameField(object, "lastSender")
     let lastSenderAvatarUrl = jsonStringField(object, "lastSenderAvatarUrl", "")
     let unreadCount = UInt32(jsonIntField(object, "unreadCount", 0))
     let lastReadSeq = UInt64(jsonIntField(object, "lastReadSeq", 0))
@@ -804,6 +1032,7 @@ public func conversationFromObject(object: CjJsonObject): Conversation {
         channelId: channelId,
         membersCount: membersCount,
         displayName: displayName,
+        title: title,
         avatarUrl: avatarUrl,
         remark: remark,
         description: description,
@@ -813,6 +1042,7 @@ public func conversationFromObject(object: CjJsonObject): Conversation {
         lastMessagePreview: lastMessagePreview,
         lastMessage: lastMessage,
         lastSenderNickname: lastSenderNickname,
+        lastSender: lastSender,
         lastSenderAvatarUrl: lastSenderAvatarUrl,
         unreadCount: unreadCount,
         lastReadSeq: lastReadSeq,
@@ -1246,6 +1476,7 @@ public func messageFromObject(object: CjJsonObject): Message {
     let senderName = jsonStringField(object, "senderName", "")
     let senderAvatar = jsonStringField(object, "senderAvatar", "")
     let senderDisplayName = jsonStringField(object, "senderDisplayName", "")
+    let sender = displayNameField(object, "sender")
     let replyTo: ?String = jsonOptionalStringField(object, "replyTo")
     let quotePreview: ?String = jsonOptionalStringField(object, "quotePreview")
     let threadId: ?String = jsonOptionalStringField(object, "threadId")
@@ -1287,6 +1518,7 @@ public func messageFromObject(object: CjJsonObject): Message {
         senderName: senderName,
         senderAvatar: senderAvatar,
         senderDisplayName: senderDisplayName,
+        sender: sender,
         replyTo: replyTo,
         quotePreview: quotePreview,
         threadId: threadId,

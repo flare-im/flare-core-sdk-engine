@@ -150,7 +150,7 @@ func conversationParticipantToMap(_ request: ConversationParticipant) -> [String
         "attributes": wrapSendable(request.attributes),
         "joinedAt": wrapSendable(request.joinedAt),
         "nickname": wrapSendable(request.nickname),
-        "name": wrapSendable(request.name.map { displayNameToMap($0).mapValues { $0.value } }),
+        "name": wrapSendable(displayNameToMap(request.name).mapValues { $0.value }),
     ]
 }
 func displayNameToMap(_ request: DisplayName) -> [String: AnySendable] {
@@ -180,7 +180,7 @@ func conversationToMap(_ request: Conversation) -> [String: AnySendable] {
         "channelId": wrapSendable(request.channelId),
         "membersCount": wrapSendable(request.membersCount),
         "displayName": wrapSendable(request.displayName),
-        "title": wrapSendable(request.title.map { displayNameToMap($0).mapValues { $0.value } }),
+        "title": wrapSendable(displayNameToMap(request.title).mapValues { $0.value }),
         "avatarUrl": wrapSendable(request.avatarUrl),
         "remark": wrapSendable(request.remark),
         "description": wrapSendable(request.description),
@@ -1647,12 +1647,10 @@ func messageReceiptViewFromJson(_ value: Any?) -> MessageReceiptView? {
 
 private let UNKNOWN_PERSON_NAME = DisplayName(kind: .unnamed, entity: .person, idTail: "")
 
-/// A projected name: conversation `title` and `lastSender`, message `sender`, participant `name`. Every value the SDK
-/// hands over carries `title`, `sender` and `name`, and `lastSender` when there is a latest message; the fields stay
-/// optional while hosts move to them, so a value without one (from an older core) reads as nil. It never fails, so a
-/// core newer than this package still yields a name: an unknown `entity` reads as `person`, an unknown `kind`, a
-/// `named` value without text or a value that is not an object reads as an unnamed person without an id tail, an
-/// unknown `source` is dropped. The kits read names by the same rule.
+/// A projected name: conversation `title` and `lastSender`, message `sender`, participant `name`. An absent value
+/// reads as nil; `requiredDisplayNameField` reads the names every value carries. A value that is there never fails, by
+/// the rule the kits read names with: an unknown `entity` reads as `person`, an unknown `kind`, a `named` value without
+/// text or a value that is not an object reads as an unnamed person without an id tail, an unknown `source` is dropped.
 func displayNameFromJson(_ value: Any?) -> DisplayName? {
     guard let value, !(value is NSNull) else { return nil }
     let json: [String: Any]
@@ -1691,6 +1689,21 @@ private func displayNameTotal(_ value: Any?) -> UInt32 {
     return total >= Double(UInt32.max) ? UInt32.max : UInt32(total.rounded(.towardZero))
 }
 
+/// A name the value always carries: conversation `title`, message `sender`, participant `name`. The core and this
+/// package ship together and the core writes these on every value, so a value without one is a contract error, as
+/// with any other required field.
+func requiredDisplayNameField(_ json: [String: Any], _ key: String, _ context: String) throws -> DisplayName {
+    guard let name = displayNameFromJson(json[key]) else {
+        throw FlareSdkException(
+            code: SdkErrorCodes.invalidParameter,
+            message: "\(context).\(key) is required",
+            operation: "wire.decode",
+            details: ["field": "\(context).\(key)", "expected": "DisplayName"]
+        )
+    }
+    return name
+}
+
 func messagePreviewFromJson(_ value: Any?) throws -> MessagePreview? {
     guard let json = value as? [String: Any] else { return nil }
     return try MessagePreview(
@@ -1707,7 +1720,7 @@ func conversationParticipantFromJson(_ json: [String: Any]) throws -> Conversati
         attributes: requiredStringMap(json["attributes"], "attributes", "ConversationParticipant"),
         joinedAt: requiredUInt64Field(json, "joinedAt", "ConversationParticipant"),
         muted: requiredBoolField(json, "muted", "ConversationParticipant"),
-        name: displayNameFromJson(json["name"]),
+        name: requiredDisplayNameField(json, "name", "ConversationParticipant"),
         nickname: requiredStringField(json, "nickname", "ConversationParticipant"),
         pinned: requiredBoolField(json, "pinned", "ConversationParticipant"),
         roles: requiredStringList(json["roles"], "roles", "ConversationParticipant"),
@@ -1770,7 +1783,7 @@ public func messageFromJson(_ value: Any) throws -> Message {
         quotePreview: json["quotePreview"] as? String,
         reactions: try reactionList(json["reactions"]),
         replyTo: json["replyTo"] as? String,
-        sender: displayNameFromJson(json["sender"]),
+        sender: try requiredDisplayNameField(json, "sender", "Message"),
         senderAvatar: try requiredStringField(json, "senderAvatar", "Message"),
         senderDisplayName: try requiredStringField(json, "senderDisplayName", "Message"),
         senderId: try requiredStringField(json, "senderId", "Message"),
@@ -1889,7 +1902,7 @@ public func conversationFromJson(_ json: [String: Any]) throws -> Conversation {
         peerReadSeq: try requiredUInt64Field(json, "peerReadSeq", "Conversation"),
         remark: json["remark"] as? String,
         role: json["role"] as? String,
-        title: displayNameFromJson(json["title"]),
+        title: try requiredDisplayNameField(json, "title", "Conversation"),
         unreadCount: UInt32(try requiredUInt64Field(json, "unreadCount", "Conversation")),
         updatedAt: try requiredUInt64Field(json, "updatedAt", "Conversation"),
         updatedAtTs: try optionalUInt64Value(json["updatedAtTs"]),

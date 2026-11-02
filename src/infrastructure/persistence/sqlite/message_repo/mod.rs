@@ -753,7 +753,7 @@ impl SqliteMessageRepo {
                 sort_ts: sort_ts.max(0) as u64,
             },
         };
-        message.sender = Some(message.snapshot_sender());
+        message.sender = message.snapshot_sender();
         Ok(message)
     }
 }

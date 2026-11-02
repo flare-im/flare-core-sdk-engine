@@ -1302,12 +1302,12 @@ async fn apply_reaction_event_before_message_arrival_is_not_lost() {
     );
 }
 
-/// 身份缓存读路径:命中缓存→当前身份;miss→消息内嵌发送时快照;都无→回退 sender_id。
+/// 身份缓存读路径:命中缓存→当前身份;miss→消息内嵌发送时快照;都无→结构化的「无名」,不回退 sender_id。
 /// 印证"写时/同步时把身份喂进缓存,读时直接批量 join,无需逐条组装"的设计。
 #[tokio::test]
 async fn timeline_read_resolves_current_identity_then_falls_back() {
     use crate::application::usecases::MessageViewAssembler;
-    use crate::domain::{UserProfile, UserWriter};
+    use crate::domain::{DisplayName, NameEntity, NameSource, UserProfile, UserWriter};
     use crate::infrastructure::persistence::sqlite::user_repo::SqliteUserProfileRepo;
     use std::sync::Arc;
 
@@ -1339,12 +1339,24 @@ async fn timeline_read_resolves_current_identity_then_falls_back() {
         list.iter()
             .find(|m| m.server_id == id)
             .unwrap()
-            .display_name()
-            .to_string()
+            .sender
+            .clone()
     };
-    assert_eq!(name_of("s1"), "Alice", "缓存命中→当前身份");
-    assert_eq!(name_of("s2"), "Bob", "缓存 miss→内嵌发送时快照");
-    assert_eq!(name_of("s3"), "u3", "都无→回退 sender_id");
+    assert_eq!(
+        name_of("s1"),
+        DisplayName::named("Alice", NameSource::Profile),
+        "缓存命中→当前身份"
+    );
+    assert_eq!(
+        name_of("s2"),
+        DisplayName::named("Bob", NameSource::Snapshot),
+        "缓存 miss→内嵌发送时快照"
+    );
+    assert_eq!(
+        name_of("s3"),
+        DisplayName::unnamed(NameEntity::Person, "u3"),
+        "都无→无名,不把 sender_id 当名字"
+    );
 }
 
 /// The sender's timeline draws its upload bar from `local_state.uploading` / `upload_progress`. SQLite used to keep

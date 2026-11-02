@@ -213,6 +213,7 @@ impl ConversationCommandUseCase {
                 } else {
                     vec!["member".to_string()]
                 },
+                name: ConversationParticipant::nickname_name(user_id, ""),
                 ..Default::default()
             })
             .collect::<Vec<_>>();
