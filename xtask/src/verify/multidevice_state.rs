@@ -81,7 +81,7 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     require_contains_all(
         &mut errors,
         &root.join(
-            "examples/flare-core-flutter-app/test/multidevice_conformance_manifest_test.dart",
+            "../flare-core-examples/apps/flare-core-flutter-app/test/multidevice_conformance_manifest_test.dart",
         ),
         "flutter multi-device conformance manifest test",
         &[

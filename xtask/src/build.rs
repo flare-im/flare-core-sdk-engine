@@ -201,7 +201,10 @@ struct ArtifactLayout {
 
 impl ArtifactLayout {
     fn new(client_root: &Path, core_root: &Path) -> Self {
-        let flutter_example = client_root.join("examples/flare-core-flutter-app");
+        let flutter_example = client_root
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("flare-core-examples/apps/flare-core-flutter-app");
         let core_manifest = core_root.join("Cargo.toml");
         let target_dir = env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
@@ -1419,13 +1422,13 @@ mod tests {
         assert_eq!(
             paths.flutter_macos_dylib,
             Path::new(
-                "/repo/flare-im-core-client-sdk/examples/flare-core-flutter-app/macos/Runner/libflare_im_core_sdk_ffi.dylib"
+                "/repo/flare-core-examples/apps/flare-core-flutter-app/macos/Runner/libflare_im_core_sdk_ffi.dylib"
             )
         );
         assert_eq!(
             paths.flutter_ios_staticlib,
             Path::new(
-                "/repo/flare-im-core-client-sdk/examples/flare-core-flutter-app/ios/FFI/build/libflare_im_core_sdk_ffi.a"
+                "/repo/flare-core-examples/apps/flare-core-flutter-app/ios/FFI/build/libflare_im_core_sdk_ffi.a"
             )
         );
         assert_eq!(
@@ -1435,19 +1438,19 @@ mod tests {
         assert_eq!(
             paths.flutter_android_jni_lib(ANDROID_TARGETS[0]),
             Path::new(
-                "/repo/flare-im-core-client-sdk/examples/flare-core-flutter-app/android/app/src/main/jniLibs/arm64-v8a/libflare_im_core_sdk_ffi.so"
+                "/repo/flare-core-examples/apps/flare-core-flutter-app/android/app/src/main/jniLibs/arm64-v8a/libflare_im_core_sdk_ffi.so"
             )
         );
         assert_eq!(
             paths.flutter_android_jni_lib(ANDROID_TARGETS[1]),
             Path::new(
-                "/repo/flare-im-core-client-sdk/examples/flare-core-flutter-app/android/app/src/main/jniLibs/armeabi-v7a/libflare_im_core_sdk_ffi.so"
+                "/repo/flare-core-examples/apps/flare-core-flutter-app/android/app/src/main/jniLibs/armeabi-v7a/libflare_im_core_sdk_ffi.so"
             )
         );
         assert_eq!(
             paths.flutter_android_jni_lib(ANDROID_TARGETS[2]),
             Path::new(
-                "/repo/flare-im-core-client-sdk/examples/flare-core-flutter-app/android/app/src/main/jniLibs/x86_64/libflare_im_core_sdk_ffi.so"
+                "/repo/flare-core-examples/apps/flare-core-flutter-app/android/app/src/main/jniLibs/x86_64/libflare_im_core_sdk_ffi.so"
             )
         );
     }

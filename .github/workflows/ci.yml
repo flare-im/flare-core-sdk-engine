@@ -32,6 +32,7 @@ jobs:
           clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
           # 架构边界测试会跨仓校验七端 SDK 的事件分发实现，需要它在场
           clone https://github.com/flare-im/flare-core-sdk.git "../flare-core-sdk"
+          clone https://github.com/flare-im/flare-core-examples.git "../flare-core-examples"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -93,6 +94,7 @@ jobs:
           clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
           # 架构边界测试会跨仓校验七端 SDK 的事件分发实现，需要它在场
           clone https://github.com/flare-im/flare-core-sdk.git "../flare-core-sdk"
+          clone https://github.com/flare-im/flare-core-examples.git "../flare-core-examples"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -338,7 +340,7 @@ jobs:
   # 遇错即停，第一道红之后的 14 步从来没被执行过。四道全部修好了（三道是判据
   # 自己过时，一道是判据自相矛盾），这个 job 就是为了不再让它们烂掉。
   #
-  # **不用 `cargo xtask verify` 总入口**：它里面有三步需要私有仓 flare-sdk-plugin
+  # **不用 `cargo xtask verify` 总入口**：它里面有三步需要私有商业插件和通话仓
   # （plugin-marketplace / rtc-capability / plugin-verify），公开仓的 CI 拿不到。
   # 所以逐条列出能跑的 11 道，并把跑不了的 3 道**明写在日志里**——
   # 「少验了什么」必须看得见，不能靠沉默。
@@ -361,6 +363,7 @@ jobs:
           # 判据要读客户端 SDK 的 packages / sdk-spec / examples；xtask 解析根目录时
           # 找不到它会直接 bail，不是跳过。
           clone https://github.com/flare-im/flare-core-sdk.git "../flare-core-sdk"
+          clone https://github.com/flare-im/flare-core-examples.git "../flare-core-examples"
           # e2ee / 多端状态两道要读服务端源码（推送可见性、扇出实现）。
           clone https://github.com/flare-im/flare-core-server.git "../flare-core-server"
           # 五个示例 app 各自是独立仓，被 flare-im-core-client-sdk 的 .gitignore 刻意
@@ -385,7 +388,7 @@ jobs:
                  performance e2ee-contract enterprise-compliance channel-capability
                  media-processing structure"
           EXPECTED=11
-          echo "跳过 3 道（需要私有仓 flare-sdk-plugin，公开 CI 拿不到）："
+          echo "跳过 3 道（需要私有商业插件和通话仓，公开 CI 拿不到）："
           echo "  · plugin-marketplace   · rtc-capability   · plugin-verify"
           echo ""
           ran=0
