@@ -1,5 +1,5 @@
 //! Plugin manifest schema, catalog checks and six-platform plugin API stubs for the
-//! `flare-plugins-commercial/sdk` checkout next to this SDK.
+//! `flare-plugins-commercial` checkout next to this SDK.
 //!
 //! The stubs come from the emitter the plugin contracts share
 //! (`flare-sdk-plugin-contract-codegen`), and that crate lives in the private
@@ -162,17 +162,23 @@ fn verify_catalog(plugin_root: &Path, manifests: &[PluginManifestFile]) -> Resul
         let expected = if item.path == call_manifest_path(plugin_root)? {
             CALL_MANIFEST.to_owned()
         } else {
-            normalize_relative_path(plugin_root, &item.path)?
+            normalize_relative_path(commercial_root(plugin_root)?, &item.path)?
         };
-        if entry.manifest_path != expected {
+        // Older commercial catalogs used paths relative to sdk/. Allow those
+        // only for manifests discovered under sdk/ during the rollout.
+        let catalog_path = if entry.manifest_path == expected {
+            expected.as_str()
+        } else if expected.strip_prefix("sdk/") == Some(entry.manifest_path.as_str()) {
+            entry.manifest_path.as_str()
+        } else {
             bail!(
                 "catalog entry {} manifestPath {} does not match {}",
                 entry.id,
                 entry.manifest_path,
                 expected
             );
-        }
-        let Some(expected_source_path) = expected.strip_suffix("/plugin.json") else {
+        };
+        let Some(expected_source_path) = catalog_path.strip_suffix("/plugin.json") else {
             bail!(
                 "catalog entry {} manifestPath must point to plugin.json",
                 entry.id
@@ -253,11 +259,50 @@ fn sha256_file(path: &Path) -> Result<String> {
 fn load_plugin_manifests(plugin_root: &Path) -> Result<Vec<PluginManifestFile>> {
     let mut paths = Vec::new();
     collect_plugin_manifest_paths(plugin_root, &mut paths)?;
-    paths.push(call_manifest_path(plugin_root)?);
+    let commercial = commercial_root(plugin_root)?;
+    let plugins = commercial.join("plugins");
+    if optional_plugin_directory(&plugins)? {
+        for entry in fs::read_dir(&plugins)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                let sdk = entry.path().join("sdk");
+                if optional_plugin_directory(&sdk)? {
+                    collect_plugin_manifest_paths(&sdk, &mut paths)?;
+                }
+            }
+        }
+    }
+
+    let call = call_manifest_path(plugin_root)?;
+    let call_repo = call
+        .ancestors()
+        .nth(2)
+        .context("missing Call repository root")?;
+    let call_repo = call_repo.canonicalize()?;
+    let commercial = commercial.canonicalize()?;
+    paths.push(call.clone());
     paths.sort();
     paths
         .into_iter()
         .map(|path| {
+            let root = if path == call {
+                &call_repo
+            } else {
+                &commercial
+            };
+            if !fs::symlink_metadata(&path)
+                .with_context(|| format!("failed to inspect plugin manifest {}", path.display()))?
+                .is_file()
+            {
+                bail!("plugin manifest must be a regular file: {}", path.display());
+            }
+            if !path.canonicalize()?.starts_with(root) {
+                bail!(
+                    "plugin manifest is outside {}: {}",
+                    root.display(),
+                    path.display()
+                );
+            }
             let raw = fs::read_to_string(&path)
                 .with_context(|| format!("failed to read plugin manifest {}", path.display()))?;
             let manifest = serde_json::from_str::<SdkPluginManifest>(&raw)
@@ -265,6 +310,18 @@ fn load_plugin_manifests(plugin_root: &Path) -> Result<Vec<PluginManifestFile>> 
             Ok(PluginManifestFile { path, manifest })
         })
         .collect()
+}
+
+fn optional_plugin_directory(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(true),
+        Ok(_) => bail!(
+            "plugin directory must be a real directory: {}",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
+    }
 }
 
 fn collect_plugin_manifest_paths(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
@@ -318,6 +375,12 @@ fn plugin_root(sdk_root: &Path) -> Result<PathBuf> {
         .parent()
         .context("flare-im-core-sdk must live under repository root")?;
     Ok(repo_root.join("flare-plugins-commercial/sdk"))
+}
+
+fn commercial_root(plugin_root: &Path) -> Result<&Path> {
+    plugin_root
+        .parent()
+        .context("missing commercial plugin repository root")
 }
 
 const CALL_MANIFEST: &str = "flare-plugin-call/sdk/plugin.json";
@@ -388,4 +451,166 @@ struct PluginCatalogEntry {
     distribution: String,
     runtime_install: String,
     platforms: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "flare-plugin-codegen-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+
+        fn sdk(&self) -> PathBuf {
+            self.0.join("flare-core-sdk-engine")
+        }
+
+        fn commercial(&self, path: &str) -> PathBuf {
+            self.0.join("flare-plugins-commercial").join(path)
+        }
+
+        fn manifest(&self, path: &Path, id: &str) {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                path,
+                json!({
+                    "id": id, "version": "1.0.0", "displayName": id, "namespaces": [id],
+                    "operations": [{"op": format!("{id}.test")}], "platforms": []
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+
+        fn catalog(&self, paths: &[(&Path, &str, &str)]) {
+            let plugins: Vec<_> = paths
+                .iter()
+                .map(|(path, id, relative)| {
+                    json!({
+                        "id": id, "version": "1.0.0", "displayName": id, "category": id,
+                        "manifestPath": relative,
+                        "sourcePath": relative.strip_suffix("/plugin.json").unwrap(),
+                        "manifestSha256": sha256_file(path).unwrap(), "platforms": [],
+                        "distribution": "composition-time", "runtimeInstall": "not-supported"
+                    })
+                })
+                .collect();
+            let path = self.commercial("sdk/catalog/plugins.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                path,
+                json!({"schema": "test", "catalogVersion": "1", "plugins": plugins}).to_string(),
+            )
+            .unwrap();
+        }
+
+        fn call(&self) -> PathBuf {
+            let path = self.0.join(CALL_MANIFEST);
+            self.manifest(&path, "flare.call");
+            path
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn verifies_both_commercial_layouts_and_the_separate_call_repository() {
+        let fixture = Fixture::new();
+        let legacy = fixture.commercial("sdk/legacy/plugin.json");
+        let poll = fixture.commercial("plugins/poll/sdk/plugin.json");
+        let call = fixture.call();
+        fixture.manifest(&legacy, "flare.legacy");
+        fixture.manifest(&poll, "flare.poll");
+        fixture.catalog(&[
+            (&legacy, "flare.legacy", "sdk/legacy/plugin.json"),
+            (&poll, "flare.poll", "plugins/poll/sdk/plugin.json"),
+            (&call, "flare.call", CALL_MANIFEST),
+        ]);
+        assert_eq!(verify(&fixture.sdk()).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn verifies_previous_sdk_relative_catalog_during_rollout() {
+        let fixture = Fixture::new();
+        let legacy = fixture.commercial("sdk/legacy/plugin.json");
+        let call = fixture.call();
+        fixture.manifest(&legacy, "flare.legacy");
+        fixture.catalog(&[
+            (&legacy, "flare.legacy", "legacy/plugin.json"),
+            (&call, "flare.call", CALL_MANIFEST),
+        ]);
+        assert_eq!(verify(&fixture.sdk()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn rejects_duplicate_ids_across_the_two_commercial_layouts() {
+        let fixture = Fixture::new();
+        let call = fixture.call();
+        let legacy = fixture.commercial("sdk/legacy/plugin.json");
+        fixture.manifest(&legacy, "flare.poll");
+        fixture.manifest(
+            &fixture.commercial("plugins/poll/sdk/plugin.json"),
+            "flare.poll",
+        );
+        fixture.catalog(&[
+            (&legacy, "flare.poll", "legacy/plugin.json"),
+            (&call, "flare.call", CALL_MANIFEST),
+        ]);
+        let error = verify(&fixture.sdk()).err().unwrap().to_string();
+        assert!(
+            error.contains("duplicate plugin manifest id flare.poll"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_missing_manifests_and_paths_outside_the_selected_root() {
+        let fixture = Fixture::new();
+        let call = fixture.call();
+        let poll = fixture.commercial("plugins/poll/sdk/plugin.json");
+        fixture.manifest(&poll, "flare.poll");
+        fixture.catalog(&[
+            (&poll, "flare.poll", "../poll/plugin.json"),
+            (&call, "flare.call", CALL_MANIFEST),
+        ]);
+        let error = verify(&fixture.sdk()).err().unwrap().to_string();
+        assert!(error.contains("manifestPath"), "{error}");
+        fs::remove_file(&poll).unwrap();
+        let error = verify(&fixture.sdk()).err().unwrap().to_string();
+        assert!(
+            error.contains("catalog references missing plugin manifest flare.poll"),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_manifest_symlinks_that_leave_a_plugin_repository() {
+        let fixture = Fixture::new();
+        let call = fixture.call();
+        let manifest = fixture.commercial("sdk/linked/plugin.json");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&call, &manifest).unwrap();
+        let error = verify(&fixture.sdk()).err().unwrap().to_string();
+        assert!(
+            error.contains("plugin manifest must be a regular file"),
+            "{error}"
+        );
+    }
 }
