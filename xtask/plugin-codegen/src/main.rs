@@ -1,9 +1,9 @@
 //! Plugin manifest schema, catalog checks and six-platform plugin API stubs for the
-//! `flare-sdk-plugin` checkout next to this SDK.
+//! `flare-plugins-commercial/sdk` checkout next to this SDK.
 //!
 //! The stubs come from the emitter the plugin contracts share
 //! (`flare-sdk-plugin-contract-codegen`), and that crate lives in the private
-//! `flare-sdk-plugin` repository. This tool is therefore its own workspace: the SDK
+//! `flare-plugins-commercial` repository. This tool is therefore its own workspace: the SDK
 //! workspace, and every workspace that uses the SDK as a path dependency, resolves and
 //! builds without that repository. `cargo xtask plugin-*` runs it.
 use std::collections::{BTreeMap, BTreeSet};

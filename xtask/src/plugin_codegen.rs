@@ -1,6 +1,6 @@
 //! `cargo xtask plugin-*` runs the plugin codegen tool in `xtask/plugin-codegen`.
 //!
-//! That tool builds against the private `flare-sdk-plugin` checkout (it shares the stub
+//! That tool builds against the private `flare-plugins-commercial/sdk` checkout (it shares the stub
 //! emitter with the plugin contracts), so it is a separate workspace. Depending on it
 //! from here would make this workspace, and every workspace that uses the SDK as a path
 //! dependency, fail to resolve wherever that repository is not checked out.

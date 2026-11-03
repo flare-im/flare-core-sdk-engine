@@ -6,10 +6,10 @@ rust-version = "1.94.0"
 authors = ["Flare Team"]
 license = "Apache-2.0"
 publish = false
-description = "Plugin manifest schema, catalog checks and six-platform plugin API stubs for the flare-sdk-plugin checkout"
+description = "Plugin manifest schema, catalog checks and six-platform plugin API stubs for flare-plugins-commercial/sdk"
 
 # Its own workspace, excluded from the SDK workspace: it depends on the private
-# flare-sdk-plugin repository, and the open-source SDK must resolve without it.
+# flare-plugins-commercial repository, and the open-source SDK must resolve without it.
 [workspace]
 
 [[bin]]

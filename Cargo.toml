@@ -12,7 +12,7 @@ members = [
 ]
 exclude = [
     "bindings/uniffi",
-    # Builds against the private flare-sdk-plugin checkout; see its Cargo.toml.
+    # Builds against the SDK packages in the private flare-plugins-commercial checkout.
     "xtask/plugin-codegen",
 ]
 
