@@ -553,13 +553,16 @@ fn core_source_does_not_depend_on_business_or_plugin_crates() {
 #[test]
 fn social_production_code_uses_spi_for_core_extension_boundaries() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let social_src = manifest
-        .parent()
-        .expect("flare-im root")
-        .join("flare-social-server/flare-social-sdk/src");
-    if !social_src.exists() {
+    let root = manifest.parent().expect("flare-im root");
+    let Some(social_src) = [
+        root.join("flare-social-sdk/src"),
+        root.join("flare-social-server/flare-social-sdk/src"),
+    ]
+    .into_iter()
+    .find(|src| src.is_dir())
+    else {
         return;
-    }
+    };
 
     let violations: Vec<_> = core_sdk_facade_violations(&social_src)
         .into_iter()
