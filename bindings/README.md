@@ -86,7 +86,7 @@ L3 typed platform SDK
   -> L2 runtime adapter
   -> L1 bindings/{c|tauri|wasm}
   -> bindings/shared (shared dispatch + contract)
-  -> L0 flare-im-core-sdk/src
+  -> L0 flare-core-sdk-engine/src
 ```
 
 Legacy channel symbols (`flare_message_dispatch_json`, `flare_conversation_dispatch_json`, …)

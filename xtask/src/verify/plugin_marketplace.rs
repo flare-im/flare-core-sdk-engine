@@ -7,7 +7,7 @@ pub(crate) fn verify_plugin_marketplace_gate(root: &Path) -> Result<()> {
     let mut errors = Vec::new();
     let monorepo_root = root.parent().unwrap_or_else(|| Path::new(".."));
     let plugin_root = monorepo_root.join("flare-sdk-plugin");
-    let sdk_root = monorepo_root.join("flare-im-core-sdk");
+    let sdk_root = monorepo_root.join("flare-core-sdk-engine");
 
     require_contains_all(
         &mut errors,

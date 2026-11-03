@@ -9,7 +9,7 @@
 
 与性能耗时门禁的关键区别：**体积是确定的，没有 runner 噪声**。同一份源码 +
 同一套工具链，产物字节数每次都一样。所以这里可以设紧的阈值，而不像
-`flare-core/scripts/check_perf_baseline.py` 那样必须留 50~100 倍余量。
+`flare-transport/scripts/check_perf_baseline.py` 那样必须留 50~100 倍余量。
 
 量两个数，两个都要卡：
 

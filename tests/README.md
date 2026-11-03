@@ -40,7 +40,7 @@ rtk bash scripts/verify.sh
 本仓当前 vNext 测试不会伪造真实服务端 E2E。服务端健康检查入口在：
 
 ```bash
-rtk bash ../flare-im-core/scripts/check_services.sh
+rtk bash ../flare-core-server/scripts/check_services.sh
 rtk cargo test -p flare-im-core-sdk --features integration-tests --test <new_live_gateway_test>
 ```
 

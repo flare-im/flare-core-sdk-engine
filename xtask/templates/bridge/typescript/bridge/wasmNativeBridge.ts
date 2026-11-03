@@ -4,7 +4,7 @@ import { wireDecodeResponse, wireEncodeRequest } from '../adapter/codec/wireCode
 import { assertBindingContractVersion } from './contractVersion';
 import { FlareSdkException } from './flareSdkException';
 
-/** Expected wasm-bindgen surface from `flare-im-core-sdk/bindings/wasm`. */
+/** Expected wasm-bindgen surface from `flare-core-sdk-engine/bindings/wasm`. */
 export interface FlareWasmRuntime {
   invoke(operation: string, requestJson: string): Promise<unknown> | unknown;
   flareBindingContractVersion(): string;
@@ -57,9 +57,9 @@ async function defaultWasmLoader(wasmUrl: string): Promise<FlareWasmRuntime> {
   const isWasmAssetUrl = wasmUrl.endsWith('.wasm');
   const specifiers = [
     ...(isWasmAssetUrl ? [] : [wasmUrl]),
-    'flare-im-core-sdk/bindings/wasm/pkg/flare_im_core_sdk',
-    '../../../../../flare-im-core-sdk/bindings/wasm/pkg/flare_im_core_sdk',
-    '../../../../flare-im-core-sdk/bindings/wasm/pkg/flare_im_core_sdk',
+    'flare-core-sdk-engine/bindings/wasm/pkg/flare_im_core_sdk',
+    '../../../../../flare-core-sdk-engine/bindings/wasm/pkg/flare_im_core_sdk',
+    '../../../../flare-core-sdk-engine/bindings/wasm/pkg/flare_im_core_sdk',
   ];
   let lastError: unknown;
   for (const specifier of specifiers) {
@@ -87,13 +87,13 @@ async function defaultWasmLoader(wasmUrl: string): Promise<FlareWasmRuntime> {
     undefined,
     {
       wasmUrl,
-      hint: 'Run `npm install && npm run build` in flare-im-core-sdk/bindings/wasm, or pass WasmBridgeOptions.runtime.',
+      hint: 'Run `npm install && npm run build` in flare-core-sdk-engine/bindings/wasm, or pass WasmBridgeOptions.runtime.',
       lastError: `${lastError ?? 'unknown'}`,
     },
   );
 }
 
-/** Web L1 bridge over `flare-im-core-sdk/bindings/wasm` (no hand-written IM logic). */
+/** Web L1 bridge over `flare-core-sdk-engine/bindings/wasm` (no hand-written IM logic). */
 export class WasmNativeBridge implements NativeBridge {
   private runtime: FlareWasmRuntime | null;
   private contractVersionChecked = false;

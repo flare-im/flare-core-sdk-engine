@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn send_failed_event_wire_matches_the_shared_golden() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../flare-im-core-client-sdk/sdk-spec/golden/events/send_failed_with_error.json",
+            "../../../flare-core-sdk/sdk-spec/golden/events/send_failed_with_error.json",
         );
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));

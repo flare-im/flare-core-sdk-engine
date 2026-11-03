@@ -42,7 +42,7 @@ impl Fixture {
     async fn new() -> Self {
         let manifest = PluginManifest::from_json(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../flare-proto/flare-plugin-protocol/tests/fixtures/plugin-ui-manifest.json"
+            "/../flare-protocol/flare-plugin-protocol/tests/fixtures/plugin-ui-manifest.json"
         )))
         .unwrap();
         let catalog = Arc::new(SyncMutex::new(UiCatalog {

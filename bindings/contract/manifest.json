@@ -5,7 +5,7 @@
   "coreCrate": "flare-im-core-sdk",
   "sourceOfTruth": {
     "core": "../../src",
-    "clientSdk": "../../../flare-im-core-client-sdk",
+    "clientSdk": "../../../flare-core-sdk",
     "ffiEntry": "../c",
     "apiContract": "apis.json",
     "modelSchemaContract": "generated/model_schemas",
@@ -40,7 +40,7 @@
     },
     "l2": {
       "name": "runtime adapters",
-      "path": "../../../flare-im-core-client-sdk/native",
+      "path": "../../../flare-core-sdk/native",
       "owns": [
         "library_loading",
         "thread_dispatch",
@@ -50,7 +50,7 @@
     },
     "l3": {
       "name": "typed platform SDKs",
-      "path": "../../../flare-im-core-client-sdk/packages",
+      "path": "../../../flare-core-sdk/packages",
       "owns": [
         "platform_friendly_api",
         "typed_models",

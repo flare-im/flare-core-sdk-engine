@@ -22,7 +22,7 @@ const CATALOG: &str = flare_plugin_protocol::ui::UI_CATALOG_OPERATION;
 fn catalog_plugin(refresh_on: Value) -> Value {
     let mut manifest: Value = serde_json::from_slice(include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../flare-proto/flare-plugin-protocol/tests/fixtures/plugin-ui-v2-manifest.json"
+        "/../flare-protocol/flare-plugin-protocol/tests/fixtures/plugin-ui-v2-manifest.json"
     )))
     .unwrap();
     let operations = manifest["capabilities"][0]["operations"]

@@ -74,7 +74,7 @@ def extract_pair(text):
 
 
 CRATE = "flare-im-core-sdk"
-UA = "flare-core-readme-gate (https://github.com/flare-im/flare-im-core-sdk)"
+UA = "flare-core-readme-gate (https://github.com/flare-im/flare-core-sdk-engine)"
 
 
 def latest_published(name: str):

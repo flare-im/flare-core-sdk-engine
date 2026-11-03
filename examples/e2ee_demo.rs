@@ -2,7 +2,7 @@
 //!
 //! ```bash
 //! cd flare-im-core && ./scripts/start_server.sh     # 先起开源栈
-//! cd ../flare-im-core-sdk
+//! cd ../flare-core-sdk-engine
 //! cargo run --example e2ee_demo --features "lifecycle-sqlite e2ee"
 //! ```
 //!
@@ -16,7 +16,7 @@
 //!
 //! 密钥协商在这里是**手工**的（两端各自生成 X25519 密钥、直接交换公钥）。
 //! 真实产品里公钥的分发与轮换属于身份体系的职责，接口是
-//! `E2eeKeyManager` —— 这一步刻意留在开源边界之外，见 flare-im-core/QUICKSTART.md。
+//! `E2eeKeyManager` —— 这一步刻意留在开源边界之外，见 flare-core-server/QUICKSTART.md。
 
 use std::sync::Arc;
 

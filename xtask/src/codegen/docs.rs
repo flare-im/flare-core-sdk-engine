@@ -298,7 +298,7 @@ fn emit_package_readme(title: &str, spec: &Value, platform_key: &str) -> String 
     [
         format!("# {title}"),
         String::new(),
-        "This package is a typed adapter over `flare-im-core-sdk/bindings/c`.".to_string(),
+        "This package is a typed adapter over `flare-core-sdk-engine/bindings/c`.".to_string(),
         String::new(),
         format!("- Status: `{}`", str_field(platform, "status")),
         format!("- Async model: {}", str_field(platform, "asyncModel")),

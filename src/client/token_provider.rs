@@ -1,7 +1,7 @@
 //! 接入 token 的网关签发/刷新（SDK 托管形态）。
 //!
 //! 对应 `flare-api-gateway` 的 `POST /api/v1/auth/tokens` 与 `POST /api/v1/auth/tokens/refresh`
-//! （见 flare-im-core/docs/AUTH-TOKEN-ISSUANCE.zh-CN.md）。客户端不持有任何签名密钥。
+//! （见 flare-core-server/docs/AUTH-TOKEN-ISSUANCE.zh-CN.md）。客户端不持有任何签名密钥。
 
 use std::collections::HashMap;
 

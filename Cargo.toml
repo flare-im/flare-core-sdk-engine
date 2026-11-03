@@ -23,9 +23,9 @@ authors = ["Flare Team"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
-flare-proto = { version = "2.1.0", path = "../flare-proto" }
-flare-grpc-proto = { version = "2.1.0", path = "../flare-grpc-proto" }
-flare-core = { version = "1.1.1", path = "../flare-core", default-features = false }
+flare-proto = { version = "2.1.0", path = "../flare-protocol" }
+flare-grpc-proto = { version = "2.1.0", path = "../flare-protocol-grpc" }
+flare-core = { version = "1.1.1", path = "../flare-transport", default-features = false }
 tonic = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -56,8 +56,8 @@ description = "Flare IM Client SDK — event-driven cross-platform IM client cor
 # crates.io 上没有关键词几乎等于搜不到；上限 5 个，按别人真正会搜的词选。
 keywords = ["instant-messaging", "im", "websocket", "client-sdk", "realtime"]
 categories = ["network-programming", "asynchronous", "api-bindings"]
-repository = "https://github.com/flare-im/flare-im-core-sdk"
-homepage = "https://github.com/flare-im/flare-im-core-sdk"
+repository = "https://github.com/flare-im/flare-core-sdk-engine"
+homepage = "https://github.com/flare-im/flare-core-sdk-engine"
 documentation = "https://docs.rs/flare-im-core-sdk"
 readme = "README.md"
 
@@ -104,7 +104,7 @@ chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = "1.0"
 schemars = { workspace = true }
-flare-plugin-protocol = { version = "0.1.0", path = "../flare-proto/flare-plugin-protocol" }
+flare-plugin-protocol = { version = "0.1.0", path = "../flare-protocol/flare-plugin-protocol" }
 anyhow = { workspace = true }
 thiserror = "2.0"
 async-trait = "0.1"

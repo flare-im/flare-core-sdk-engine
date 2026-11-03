@@ -17,10 +17,10 @@ rustup target add aarch64-unknown-linux-ohos
 ## 构建
 
 ```bash
-cd flare-im-core-sdk/bindings/c
+cd flare-core-sdk-engine/bindings/c
 make ohos
 # 或：
-../../flare-im-core-client-sdk/tools/sync_harmony_native.sh
+../../flare-core-sdk/tools/sync_harmony_native.sh
 ```
 
 产物：`target/aarch64-unknown-linux-ohos/release/libflare_im_core_sdk_ffi.so`

@@ -26,11 +26,11 @@ function resolveNativeHost(): FlareNativeModuleHost {
   }
   throw new FlareSdkException(
     'native.module_missing',
-    'Native module host not registered. Link flare-im-core-sdk/bindings/c through a TurboModule and set globalThis.__FLARE_IM_CORE_NATIVE__.',
+    'Native module host not registered. Link flare-core-sdk-engine/bindings/c through a TurboModule and set globalThis.__FLARE_IM_CORE_NATIVE__.',
   );
 }
 
-/** React Native / uni-app App L1 bridge over `flare-im-core-sdk/bindings/c`. */
+/** React Native / uni-app App L1 bridge over `flare-core-sdk-engine/bindings/c`. */
 export class FfiNativeBridge implements NativeBridge {
   private contractVersionCheck: Promise<void> | null = null;
 

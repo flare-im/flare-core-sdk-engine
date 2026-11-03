@@ -1,7 +1,7 @@
 //! 示例共用的开发 token 密钥获取。
 //!
 //! 这些示例要自己签一个 token 连服务端 —— 开源栈不含用户体系，这是「自带身份」
-//! 模式下评估者拿到第一个可用 token 的方式（见 flare-im-core/QUICKSTART.md）。
+//! 模式下评估者拿到第一个可用 token 的方式（见 flare-core-server/QUICKSTART.md）。
 //!
 //! **不提供可用的默认密钥。** 早先几个示例写死 `"insecure-secret"`，而服务端从
 //! 一开始就拒绝弱密钥，于是它们注定连不上；更糟的是客户端只会报「协商超时，
@@ -10,7 +10,7 @@
 //!
 //! 取值顺序：
 //!   1. `TOKEN_SECRET` / `ACCESS_GATEWAY_TOKEN_SECRET` / `FLARE_CORE_GATEWAY_TOKEN_SECRET`
-//!   2. 同一工作区里 `flare-im-core/logs/.dev-token-secret`（`start_server.sh` 生成）
+//!   2. 同一工作区里 `flare-core-server/logs/.dev-token-secret`（`start_server.sh` 生成）
 //!
 //! 用法：
 //! ```ignore
@@ -28,7 +28,7 @@ fn dev_secret_file() -> Option<String> {
     let workspace_root = manifest_dir.parent()?;
     Some(
         workspace_root
-            .join("flare-im-core")
+            .join("flare-core-server")
             .join("logs")
             .join(".dev-token-secret")
             .to_string_lossy()
@@ -79,7 +79,7 @@ pub fn require() -> Result<String, Box<dyn std::error::Error>> {
          \x20    它会把密钥写到 {}\n\
          \x20    示例会自动读取，无需额外设置。\n\
          \x20 2) 或显式指定：export TOKEN_SECRET=<你的强密钥>（与服务端同一把）",
-        dev_secret_file().unwrap_or_else(|| "flare-im-core/logs/.dev-token-secret".into())
+        dev_secret_file().unwrap_or_else(|| "flare-core-server/logs/.dev-token-secret".into())
     )
     .into())
 }

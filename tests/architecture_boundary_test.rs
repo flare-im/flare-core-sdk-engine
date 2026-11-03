@@ -556,7 +556,7 @@ fn social_production_code_uses_spi_for_core_extension_boundaries() {
     let social_src = manifest
         .parent()
         .expect("flare-im root")
-        .join("flare-social/flare-social-sdk/src");
+        .join("flare-social-server/flare-social-sdk/src");
     if !social_src.exists() {
         return;
     }
@@ -1038,7 +1038,7 @@ fn downlink_codec_uses_typed_dispatch_without_unknown_payload_guessing() {
 fn platform_event_fanout_isolation_and_unknown_event_codes_are_structural() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest.parent().expect("flare-im root");
-    let client_sdk = repo_root.join("flare-im-core-client-sdk");
+    let client_sdk = repo_root.join("flare-core-sdk");
 
     let sources = [
         manifest.join("xtask/src/codegen/typescript_adapter.rs"),

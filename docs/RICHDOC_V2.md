@@ -1,6 +1,6 @@
 # IM RichDoc v2 — 架构与落地说明
 
-与 `flare-proto/proto/message_content.proto` 中 `RichTextContent` 一致：`doc_json` + `content_schema=rich_doc` 为唯一结构化主存；`plain_text` / `search_text` / `render_hints_json` 由 **Rust SDK 权威派生**。
+与 `flare-protocol/proto/message_content.proto` 中 `RichTextContent` 一致：`doc_json` + `content_schema=rich_doc` 为唯一结构化主存；`plain_text` / `search_text` / `render_hints_json` 由 **Rust SDK 权威派生**。
 
 ---
 
@@ -48,7 +48,7 @@
 
 ## 3. JSON Schema
 
-见 `flare-proto/schemas/rich_doc_v2.schema.json`（与 Rust 校验白名单对齐；演进时以 Rust 为先更新）。
+见 `flare-protocol/schemas/rich_doc_v2.schema.json`（与 Rust 校验白名单对齐；演进时以 Rust 为先更新）。
 
 ---
 

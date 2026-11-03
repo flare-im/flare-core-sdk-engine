@@ -44,7 +44,7 @@ storage/
 
 ### 依赖
 
-- 使用 **workspace** 依赖（与 `flare-im-core-sdk/Cargo.toml` 一致）：`anyhow`、`once_cell`、`sqlx`、`tokio`。
+- 使用 **workspace** 依赖（与 `flare-core-sdk-engine/Cargo.toml` 一致）：`anyhow`、`once_cell`、`sqlx`、`tokio`。
 
 ### 使用方式
 

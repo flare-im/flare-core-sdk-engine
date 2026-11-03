@@ -542,7 +542,7 @@ mod tests {
         let generated = serde_json::to_string_pretty(&super::action_availability_vectors())
             .expect("序列化向量");
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../flare-im-core-client-sdk/sdk-spec/message-action-vectors.json");
+            .join("../flare-core-sdk/sdk-spec/message-action-vectors.json");
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
         if existing.trim() != generated.trim() {
             std::fs::create_dir_all(path.parent().expect("父目录")).ok();

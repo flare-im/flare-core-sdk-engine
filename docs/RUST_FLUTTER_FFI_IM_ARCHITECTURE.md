@@ -2,9 +2,9 @@
 
 本文基于以下代码目录落地：
 
-- Rust Core：`/Users/hg/workspace/flare/flare-im/flare-im-core-sdk/src`
-- C FFI：`/Users/hg/workspace/flare/flare-im/flare-im-core-sdk/bindings/c`
-- Flutter Example Host：`/Users/hg/workspace/flare/flare-im/flare-im-core-sdk/examples/flare`
+- Rust Core：`/Users/hg/workspace/flare/flare-im/flare-core-sdk-engine/src`
+- C FFI：`/Users/hg/workspace/flare/flare-im/flare-core-sdk-engine/bindings/c`
+- Flutter Example Host：`/Users/hg/workspace/flare/flare-im/flare-core-sdk-engine/examples/flare`
 
 目标：统一桌面与移动端接入，保持核心能力在 Rust，Flutter 仅做状态展示与交互编排。
 

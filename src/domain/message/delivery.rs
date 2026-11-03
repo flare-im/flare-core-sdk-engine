@@ -713,7 +713,7 @@ mod tests {
     #[test]
     fn a_rejected_ack_matches_the_shared_send_failed_golden() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../flare-im-core-client-sdk/sdk-spec/golden/events/send_failed_with_error.json");
+            .join("../flare-core-sdk/sdk-spec/golden/events/send_failed_with_error.json");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
         let golden: serde_json::Value = serde_json::from_str(&text).expect("golden json");

@@ -14,7 +14,7 @@ crate-type = ["cdylib", "staticlib"]
 [dependencies]
 flare-im-core-sdk-bindings-runtime = { version = "1.0.3", path = "../shared" }
 flare-im-core-sdk = { version = "1.0.3", path = "../..", features = ["lifecycle-sqlite"] }
-flare-proto = { version = "2.0.0", path = "../../../flare-proto" }
+flare-proto = { version = "2.0.0", path = "../../../flare-protocol" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }

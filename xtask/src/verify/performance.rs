@@ -7,7 +7,7 @@ pub(crate) fn verify_performance_gate(root: &Path) -> Result<()> {
     let mut errors = Vec::new();
     let monorepo_root = root.parent().unwrap_or_else(|| Path::new(".."));
     let sdk_root = core_root(root);
-    let flare_core_root = monorepo_root.join("flare-core");
+    let flare_core_root = monorepo_root.join("flare-transport");
 
     let public_doc = root.join("docs/performance-baselines.md");
     require_contains_all(

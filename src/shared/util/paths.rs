@@ -40,7 +40,7 @@ pub fn dev_data_dir_relative_to_cwd() -> PathBuf {
 /// SDK 默认数据根。宿主未显式传入 `dataUrl` 时使用。
 pub fn default_sdk_data_root() -> PathBuf {
     let base = default_system_data_dir();
-    base.join("flare-im-core-sdk")
+    base.join("flare-core-sdk-engine")
 }
 
 #[cfg(not(target_arch = "wasm32"))]

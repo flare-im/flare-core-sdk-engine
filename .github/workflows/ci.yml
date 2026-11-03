@@ -27,11 +27,11 @@ jobs:
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
           }
-          clone https://github.com/flare-im/flare-core.git "../flare-core"
-          clone https://github.com/flare-im/flare-proto.git "../flare-proto"
-          clone https://github.com/flare-im/flare-grpc-proto.git "../flare-grpc-proto"
+          clone https://github.com/flare-im/flare-transport.git "../flare-transport"
+          clone https://github.com/flare-im/flare-protocol.git "../flare-protocol"
+          clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
           # 架构边界测试会跨仓校验七端 SDK 的事件分发实现，需要它在场
-          clone https://github.com/flare-im/flare-im-core-client-sdk.git "../flare-im-core-client-sdk"
+          clone https://github.com/flare-im/flare-core-sdk.git "../flare-core-sdk"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -88,11 +88,11 @@ jobs:
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
           }
-          clone https://github.com/flare-im/flare-core.git "../flare-core"
-          clone https://github.com/flare-im/flare-proto.git "../flare-proto"
-          clone https://github.com/flare-im/flare-grpc-proto.git "../flare-grpc-proto"
+          clone https://github.com/flare-im/flare-transport.git "../flare-transport"
+          clone https://github.com/flare-im/flare-protocol.git "../flare-protocol"
+          clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
           # 架构边界测试会跨仓校验七端 SDK 的事件分发实现，需要它在场
-          clone https://github.com/flare-im/flare-im-core-client-sdk.git "../flare-im-core-client-sdk"
+          clone https://github.com/flare-im/flare-core-sdk.git "../flare-core-sdk"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -139,9 +139,9 @@ jobs:
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
           }
-          clone https://github.com/flare-im/flare-core.git "../flare-core"
-          clone https://github.com/flare-im/flare-proto.git "../flare-proto"
-          clone https://github.com/flare-im/flare-grpc-proto.git "../flare-grpc-proto"
+          clone https://github.com/flare-im/flare-transport.git "../flare-transport"
+          clone https://github.com/flare-im/flare-protocol.git "../flare-protocol"
+          clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -308,9 +308,9 @@ jobs:
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
           }
-          clone https://github.com/flare-im/flare-core.git "../flare-core"
-          clone https://github.com/flare-im/flare-proto.git "../flare-proto"
-          clone https://github.com/flare-im/flare-grpc-proto.git "../flare-grpc-proto"
+          clone https://github.com/flare-im/flare-transport.git "../flare-transport"
+          clone https://github.com/flare-im/flare-protocol.git "../flare-protocol"
+          clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -355,21 +355,21 @@ jobs:
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
           }
-          clone https://github.com/flare-im/flare-core.git "../flare-core"
-          clone https://github.com/flare-im/flare-proto.git "../flare-proto"
-          clone https://github.com/flare-im/flare-grpc-proto.git "../flare-grpc-proto"
+          clone https://github.com/flare-im/flare-transport.git "../flare-transport"
+          clone https://github.com/flare-im/flare-protocol.git "../flare-protocol"
+          clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
           # 判据要读客户端 SDK 的 packages / sdk-spec / examples；xtask 解析根目录时
           # 找不到它会直接 bail，不是跳过。
-          clone https://github.com/flare-im/flare-im-core-client-sdk.git "../flare-im-core-client-sdk"
+          clone https://github.com/flare-im/flare-core-sdk.git "../flare-core-sdk"
           # e2ee / 多端状态两道要读服务端源码（推送可见性、扇出实现）。
-          clone https://github.com/flare-im/flare-im-core-server.git "../flare-im-core"
+          clone https://github.com/flare-im/flare-core-server.git "../flare-core-server"
           # 五个示例 app 各自是独立仓，被 flare-im-core-client-sdk 的 .gitignore 刻意
           # 排除（不排除的话会变成 mode 160000 的 gitlink，而那个仓没有 .gitmodules，
           # 克隆方只会拿到空目录）。多端状态门禁要读其中 flutter 那个的一致性清单测试，
           # 所以单独拉进它该在的位置——本机有整个工作区所以一直没露馅，
           # 全新 checkout 上这道门禁就直接报「文件缺失」。
           clone https://github.com/flare-im/flare-core-flutter-demo.git \
-            "../flare-im-core-client-sdk/examples/flare-core-flutter-app"
+            "../flare-core-sdk/examples/flare-core-flutter-app"
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2

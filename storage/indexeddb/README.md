@@ -5,7 +5,7 @@ IndexedDB 是 Web/WASM 平台的持久化后端。它的职责是承载 `flare-i
 
 ## 架构定位
 
-- `flare-im-core-sdk/storage/indexeddb`：core SDK 的 Web/WASM 存储后端位置，负责对齐 core 仓储语义、schema、迁移和事务边界。
+- `flare-core-sdk-engine/storage/indexeddb`：core SDK 的 Web/WASM 存储后端位置，负责对齐 core 仓储语义、schema、迁移和事务边界。
 - `flare-core-typescript-sdk/src/storage/indexeddb.ts`：TypeScript 运行时的浏览器 IndexedDB driver，服务 Web/H5 adapter。
 - `flare-core-typescript-sdk/src/storage/sqlite.ts`：RN/uni-app App 构建使用的 SQLite driver 契约，通过平台 SQLite executor 注入。
 - 示例应用不能自建长期存储语义，只能消费 SDK 暴露的 storage driver 或 client facade。
@@ -29,7 +29,7 @@ Web/WASM 后端需要覆盖和 SQLite 后端等价的核心能力：
 当前浏览器落地实现位于：
 
 ```text
-flare-im-core-client-sdk/packages/flare-core-typescript-sdk/src/storage/indexeddb.ts
+flare-core-sdk/packages/flare-core-typescript-sdk/src/storage/indexeddb.ts
 ```
 
 它使用生成的 TypeScript SDK 模型持久化：

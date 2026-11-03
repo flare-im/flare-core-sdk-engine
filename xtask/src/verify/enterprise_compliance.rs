@@ -28,7 +28,7 @@ pub(crate) fn verify_enterprise_compliance_gate(root: &Path) -> Result<()> {
     require_contains_all(
         &mut errors,
         &monorepo_root
-            .join("flare-im-core/flare-admin-gateway/src/interface/http/admin_auth_middleware.rs"),
+            .join("flare-core-server/flare-admin-gateway/src/interface/http/admin_auth_middleware.rs"),
         "admin gateway audit middleware",
         // 中间件已改为验网关签发的 Staff 签名上下文（x-flare-ctx）：只认一份、只认 Staff、
         // 必须落到一个具体应用；权限与租户由路由表加签名里的权限决定，伪造的身份头一律
@@ -52,7 +52,7 @@ pub(crate) fn verify_enterprise_compliance_gate(root: &Path) -> Result<()> {
     require_contains_all(
         &mut errors,
         &monorepo_root
-            .join("flare-im-core/flare-admin-gateway/src/interface/http/admin_contract.rs"),
+            .join("flare-core-server/flare-admin-gateway/src/interface/http/admin_contract.rs"),
         "admin capability descriptor",
         &[
             "AUDIT_REASON_HEADER",
@@ -79,7 +79,7 @@ pub(crate) fn verify_enterprise_compliance_gate(root: &Path) -> Result<()> {
     );
     require_contains_all(
         &mut errors,
-        &monorepo_root.join("flare-im-core/deploy/init.sql"),
+        &monorepo_root.join("flare-core-server/deploy/init.sql"),
         "capability audit schema",
         &[
             "CREATE TABLE capability_audit_log",
@@ -94,7 +94,7 @@ pub(crate) fn verify_enterprise_compliance_gate(root: &Path) -> Result<()> {
     require_contains_all(
         &mut errors,
         &monorepo_root.join(
-            "flare-im-core/flare-capability/src/infrastructure/persistence/postgres_capability_audit.rs",
+            "flare-core-server/flare-capability/src/infrastructure/persistence/postgres_capability_audit.rs",
         ),
         "capability audit writer",
         &[
@@ -106,7 +106,7 @@ pub(crate) fn verify_enterprise_compliance_gate(root: &Path) -> Result<()> {
     );
     require_contains_all(
         &mut errors,
-        &monorepo_root.join("flare-im-core/config/hooks.example.toml"),
+        &monorepo_root.join("flare-core-server/config/hooks.example.toml"),
         "message compliance hook example",
         &[
             "compliance-text-check",

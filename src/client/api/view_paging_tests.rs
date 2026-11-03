@@ -437,7 +437,7 @@ impl Request {
 /// 向量在本仓同级的客户端 SDK 规格里。
 fn vectors() -> Vectors {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../flare-im-core-client-sdk/sdk-spec/golden/view/timeline-paging.json");
+        .join("../flare-core-sdk/sdk-spec/golden/view/timeline-paging.json");
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     serde_json::from_str(&text).unwrap_or_else(|error| panic!("decode {}: {error}", path.display()))

@@ -572,7 +572,7 @@ const DELTA_APPLY_RULES: [&str; 6] = [
 
 fn delta_vectors_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../flare-im-core-client-sdk/sdk-spec/golden/view/timeline-delta.json")
+        .join("../flare-core-sdk/sdk-spec/golden/view/timeline-delta.json")
 }
 
 #[tokio::test]

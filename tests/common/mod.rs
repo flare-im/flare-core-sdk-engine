@@ -636,7 +636,7 @@ pub fn build_single_text(
 
 /// 生成 Core JWT token（使用 SDK 内置的 generate_core_token）
 ///
-/// 与 flare-im-core/examples/chatroom_client.rs 保持一致：
+/// 与 flare-core-server/examples/chatroom_client.rs 保持一致：
 /// secret = "insecure-secret"，issuer = "flare-im-core"，tenant_id = "0"
 fn generate_core_token(user_id: &str) -> String {
     flare_im_core_sdk::prelude::generate_core_token(&flare_im_core_sdk::prelude::CoreTokenConfig {

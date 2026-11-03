@@ -14,6 +14,6 @@ works thereof, you must:
    distributions, or reproduce them in documentation for binary distributions.
 2. Include visible attribution in user-facing materials where practical, for
    example: "Includes software from Flare IM Core SDK
-   (https://github.com/flare-im/flare-im-core-sdk)".
+   (https://github.com/flare-im/flare-core-sdk-engine)".
 
 Licensed under the Apache License, Version 2.0. See LICENSE for the full text.

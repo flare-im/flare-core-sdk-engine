@@ -11,7 +11,7 @@ import {
 } from '../../adapter/module/DefaultEventsApi';
 import { FlareSdkException } from '../../bridge/flareSdkException';
 
-/** Maps contract operation ids to dedicated Tauri commands from `flare-im-core-sdk/bindings/tauri`. */
+/** Maps contract operation ids to dedicated Tauri commands from `flare-core-sdk-engine/bindings/tauri`. */
 export const TAURI_COMMAND_BY_OPERATION: Record<string, string> = {
   'sdk.init': 'sdk_init',
   'sdk.login': 'sdk_login',
@@ -30,7 +30,7 @@ function mapImPayload(channel: string, payload: unknown): unknown {
   return nativeEventFromCode(eventType, payload);
 }
 
-/** Tauri L1 bridge over `flare-im-core-sdk/bindings/tauri` commands. */
+/** Tauri L1 bridge over `flare-core-sdk-engine/bindings/tauri` commands. */
 export class TauriNativeBridge implements NativeBridge {
   private eventsApi: EventEmitter | null = null;
   private unlisteners: UnlistenFn[] = [];

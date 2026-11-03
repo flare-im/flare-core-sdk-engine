@@ -97,7 +97,7 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     );
     require_contains_all(
         &mut errors,
-        &monorepo_root.join("flare-proto/proto/sync.proto"),
+        &monorepo_root.join("flare-protocol/proto/sync.proto"),
         "multi-device state sync proto",
         &[
             "ConversationUserSettingsSync conversation_user_settings = 24",
@@ -109,7 +109,7 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     require_contains_all(
         &mut errors,
         &monorepo_root
-            .join("flare-im-core/flare-sync-orchestrator/src/application/handlers/sync_orchestration_handler.rs"),
+            .join("flare-core-server/flare-sync-orchestrator/src/application/handlers/sync_orchestration_handler.rs"),
         "sync orchestrator conversation settings handler",
         &[
             "SyncPayload::ConversationUserSettings",
@@ -125,7 +125,7 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     require_contains_all(
         &mut errors,
         &monorepo_root
-            .join("flare-im-core/flare-signaling/gateway/src/domain/service/sync_service.rs"),
+            .join("flare-core-server/flare-signaling/gateway/src/domain/service/sync_service.rs"),
         "signaling sync gateway settings forwarding",
         &["SyncPayload::ConversationUserSettings"],
     );
@@ -464,7 +464,7 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     require_contains_all(
         &mut errors,
         &monorepo_root
-            .join("flare-im-core/flare-api-gateway/src/interface/http/presence_handler.rs"),
+            .join("flare-core-server/flare-api-gateway/src/interface/http/presence_handler.rs"),
         "api gateway presence device management",
         &[
             "pub async fn list_user_devices",
@@ -477,7 +477,7 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     );
     require_contains_all(
         &mut errors,
-        &monorepo_root.join("flare-im-core/flare-api-gateway/src/interface/http/router.rs"),
+        &monorepo_root.join("flare-core-server/flare-api-gateway/src/interface/http/router.rs"),
         "api gateway presence device routes",
         &[
             "/users/{user_id}/devices",
@@ -489,7 +489,7 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
         &mut errors,
         // manager.rs 早已拆成 manager/ 目录（mod / ops / lifecycle / trait_impl / tests）。
         // 扇出这几个标记落在 trait_impl.rs 里。用户索引按（租户，用户）即 DeviceOwner 建立。
-        &monorepo_root.join("flare-core/src/server/connection/manager/trait_impl.rs"),
+        &monorepo_root.join("flare-transport/src/server/connection/manager/trait_impl.rs"),
         "transport active multi-device fanout",
         &[
             "async fn send_to_user",

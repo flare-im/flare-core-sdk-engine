@@ -5,16 +5,16 @@ English · **[中文](README.zh-CN.md)**
 > ## ⚠ Clone this next to its sibling repos
 
 This crate depends on `flare-core`, `flare-proto` and `flare-grpc-proto` by **path**
-(`../flare-core`, …). Cloning this repository on its own does not build — the failure
+(`../flare-transport`, …). Cloning this repository on its own does not build — the failure
 happens in `cargo metadata`, before it ever reaches your code, so the error names an
 internal workspace member and says nothing about the real cause.
 
 ```bash
 mkdir flare && cd flare
-git clone https://github.com/flare-im/flare-core.git
-git clone https://github.com/flare-im/flare-proto.git
-git clone https://github.com/flare-im/flare-grpc-proto.git
-git clone https://github.com/flare-im/flare-im-core-sdk.git
+git clone https://github.com/flare-im/flare-transport.git
+git clone https://github.com/flare-im/flare-protocol.git
+git clone https://github.com/flare-im/flare-protocol-grpc.git
+git clone https://github.com/flare-im/flare-core-sdk-engine.git
 cd flare-im-core-sdk && cargo check
 ```
 
@@ -32,7 +32,7 @@ cd flare-im-core-sdk && cargo check
 > - **`HttpHookTokenValidator`** — POSTs the token to your own endpoint. **This
 >   is the entry point for wiring in your own user system.**
 >
-> Business rules work the same way: `flare-im-core/crates/flare-im-hooks`
+> Business rules work the same way: `flare-core-server/crates/flare-im-hooks`
 > exposes 9 extension points (PreSend / PostSend / Delivery / Recall /
 > MessageRead / MessageReaction / ConversationLifecycle / ConversationMember /
 > GetConversationParticipants).
@@ -100,7 +100,7 @@ brew install protobuf
 
 ## Quick start
 
-> Client apps must not mint tokens: set `SdkConfig::auth.token_endpoint` (builder `auth_token_endpoint`) so the SDK issues and refreshes via the gateway's `/api/v1/auth/tokens`, or pass a token issued by your backend. `generate_core_token` stays only for server-side tooling and tests (see flare-im-core/docs/AUTH-TOKEN-ISSUANCE.md).
+> Client apps must not mint tokens: set `SdkConfig::auth.token_endpoint` (builder `auth_token_endpoint`) so the SDK issues and refreshes via the gateway's `/api/v1/auth/tokens`, or pass a token issued by your backend. `generate_core_token` stays only for server-side tooling and tests (see flare-core-server/docs/AUTH-TOKEN-ISSUANCE.md).
 
 ```rust
 use flare_im_core_sdk::prelude::*;
@@ -235,13 +235,13 @@ rtk cargo clippy --workspace --all-targets --all-features -- -D warnings
 ## Server integration testing
 
 The local full-stack server is started by
-`../flare-im-core/scripts/start_server.sh` and can be checked with
-`../flare-im-core/scripts/check_services.sh`. The current live-gateway E2E needs
+`../flare-core-server/scripts/start_server.sh` and can be checked with
+`../flare-core-server/scripts/check_services.sh`. The current live-gateway E2E needs
 to be rebuilt on top of `SocketTransport` / `PacketSender` / the typed API; do
 not restore the old `memory://local` route-facade tests.
 
 ```bash
-rtk bash ../flare-im-core/scripts/check_services.sh
+rtk bash ../flare-core-server/scripts/check_services.sh
 ```
 
 ## License
@@ -255,7 +255,7 @@ its repository.
 
 | What you want | Where to go |
 |---|---|
-| **Run it in five minutes** | [QUICKSTART](https://github.com/flare-im/flare-im-core-server/blob/main/QUICKSTART.md) — start the server, hand-sign a token, get a call through, **no self-built user system required** |
+| **Run it in five minutes** | [QUICKSTART](https://github.com/flare-im/flare-core-server/blob/main/QUICKSTART.md) — start the server, hand-sign a token, get a call through, **no self-built user system required** |
 | Wire in your own user system | Implement `TokenValidator` (`CoreJwtTokenValidator` for local verification / `HttpHookTokenValidator` to call your endpoint) |
 | Add your own business rules | The 9 `flare-im-hooks` extension points: PreSend / PostSend / Delivery / Recall / MessageRead / MessageReaction / ConversationLifecycle / ConversationMember / GetConversationParticipants |
 | Build a UI | [`@flare-im/vue-ui`](https://www.npmjs.com/package/@flare-im/vue-ui) — 107 components, one contract consistent across four platforms |
@@ -275,7 +275,7 @@ data residency / SLA support.
 Inquiries: `flare1522@163.com`
 
 > For the boundary and its immutable guarantees, see
-> [GOVERNANCE](https://github.com/flare-im/flare-im-core-server/blob/main/GOVERNANCE.md).
+> [GOVERNANCE](https://github.com/flare-im/flare-core-server/blob/main/GOVERNANCE.md).
 > In short: **what is already open-sourced will not be taken back, and the auth
 > and hooks contracts stay open forever — they will never be crippled to force
 > payment.**

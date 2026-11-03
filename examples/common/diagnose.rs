@@ -38,7 +38,7 @@ pub fn hint_for(err: &str) -> Option<&'static str> {
     {
         return Some(
             "握手被拒，通常是签名密钥或 issuer 与服务端不一致。\n\
-             \x20 密钥取自 flare-im-core/logs/.dev-token-secret（start_server.sh 生成），\n\
+             \x20 密钥取自 flare-core-server/logs/.dev-token-secret（start_server.sh 生成），\n\
              \x20 issuer 需与 config/services/api-gateway.toml 里的 token_issuer 相同。",
         );
     }

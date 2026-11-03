@@ -1,6 +1,6 @@
 # Notification 分发基础设施（Core SDK）
 
-> 完整方案与验收清单：[`flare-social/docs/NOTIFICATION_DISPATCH_REFACTOR.md`](https://github.com/flare-im/flare-social-server/blob/main/docs/NOTIFICATIONS.md)（**已实施**）
+> 完整方案与验收清单：[`flare-social-server/docs/NOTIFICATION_DISPATCH_REFACTOR.md`](https://github.com/flare-im/flare-social-server/blob/main/docs/NOTIFICATIONS.md)（**已实施**）
 
 ## 终态摘要
 

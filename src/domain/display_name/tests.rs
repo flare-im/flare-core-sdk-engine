@@ -59,7 +59,7 @@ struct ConversationCase {
 /// The shared vectors live in the client SDK spec next to this repository.
 fn vectors() -> Vectors {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../flare-im-core-client-sdk/sdk-spec/golden/display-name-projection.json");
+        .join("../flare-core-sdk/sdk-spec/golden/display-name-projection.json");
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     serde_json::from_str(&text).unwrap_or_else(|error| panic!("decode {}: {error}", path.display()))

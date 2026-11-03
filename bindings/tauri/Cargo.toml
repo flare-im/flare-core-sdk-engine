@@ -12,7 +12,7 @@ anyhow = "1.0"
 base64 = "0.22"
 flare-im-core-sdk-bindings-runtime = { version = "1.0.3", path = "../shared" }
 flare-im-core-sdk = { version = "1.0.3", path = "../..", features = ["lifecycle-sqlite"] }
-flare-proto = { version = "2.0.0", path = "../../../flare-proto" }
+flare-proto = { version = "2.0.0", path = "../../../flare-protocol" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tauri = { version = "2.10.1", features = ["macos-private-api"] }

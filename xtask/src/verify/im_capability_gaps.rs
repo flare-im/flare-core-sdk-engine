@@ -6,8 +6,8 @@ use crate::{emit_errors, fail};
 pub(crate) fn verify_e2ee_contract_gate(root: &Path) -> Result<()> {
     let mut errors = Vec::new();
     let monorepo_root = root.parent().unwrap_or_else(|| Path::new(".."));
-    let sdk_root = monorepo_root.join("flare-im-core-sdk");
-    let server_root = monorepo_root.join("flare-im-core");
+    let sdk_root = monorepo_root.join("flare-core-sdk-engine");
+    let server_root = monorepo_root.join("flare-core-server");
 
     require_contains_all(
         &mut errors,
@@ -98,8 +98,8 @@ pub(crate) fn verify_e2ee_contract_gate(root: &Path) -> Result<()> {
 pub(crate) fn verify_channel_capability_gate(root: &Path) -> Result<()> {
     let mut errors = Vec::new();
     let monorepo_root = root.parent().unwrap_or_else(|| Path::new(".."));
-    let sdk_root = monorepo_root.join("flare-im-core-sdk");
-    let server_root = monorepo_root.join("flare-im-core");
+    let sdk_root = monorepo_root.join("flare-core-sdk-engine");
+    let server_root = monorepo_root.join("flare-core-server");
 
     require_contains_all(
         &mut errors,
@@ -176,8 +176,8 @@ pub(crate) fn verify_channel_capability_gate(root: &Path) -> Result<()> {
 pub(crate) fn verify_media_processing_gate(root: &Path) -> Result<()> {
     let mut errors = Vec::new();
     let monorepo_root = root.parent().unwrap_or_else(|| Path::new(".."));
-    let sdk_root = monorepo_root.join("flare-im-core-sdk");
-    let server_root = monorepo_root.join("flare-im-core");
+    let sdk_root = monorepo_root.join("flare-core-sdk-engine");
+    let server_root = monorepo_root.join("flare-core-server");
 
     require_contains_all(
         &mut errors,
@@ -257,7 +257,7 @@ pub(crate) fn verify_media_processing_gate(root: &Path) -> Result<()> {
     );
     require_contains_all(
         &mut errors,
-        &monorepo_root.join("flare-proto/proto/message_content.proto"),
+        &monorepo_root.join("flare-protocol/proto/message_content.proto"),
         "media proto blurhash contract",
         &["string blurhash = 10"],
     );

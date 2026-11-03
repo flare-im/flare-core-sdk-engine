@@ -19,7 +19,7 @@ crate-type = ["cdylib", "staticlib"]
 flare-im-core-sdk-bindings-runtime = { version = "1.0.3", path = "../shared" }
 flare-im-core-sdk = { version = "1.0.3", path = "../.." }
 flare-im-core-sdk-storage-sqlite = { version = "1.0.3", path = "../../storage/sqlite" }
-flare-proto = { version = "2.0.0", path = "../../../flare-proto" }
+flare-proto = { version = "2.0.0", path = "../../../flare-protocol" }
 uniffi = "0.28"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 prost = "0.14"

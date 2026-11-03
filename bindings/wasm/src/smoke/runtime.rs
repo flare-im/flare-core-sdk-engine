@@ -2,7 +2,7 @@
 //
 // This module intentionally lives behind `lib.rs` so the wasm binding entry
 // stays thin. Do not add durable IM behavior here. Add shared behavior under
-// `flare-im-core-sdk/src`, then route the wasm binding to that core facade.
+// `flare-core-sdk-engine/src`, then route the wasm binding to that core facade.
 
 use flare_im_core_sdk::content::message_elem::{
     CustomElem, Elem, EmojiElem, MentionElem, StickerElem, TextElem,
