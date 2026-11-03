@@ -159,7 +159,11 @@ fn verify_catalog(plugin_root: &Path, manifests: &[PluginManifestFile]) -> Resul
         if entry.manifest_path.trim().is_empty() || entry.source_path.trim().is_empty() {
             bail!("catalog entry {} paths must not be empty", entry.id);
         }
-        let expected = normalize_relative_path(plugin_root, &item.path)?;
+        let expected = if item.path == call_manifest_path(plugin_root)? {
+            CALL_MANIFEST.to_owned()
+        } else {
+            normalize_relative_path(plugin_root, &item.path)?
+        };
         if entry.manifest_path != expected {
             bail!(
                 "catalog entry {} manifestPath {} does not match {}",
@@ -249,6 +253,7 @@ fn sha256_file(path: &Path) -> Result<String> {
 fn load_plugin_manifests(plugin_root: &Path) -> Result<Vec<PluginManifestFile>> {
     let mut paths = Vec::new();
     collect_plugin_manifest_paths(plugin_root, &mut paths)?;
+    paths.push(call_manifest_path(plugin_root)?);
     paths.sort();
     paths
         .into_iter()
@@ -312,7 +317,17 @@ fn plugin_root(sdk_root: &Path) -> Result<PathBuf> {
     let repo_root = sdk_root
         .parent()
         .context("flare-im-core-sdk must live under repository root")?;
-    Ok(repo_root.join("flare-sdk-plugin"))
+    Ok(repo_root.join("flare-plugins-commercial/sdk"))
+}
+
+const CALL_MANIFEST: &str = "flare-plugin-call/sdk/plugin.json";
+
+fn call_manifest_path(plugin_root: &Path) -> Result<PathBuf> {
+    let workspace = plugin_root
+        .ancestors()
+        .nth(2)
+        .context("commercial plugin SDK must live at flare-plugins-commercial/sdk")?;
+    Ok(workspace.join(CALL_MANIFEST))
 }
 
 fn normalize_relative_path(root: &Path, path: &Path) -> Result<String> {

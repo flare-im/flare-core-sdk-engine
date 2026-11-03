@@ -16,13 +16,13 @@ pub(crate) fn run(root: &Path, command: &str) -> Result<()> {
     let plugin_root = sdk_root
         .parent()
         .context("flare-im-core-sdk must live under the monorepo root")?
-        .join("flare-sdk-plugin");
+        .join("flare-plugins-commercial/sdk");
     if !plugin_root
         .join("flare-sdk-plugin-contract-codegen")
         .is_dir()
     {
         bail!(
-            "plugin {command} needs the flare-sdk-plugin checkout at {}; the SDK itself builds and tests without it",
+            "plugin {command} needs the commercial plugin SDK checkout at {}; the SDK itself builds and tests without it",
             plugin_root.display()
         );
     }

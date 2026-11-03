@@ -6,7 +6,7 @@ use crate::{emit_errors, fail};
 pub(crate) fn verify_plugin_marketplace_gate(root: &Path) -> Result<()> {
     let mut errors = Vec::new();
     let monorepo_root = root.parent().unwrap_or_else(|| Path::new(".."));
-    let plugin_root = monorepo_root.join("flare-sdk-plugin");
+    let plugin_root = monorepo_root.join("flare-plugins-commercial/sdk");
     let sdk_root = monorepo_root.join("flare-core-sdk-engine");
 
     require_contains_all(
@@ -34,7 +34,7 @@ pub(crate) fn verify_plugin_marketplace_gate(root: &Path) -> Result<()> {
             "\"distribution\": \"composition-time\"",
             "\"runtimeInstall\": \"not-supported\"",
             "\"manifestSha256\"",
-            "\"manifestPath\": \"flare-sdk-plugin-call/plugin.json\"",
+            "\"manifestPath\": \"flare-plugin-call/sdk/plugin.json\"",
             "\"manifestPath\": \"flare-sdk-plugin-ai/plugin.json\"",
         ],
     );
@@ -78,7 +78,7 @@ pub(crate) fn verify_plugin_marketplace_gate(root: &Path) -> Result<()> {
 
     require_contains_all(
         &mut errors,
-        &plugin_root.join("flare-sdk-plugin-call/plugin.json"),
+        &monorepo_root.join("flare-plugin-call/sdk/plugin.json"),
         "call plugin manifest",
         &[
             "\"id\": \"sdk.plugin.call\"",

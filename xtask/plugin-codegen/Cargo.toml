@@ -19,7 +19,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0"
 flare-im-core-sdk = { path = "../.." }
-flare-sdk-plugin-contract-codegen = { path = "../../../flare-sdk-plugin/flare-sdk-plugin-contract-codegen" }
+flare-sdk-plugin-contract-codegen = { path = "../../../flare-plugins-commercial/sdk/flare-sdk-plugin-contract-codegen" }
 # The derive expands to paths under `serde`, so the crate has to be a direct dependency.
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
