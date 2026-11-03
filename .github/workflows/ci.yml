@@ -366,13 +366,6 @@ jobs:
           clone https://github.com/flare-im/flare-core-examples.git "../flare-core-examples"
           # e2ee / 多端状态两道要读服务端源码（推送可见性、扇出实现）。
           clone https://github.com/flare-im/flare-core-server.git "../flare-core-server"
-          # 五个示例 app 各自是独立仓，被 flare-im-core-client-sdk 的 .gitignore 刻意
-          # 排除（不排除的话会变成 mode 160000 的 gitlink，而那个仓没有 .gitmodules，
-          # 克隆方只会拿到空目录）。多端状态门禁要读其中 flutter 那个的一致性清单测试，
-          # 所以单独拉进它该在的位置——本机有整个工作区所以一直没露馅，
-          # 全新 checkout 上这道门禁就直接报「文件缺失」。
-          clone https://github.com/flare-im/flare-core-flutter-demo.git \
-            "../flare-core-sdk/examples/flare-core-flutter-app"
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2

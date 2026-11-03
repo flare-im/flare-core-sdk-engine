@@ -1,11 +1,11 @@
 # Flutter 打包说明
 
-本文说明如何将 `flare-core-sdk-engine/bindings/c` 生成的 C ABI 产物打包给 `flare-core-sdk/examples/flare-core-flutter-app` 使用。
+本文说明如何将 `flare-core-sdk-engine/bindings/c` 生成的 C ABI 产物打包给 `flare-core-examples/apps/flare-core-flutter-app` 使用。
 
 Flutter 示例工程位于：
 
 ```bash
-flare-core-sdk/examples/flare-core-flutter-app
+flare-core-examples/apps/flare-core-flutter-app
 ```
 
 Dart 侧通过 `dart:ffi` 加载 `libflare_im_core_sdk_ffi`：
@@ -123,7 +123,7 @@ cargo xtask build ios-verify
 Flutter 侧静态检查：
 
 ```bash
-cd flare-core-sdk/examples/flare-core-flutter-app
+cd flare-core-examples/apps/flare-core-flutter-app
 flutter analyze
 ```
 
