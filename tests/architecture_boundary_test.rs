@@ -559,8 +559,7 @@ fn social_production_code_uses_spi_for_core_extension_boundaries() {
         root.join("flare-social-server/flare-social-sdk/src"),
     ]
     .into_iter()
-    .find(|src| src.is_dir())
-    else {
+    .find(|src| src.is_dir()) else {
         return;
     };
 
