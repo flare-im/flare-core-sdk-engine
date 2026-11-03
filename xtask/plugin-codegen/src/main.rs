@@ -164,21 +164,15 @@ fn verify_catalog(plugin_root: &Path, manifests: &[PluginManifestFile]) -> Resul
         } else {
             normalize_relative_path(commercial_root(plugin_root)?, &item.path)?
         };
-        // Older commercial catalogs used paths relative to sdk/. Allow those
-        // only for manifests discovered under sdk/ during the rollout.
-        let catalog_path = if entry.manifest_path == expected {
-            expected.as_str()
-        } else if expected.strip_prefix("sdk/") == Some(entry.manifest_path.as_str()) {
-            entry.manifest_path.as_str()
-        } else {
+        if entry.manifest_path != expected {
             bail!(
                 "catalog entry {} manifestPath {} does not match {}",
                 entry.id,
                 entry.manifest_path,
                 expected
             );
-        };
-        let Some(expected_source_path) = catalog_path.strip_suffix("/plugin.json") else {
+        }
+        let Some(expected_source_path) = expected.strip_suffix("/plugin.json") else {
             bail!(
                 "catalog entry {} manifestPath must point to plugin.json",
                 entry.id
@@ -258,7 +252,6 @@ fn sha256_file(path: &Path) -> Result<String> {
 
 fn load_plugin_manifests(plugin_root: &Path) -> Result<Vec<PluginManifestFile>> {
     let mut paths = Vec::new();
-    collect_plugin_manifest_paths(plugin_root, &mut paths)?;
     let commercial = commercial_root(plugin_root)?;
     let plugins = commercial.join("plugins");
     if optional_plugin_directory(&plugins)? {
@@ -530,46 +523,51 @@ mod tests {
     }
 
     #[test]
-    fn verifies_both_commercial_layouts_and_the_separate_call_repository() {
+    fn verifies_vertical_commercial_layout_and_call_without_scanning_shared_sdk() {
         let fixture = Fixture::new();
-        let legacy = fixture.commercial("sdk/legacy/plugin.json");
+        fixture.manifest(
+            &fixture.commercial("sdk/legacy/plugin.json"),
+            "flare.legacy",
+        );
         let poll = fixture.commercial("plugins/poll/sdk/plugin.json");
         let call = fixture.call();
-        fixture.manifest(&legacy, "flare.legacy");
         fixture.manifest(&poll, "flare.poll");
         fixture.catalog(&[
-            (&legacy, "flare.legacy", "sdk/legacy/plugin.json"),
             (&poll, "flare.poll", "plugins/poll/sdk/plugin.json"),
-            (&call, "flare.call", CALL_MANIFEST),
-        ]);
-        assert_eq!(verify(&fixture.sdk()).unwrap().len(), 3);
-    }
-
-    #[test]
-    fn verifies_previous_sdk_relative_catalog_during_rollout() {
-        let fixture = Fixture::new();
-        let legacy = fixture.commercial("sdk/legacy/plugin.json");
-        let call = fixture.call();
-        fixture.manifest(&legacy, "flare.legacy");
-        fixture.catalog(&[
-            (&legacy, "flare.legacy", "legacy/plugin.json"),
             (&call, "flare.call", CALL_MANIFEST),
         ]);
         assert_eq!(verify(&fixture.sdk()).unwrap().len(), 2);
     }
 
     #[test]
-    fn rejects_duplicate_ids_across_the_two_commercial_layouts() {
+    fn rejects_catalog_entries_pointing_to_the_legacy_sdk_layout() {
+        let fixture = Fixture::new();
+        let legacy = fixture.commercial("sdk/legacy/plugin.json");
+        let call = fixture.call();
+        fixture.manifest(&legacy, "flare.legacy");
+        fixture.catalog(&[
+            (&legacy, "flare.legacy", "sdk/legacy/plugin.json"),
+            (&call, "flare.call", CALL_MANIFEST),
+        ]);
+        let error = verify(&fixture.sdk()).err().unwrap().to_string();
+        assert!(
+            error.contains("catalog references missing plugin manifest flare.legacy"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_ids_across_commercial_plugins() {
         let fixture = Fixture::new();
         let call = fixture.call();
-        let legacy = fixture.commercial("sdk/legacy/plugin.json");
-        fixture.manifest(&legacy, "flare.poll");
+        let poll = fixture.commercial("plugins/poll/sdk/plugin.json");
+        fixture.manifest(&poll, "flare.poll");
         fixture.manifest(
-            &fixture.commercial("plugins/poll/sdk/plugin.json"),
+            &fixture.commercial("plugins/duplicate/sdk/plugin.json"),
             "flare.poll",
         );
         fixture.catalog(&[
-            (&legacy, "flare.poll", "legacy/plugin.json"),
+            (&poll, "flare.poll", "plugins/poll/sdk/plugin.json"),
             (&call, "flare.call", CALL_MANIFEST),
         ]);
         let error = verify(&fixture.sdk()).err().unwrap().to_string();
@@ -604,7 +602,8 @@ mod tests {
     fn rejects_manifest_symlinks_that_leave_a_plugin_repository() {
         let fixture = Fixture::new();
         let call = fixture.call();
-        let manifest = fixture.commercial("sdk/linked/plugin.json");
+        let manifest = fixture.commercial("plugins/linked/sdk/plugin.json");
+        fixture.catalog(&[(&call, "flare.call", CALL_MANIFEST)]);
         fs::create_dir_all(manifest.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&call, &manifest).unwrap();
         let error = verify(&fixture.sdk()).err().unwrap().to_string();
