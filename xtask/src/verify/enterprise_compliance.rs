@@ -27,8 +27,9 @@ pub(crate) fn verify_enterprise_compliance_gate(root: &Path) -> Result<()> {
     );
     require_contains_all(
         &mut errors,
-        &monorepo_root
-            .join("flare-core-server/flare-admin-gateway/src/interface/http/admin_auth_middleware.rs"),
+        &monorepo_root.join(
+            "flare-core-server/flare-admin-gateway/src/interface/http/admin_auth_middleware.rs",
+        ),
         "admin gateway audit middleware",
         // 中间件已改为验网关签发的 Staff 签名上下文（x-flare-ctx）：只认一份、只认 Staff、
         // 必须落到一个具体应用；权限与租户由路由表加签名里的权限决定，伪造的身份头一律

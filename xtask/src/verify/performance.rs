@@ -16,7 +16,7 @@ pub(crate) fn verify_performance_gate(root: &Path) -> Result<()> {
         "performance baseline doc",
         &[
             "flare-core",
-            "flare-im-core-sdk",
+            "flare-core-sdk-engine",
             "send→render",
             "cargo bench",
         ],

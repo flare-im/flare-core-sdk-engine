@@ -466,9 +466,8 @@ mod tests {
     /// shared golden lays it out.
     #[test]
     fn send_failed_event_wire_matches_the_shared_golden() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../../flare-core-sdk/sdk-spec/golden/events/send_failed_with_error.json",
-        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../flare-core-sdk/sdk-spec/golden/events/send_failed_with_error.json");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
         let golden: Value = flare_im_core_sdk::serde_json::from_str(&text).expect("golden json");
