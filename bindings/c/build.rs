@@ -37,6 +37,7 @@ fn main() {
         .with_config(
             cbindgen::Config::from_file(&config_file).expect("Failed to read cbindgen.toml"),
         )
+        .with_only_target_dependencies(true)
         .generate()
     {
         Ok(bindings) => {
