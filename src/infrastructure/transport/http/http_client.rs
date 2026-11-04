@@ -848,15 +848,14 @@ pub struct HttpClient {
 impl HttpClient {
     #[cfg(not(target_arch = "wasm32"))]
     fn build_reqwest_client(tls: Option<&CoreTlsConfig>) -> (reqwest::Client, Option<String>) {
-        const HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
-        const HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;
+        // 时限与 wasm 端共用一份（`super::HTTP_REQUEST_TIMEOUT`），两端行为不再各自漂移。
         let mut builder = reqwest::Client::builder()
             .no_proxy()
             // Auth and revoke-only capabilities are endpoint-bound. Core APIs
             // must return an explicit final response, never forward a write body.
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECS))
-            .timeout(Duration::from_secs(HTTP_REQUEST_TIMEOUT_SECS));
+            .connect_timeout(super::HTTP_CONNECT_TIMEOUT)
+            .timeout(super::HTTP_REQUEST_TIMEOUT);
         let mut tls_config_error = None;
         if let Some(tls) = tls
             && tls.requires_custom_client_tls()

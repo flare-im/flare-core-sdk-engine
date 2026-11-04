@@ -82,6 +82,22 @@
         "null"
       ]
     },
+    "appBuild": {
+      "description": "宿主应用构建号（`appBuild`，单调整数），服务端版本比较只用它。",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "appVersion": {
+      "description": "宿主应用版本名（`appVersion`，如 `3.2.1`），CONNECT 时作为 `app_version` 上报。",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "auth": {
       "anyOf": [
         {
@@ -126,6 +142,13 @@
     },
     "deviceId": {
       "description": "Stable client device id for multi-device delivery and sync cursors.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "distribution": {
+      "description": "分发渠道（`distribution`）：`appstore` / `play` / `appgallery` / `direct` / `web` / `tauri` 等。",
       "type": [
         "string",
         "null"

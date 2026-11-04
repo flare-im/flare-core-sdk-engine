@@ -1,14 +1,68 @@
 //! Browser HTTP transport via `fetch` (wasm32).
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::time::Duration;
 
 use js_sys::Uint8Array;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{Headers, Request, RequestInit, RequestMode, Response};
+use web_sys::{AbortController, Headers, Request, RequestInit, RequestMode, Response, Window};
 
-use super::http_error_from_response_status;
+use super::{HTTP_REQUEST_TIMEOUT, http_error_from_response_status, request_timed_out};
 use crate::shared::error::{FlareError, Result};
+
+/// `fetch` 的总时限：到点由 `AbortController` 中止请求（连同读响应体）。drop 时撤销定时器。
+///
+/// 浏览器的 `fetch` 自己不超时：网络卡住（切网、弱网、半开的 TCP）时请求会一直挂着，等它的
+/// 调用方以及串行执行的 invoke 链都跟着卡死。原生端由 reqwest 的总时限兜住，这里补齐同一个时限。
+struct FetchDeadline {
+    window: Window,
+    handle: i32,
+    fired: Rc<Cell<bool>>,
+    _on_timeout: Closure<dyn FnMut()>,
+}
+
+impl FetchDeadline {
+    fn arm(window: &Window, init: &RequestInit, after: Duration) -> Result<Self> {
+        let controller = AbortController::new()
+            .map_err(|e| FlareError::system(format!("http abort controller init failed: {e:?}")))?;
+        init.set_signal(Some(&controller.signal()));
+        let fired = Rc::new(Cell::new(false));
+        let on_timeout = {
+            let fired = fired.clone();
+            Closure::<dyn FnMut()>::new(move || {
+                fired.set(true);
+                controller.abort();
+            })
+        };
+        let millis = i32::try_from(after.as_millis()).unwrap_or(i32::MAX);
+        let handle = window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                on_timeout.as_ref().unchecked_ref(),
+                millis,
+            )
+            .map_err(|e| FlareError::system(format!("http request timer failed: {e:?}")))?;
+        Ok(Self {
+            window: window.clone(),
+            handle,
+            fired,
+            _on_timeout: on_timeout,
+        })
+    }
+
+    fn fired(&self) -> bool {
+        self.fired.get()
+    }
+}
+
+impl Drop for FetchDeadline {
+    fn drop(&mut self) {
+        self.window.clear_timeout_with_handle(self.handle);
+    }
+}
 
 pub fn build_url(base_url: &str, path: &str) -> String {
     if path.starts_with("http://") || path.starts_with("https://") {
@@ -149,7 +203,22 @@ async fn fetch_bytes_with_headers_local(
         init.set_body(array.as_ref());
     }
 
-    let request = Request::new_with_str_and_init(&url, &init)
+    let deadline = FetchDeadline::arm(&window, &init, HTTP_REQUEST_TIMEOUT)?;
+    match fetch_and_read(&window, &init, method, &url).await {
+        // 到点被中止的请求，fetch / 读响应体报的是 AbortError；按超时上报，与原生超时同类。
+        Err(_) if deadline.fired() => Err(request_timed_out(method, &url, HTTP_REQUEST_TIMEOUT)),
+        outcome => outcome,
+    }
+}
+
+/// 发出请求并读完响应体；总时限由调用方的 [`FetchDeadline`] 负责。
+async fn fetch_and_read(
+    window: &Window,
+    init: &RequestInit,
+    method: &str,
+    url: &str,
+) -> Result<(Vec<u8>, HashMap<String, String>)> {
+    let request = Request::new_with_str_and_init(url, init)
         .map_err(|e| FlareError::system(format!("http request init failed: {e:?}")))?;
     let resp_value = JsFuture::from(window.fetch_with_request(&request))
         .await

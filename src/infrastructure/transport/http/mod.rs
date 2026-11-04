@@ -16,6 +16,23 @@ pub use media_dto::{
 
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
+/// 单次 HTTP 请求的总时限（从发起到读完响应体），原生与 wasm 共用。
+pub(crate) const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// 原生端建连时限。浏览器 `fetch` 没有独立的建连阶段，只受 [`HTTP_REQUEST_TIMEOUT`] 约束。
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 请求超过总时限被放弃时的错误（wasm 用；原生由 reqwest 报超时，经 `send_failure` 得到同一类）。
+///
+/// 与原生一致归为系统错误、不带 `NetworkUnreachable`：超时分不清服务端是否已经处理，调用方
+/// 不能把它当成「肯定没发出去」去重发一次性请求（刷新令牌重放会吊销该用户全部会话）。
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+pub(crate) fn request_timed_out(method: &str, url: &str, after: std::time::Duration) -> FlareError {
+    FlareError::system(format!(
+        "http request failed: {method} {url}: timed out after {after:?}"
+    ))
+}
+
 /// SDK 统一 HTTP 包装响应（与 gateway ApiResponse 对齐）
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HttpApiResponse<T> {
@@ -211,5 +228,38 @@ mod tests {
             unwrap_optional_api_response(response, "get optional").unwrap(),
             Some("present".to_string())
         );
+    }
+
+    /// wasm 端的请求超时与原生超时归为同一类错误：同为系统错误、没有错误码，
+    /// 尤其不是 `NetworkUnreachable`（那表示「肯定没发出去」，调用方会放心重发）。
+    ///
+    /// 原生一侧用真实的 reqwest 超时：本机监听但从不应答的端口（内核完成握手，请求发出后
+    /// 永远等不到响应），客户端总时限 200 ms。
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn wasm_request_timeout_maps_like_a_native_timeout() {
+        use super::http_client::send_failure;
+        use super::{HTTP_REQUEST_TIMEOUT, request_timed_out};
+        use crate::shared::error::FlareError;
+
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("bind silent listener");
+        let url = format!("http://{}/api/v1/ping", silent.local_addr().unwrap());
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap();
+        let native_error = client.get(&url).send().await.expect_err("never answered");
+        assert!(native_error.is_timeout(), "{native_error}");
+        let native = send_failure(native_error);
+
+        let wasm = request_timed_out("GET", &url, HTTP_REQUEST_TIMEOUT);
+
+        assert!(matches!(native, FlareError::System(_)), "{native:?}");
+        assert!(matches!(wasm, FlareError::System(_)), "{wasm:?}");
+        assert_eq!(wasm.code(), native.code());
+        assert_ne!(wasm.code(), Some(ErrorCode::NetworkUnreachable));
+        assert!(wasm.reason().contains("timed out"), "{}", wasm.reason());
+        drop(silent);
     }
 }

@@ -7,9 +7,13 @@ public final class FfiNativeBridge: NativeBridgeProtocol, @unchecked Sendable {
     private var handle: FlareHandle = 0
     private var released = false
     private var contractVersionChecked = false
+    /// `sdk.init` 时补进配置的应用版本信息（宿主在请求里显式给的值优先）。
+    private let appInfo: FlareAppInfo
 
-    public init(libraryPath: String? = nil) throws {
+    /// `appInfo` 默认从 `Bundle.main` 自动采集；扩展、测试等 bundle 不是宿主应用时可显式传入。
+    public init(libraryPath: String? = nil, appInfo: FlareAppInfo = .fromBundle()) throws {
         bindings = try FlareNativeBindings(libraryPath: libraryPath)
+        self.appInfo = appInfo
     }
 
     public func invoke(_ descriptor: NativeCallDescriptor, request: AnySendable?) async throws -> AnySendable {
@@ -79,7 +83,7 @@ public final class FfiNativeBridge: NativeBridgeProtocol, @unchecked Sendable {
             released = true
             return nil
         case "sdk.init":
-            return try await callWithJson(bindings.sdkInit, request?.value)
+            return try await callWithJson(bindings.sdkInit, appInfo.fill(request?.value))
         case "sdk.uninit":
             return try await call0(bindings.sdkUninit)
         case "sdk.login":

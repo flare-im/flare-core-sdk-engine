@@ -25,6 +25,8 @@ internal typealias NativeEventSink = (Int, Map<String, Any?>) -> Unit
  */
 class JniNativeBridge(
     private val libraryName: String = "flare_im_core_android_sdk_jni",
+    /** `sdk.init` 时补进配置的应用版本信息（宿主在请求里显式给的值优先），见 [FlareAppInfo]。 */
+    private val appInfo: FlareAppInfo? = null,
 ) : NativeBridge {
     private var handle: Long = 0
     private var released: Boolean = false
@@ -171,7 +173,11 @@ class JniNativeBridge(
                     val op = map["op"]?.toString() ?: descriptor.dispatchOp ?: ""
                     nativeMessageDispatchJson(requireHandle(), op, encodeJson(request), contextId)
                 }
-                descriptor.cApi == "flare_sdk_init" -> nativeSdkInit(requireHandle(), encodeJson(request), contextId)
+                descriptor.cApi == "flare_sdk_init" -> nativeSdkInit(
+                    requireHandle(),
+                    encodeJson(appInfo?.fill(request) ?: request),
+                    contextId,
+                )
                 descriptor.cApi == "flare_sdk_uninit" -> nativeSdkUninit(requireHandle(), contextId)
                 descriptor.cApi == "flare_sdk_login" -> nativeSdkLogin(
                     requireHandle(),

@@ -31,6 +31,12 @@ pub struct SdkConfigOverlay {
     pub tenant_id: Option<String>,
     /// Stable client device id for multi-device delivery and sync cursors.
     pub device_id: Option<String>,
+    /// 宿主应用版本名（`appVersion`，如 `3.2.1`），CONNECT 时作为 `app_version` 上报。
+    pub app_version: Option<String>,
+    /// 宿主应用构建号（`appBuild`，单调整数），服务端版本比较只用它。
+    pub app_build: Option<u64>,
+    /// 分发渠道（`distribution`）：`appstore` / `play` / `appgallery` / `direct` / `web` / `tauri` 等。
+    pub distribution: Option<String>,
     pub connect_timeout_secs: Option<u64>,
     pub reconnect_interval_secs: Option<u64>,
     pub max_reconnect_attempts: Option<u32>,
@@ -147,6 +153,15 @@ pub fn merge_sdk_config_onto(
         }
         if o.device_id.is_some() {
             config.device_id = o.device_id.clone();
+        }
+        if o.app_version.is_some() {
+            config.app_version = o.app_version.clone();
+        }
+        if o.app_build.is_some() {
+            config.app_build = o.app_build;
+        }
+        if o.distribution.is_some() {
+            config.distribution = o.distribution.clone();
         }
         if o.connect_timeout_secs.is_some() {
             config.connect_timeout_secs = o.connect_timeout_secs;
@@ -336,6 +351,45 @@ mod tests {
         );
     }
     use super::*;
+
+    /// 应用版本三项走 camelCase JSON（各端 init 都这么传），overlay 显式给的值覆盖构建期配置，
+    /// 没给的项保留构建期配置，两边都没有就保持为空——绝不回退成假版本号。
+    #[test]
+    fn app_version_overlay_merges_onto_configured_config() {
+        let overlay: SdkConfigOverlay = serde_json::from_value(serde_json::json!({
+            "appVersion": "3.2.1",
+            "appBuild": 30201,
+            "distribution": "appstore"
+        }))
+        .expect("camelCase app version fields");
+        assert_eq!(overlay.app_version.as_deref(), Some("3.2.1"));
+        assert_eq!(overlay.app_build, Some(30201));
+        assert_eq!(overlay.distribution.as_deref(), Some("appstore"));
+
+        let configured = SdkConfig::builder()
+            .app_version("3.0.0")
+            .app_build(30000)
+            .distribution("direct")
+            .build();
+        let merged = merge_sdk_config_onto(configured.clone(), "ws://h/ws", Some(&overlay));
+        assert_eq!(merged.app_version.as_deref(), Some("3.2.1"));
+        assert_eq!(merged.app_build, Some(30201));
+        assert_eq!(merged.distribution.as_deref(), Some("appstore"));
+
+        let partial = SdkConfigOverlay {
+            app_build: Some(30202),
+            ..Default::default()
+        };
+        let merged = merge_sdk_config_onto(configured, "ws://h/ws", Some(&partial));
+        assert_eq!(merged.app_version.as_deref(), Some("3.0.0"));
+        assert_eq!(merged.app_build, Some(30202));
+        assert_eq!(merged.distribution.as_deref(), Some("direct"));
+
+        let unset = merge_sdk_config("ws://h/ws", Some(&SdkConfigOverlay::default()));
+        assert_eq!(unset.app_version, None);
+        assert_eq!(unset.app_build, None);
+        assert_eq!(unset.distribution, None);
+    }
 
     #[test]
     fn sdk_config_overlay_uses_canonical_camel_case_json() {

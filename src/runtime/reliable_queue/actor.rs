@@ -15,6 +15,7 @@ use crate::domain::{
     REASON_ORPHAN_RECOVERED, RetryDecision,
 };
 use crate::infrastructure::protocol::PacketSender;
+use crate::infrastructure::transport::socket::LinkProbe;
 use crate::kernel::event::{EventBus, MessageEvent, SdkEvent};
 use crate::kernel::{CurrentUserIdStore, ReliableSendQueuePort};
 use crate::model::IMMessage;
@@ -30,6 +31,49 @@ use crate::spi::metrics::{MetricLabel, MetricsRecorder};
 
 const ADAPTIVE_INITIAL_MAX_IN_FLIGHT: usize = 4;
 const ADAPTIVE_MIN_IN_FLIGHT: usize = 1;
+
+/// 帧交给传输层后这么久还没等到 SendAck，就怀疑连接已经半开，请求一次验活。
+///
+/// 正常往返远小于它；它又远短于 ACK 超时（默认 10 s）与心跳超时（前台 90 s），
+/// 半开连接能在下一次重发之前被戳穿。
+const SEND_STALL_PROBE_AFTER: Duration = Duration::from_secs(5);
+/// 两次验活至少相隔这么久：一批消息同时卡住只验一次，连接健康而服务端慢时也不会每条都验。
+/// 换了新连接（[`recover_pending_for_current_user`]）立即解除。
+const SEND_STALL_PROBE_MIN_INTERVAL: Duration = Duration::from_secs(30);
+
+/// 「发出去迟迟没回执」触发验活的去抖状态。
+#[derive(Debug, Default)]
+struct SendStallProbeGate {
+    /// 只看这之后发出的尝试：更早的帧要么走的是旧连接，要么已被上一次验活覆盖，
+    /// 它们没回执说明不了当前连接的死活。
+    since_ms: u64,
+    last_probe_ms: Option<u64>,
+}
+
+impl SendStallProbeGate {
+    fn should_probe(&self, now_ms: u64, sent_at_ms: impl IntoIterator<Item = u64>) -> bool {
+        if let Some(last) = self.last_probe_ms
+            && now_ms.saturating_sub(last) < SEND_STALL_PROBE_MIN_INTERVAL.as_millis() as u64
+        {
+            return false;
+        }
+        let stall_ms = SEND_STALL_PROBE_AFTER.as_millis() as u64;
+        sent_at_ms
+            .into_iter()
+            .any(|sent| sent >= self.since_ms && now_ms.saturating_sub(sent) >= stall_ms)
+    }
+
+    fn record_probe(&mut self, now_ms: u64) {
+        self.last_probe_ms = Some(now_ms);
+        self.since_ms = now_ms;
+    }
+
+    /// 新连接建立：旧连接上的尝试不再作数，去抖窗口清零。
+    fn on_new_connection(&mut self, now_ms: u64) {
+        self.last_probe_ms = None;
+        self.since_ms = now_ms;
+    }
+}
 
 /// 队列命令（仅通过此与队列通信）
 #[derive(Debug)]
@@ -106,11 +150,15 @@ struct QueueState {
     /// 退避期间不占发送窗口，也不会被 `try_send_next` 提前捡起。
     retry_backoff: HashMap<String, u32>,
     metrics: MetricsRecorder,
+    link_probe: Option<Arc<dyn LinkProbe>>,
+    stall_probe_gate: SendStallProbeGate,
 }
 
 struct InFlightSend {
     entry: PendingSendVo,
     deadline_ms: u64,
+    /// 本次尝试交给传输层（或收到服务端非终态回执）的时刻，判断「发出后多久没回执」用。
+    sent_at_ms: u64,
     /// 上一次发送尝试没能把帧交出去（未连接、写失败、发送超时）。连接恢复（
     /// [`recover_pending_for_current_user`]）时立即重发，不必等到 `deadline_ms`：长连接断开后
     /// 发送直接失败，不再由传输层自己重连，重连只走会话的重连监视器。
@@ -181,6 +229,19 @@ impl ReliableSendQueue {
     /// 构建队列并启动后台任务；收到 ack 需由调用方往 `on_ack` 注入。
     /// reader 与 writer 通常为同一实现体（如 SqlitePendingSendRepo）的两个 Arc。
     pub fn new(config: ReliableSendQueueConfig) -> Self {
+        Self::spawn(config, None)
+    }
+
+    /// 同 [`Self::new`]，另装一个验活出口：帧发出后迟迟等不到 SendAck 时请求对当前连接验活
+    /// （见 [`probe_link_if_send_stalled`]）。引擎建队列时用它；不装则不做这项检查。
+    pub fn with_link_probe(
+        config: ReliableSendQueueConfig,
+        link_probe: Arc<dyn LinkProbe>,
+    ) -> Self {
+        Self::spawn(config, Some(link_probe))
+    }
+
+    fn spawn(config: ReliableSendQueueConfig, link_probe: Option<Arc<dyn LinkProbe>>) -> Self {
         let ReliableSendQueueConfig {
             pending_reader,
             pending_writer,
@@ -224,6 +285,8 @@ impl ReliableSendQueue {
             retry_count: HashMap::new(),
             retry_backoff: HashMap::new(),
             metrics,
+            link_probe,
+            stall_probe_gate: SendStallProbeGate::default(),
         };
         state
             .metrics
@@ -246,6 +309,7 @@ impl ReliableSendQueue {
                         if let Err(e) = check_timeout(&mut state).await {
                             warn!(%e, "reliable queue timeout check error");
                         }
+                        probe_link_if_send_stalled(&mut state);
                     }
                     else => break,
                 }
@@ -411,8 +475,14 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
                 match apply_ack_and_publish(st, &in_flight.entry, ack).await {
                     AckApplyResult::Terminal | AckApplyResult::RetryScheduled => {}
                     AckApplyResult::KeepInFlight => {
-                        st.in_flight
-                            .insert(in_flight.entry.client_msg_id.clone(), in_flight);
+                        // 服务端回了话（虽未终态）：连接是活的，「没回执」从现在重新计时。
+                        st.in_flight.insert(
+                            in_flight.entry.client_msg_id.clone(),
+                            InFlightSend {
+                                sent_at_ms: id::now_millis(),
+                                ..in_flight
+                            },
+                        );
                     }
                     AckApplyResult::AwaitDurable => {
                         st.awaiting_durable.insert(
@@ -451,6 +521,7 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
                             InFlightSend {
                                 entry,
                                 deadline_ms: deadline_after(st.timeout_duration),
+                                sent_at_ms: id::now_millis(),
                                 send_failed: false,
                             },
                         );
@@ -590,6 +661,7 @@ fn dispatch_send_attempt(st: &mut QueueState, entry: PendingSendVo, retries: u32
         InFlightSend {
             entry: entry.clone(),
             deadline_ms: deadline_after(st.timeout_duration),
+            sent_at_ms: id::now_millis(),
             send_failed: false,
         },
     );
@@ -656,6 +728,7 @@ async fn handle_send_attempt_finished(
                 InFlightSend {
                     entry,
                     deadline_ms: deadline_after(st.timeout_duration),
+                    sent_at_ms: id::now_millis(),
                     send_failed: true,
                 },
             );
@@ -732,6 +805,8 @@ async fn reset_pending_on_login(st: &mut QueueState) -> Result<Vec<String>> {
 }
 
 async fn recover_pending_for_current_user(st: &mut QueueState) -> Result<Vec<String>> {
+    // 连接（重新）建好后调用：旧连接上没回执的尝试不再作数，新连接可以立即被验活。
+    st.stall_probe_gate.on_new_connection(id::now_millis());
     let current_user_id = st.current_user_id.read().await.clone();
     if current_user_id.trim().is_empty() {
         return Ok(Vec::new());
@@ -865,6 +940,7 @@ async fn check_timeout(st: &mut QueueState) -> Result<()> {
                 InFlightSend {
                     entry,
                     deadline_ms: in_flight.deadline_ms,
+                    sent_at_ms: in_flight.sent_at_ms,
                     send_failed: in_flight.send_failed,
                 },
             );
@@ -872,6 +948,36 @@ async fn check_timeout(st: &mut QueueState) -> Result<()> {
     }
     try_send_next(st).await?;
     Ok(())
+}
+
+/// 有尝试发出 [`SEND_STALL_PROBE_AFTER`] 仍没等到 SendAck：请求对当前连接验活一次
+/// （去抖见 [`SendStallProbeGate`]）。
+///
+/// 半开连接上帧照样「发送成功」（写进了本机缓冲），回执却永远不来；不验活就只能等 ACK 超时
+/// 在同一条死连接上重发，直到重试耗尽判失败。验活在 8 s 内把死连接断开，重连后照常重发。
+///
+/// 只看帧确实交给了传输层的尝试（`send_failed == false`）：没连上时发送直接失败，不算进来。
+/// 这里只请求验活，不改任何超时、重试与窗口状态。
+fn probe_link_if_send_stalled(st: &mut QueueState) {
+    let Some(probe) = st.link_probe.as_ref() else {
+        return;
+    };
+    let now = id::now_millis();
+    let unanswered = st
+        .in_flight
+        .values()
+        .filter(|in_flight| !in_flight.send_failed)
+        .map(|in_flight| in_flight.sent_at_ms);
+    if !st.stall_probe_gate.should_probe(now, unanswered) {
+        return;
+    }
+    st.stall_probe_gate.record_probe(now);
+    st.metrics.counter("reliable_queue.stall_probe_total", 1);
+    debug!(
+        in_flight = st.in_flight.len(),
+        "reliable queue: send unanswered for {:?}; probing the connection", SEND_STALL_PROBE_AFTER
+    );
+    probe.request_probe();
 }
 
 async fn check_awaiting_durable_timeout(st: &mut QueueState) -> Result<()> {
@@ -973,6 +1079,7 @@ async fn reconcile_in_flight_terminal_states(st: &mut QueueState) -> Result<bool
                     InFlightSend {
                         entry,
                         deadline_ms: in_flight.deadline_ms,
+                        sent_at_ms: in_flight.sent_at_ms,
                         send_failed: in_flight.send_failed,
                     },
                 );
@@ -2373,5 +2480,167 @@ mod unsent_resend_tests {
             .await
             .expect("recover pending");
         wait_for_counter(&metrics, resend, 1).await;
+    }
+}
+
+#[cfg(test)]
+mod stall_probe_tests {
+    use super::{
+        AdaptiveInFlightWindow, InFlightSend, LinkProbe, QueueState, SEND_STALL_PROBE_AFTER,
+        SEND_STALL_PROBE_MIN_INTERVAL, SendStallProbeGate, probe_link_if_send_stalled,
+    };
+    use crate::domain::PendingSendVo;
+    use crate::infrastructure::persistence::in_memory_im_provider;
+    use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
+    use crate::kernel::event::EventBus;
+    use crate::model::IMMessage;
+    use crate::shared::util::id;
+    use crate::spi::metrics::MetricsRecorder;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::sync::{Mutex, RwLock, mpsc};
+
+    const STALL_MS: u64 = SEND_STALL_PROBE_AFTER.as_millis() as u64;
+    const WINDOW_MS: u64 = SEND_STALL_PROBE_MIN_INTERVAL.as_millis() as u64;
+
+    #[derive(Default)]
+    struct CountingProbe(AtomicUsize);
+
+    impl CountingProbe {
+        fn count(&self) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    impl LinkProbe for CountingProbe {
+        fn request_probe(&self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn queue_state(probe: Arc<CountingProbe>) -> QueueState {
+        let stores = in_memory_im_provider();
+        let (pending_reader, pending_writer) = stores.pending_sends().expect("pending sends");
+        let (command_tx, _command_rx) = mpsc::channel(8);
+        QueueState {
+            pending_reader,
+            pending_writer,
+            command_tx,
+            sender: Arc::new(PacketSender::new(
+                Arc::new(Mutex::new(None)),
+                Arc::new(ProtobufCodec) as Arc<dyn Codec>,
+            )),
+            message_store: stores.messages.clone(),
+            conversation_store: stores.conversations.clone(),
+            current_user_id: Arc::new(RwLock::new("u1".to_string())),
+            bus: EventBus::new(),
+            timeout_duration: Duration::from_secs(10),
+            max_retries: 3,
+            max_in_flight: 32,
+            adaptive_window: AdaptiveInFlightWindow::new(32),
+            in_flight: HashMap::new(),
+            awaiting_durable: HashMap::new(),
+            retry_count: HashMap::new(),
+            retry_backoff: HashMap::new(),
+            metrics: MetricsRecorder::disabled(),
+            link_probe: Some(probe),
+            stall_probe_gate: SendStallProbeGate::default(),
+        }
+    }
+
+    fn in_flight(st: &mut QueueState, client_msg_id: &str, sent_ago_ms: u64, send_failed: bool) {
+        let now = id::now_millis();
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.client_msg_id = client_msg_id.to_string();
+        message.conversation_id = "conv-stall".to_string();
+        st.in_flight.insert(
+            client_msg_id.to_string(),
+            InFlightSend {
+                entry: PendingSendVo {
+                    client_msg_id: client_msg_id.to_string(),
+                    conversation_id: "conv-stall".to_string(),
+                    message,
+                    enqueued_at_ms: now,
+                },
+                deadline_ms: now + 10_000,
+                sent_at_ms: now.saturating_sub(sent_ago_ms),
+                send_failed,
+            },
+        );
+    }
+
+    /// 5 s 没回执才验活；验过之后 30 s 内不再验，也不为验活之前发出的尝试再验。
+    #[test]
+    fn gate_waits_for_the_stall_and_debounces() {
+        let mut gate = SendStallProbeGate::default();
+        let t0 = 1_000_000;
+        assert!(!gate.should_probe(t0 + STALL_MS - 1, [t0]));
+        assert!(gate.should_probe(t0 + STALL_MS, [t0]));
+        gate.record_probe(t0 + STALL_MS);
+
+        // 同一窗口内：新的卡住的尝试也不再验
+        let later = t0 + STALL_MS + 1_000;
+        assert!(!gate.should_probe(later + STALL_MS, [t0, later]));
+        // 窗口过后：验活之前发出的那条不算，验活之后发出且卡住的算
+        let after_window = t0 + STALL_MS + WINDOW_MS;
+        assert!(!gate.should_probe(after_window, [t0]));
+        assert!(gate.should_probe(after_window, [later]));
+    }
+
+    /// 换了新连接：旧连接上的尝试不再触发验活，新连接上卡住的尝试立即可以触发，不受旧窗口限制。
+    #[test]
+    fn gate_restarts_on_a_new_connection() {
+        let mut gate = SendStallProbeGate::default();
+        let t0 = 1_000_000;
+        gate.record_probe(t0 + STALL_MS);
+        let reconnected = t0 + STALL_MS + 2_000;
+        gate.on_new_connection(reconnected);
+
+        assert!(!gate.should_probe(reconnected + STALL_MS, [t0 + STALL_MS + 1]));
+        assert!(gate.should_probe(reconnected + STALL_MS, [reconnected]));
+    }
+
+    /// 一批卡住的消息只验一次；没交给传输层（未连接、写失败）的尝试不算；回执及时的不验。
+    #[tokio::test]
+    async fn one_probe_for_a_batch_of_unanswered_sends() {
+        let probe = Arc::new(CountingProbe::default());
+        let mut st = queue_state(probe.clone());
+
+        in_flight(&mut st, "fresh", 1_000, false);
+        probe_link_if_send_stalled(&mut st);
+        assert_eq!(
+            probe.count(),
+            0,
+            "sent 1 s ago: still within a normal round trip"
+        );
+
+        in_flight(&mut st, "never-left", STALL_MS + 3_000, true);
+        probe_link_if_send_stalled(&mut st);
+        assert_eq!(
+            probe.count(),
+            0,
+            "an attempt that never reached the transport says nothing about the connection"
+        );
+
+        in_flight(&mut st, "stalled-1", STALL_MS + 1_000, false);
+        in_flight(&mut st, "stalled-2", STALL_MS + 2_000, false);
+        for _ in 0..5 {
+            probe_link_if_send_stalled(&mut st);
+        }
+        assert_eq!(probe.count(), 1, "one probe for the whole stalled batch");
+    }
+
+    /// 没装验活出口（如单测里的队列）时不做这项检查。
+    #[tokio::test]
+    async fn no_probe_without_a_link_probe() {
+        let probe = Arc::new(CountingProbe::default());
+        let mut st = queue_state(probe.clone());
+        st.link_probe = None;
+        in_flight(&mut st, "stalled", STALL_MS + 1_000, false);
+        probe_link_if_send_stalled(&mut st);
+        assert_eq!(probe.count(), 0);
+        assert_eq!(st.stall_probe_gate.last_probe_ms, None);
     }
 }

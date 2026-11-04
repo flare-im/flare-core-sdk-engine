@@ -205,6 +205,20 @@ pub struct SdkConfig {
     /// persisted value and read this field, so a default never stands in for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
+    /// 宿主应用的版本名（如 `3.2.1`），CONNECT 时作为 `app_version` 上报。
+    ///
+    /// 只用宿主（或平台包代采）给的真实值；没给就不上报，服务端看到缺省即知「未知版本」，
+    /// 不能用一个假值冒充。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+    /// 宿主应用的构建号：单调递增的整数，服务端做版本比较（强制升级、灰度）只看它，
+    /// 版本名只用于展示。CONNECT 时以十进制字符串放进 `app_build`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_build: Option<u64>,
+    /// 分发渠道：`appstore`、`play`、`appgallery`、`direct`、`web`、`tauri` 等，
+    /// CONNECT 时作为 `distribution` 上报。浏览器（wasm）未配置时取 `web`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distribution: Option<String>,
     pub connect_timeout_secs: Option<u64>,
     pub reconnect_interval_secs: Option<u64>,
     pub max_reconnect_attempts: Option<u32>,
@@ -391,11 +405,71 @@ impl SdkConfig {
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| process_fallback_device_id().to_string())
     }
+
+    /// CONNECT 上报的应用版本名：宿主给的非空值，没有就是 `None`（不上报）。
+    pub fn effective_app_version(&self) -> Option<String> {
+        non_blank(self.app_version.as_deref())
+    }
+
+    /// CONNECT 上报的分发渠道：宿主给的非空值优先；浏览器里的 wasm 构建只可能是 Web，
+    /// 未配置时取 `web`；其余平台没给就不上报（安装来源 SDK 猜不准，不替宿主编）。
+    pub fn effective_distribution(&self) -> Option<String> {
+        non_blank(self.distribution.as_deref()).or_else(|| {
+            if cfg!(target_arch = "wasm32") {
+                Some("web".to_string())
+            } else {
+                None
+            }
+        })
+    }
+}
+
+fn non_blank(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 默认配置不编造应用版本：版本、构建号、渠道都留空，由宿主或平台包填。
+    #[test]
+    fn a_default_config_names_no_app_version() {
+        let config = SdkConfig::default();
+        assert_eq!(config.app_version, None);
+        assert_eq!(config.app_build, None);
+        assert_eq!(config.distribution, None);
+        assert_eq!(config.effective_app_version(), None);
+        #[cfg(not(target_arch = "wasm32"))]
+        assert_eq!(config.effective_distribution(), None);
+        let json = serde_json::to_value(&config).unwrap();
+        for key in ["app_version", "app_build", "distribution"] {
+            assert!(json.get(key).is_none(), "{key} in {json}");
+        }
+    }
+
+    #[test]
+    fn app_version_fields_ignore_blank_values() {
+        let config = SdkConfig::builder()
+            .app_version("  ")
+            .distribution("")
+            .build();
+        assert_eq!(config.effective_app_version(), None);
+        #[cfg(not(target_arch = "wasm32"))]
+        assert_eq!(config.effective_distribution(), None);
+
+        let config = SdkConfig::builder()
+            .app_version(" 3.2.1 ")
+            .app_build(30201)
+            .distribution("play")
+            .build();
+        assert_eq!(config.effective_app_version().as_deref(), Some("3.2.1"));
+        assert_eq!(config.app_build, Some(30201));
+        assert_eq!(config.effective_distribution().as_deref(), Some("play"));
+    }
 
     #[test]
     fn protocol_race_order_respects_overlay() {
@@ -562,6 +636,10 @@ impl Default for SdkConfig {
             // (`effective_device_id`). Minting one here made every default config a new
             // device and passed a throwaway id off as the host's stable one.
             device_id: None,
+            // 版本信息只取宿主的真实值；以前这里写死 "1.0.0"，服务端据此做的版本判断全是错的。
+            app_version: None,
+            app_build: None,
+            distribution: None,
             connect_timeout_secs: Some(30),
             reconnect_interval_secs: Some(5),
             max_reconnect_attempts: None,
@@ -627,6 +705,21 @@ impl SdkConfigBuilder {
     /// 设置稳定设备 ID，用于多端在线、同步游标与服务端设备态。
     pub fn device_id(mut self, device_id: impl Into<String>) -> Self {
         self.config.device_id = Some(device_id.into());
+        self
+    }
+    /// 设置宿主应用版本名（CONNECT 元数据 `app_version`）。
+    pub fn app_version(mut self, version: impl Into<String>) -> Self {
+        self.config.app_version = Some(version.into());
+        self
+    }
+    /// 设置宿主应用构建号（单调整数，CONNECT 元数据 `app_build`）。
+    pub fn app_build(mut self, build: u64) -> Self {
+        self.config.app_build = Some(build);
+        self
+    }
+    /// 设置分发渠道（CONNECT 元数据 `distribution`），如 `appstore` / `play` / `direct`。
+    pub fn distribution(mut self, distribution: impl Into<String>) -> Self {
+        self.config.distribution = Some(distribution.into());
         self
     }
     /// 设置连接超时（秒）。

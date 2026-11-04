@@ -91,6 +91,12 @@ fn bridge_targets(root: &Path) -> Vec<BridgeTarget> {
             body: include_str!("../../templates/bridge/apple/Bridge/FfiNativeBridge.swift"),
         },
         BridgeTarget {
+            path: root.join(
+                "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Bridge/FlareAppInfo.swift",
+            ),
+            body: include_str!("../../templates/bridge/apple/Bridge/FlareAppInfo.swift"),
+        },
+        BridgeTarget {
             path: root.join("packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/FlareCoreSdk.swift"),
             body: include_str!("../../templates/bridge/apple/FlareCoreSdk.swift"),
         },
@@ -164,6 +170,12 @@ fn bridge_targets(root: &Path) -> Vec<BridgeTarget> {
             body: include_str!("../../templates/bridge/android/bridge/JniNativeBridge.kt"),
         },
         BridgeTarget {
+            path: root.join(
+                "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/bridge/FlareAppInfo.kt",
+            ),
+            body: include_str!("../../templates/bridge/android/bridge/FlareAppInfo.kt"),
+        },
+        BridgeTarget {
             path: root.join("packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/FlareCoreSdk.kt"),
             body: include_str!("../../templates/bridge/android/FlareCoreSdk.kt"),
         },
@@ -186,6 +198,12 @@ fn bridge_targets(root: &Path) -> Vec<BridgeTarget> {
                 "packages/flare-core-harmony-arkts-sdk/src/main/ets/bridge/FfiNativeBridge.ets",
             ),
             body: include_str!("../../templates/bridge/arkts/bridge/FfiNativeBridge.ets"),
+        },
+        BridgeTarget {
+            path: root.join(
+                "packages/flare-core-harmony-arkts-sdk/src/main/ets/bridge/FlareAppInfo.ets",
+            ),
+            body: include_str!("../../templates/bridge/arkts/bridge/FlareAppInfo.ets"),
         },
         BridgeTarget {
             path: root.join("packages/flare-core-harmony-arkts-sdk/src/main/ets/bridge/index.ets"),

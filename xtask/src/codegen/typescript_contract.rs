@@ -159,10 +159,19 @@ fn emit_typescript_api_types(spec: &Value) -> String {
         "  ackMaxInFlight?: number;".to_string(),
         "  ackMaxRetries?: number;".to_string(),
         "  ackTimeoutSecs?: number;".to_string(),
+        "  /** Monotonic integer build number reported on CONNECT; servers compare versions by it. */"
+            .to_string(),
+        "  appBuild?: number;".to_string(),
+        "  /** Host app version name reported on CONNECT. Web hosts inject it at build time. */"
+            .to_string(),
+        "  appVersion?: string;".to_string(),
         "  capabilityUrl?: string;".to_string(),
         "  connectTimeoutSecs?: number;".to_string(),
         "  dataUrl?: string;".to_string(),
         "  defaultTransport?: TransportKind;".to_string(),
+        "  /** Distribution channel reported on CONNECT (`web` when unset in the browser, `tauri` under Tauri). */"
+            .to_string(),
+        "  distribution?: string;".to_string(),
         "  enableMetrics?: boolean;".to_string(),
         "  eventBusCapacity?: number;".to_string(),
         "  eventDedupeCapacity?: number;".to_string(),

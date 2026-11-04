@@ -18,16 +18,67 @@ pub async fn sdk_ffi_contract_version()
 }
 
 /// 透传 [IMClient::init]；`sdkConfig` / `dataUrl` 由前端与 core-sdk 约定。
+///
+/// 应用版本与渠道由这里补齐（见 [`with_tauri_app_info`]）。`app` 由 Tauri 运行时注入。
 #[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_init(
     state: State<'_, SdkState>,
+    app: tauri::AppHandle,
     environment: Option<String>,
     sdk_config: Option<SdkConfigOverlay>,
 ) -> std::result::Result<(), super::CommandError> {
+    let sdk_config = with_tauri_app_info(sdk_config, app.package_info().version.to_string());
     state
-        .set_config(environment, sdk_config)
+        .set_config(environment, Some(sdk_config))
         .await
         .map_err(super::map_sdk_err)
+}
+
+/// Tauri 宿主的版本号由运行时自带（`tauri.conf.json` 的 `version`），零依赖就能拿到，渠道恒为
+/// `tauri`；CONNECT 时随设备信息上报。只补前端没给的项，前端显式传入的值优先。构建号 Tauri
+/// 没有独立来源，需要时由前端经 `sdkConfig.appBuild` 传入。
+fn with_tauri_app_info(
+    sdk_config: Option<SdkConfigOverlay>,
+    package_version: String,
+) -> SdkConfigOverlay {
+    fn is_blank(value: Option<&str>) -> bool {
+        value.map(str::trim).is_none_or(str::is_empty)
+    }
+    let mut overlay = sdk_config.unwrap_or_default();
+    if is_blank(overlay.app_version.as_deref()) && !package_version.trim().is_empty() {
+        overlay.app_version = Some(package_version);
+    }
+    if is_blank(overlay.distribution.as_deref()) {
+        overlay.distribution = Some("tauri".to_string());
+    }
+    overlay
+}
+
+#[cfg(test)]
+mod app_info_tests {
+    use super::with_tauri_app_info;
+    use flare_im_core_sdk::client::SdkConfigOverlay;
+
+    #[test]
+    fn package_version_fills_only_what_the_frontend_left_out() {
+        let filled = with_tauri_app_info(None, "2.4.0".to_string());
+        assert_eq!(filled.app_version.as_deref(), Some("2.4.0"));
+        assert_eq!(filled.distribution.as_deref(), Some("tauri"));
+        assert_eq!(filled.app_build, None);
+
+        let explicit = with_tauri_app_info(
+            Some(SdkConfigOverlay {
+                app_version: Some("2.4.1-hotfix".to_string()),
+                app_build: Some(241),
+                distribution: Some("direct".to_string()),
+                ..Default::default()
+            }),
+            "2.4.0".to_string(),
+        );
+        assert_eq!(explicit.app_version.as_deref(), Some("2.4.1-hotfix"));
+        assert_eq!(explicit.app_build, Some(241));
+        assert_eq!(explicit.distribution.as_deref(), Some("direct"));
+    }
 }
 
 /// 透传 [IMClient::login]。`app` 由 Tauri 运行时注入（勿从前端 JSON 传参）。

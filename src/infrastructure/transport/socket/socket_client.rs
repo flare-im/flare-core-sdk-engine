@@ -37,14 +37,36 @@ fn sdk_device_info(config: &SdkConfig) -> DeviceInfo {
     #[cfg(target_arch = "wasm32")]
     let model = "FlareSDK-Web".to_string();
 
-    DeviceInfo::new(device_id, platform)
+    let mut device = DeviceInfo::new(device_id, platform)
         .with_model(model)
-        .with_app_version("1.0.0".to_string())
         .with_metadata(
             "desired_conflict_strategy".to_string(),
             "platform_exclusive".to_string(),
         )
+        // 引擎自身的版本，与宿主应用版本分开：服务端按它判断协议/能力兼容。
+        .with_metadata(
+            CONNECT_META_SDK_VERSION.to_string(),
+            env!("CARGO_PKG_VERSION").to_string(),
+        );
+    // 应用版本只报宿主给的真实值。以前这里写死 "1.0.0"，服务端拿到的版本全是假的，
+    // 没法按版本做兼容判断、强制升级或排查问题；没给就不报，服务端据缺省即知「未知」。
+    if let Some(version) = config.effective_app_version() {
+        device = device.with_app_version(version);
+    }
+    if let Some(build) = config.app_build {
+        device = device.with_metadata(CONNECT_META_APP_BUILD.to_string(), build.to_string());
+    }
+    if let Some(distribution) = config.effective_distribution() {
+        device = device.with_metadata(CONNECT_META_DISTRIBUTION.to_string(), distribution);
+    }
+    device
 }
+
+/// CONNECT 元数据键（经 `DeviceInfo.metadata` 平铺进 CONNECT 帧的 metadata）。
+/// 服务端按这几个键名读取并记日志，改名要两端同步。
+const CONNECT_META_APP_BUILD: &str = "app_build";
+const CONNECT_META_DISTRIBUTION: &str = "distribution";
+const CONNECT_META_SDK_VERSION: &str = "sdk_version";
 
 /// 建连失败时保留下来的错误码：服务端明确拒绝的类别原样上报，其余都是连接失败。
 ///
@@ -65,6 +87,49 @@ fn connect_failure_code(error: &FlareError) -> ErrorCode {
     }
 }
 
+/// 对当前长连接做一次即时验活：立即发一枚 ping，验活窗口（8 s）内收不到 PONG 就按心跳超时
+/// 断开，之后由会话的重连监视器接手。
+///
+/// 用来戳穿「看起来连着、其实早已死掉」的半开连接：网络切换后旧路径上的连接常被中间设备静默
+/// 丢弃，本端收不到任何关闭信号，只靠周期心跳要等一个完整的心跳超时（前台 90 s）才发现。
+pub trait LinkProbe: Send + Sync {
+    /// 请求一次验活，立即返回、不等结果；没有在用的连接时什么也不做。
+    fn request_probe(&self);
+}
+
+/// 与 [`SocketTransport`] 共享同一客户端槽位的验活句柄：重连换了新客户端，它探的也是新连接。
+#[derive(Clone)]
+pub struct SocketLinkProbe {
+    client: Arc<Mutex<Option<FlareClient>>>,
+}
+
+impl SocketLinkProbe {
+    /// 对在用的客户端发起验活；没有客户端时返回 `false`，不做任何事。
+    ///
+    /// 只在取客户端快照时短暂持有槽位锁，验活本身不拿任何锁：发送等回执期间 flare-core 的
+    /// 客户端锁一直被占着（`is_connected_async` 也要排在它后面），而那正是最需要验活的时候。
+    /// 所以这里不再问一遍「是否已连」——调用方（引擎的 Ready 判断、发件箱的「帧确实发出去了」）
+    /// 已经给出了理由；客户端其实没连上时，唤醒只会留到它下次心跳启动时探一次，无害。
+    pub async fn probe_now(&self) -> bool {
+        let Some(client) = self.client.lock().await.as_ref().cloned() else {
+            return false;
+        };
+        client.probe_heartbeat();
+        true
+    }
+}
+
+impl LinkProbe for SocketLinkProbe {
+    fn request_probe(&self) {
+        let probe = self.clone();
+        let _ = crate::shared::util::spawn_background_task(async move {
+            if probe.probe_now().await {
+                info!("link probe requested: waiting for PONG on the current connection");
+            }
+        });
+    }
+}
+
 /// Socket 传输层 — 基于 flare-core 的多协议长连接封装
 pub struct SocketTransport {
     config: SdkConfig,
@@ -73,6 +138,18 @@ pub struct SocketTransport {
 }
 
 impl SocketTransport {
+    /// 共享同一客户端槽位的验活句柄（发件箱用它在「发出后迟迟等不到回执」时验活）。
+    pub fn link_probe(&self) -> SocketLinkProbe {
+        SocketLinkProbe {
+            client: self.client.clone(),
+        }
+    }
+
+    /// 对当前连接做一次即时验活，见 [`LinkProbe`]；返回是否有客户端可探。
+    pub async fn probe_link(&self) -> bool {
+        self.link_probe().probe_now().await
+    }
+
     pub fn new(config: SdkConfig) -> Self {
         Self::with_codec(config, Arc::new(ProtobufCodec))
     }
@@ -352,5 +429,60 @@ mod tests {
             info.metadata.get("desired_conflict_strategy"),
             Some(&"platform_exclusive".to_string())
         );
+    }
+
+    /// 没配应用版本就不报：以前写死的 "1.0.0" 不能再出现；引擎版本始终报。
+    #[test]
+    fn sdk_device_info_reports_no_app_version_unless_configured() {
+        let info = sdk_device_info(&SdkConfig::default());
+
+        assert_eq!(info.app_version, None);
+        assert!(!info.metadata.contains_key("app_build"));
+        #[cfg(not(target_arch = "wasm32"))]
+        assert!(!info.metadata.contains_key("distribution"));
+        assert_eq!(
+            info.metadata.get("sdk_version").map(String::as_str),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    /// 服务端按 `app_version` / `app_build` / `distribution` / `sdk_version` 这几个键读取，
+    /// 构建号以十进制字符串上报。
+    #[test]
+    fn sdk_device_info_carries_the_configured_app_version() {
+        let config = SdkConfig::builder()
+            .app_version("3.2.1")
+            .app_build(30201)
+            .distribution("appstore")
+            .build();
+        let info = sdk_device_info(&config);
+
+        assert_eq!(info.app_version.as_deref(), Some("3.2.1"));
+        assert_eq!(
+            info.metadata.get("app_build").map(String::as_str),
+            Some("30201")
+        );
+        assert_eq!(
+            info.metadata.get("distribution").map(String::as_str),
+            Some("appstore")
+        );
+        assert_eq!(
+            info.metadata.get("sdk_version").map(String::as_str),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            info.metadata
+                .get("desired_conflict_strategy")
+                .map(String::as_str),
+            Some("platform_exclusive")
+        );
+    }
+
+    /// 没有在用的连接时验活什么也不做，也不报「探过了」。
+    #[tokio::test]
+    async fn link_probe_is_a_no_op_without_a_connection() {
+        let transport = SocketTransport::new(SdkConfig::default());
+        assert!(!transport.probe_link().await);
+        transport.link_probe().request_probe();
     }
 }

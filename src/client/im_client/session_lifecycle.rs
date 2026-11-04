@@ -104,12 +104,26 @@ impl IMClient {
             );
             return Ok(false);
         }
+        // 连接看起来还在（Ready 且传输仍报已连）时，下面的重连只做补同步。可网络切换后，旧路径上
+        // 的连接常被中间设备静默丢弃，本端收不到任何关闭信号，只靠周期心跳要等完整的心跳超时才
+        // 发现。所以先对它立即验活：验活窗口（8 s）内没有 PONG 就判死断开，交给现有的断开 →
+        // 重连路径；连接健康则什么也不变。
+        let probed = {
+            let g = self.inner.read().await;
+            match g.engine.as_ref() {
+                Some(engine) if g.session_generation == generation => {
+                    engine.probe_connection_if_ready().await
+                }
+                _ => false,
+            }
+        };
         tracing::info!(
             session_generation = generation,
             interface = event.interface.as_deref().unwrap_or("unknown"),
             expensive = event.expensive,
             metered = event.metered,
             reason = event.reason.as_deref().unwrap_or("network_change"),
+            probed,
             "network change reported; proactively reconnecting SDK session"
         );
         let reconnect_result = self

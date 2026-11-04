@@ -73,6 +73,26 @@
     "device": [
       "deviceId"
     ],
+    "app": [
+      "appVersion",
+      "appBuild",
+      "distribution"
+    ],
+    "appVersion": {
+      "type": "string",
+      "optional": true,
+      "description": "宿主应用版本名（如 3.2.1），CONNECT 时作为 app_version 上报（另带引擎版本 sdk_version）。未配置不上报，SDK 不编造版本。平台包能零依赖采集的（Android、Apple、HarmonyOS ArkTS、Tauri）会自动补齐，宿主显式传入的值优先。"
+    },
+    "appBuild": {
+      "type": "u64",
+      "optional": true,
+      "description": "宿主应用构建号：单调递增的整数，服务端版本比较只用它。CONNECT 时以十进制字符串作为 app_build 上报。"
+    },
+    "distribution": {
+      "type": "string",
+      "optional": true,
+      "description": "分发渠道：appstore、play、appgallery、direct、web、tauri 等，CONNECT 时作为 distribution 上报。wasm 未配置时取 web，Tauri 绑定未配置时取 tauri。"
+    },
     "timeouts": [
       "connectTimeoutSecs",
       "reconnectIntervalSecs",

@@ -3,6 +3,7 @@ import { NativeBridge, NativeCallDescriptor } from '../contract/BridgeContract';
 import { SdkOperations } from '../contract/SdkContract';
 import { assertFfiContractVersion } from './FfiContractVersionGuard';
 import { FlareSdkException } from './FlareSdkException';
+import { FlareAppInfo } from './FlareAppInfo';
 import { wireDecodeResponse, wireEncodeRequest } from '../adapter/codec/WireCodec';
 import flareCoreNative from 'libflare_core_harmony_arkts_sdk.so';
 
@@ -42,6 +43,13 @@ export class FfiNativeBridge implements NativeBridge {
   private handle: number = 0;
   private released: boolean = false;
   private contractVersionChecked: boolean = false;
+  /** `sdk.init` 时补进配置的应用版本信息（宿主在请求里显式给的值优先）。 */
+  private readonly appInfo: FlareAppInfo;
+
+  /** `appInfo` 默认从本应用的 bundle 信息自动采集；需要覆盖（如渠道）时显式传入。 */
+  constructor(appInfo?: FlareAppInfo) {
+    this.appInfo = appInfo ?? FlareAppInfo.fromBundle();
+  }
 
   async invoke<T>(descriptor: NativeCallDescriptor, request?: Object): Promise<T> {
     if (descriptor.operation !== SdkOperations.diagnosticsFfiContractVersion) {
@@ -145,7 +153,10 @@ export class FfiNativeBridge implements NativeBridge {
       const op = this.stringField(request, 'op') || descriptor.dispatchOp || '';
       resultJson = await nativeModule.messageDispatchJson(this.requireHandle(), op, this.encodeJson(request));
     } else if (descriptor.cApi === 'flare_sdk_init') {
-      resultJson = await nativeModule.sdkInit(this.requireHandle(), this.encodeJson(request));
+      resultJson = await nativeModule.sdkInit(
+        this.requireHandle(),
+        this.encodeJson(this.appInfo.fill(request)),
+      );
     } else if (descriptor.cApi === 'flare_sdk_uninit') {
       resultJson = await nativeModule.sdkUninit(this.requireHandle());
     } else if (descriptor.cApi === 'flare_sdk_login') {

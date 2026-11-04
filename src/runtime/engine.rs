@@ -132,19 +132,23 @@ impl SdkEngine {
         } = config;
         let sender = transport.sender().clone();
         let reliable_queue = stores.pending_sends().map(|(reader, writer)| {
-            Arc::new(ReliableSendQueue::new(ReliableSendQueueConfig {
-                pending_reader: reader,
-                pending_writer: writer,
-                sender: sender.clone(),
-                message_store: stores.messages.clone(),
-                conversation_store: stores.conversations.clone(),
-                current_user_id: current_user_id.clone(),
-                bus: bus.clone(),
-                timeout_secs: ack_timeout_secs,
-                max_retries: ack_max_retries,
-                max_in_flight: ack_max_in_flight,
-                metrics: metrics.clone(),
-            }))
+            // 发出后迟迟没回执时验活当前连接；句柄与传输共享客户端槽位，重连后探的是新连接。
+            Arc::new(ReliableSendQueue::with_link_probe(
+                ReliableSendQueueConfig {
+                    pending_reader: reader,
+                    pending_writer: writer,
+                    sender: sender.clone(),
+                    message_store: stores.messages.clone(),
+                    conversation_store: stores.conversations.clone(),
+                    current_user_id: current_user_id.clone(),
+                    bus: bus.clone(),
+                    timeout_secs: ack_timeout_secs,
+                    max_retries: ack_max_retries,
+                    max_in_flight: ack_max_in_flight,
+                    metrics: metrics.clone(),
+                },
+                Arc::new(transport.link_probe()),
+            ))
         });
         Self {
             stores,
@@ -549,6 +553,15 @@ impl SdkEngine {
 
     pub async fn transport_connected(&self) -> bool {
         self.transport.is_connected().await
+    }
+
+    /// 连接「看起来」还在（Ready）时对它做一次即时验活：立即 ping，验活窗口（8 s）内没有 PONG
+    /// 就按心跳超时断开，之后走断开 → 重连监视器。返回是否真的请求了验活。
+    pub async fn probe_connection_if_ready(&self) -> bool {
+        if self.state() != SdkState::Ready {
+            return false;
+        }
+        self.transport.probe_link().await
     }
 
     pub async fn update_heartbeat_config(&self, config: HeartbeatConfig) -> crate::Result<()> {
