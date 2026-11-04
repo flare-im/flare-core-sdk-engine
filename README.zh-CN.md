@@ -1,5 +1,7 @@
 # Flare IM Core SDK
 
+[English](README.md) · 简体中文
+
 **[English](README.md)** · 中文
 
 > ## ⚠ 请与同级仓库一起 clone
@@ -208,7 +210,7 @@ Apache License 2.0，与底层 `flare-core` 一致，见对应仓库许可文件
 
 | 想做什么 | 去哪里 |
 |---|---|
-| **五分钟跑起来** | [QUICKSTART](https://github.com/flare-im/flare-core-server/blob/main/QUICKSTART.md) —— 起服务、手签 token、调通接口，**不需要自建用户体系** |
+| **五分钟跑起来** | [QUICKSTART](https://github.com/flare-im/flare-core-server/blob/main/docs/QUICKSTART.zh-CN.md) —— 起服务、手签 token、调通接口，**不需要自建用户体系** |
 | 接入自己的用户系统 | 实现 `TokenValidator`（`CoreJwtTokenValidator` 本地验签 / `HttpHookTokenValidator` 调你的接口） |
 | 加自己的业务规则 | `flare-im-hooks` 的 9 个扩展点：PreSend / PostSend / Delivery / Recall / MessageRead / MessageReaction / ConversationLifecycle / ConversationMember / GetConversationParticipants |
 | 做界面 | [`@flare-im/vue-ui`](https://www.npmjs.com/package/@flare-im/vue-ui) —— 107 个组件，四端一致的契约 |
@@ -223,5 +225,9 @@ Apache License 2.0，与底层 `flare-core` 一致，见对应仓库许可文件
 
 咨询：`flare1522@163.com`
 
-> 边界划分与不变承诺见 [GOVERNANCE](https://github.com/flare-im/flare-core-server/blob/main/GOVERNANCE.md)。
+> 边界划分与不变承诺见 [GOVERNANCE](https://github.com/flare-im/flare-core-server/blob/main/.github/GOVERNANCE.md)。
 > 简言之：**已开源的不会被收回，鉴权与 hooks 契约永远开源、不会为逼迫付费而阉割。**
+
+## 变更归属
+
+发送、存储、排序和同步行为由 Rust 引擎统一维护。平台包与集成验证分别见 [flare-core-sdk](https://github.com/flare-im/flare-core-sdk) 和[示例应用](https://github.com/flare-im/flare-core-examples)。

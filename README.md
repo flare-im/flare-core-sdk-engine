@@ -1,6 +1,6 @@
 # Flare IM Core SDK
 
-English · **[中文](README.zh-CN.md)**
+English · [Simplified Chinese](README.zh-CN.md)
 
 > ## ⚠ Clone this next to its sibling repos
 
@@ -84,7 +84,7 @@ is no longer the production contract.
 
 ```toml
 [dependencies]
-# `LoginDbKind::Sqlite` 由 lifecycle-sqlite 提供；不开这个 feature，下面的样例编不过。
+# Enable lifecycle-sqlite to use LoginDbKind::Sqlite in the example below.
 flare-im-core-sdk = { version = "1.2", features = ["lifecycle-sqlite"] }
 tokio = { version = "1", features = ["full"] }
 ```
@@ -255,7 +255,7 @@ its repository.
 
 | What you want | Where to go |
 |---|---|
-| **Run it in five minutes** | [QUICKSTART](https://github.com/flare-im/flare-core-server/blob/main/QUICKSTART.md) — start the server, hand-sign a token, get a call through, **no self-built user system required** |
+| **Run it in five minutes** | [QUICKSTART](https://github.com/flare-im/flare-core-server/blob/main/docs/QUICKSTART.md) — start the server, hand-sign a token, get a call through, **no self-built user system required** |
 | Wire in your own user system | Implement `TokenValidator` (`CoreJwtTokenValidator` for local verification / `HttpHookTokenValidator` to call your endpoint) |
 | Add your own business rules | The 9 `flare-im-hooks` extension points: PreSend / PostSend / Delivery / Recall / MessageRead / MessageReaction / ConversationLifecycle / ConversationMember / GetConversationParticipants |
 | Build a UI | [`@flare-im/vue-ui`](https://www.npmjs.com/package/@flare-im/vue-ui) — 107 components, one contract consistent across four platforms |
@@ -275,7 +275,11 @@ data residency / SLA support.
 Inquiries: `flare1522@163.com`
 
 > For the boundary and its immutable guarantees, see
-> [GOVERNANCE](https://github.com/flare-im/flare-core-server/blob/main/GOVERNANCE.md).
+> [GOVERNANCE](https://github.com/flare-im/flare-core-server/blob/main/.github/GOVERNANCE.md).
 > In short: **what is already open-sourced will not be taken back, and the auth
 > and hooks contracts stay open forever — they will never be crippled to force
 > payment.**
+
+## Change Ownership
+
+Keep send, storage, ordering, and sync behavior in the Rust engine. For platform packaging and integration, follow [flare-core-sdk](https://github.com/flare-im/flare-core-sdk) and the [reference apps](https://github.com/flare-im/flare-core-examples).
