@@ -13,6 +13,18 @@ pub(crate) fn bool_field(value: &Value, key: &str) -> bool {
     value.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
+/// A bridge-level operation (`"visibility": "bridge"`): platform bridges call it themselves, so it
+/// stays in the native call map but out of every public facade.
+pub(crate) fn is_bridge_internal_method(method: &Value) -> bool {
+    str_field(method, "visibility") == "bridge"
+}
+
+/// `setConnectTokenRefresher`: every facade takes the host's async function itself (not the
+/// bridge-level `{ enabled }` request) and hands it to its bridge's hook of the same name.
+pub(crate) fn is_connect_token_refresher_method(method: &Value) -> bool {
+    str_field(method, "operation") == "sdk.set_connect_token_refresher"
+}
+
 pub(crate) fn include_paths<'a>(manifest: &'a Value, key: &str) -> Vec<&'a str> {
     manifest
         .get("include")

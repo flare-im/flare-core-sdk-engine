@@ -6,10 +6,11 @@ use std::{
 };
 
 use crate::{
-    GeneratedTextTarget, cangjie_identifier, child_arr, facade_prop, is_known_ts_model_type,
-    kotlin_model_package_imports, listener_payloads, load_expanded_client_spec, pascal_case,
-    remove_output_paths, single_trailing_newline, str_field, swift_identifier,
-    ts_api_interface_name, ts_api_module_key, upsert_text_file,
+    GeneratedTextTarget, cangjie_identifier, child_arr, facade_prop, is_bridge_internal_method,
+    is_connect_token_refresher_method, is_known_ts_model_type, is_list_type_name,
+    kotlin_model_package_imports, list_inner_type_name, listener_payloads,
+    load_expanded_client_spec, pascal_case, remove_output_paths, single_trailing_newline,
+    str_field, swift_identifier, ts_api_interface_name, ts_api_module_key, upsert_text_file,
 };
 
 pub(crate) fn emit_platform_api_files(root: &Path, check: bool) -> Result<()> {
@@ -92,13 +93,34 @@ fn method_summary(method: &Value) -> String {
     )
 }
 
+/// The element model of a `<Model>List` API type (a bare JSON array of `Model` on the wire),
+/// when `Model` is a known spec model. Other names ending in `List` are not model lists.
+pub(crate) fn api_model_list_element<'a>(name: &'a str, spec: &Value) -> Option<&'a str> {
+    if !is_list_type_name(name) {
+        return None;
+    }
+    let inner = list_inner_type_name(name);
+    is_known_ts_model_type(inner, spec).then_some(inner)
+}
+
+/// Doc line for the facade's `setConnectTokenRefresher`, identical on every platform.
+const CONNECT_TOKEN_REFRESHER_DOC: &str = "Installs (or, with null, removes) the host-managed connect token refresher: an async function returning the new connect token, or null when none can be obtained. The core calls it once after the gateway rejects a connection on authentication and waits at most 20 seconds. Not needed with SDK-managed tokens (an auth block in the init config, even an empty one).";
+
+fn module_has_connect_token_refresher(module: &Value) -> bool {
+    child_arr(module, "methods")
+        .iter()
+        .any(is_connect_token_refresher_method)
+}
+
 pub(crate) fn dart_api_type(name: &str, spec: &Value) -> String {
     match name {
         "Unit" | "DisposeRequest" => "void".to_string(),
         "BooleanResponse" => "bool".to_string(),
-        "ConnectionStateResponse" => "ConnectionState".to_string(),
         _ if is_known_ts_model_type(name, spec) => name.to_string(),
-        _ => "Map<String, Object?>".to_string(),
+        _ => match api_model_list_element(name, spec) {
+            Some(inner) => format!("List<{inner}>"),
+            None => "Map<String, Object?>".to_string(),
+        },
     }
 }
 
@@ -106,9 +128,11 @@ pub(crate) fn kotlin_api_type(name: &str, spec: &Value) -> String {
     match name {
         "Unit" | "DisposeRequest" => "Unit".to_string(),
         "BooleanResponse" => "Boolean".to_string(),
-        "ConnectionStateResponse" => "ConnectionState".to_string(),
         _ if is_known_ts_model_type(name, spec) => name.to_string(),
-        _ => "Map<String, Any?>".to_string(),
+        _ => match api_model_list_element(name, spec) {
+            Some(inner) => format!("List<{inner}>"),
+            None => "Map<String, Any?>".to_string(),
+        },
     }
 }
 
@@ -116,9 +140,11 @@ pub(crate) fn swift_api_type(name: &str, spec: &Value) -> String {
     match name {
         "Unit" | "DisposeRequest" => "Void".to_string(),
         "BooleanResponse" => "Bool".to_string(),
-        "ConnectionStateResponse" => "ConnectionState".to_string(),
         _ if is_known_ts_model_type(name, spec) => name.to_string(),
-        _ => "[String: AnySendable]".to_string(),
+        _ => match api_model_list_element(name, spec) {
+            Some(inner) => format!("[{inner}]"),
+            None => "[String: AnySendable]".to_string(),
+        },
     }
 }
 
@@ -126,9 +152,11 @@ pub(crate) fn arkts_api_type(name: &str, spec: &Value) -> String {
     match name {
         "Unit" | "DisposeRequest" => "void".to_string(),
         "BooleanResponse" => "boolean".to_string(),
-        "ConnectionStateResponse" => "ConnectionState".to_string(),
         _ if is_known_ts_model_type(name, spec) => name.to_string(),
-        _ => "Record<string, Object>".to_string(),
+        _ => match api_model_list_element(name, spec) {
+            Some(inner) => format!("Array<{inner}>"),
+            None => "Record<string, Object>".to_string(),
+        },
     }
 }
 
@@ -136,10 +164,12 @@ pub(crate) fn cangjie_api_type(name: &str, spec: &Value) -> String {
     match name {
         "Unit" | "DisposeRequest" => "Unit".to_string(),
         "BooleanResponse" => "BooleanResponse".to_string(),
-        "ConnectionStateResponse" => "ConnectionState".to_string(),
         "JsonValue" => "JsonValue".to_string(),
         _ if is_known_ts_model_type(name, spec) => name.to_string(),
-        _ => "String".to_string(),
+        _ => match api_model_list_element(name, spec) {
+            Some(inner) => format!("Array<{inner}>"),
+            None => "String".to_string(),
+        },
     }
 }
 
@@ -165,21 +195,6 @@ fn emit_dart_api_targets(root: &Path, spec: &Value) -> Vec<GeneratedTextTarget> 
     targets.push(GeneratedTextTarget {
         path: modules_root.join("modules.dart"),
         body: module_exports.join("\n"),
-    });
-    targets.push(GeneratedTextTarget {
-        path: api_root.join("connection_state.dart"),
-        body: [
-            "// GENERATED. Do not edit by hand.",
-            "",
-            "enum ConnectionState {",
-            "  disconnected,",
-            "  connecting,",
-            "  connected,",
-            "  ready,",
-            "  reconnecting,",
-            "}",
-        ]
-        .join("\n"),
     });
     let mut client_lines = vec![
         "// GENERATED. Do not edit by hand.".to_string(),
@@ -211,7 +226,6 @@ fn emit_dart_api_targets(root: &Path, spec: &Value) -> Vec<GeneratedTextTarget> 
         body: [
             "// GENERATED. Do not edit by hand.",
             "export 'client.dart';",
-            "export 'connection_state.dart';",
             "export 'modules/modules.dart';",
         ]
         .join("\n"),
@@ -223,7 +237,10 @@ fn dart_module_needs_models(spec: &Value, module: &Value) -> bool {
     child_arr(module, "methods").iter().any(|method| {
         [str_field(method, "request"), str_field(method, "response")]
             .into_iter()
-            .any(|type_name| is_known_ts_model_type(type_name, spec))
+            .any(|type_name| {
+                is_known_ts_model_type(type_name, spec)
+                    || api_model_list_element(type_name, spec).is_some()
+            })
     })
 }
 
@@ -237,14 +254,13 @@ fn emit_dart_api_module(spec: &Value, module: &Value) -> String {
             str_field(module, "description")
         ),
     ];
-    let needs_models = dart_module_needs_models(spec, module);
-    if str_field(module, "key") == "connection" {
-        lines.push("import '../connection_state.dart';".to_string());
-        if needs_models {
-            lines.push("import '../../model/model.dart';".to_string());
-        }
-    } else if needs_models {
+    if dart_module_needs_models(spec, module) {
         lines.push("import '../../model/model.dart';".to_string());
+    }
+    if module_has_connect_token_refresher(module) {
+        lines.push(
+            "import '../../contract/bridge_contract.dart' show ConnectTokenRefresher;".to_string(),
+        );
     }
     if str_field(module, "key") == "events" {
         lines.push("import '../../model/model.dart';".to_string());
@@ -258,6 +274,17 @@ fn emit_dart_api_module(spec: &Value, module: &Value) -> String {
         format!("abstract interface class {iface} {{"),
     ]);
     for method in child_arr(module, "methods") {
+        if is_bridge_internal_method(method) {
+            continue;
+        }
+        if is_connect_token_refresher_method(method) {
+            lines.push(format!("  /// {}", CONNECT_TOKEN_REFRESHER_DOC));
+            lines.push(
+                "  Future<void> setConnectTokenRefresher(ConnectTokenRefresher? refresher);"
+                    .to_string(),
+            );
+            continue;
+        }
         let req = dart_api_type(str_field(method, "request"), spec);
         let res = dart_api_type(str_field(method, "response"), spec);
         let arg = if str_field(method, "name") == "sendMessage" {
@@ -304,16 +331,6 @@ fn emit_kotlin_api_targets(root: &Path, spec: &Value) -> Vec<GeneratedTextTarget
             body: emit_kotlin_api_module(spec, module),
         });
     }
-    targets.push(GeneratedTextTarget {
-        path: api_root.join("ConnectionState.kt"),
-        body: [
-            "package com.flare.im.api",
-            "",
-            "/** GENERATED. Do not edit by hand. */",
-            "enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, READY, RECONNECTING }",
-        ]
-        .join("\n"),
-    });
     let mut api_imports = vec!["import com.flare.im.api.session.SessionApi".to_string()];
     for module in child_arr(spec, "modules") {
         if str_field(module, "facade") == "client" {
@@ -366,10 +383,12 @@ fn emit_kotlin_api_module(spec: &Value, module: &Value) -> String {
     let mut lines = vec![
         format!("package {}", kotlin_api_module_package(module)),
         String::new(),
-        "import com.flare.im.api.ConnectionState".to_string(),
         "import com.flare.im.callback.*".to_string(),
         "import com.flare.im.listener.*".to_string(),
     ];
+    if module_has_connect_token_refresher(module) {
+        lines.push("import com.flare.im.contract.ConnectTokenRefresher".to_string());
+    }
     lines.extend(kotlin_model_package_imports(spec));
     lines.extend([
         String::new(),
@@ -378,6 +397,17 @@ fn emit_kotlin_api_module(spec: &Value, module: &Value) -> String {
         format!("interface {iface} {{"),
     ]);
     for method in child_arr(module, "methods") {
+        if is_bridge_internal_method(method) {
+            continue;
+        }
+        if is_connect_token_refresher_method(method) {
+            lines.push(format!("    /** {} */", CONNECT_TOKEN_REFRESHER_DOC));
+            lines.push(
+                "    suspend fun setConnectTokenRefresher(refresher: ConnectTokenRefresher?): Unit"
+                    .to_string(),
+            );
+            continue;
+        }
         let req = kotlin_api_type(str_field(method, "request"), spec);
         let res = kotlin_api_type(str_field(method, "response"), spec);
         let arg = if str_field(method, "name") == "sendMessage" {
@@ -426,7 +456,6 @@ fn emit_swift_api_targets(root: &Path, spec: &Value) -> Vec<GeneratedTextTarget>
         String::new(),
         "/// GENERATED. Do not edit by hand.".to_string(),
         "public struct AnySendable: @unchecked Sendable { public let value: Any; public init(_ value: Any) { self.value = value } }".to_string(),
-        "public enum ConnectionState: String, Sendable { case disconnected, connecting, connected, ready, reconnecting }".to_string(),
         String::new(),
         "public protocol FlareImClientProtocol: SessionApiProtocol {".to_string(),
     ];
@@ -458,6 +487,17 @@ fn emit_swift_api_module(spec: &Value, module: &Value) -> String {
         format!("public protocol {iface}Protocol: AnyObject {{"),
     ];
     for method in child_arr(module, "methods") {
+        if is_bridge_internal_method(method) {
+            continue;
+        }
+        if is_connect_token_refresher_method(method) {
+            lines.push(format!("    /// {}", CONNECT_TOKEN_REFRESHER_DOC));
+            lines.push(
+                "    func setConnectTokenRefresher(_ refresher: ConnectTokenRefresher?) async throws"
+                    .to_string(),
+            );
+            continue;
+        }
         let req = swift_api_type(str_field(method, "request"), spec);
         let res = swift_api_type(str_field(method, "response"), spec);
         let arg = if str_field(method, "name") == "sendMessage" {
@@ -508,10 +548,7 @@ fn emit_arkts_api_targets(root: &Path, spec: &Value) -> Vec<GeneratedTextTarget>
             ts_api_module_key(module)
         ));
     }
-    exports.extend([
-        "export type { FlareImClient } from './client';".to_string(),
-        "export type { ConnectionState } from './client';".to_string(),
-    ]);
+    exports.push("export type { FlareImClient } from './client';".to_string());
     targets.push(GeneratedTextTarget {
         path: api_root.join("index.ets"),
         body: exports.join("\n"),
@@ -531,8 +568,6 @@ fn emit_arkts_api_targets(root: &Path, spec: &Value) -> Vec<GeneratedTextTarget>
         ));
     }
     client.extend([
-        String::new(),
-        "export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'ready' | 'reconnecting';".to_string(),
         String::new(),
         "export interface FlareImClient extends SessionApi {".to_string(),
     ]);
@@ -556,12 +591,39 @@ fn emit_arkts_api_targets(root: &Path, spec: &Value) -> Vec<GeneratedTextTarget>
 
 fn emit_arkts_api_module(spec: &Value, module: &Value) -> String {
     let iface = ts_api_interface_name(module);
+    // Listener payloads plus every model the module's methods take or return.
+    let model_imports = listener_payloads(spec)
+        .into_iter()
+        .chain(
+            child_arr(module, "methods")
+                .iter()
+                .filter(|method| {
+                    !is_bridge_internal_method(method) && !is_connect_token_refresher_method(method)
+                })
+                .flat_map(|method| {
+                    [str_field(method, "request"), str_field(method, "response")]
+                        .into_iter()
+                        .filter_map(|type_name| {
+                            if is_known_ts_model_type(type_name, spec) {
+                                Some(type_name.to_string())
+                            } else {
+                                api_model_list_element(type_name, spec).map(str::to_string)
+                            }
+                        })
+                }),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
     let mut imports = vec![format!(
         "import {{ {} }} from '../../model';",
-        listener_payloads(spec).join(", ")
+        model_imports.into_iter().collect::<Vec<_>>().join(", ")
     )];
     if matches!(str_field(module, "key"), "events" | "messages") {
         imports.push("import { EventCallback, EventSubscription, FlareImEventListener, MessageSendCallback } from '../../listener';".to_string());
+    }
+    if module_has_connect_token_refresher(module) {
+        imports.push(
+            "import { ConnectTokenRefresher } from '../../contract/BridgeContract';".to_string(),
+        );
     }
     let mut lines = vec!["// GENERATED. Do not edit by hand.".to_string()];
     lines.extend(imports);
@@ -571,6 +633,17 @@ fn emit_arkts_api_module(spec: &Value, module: &Value) -> String {
         format!("export interface {iface} {{"),
     ]);
     for method in child_arr(module, "methods") {
+        if is_bridge_internal_method(method) {
+            continue;
+        }
+        if is_connect_token_refresher_method(method) {
+            lines.push(format!("  /** {} */", CONNECT_TOKEN_REFRESHER_DOC));
+            lines.push(
+                "  setConnectTokenRefresher(refresher: ConnectTokenRefresher | null): Promise<void>;"
+                    .to_string(),
+            );
+            continue;
+        }
         let req = arkts_api_type(str_field(method, "request"), spec);
         let res = arkts_api_type(str_field(method, "response"), spec);
         let arg = if str_field(method, "name") == "sendMessage" {
@@ -655,12 +728,30 @@ fn emit_cangjie_api_module(spec: &Value, module: &Value) -> String {
         "package flare_core_harmony_cangjie_sdk.api.modules".to_string(),
         String::new(),
         "import flare_core_harmony_cangjie_sdk.model.*".to_string(),
+    ];
+    if module_has_connect_token_refresher(module) {
+        lines.push(
+            "import flare_core_harmony_cangjie_sdk.contract.ConnectTokenRefresher".to_string(),
+        );
+    }
+    lines.extend([
         String::new(),
         "// GENERATED. Do not edit by hand.".to_string(),
         format!("// {}", str_field(module, "description")),
         format!("public interface {iface} {{"),
-    ];
+    ]);
     for method in child_arr(module, "methods") {
+        if is_bridge_internal_method(method) {
+            continue;
+        }
+        if is_connect_token_refresher_method(method) {
+            lines.push(format!("    // {}", CONNECT_TOKEN_REFRESHER_DOC));
+            lines.push(
+                "    func setConnectTokenRefresher(refresher: ?ConnectTokenRefresher): Unit"
+                    .to_string(),
+            );
+            continue;
+        }
         lines.push(format!(
             "    func {}({}): {}",
             cangjie_identifier(str_field(method, "name")),
@@ -670,4 +761,60 @@ fn emit_cangjie_api_module(spec: &Value, module: &Value) -> String {
     }
     lines.push("}".to_string());
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod connect_token_refresher_tests {
+    use super::*;
+
+    fn session(spec: &Value) -> &Value {
+        child_arr(spec, "modules")
+            .iter()
+            .find(|module| str_field(module, "facade") == "client")
+            .expect("session module")
+    }
+
+    /// Every native facade takes the host's async function and hides the bridge-level answer.
+    #[test]
+    fn session_facades_take_the_refresher_function_and_hide_the_bridge_answer() {
+        let root = crate::context::workspace_root().unwrap();
+        let spec = load_expanded_client_spec(&root).unwrap();
+        let module = session(&spec);
+        let cases = [
+            (
+                emit_kotlin_api_module(&spec, module),
+                "suspend fun setConnectTokenRefresher(refresher: ConnectTokenRefresher?): Unit",
+            ),
+            (
+                emit_swift_api_module(&spec, module),
+                "func setConnectTokenRefresher(_ refresher: ConnectTokenRefresher?) async throws",
+            ),
+            (
+                emit_dart_api_module(&spec, module),
+                "Future<void> setConnectTokenRefresher(ConnectTokenRefresher? refresher);",
+            ),
+            (
+                emit_arkts_api_module(&spec, module),
+                "setConnectTokenRefresher(refresher: ConnectTokenRefresher | null): Promise<void>;",
+            ),
+            (
+                emit_cangjie_api_module(&spec, module),
+                "func setConnectTokenRefresher(refresher: ?ConnectTokenRefresher): Unit",
+            ),
+        ];
+        for (body, signature) in cases {
+            assert!(
+                body.contains(signature),
+                "missing `{signature}` in:\n{body}"
+            );
+            assert!(
+                !body.contains("completeConnectTokenRefresh"),
+                "the bridge-level answer leaked into a facade:\n{body}"
+            );
+            assert!(
+                !body.contains("SetConnectTokenRefresherRequest"),
+                "the facade still takes the bridge-level request:\n{body}"
+            );
+        }
+    }
 }

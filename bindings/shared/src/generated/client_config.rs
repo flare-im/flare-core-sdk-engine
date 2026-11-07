@@ -2,26 +2,32 @@
 // Source: bindings/contract/client_config.json
 
 /// Full client config contract document (JSON).
-pub const CLIENT_CONFIG_CONTRACT_JSON: &str = r#"{"description":"Canonical init/login config shapes for all bindings (camelCase SDK JSON).","initRequest":{"example":{"environment":"production","sdkConfig":{"auth":{"tokenEndpoint":"http://localhost:50050"},"connectTimeoutSecs":30,"defaultTransport":"websocket","httpUrl":"http://localhost:50050","protocolRaceOrder":["quic","websocket"],"quicUrl":"quic://localhost:60052","reconnectIntervalSecs":5,"tlsCaCertPath":"certs/server.crt","transportPolicy":"protocol_race","wsUrl":"ws://localhost:60051"}},"fields":{"environment":{"optional":true,"type":"string"},"sdkConfig":{"optional":true,"type":"SdkConfigOverlay"}}},"platformNotes":{"c":"flare_sdk_init(handle, config_json, ...) — UTF-8 JSON 即 SdkConfigOverlay 或 initRequest 包装","tauri":"sdk_init({ environment?, sdkConfig? }) — 字段与 initRequest 一致","uniffi":"invoke_contract_api(\"client.init\", initRequestJson)","wasm":"flareInvoke(runtime, \"client.init\", initRequestJson) — smoke 与生产适配器同形"},"schemaVersion":1,"sdkConfigOverlay":{"app":["appVersion","appBuild","distribution"],"appBuild":{"description":"宿主应用构建号：单调递增的整数，服务端版本比较只用它。CONNECT 时以十进制字符串作为 app_build 上报。","optional":true,"type":"u64"},"appVersion":{"description":"宿主应用版本名（如 3.2.1），CONNECT 时作为 app_version 上报（另带引擎版本 sdk_version）。未配置不上报，SDK 不编造版本。平台包能零依赖采集的（Android、Apple、HarmonyOS ArkTS、Tauri）会自动补齐，宿主显式传入的值优先。","optional":true,"type":"string"},"auth":{"description":"接入 token 来源。tokenEndpoint 配了即 SDK 托管：login 不传 token 时向 {tokenEndpoint}/api/v1/auth/tokens 签发，到期前 refreshLeadSecs（默认 300）秒用 /api/v1/auth/tokens/refresh 换新。没配则必须显式传 token（flare-social / 自建业务由应用拿 token、自己刷新）。客户端永远不持有签名密钥。","fields":{"refreshLeadSecs":{"optional":true,"type":"u64"},"tokenEndpoint":{"optional":true,"type":"string"}},"type":"object"},"defaultTransport":{"description":"非竞速时的首选传输；未设置时以 WebSocket 为主入口。","type":"enum","values":["websocket","quic"]},"device":["deviceId"],"distribution":{"description":"分发渠道：appstore、play、appgallery、direct、web、tauri 等，CONNECT 时作为 distribution 上报。wasm 未配置时取 web，Tauri 绑定未配置时取 tauri。","optional":true,"type":"string"},"flags":["enableMetrics"],"protocolRaceOrder":{"description":"协议竞速优先级（前项优先）。需同时提供 wsUrl 与 quicUrl，且 transportPolicy 为 auto 或 protocol_race。","items":["websocket","quic"],"type":"array"},"sync":["syncBatchSize","initMessageSyncConcurrency"],"tenant":["tenantId"],"timeouts":["connectTimeoutSecs","reconnectIntervalSecs","maxReconnectAttempts","ackTimeoutSecs","ackMaxRetries"],"tls":["tlsCaCertPath","tlsCaCert","tlsSpkiSha256Pins","tlsCertificateSha256Pins"],"tlsCaCert":{"description":"内联信任 CA 证书（PEM 文本或 base64 DER）。移动端没有可靠文件路径时用它代替 tlsCaCertPath；QUIC/wss 连自签/私有 CA 的服务端必配。","optional":true,"type":"string"},"transportPolicy":{"type":"enum","values":["auto","websocket_only","protocol_race"],"wasmEffective":"websocket_only"},"urls":["dataUrl","wsUrl","quicUrl","httpUrl","capabilityUrl","onlineUrl"]}}"#;
+pub const CLIENT_CONFIG_CONTRACT_JSON: &str = r#"{"description":"Canonical init/login config shapes for all bindings (camelCase SDK JSON).","initRequest":{"example":{"environment":"development","sdkConfig":{"access":{"developmentEndpoints":{"coreApiUrl":"http://localhost:50050","mediaUrl":"http://localhost:50050","quicUrl":"quic://localhost:60052","socialApiUrl":"http://localhost:9300","wsUrl":"ws://localhost:60051"},"trustMode":"development"},"app":{"build":30201,"channel":"stable","distribution":"direct","version":"3.2.1"},"auth":{"tokenEndpoint":"/api/v1/auth/tokens"},"connectTimeoutSecs":8,"tlsCaCertPath":"certs/server.crt"}},"fields":{"environment":{"optional":true,"type":"string"},"sdkConfig":{"optional":true,"type":"SdkConfigOverlay"}}},"platformNotes":{"c":"flare_sdk_init(handle, config_json, ...) — UTF-8 JSON 即 SdkConfigOverlay 或 initRequest 包装","tauri":"sdk_init({ environment?, sdkConfig? }) — 字段与 initRequest 一致","uniffi":"invoke_contract_api(\"client.init\", initRequestJson)","wasm":"flareInvoke(runtime, \"client.init\", initRequestJson) — smoke 与生产适配器同形"},"schemaVersion":1,"sdkConfigOverlay":{"access":{"description":"连哪里只由它决定：IM 与 REST（coreApi / socialApi / media）都按所选接入点路由，SDK 没有其他地址字段。","fields":{"bootstrapId":{"description":"本应用的引导 ID；开发模式可省略（取 development）。","optional":true,"type":"string"},"developmentEndpoints":{"description":"仅 development：主接入点（ID development）的完整 URL；accessPoints 追加同一 Cell 的其他接入点（{ id, wsUrl?, quicUrl?, coreApiUrl?, socialApiUrl?, mediaUrl? }），clientPolicy 覆盖清单策略（照常夹紧）。","fields":["wsUrl","quicUrl","coreApiUrl","socialApiUrl","mediaUrl","accessPoints","clientPolicy"],"optional":true,"type":"object"},"seed":{"description":"构建期写入的已签名接入清单（DSSE 信封 JSON 原文）。","optional":true,"type":"string"},"trustMode":{"description":"production（默认）只接受验签通过的清单；development 允许用 developmentEndpoints 直接构造未签名清单，状态事件带 developmentMode。","optional":true,"type":"enum","values":["production","development"]},"trustRoots":{"description":"构建期注入的根公钥（base64url Ed25519），只用来验证接入清单的签名链。","items":"{ keyId, publicKey }","optional":true,"type":"array"}},"optional":false,"type":"AccessConfig"},"app":{"description":"给了就整体替换构建期的值。","fields":{"build":{"description":"宿主应用构建号：单调递增的整数，服务端版本比较只用它。CONNECT 时以十进制字符串作为 app_build 上报。","optional":true,"type":"u64"},"buildId":{"description":"Web 运行中的构建标识（如 20261105-abc）。Web 的 build 不单调可比，是否更新看它。","optional":true,"type":"string"},"channel":{"description":"更新通道（如 stable、beta），更新中心按它挑发布清单；不上报到 CONNECT。","optional":true,"type":"string"},"distribution":{"description":"分发渠道：appstore、play、appgallery、direct、web、tauri 等，CONNECT 时作为 distribution 上报。wasm 未配置时取 web，Tauri 绑定未配置时取 tauri。","optional":true,"type":"string"},"locale":{"description":"界面语言（BCP-47，如 zh-Hant-TW），更新说明按它选，回退链 zh-Hant-TW → zh-Hant → zh → en。","optional":true,"type":"string"},"target":{"description":"桌面目标（如 darwin-aarch64），发布清单按它挑桌面制品。","optional":true,"type":"string"},"version":{"description":"宿主应用版本名（如 3.2.1），CONNECT 时作为 app_version 上报（另带引擎版本 sdk_version）。未配置不上报，SDK 不编造版本。平台包能零依赖采集的（Android、Apple、HarmonyOS ArkTS、Tauri）会自动补齐，宿主显式传入的值优先。","optional":true,"type":"string"}},"optional":true,"type":"object"},"auth":{"description":"SDK 托管连接令牌：配了 auth（可为空对象）即 SDK 托管，login 不传 token 时由链路在每次建连前向接入清单的 Core API 签发（经 HttpRouter，开发模式即 developmentEndpoints.coreApiUrl；离线时不签发，联网后先签发再握手），到期前 refreshLeadSecs（默认 300）秒用「签发路径 + /refresh」换新。tokenEndpoint 是 Core API 上签发接口的相对路径（以 / 开头），不给用 /api/v1/auth/tokens；绝对地址是配置错误。没配 auth 则必须显式传 token（flare-social / 自建业务由应用拿 token、自己刷新）。客户端永远不持有签名密钥。","fields":{"refreshLeadSecs":{"optional":true,"type":"u64"},"tokenEndpoint":{"optional":true,"type":"string"}},"type":"object"},"connectTimeoutSecs":{"description":"单次握手（含 CONNECT_ACK）时限的本机覆盖，夹紧到 2..30 秒；不设时用清单 clientPolicy.connectTimeoutMs（默认 8 秒）。重连节奏只由 SDK 的退避与清单策略决定，不可配置。","optional":true,"type":"u64"},"device":["deviceId"],"flags":["enableMetrics"],"sync":["syncBatchSize","initMessageSyncConcurrency"],"tenant":["tenantId"],"timeouts":["connectTimeoutSecs","ackTimeoutSecs","ackMaxRetries"],"tls":["tlsCaCertPath","tlsCaCert"],"tlsCaCert":{"description":"内联信任 CA 证书（PEM 文本或 base64 DER）。移动端没有可靠文件路径时用它代替 tlsCaCertPath；QUIC/wss 连自签/私有 CA 的服务端必配。","optional":true,"type":"string"},"urls":["dataUrl"]}}"#;
 
 /// Example `client.init` / `sdk.init` request body.
 pub const CLIENT_INIT_REQUEST_EXAMPLE_JSON: &str = r#"{
-  "environment": "production",
+  "environment": "development",
   "sdkConfig": {
-    "auth": {
-      "tokenEndpoint": "http://localhost:50050"
+    "access": {
+      "developmentEndpoints": {
+        "coreApiUrl": "http://localhost:50050",
+        "mediaUrl": "http://localhost:50050",
+        "quicUrl": "quic://localhost:60052",
+        "socialApiUrl": "http://localhost:9300",
+        "wsUrl": "ws://localhost:60051"
+      },
+      "trustMode": "development"
     },
-    "connectTimeoutSecs": 30,
-    "defaultTransport": "websocket",
-    "httpUrl": "http://localhost:50050",
-    "protocolRaceOrder": [
-      "quic",
-      "websocket"
-    ],
-    "quicUrl": "quic://localhost:60052",
-    "reconnectIntervalSecs": 5,
-    "tlsCaCertPath": "certs/server.crt",
-    "transportPolicy": "protocol_race",
-    "wsUrl": "ws://localhost:60051"
+    "app": {
+      "build": 30201,
+      "channel": "stable",
+      "distribution": "direct",
+      "version": "3.2.1"
+    },
+    "auth": {
+      "tokenEndpoint": "/api/v1/auth/tokens"
+    },
+    "connectTimeoutSecs": 8,
+    "tlsCaCertPath": "certs/server.crt"
   }
 }"#;

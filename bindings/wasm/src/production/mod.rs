@@ -2,6 +2,7 @@ mod events;
 mod platform;
 mod runtime;
 mod session;
+mod token_refresh;
 
 pub use platform::{
     flare_clear_encryption_key, flare_encryption_key_len, flare_has_encryption_key,

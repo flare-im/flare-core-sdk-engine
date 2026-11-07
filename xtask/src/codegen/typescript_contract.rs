@@ -4,10 +4,11 @@ use std::{collections::BTreeSet, path::Path};
 
 use crate::{
     GeneratedTextTarget, all_spec_enums, all_spec_models, child_arr, facade_prop,
-    is_known_ts_model_type, is_list_type_name, json_quote, list_inner_type_name,
-    listener_interface_name, load_expanded_client_spec, pascal_case, remove_output_paths,
-    single_trailing_newline, snake_case, spec_enum_names, spec_model_names, str_field,
-    ts_api_interface_name, ts_api_module_key, typescript_listener_groups, upsert_text_file,
+    is_bridge_internal_method, is_connect_token_refresher_method, is_known_ts_model_type,
+    is_list_type_name, json_quote, list_inner_type_name, listener_interface_name,
+    load_expanded_client_spec, pascal_case, remove_output_paths, single_trailing_newline,
+    snake_case, spec_enum_names, spec_model_names, str_field, ts_api_interface_name,
+    ts_api_module_key, typescript_listener_groups, upsert_text_file,
 };
 
 pub(crate) fn emit_typescript_contract_files(root: &Path, check: bool) -> Result<()> {
@@ -88,14 +89,7 @@ fn typescript_contract_targets(root: &Path, spec: &Value) -> Vec<GeneratedTextTa
         body: emit_typescript_callback_index(),
     });
     targets.extend(emit_typescript_api_targets(root, spec));
-    targets.push(GeneratedTextTarget {
-        path: src_root.join("lifecycle/heartbeatLifecycle.ts"),
-        body: emit_typescript_heartbeat_lifecycle_bridge(),
-    });
-    targets.push(GeneratedTextTarget {
-        path: src_root.join("lifecycle/index.ts"),
-        body: "export * from \"./heartbeatLifecycle\";".to_string(),
-    });
+    // `src/lifecycle/` (the platform lifecycle installed by init) is hand-written.
     targets
 }
 
@@ -151,46 +145,107 @@ fn emit_typescript_api_types(spec: &Value) -> String {
         String::new(),
         "export type Unit = void;".to_string(),
         "export type JsonValue = unknown;".to_string(),
-        "export type TransportPolicy = \"auto\" | \"websocket_only\" | \"protocol_race\";"
-            .to_string(),
-        "export type TransportKind = \"websocket\" | \"quic\";".to_string(),
         "export type SdkResourceProfile = \"desktop\" | \"mobile\";".to_string(),
-        "export interface SdkConfig {".to_string(),
-        "  ackMaxInFlight?: number;".to_string(),
-        "  ackMaxRetries?: number;".to_string(),
-        "  ackTimeoutSecs?: number;".to_string(),
-        "  /** Monotonic integer build number reported on CONNECT; servers compare versions by it. */"
+        "/** A root public key the access manifest signature chain is verified against. */"
             .to_string(),
-        "  appBuild?: number;".to_string(),
-        "  /** Host app version name reported on CONNECT. Web hosts inject it at build time. */"
+        "export interface AccessTrustRoot { keyId: string; publicKey: string; }".to_string(),
+        "/** One more access point of the development cell (local dual-entry failover drills). */"
             .to_string(),
-        "  appVersion?: string;".to_string(),
-        "  capabilityUrl?: string;".to_string(),
-        "  connectTimeoutSecs?: number;".to_string(),
-        "  dataUrl?: string;".to_string(),
-        "  defaultTransport?: TransportKind;".to_string(),
+        "export interface DevelopmentAccessPoint {".to_string(),
+        "  id: string;".to_string(),
+        "  wsUrl?: string;".to_string(),
+        "  quicUrl?: string;".to_string(),
+        "  coreApiUrl?: string;".to_string(),
+        "  socialApiUrl?: string;".to_string(),
+        "  mediaUrl?: string;".to_string(),
+        "}".to_string(),
+        "/** Development mode only: endpoints of the primary access point (id `development`), unsigned. */"
+            .to_string(),
+        "export interface DevelopmentEndpoints {".to_string(),
+        "  wsUrl?: string;".to_string(),
+        "  quicUrl?: string;".to_string(),
+        "  coreApiUrl?: string;".to_string(),
+        "  socialApiUrl?: string;".to_string(),
+        "  mediaUrl?: string;".to_string(),
+        "  accessPoints?: DevelopmentAccessPoint[];".to_string(),
+        "  /** Client link policy overrides, clamped like a signed manifest's `clientPolicy`. */"
+            .to_string(),
+        "  clientPolicy?: Record<string, unknown>;".to_string(),
+        "}".to_string(),
+        "/** Where to connect: the signed access manifest, or development endpoints. The SDK has no other address field. */"
+            .to_string(),
+        "export interface AccessConfig {".to_string(),
+        "  bootstrapId?: string;".to_string(),
+        "  trustRoots?: AccessTrustRoot[];".to_string(),
+        "  /** Signed access manifest written at build time (DSSE envelope JSON text). */"
+            .to_string(),
+        "  seed?: string;".to_string(),
+        "  trustMode?: \"production\" | \"development\";".to_string(),
+        "  developmentEndpoints?: DevelopmentEndpoints;".to_string(),
+        "}".to_string(),
+        "/** Host app identity reported on CONNECT. When given it replaces the build-time value whole. */"
+            .to_string(),
+        "export interface SdkAppConfig {".to_string(),
+        "  /** Version name, e.g. `3.2.1`. Web hosts inject it at build time. */".to_string(),
+        "  version?: string;".to_string(),
+        "  /** Monotonic integer build number; servers compare versions by it. */".to_string(),
+        "  build?: number;".to_string(),
         "  /** Distribution channel reported on CONNECT (`web` when unset in the browser, `tauri` under Tauri). */"
             .to_string(),
         "  distribution?: string;".to_string(),
+        "  /** Update channel (stable, beta); not reported on CONNECT. */".to_string(),
+        "  channel?: string;".to_string(),
+        "  /** The web build this page runs: the update center compares it, not `build`. */"
+            .to_string(),
+        "  buildId?: string;".to_string(),
+        "  /** Desktop target (`darwin-aarch64`): picks the desktop artifact. */".to_string(),
+        "  target?: string;".to_string(),
+        "  /** Interface language (BCP-47); the release notes follow it. */".to_string(),
+        "  locale?: string;".to_string(),
+        "}".to_string(),
+        "/**".to_string(),
+        " * SDK-managed connect tokens: with `auth` in the config (even `{}`) the core issues and refreshes"
+            .to_string(),
+        " * them through the Core API; without it the host supplies them.".to_string(),
+        " */".to_string(),
+        "export interface SdkAuthConfig {".to_string(),
+        "  /**".to_string(),
+        "   * Path of the issuing endpoint on the Core API, starting with `/` (default `/api/v1/auth/tokens`;"
+            .to_string(),
+        "   * refresh is `{tokenEndpoint}/refresh`). An absolute URL fails init with CONFIGURATION_ERROR."
+            .to_string(),
+        "   */".to_string(),
+        "  tokenEndpoint?: string;".to_string(),
+        "  /** Seconds before expiry to refresh the token (default 300). */".to_string(),
+        "  refreshLeadSecs?: number;".to_string(),
+        "}".to_string(),
+        "export interface SdkConfig {".to_string(),
+        "  access?: AccessConfig;".to_string(),
+        "  ackMaxInFlight?: number;".to_string(),
+        "  ackMaxRetries?: number;".to_string(),
+        "  ackTimeoutSecs?: number;".to_string(),
+        "  app?: SdkAppConfig;".to_string(),
+        "  auth?: SdkAuthConfig;".to_string(),
+        "  /** Local override of one handshake's timeout, clamped to 2..30; unset uses the manifest's clientPolicy. */"
+            .to_string(),
+        "  connectTimeoutSecs?: number;".to_string(),
+        "  dataUrl?: string;".to_string(),
+        "  deviceId?: string;".to_string(),
         "  enableMetrics?: boolean;".to_string(),
         "  eventBusCapacity?: number;".to_string(),
         "  eventDedupeCapacity?: number;".to_string(),
-        "  httpUrl?: string;".to_string(),
         "  initMessageSyncConcurrency?: number;".to_string(),
-        "  maxReconnectAttempts?: number;".to_string(),
-        "  mediaStorageProxyPrefix?: string;".to_string(),
-        "  mediaStorageProxyTargets?: string[];".to_string(),
         "  messageDedupeCapacity?: number;".to_string(),
-        "  onlineUrl?: string;".to_string(),
-        "  protocolRaceOrder?: TransportKind[];".to_string(),
-        "  quicUrl?: string;".to_string(),
-        "  reconnectIntervalSecs?: number;".to_string(),
         "  resourceProfile?: SdkResourceProfile;".to_string(),
         "  syncBatchSize?: number;".to_string(),
         "  tenantId?: string;".to_string(),
+        "  tlsCaCert?: string;".to_string(),
         "  tlsCaCertPath?: string;".to_string(),
-        "  transportPolicy?: TransportPolicy;".to_string(),
-        "  wsUrl?: string;".to_string(),
+        "  /**".to_string(),
+        "   * Platform package only, never sent to the core: init installs the PlatformLifecycle".to_string(),
+        "   * (network and foreground/background wiring) unless this is false. Default true; tests turn it off.".to_string(),
+        "   */".to_string(),
+        "  installPlatformLifecycle?: boolean;".to_string(),
         "}".to_string(),
         "export interface CreateClientRequest { config: SdkConfig; }".to_string(),
         "export interface CreateClientResponse { handle: bigint | number; }".to_string(),
@@ -282,8 +337,8 @@ fn emit_typescript_api_module(spec: &Value, module: &Value) -> String {
     if str_field(module, "key") == "messages" {
         lines.push("import type { MessageSendCallback } from '../../callback';".to_string());
     }
-    if module_uses_connection_state(module) {
-        lines.push("import type { ConnectionState } from '../../contract';".to_string());
+    if module_uses_connect_token_refresher(module) {
+        lines.push("import type { ConnectTokenRefresher } from '../../contract';".to_string());
     }
     let model_imports = typescript_api_module_model_imports(spec, module);
     if !model_imports.is_empty() {
@@ -305,6 +360,9 @@ fn emit_typescript_api_module(spec: &Value, module: &Value) -> String {
         format!("export interface {iface} {{"),
     ]);
     for method in child_arr(module, "methods") {
+        if is_bridge_internal_method(method) {
+            continue;
+        }
         let res = typescript_api_type(str_field(method, "response"), spec);
         let arg = typescript_api_method_arg(method, spec);
         lines.push(format!(
@@ -351,6 +409,10 @@ fn typescript_api_method_arg(method: &Value, spec: &Value) -> String {
     if str_field(method, "name") == "sendMessage" {
         return "request: SendMessageRequest, callback?: MessageSendCallback".to_string();
     }
+    if is_connect_token_refresher_method(method) {
+        // The host hands over one function; the runtime bridge owns the request/complete round trip.
+        return "refresher: ConnectTokenRefresher | null".to_string();
+    }
     let req = typescript_api_type(str_field(method, "request"), spec);
     if req == "void" {
         String::new()
@@ -364,16 +426,21 @@ fn typescript_api_type(name: &str, spec: &Value) -> String {
         "Unit" | "DisposeRequest" => "void".to_string(),
         "JsonValue" => "unknown".to_string(),
         "BooleanResponse" => "boolean".to_string(),
-        "ConnectionStateResponse" => "ConnectionState".to_string(),
         _ if is_known_ts_model_type(name, spec) => name.to_string(),
+        _ if is_model_list_type(name, spec) => format!("{}[]", list_inner_type_name(name)),
         _ => name.to_string(),
     }
+}
+
+/// `<Model>List`: a bare JSON array of one spec model (e.g. `access.listAccessPoints`).
+pub(crate) fn is_model_list_type(name: &str, spec: &Value) -> bool {
+    is_list_type_name(name) && is_known_ts_model_type(list_inner_type_name(name), spec)
 }
 
 fn is_non_importable_typescript_api_type(name: &str) -> bool {
     matches!(
         name,
-        "Unit" | "DisposeRequest" | "JsonValue" | "BooleanResponse" | "ConnectionStateResponse"
+        "Unit" | "DisposeRequest" | "JsonValue" | "BooleanResponse"
     )
 }
 
@@ -395,6 +462,7 @@ fn needs_typescript_api_alias(name: &str, spec: &Value) -> bool {
     !is_non_importable_typescript_api_type(name)
         && !is_static_typescript_api_type(name)
         && !is_known_ts_model_type(name, spec)
+        && !is_model_list_type(name, spec)
 }
 
 fn needs_typescript_api_types_import(name: &str, spec: &Value) -> bool {
@@ -405,6 +473,9 @@ fn typescript_api_alias_names(spec: &Value) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for module in child_arr(spec, "modules") {
         for method in child_arr(module, "methods") {
+            if is_connect_token_refresher_method(method) || is_bridge_internal_method(method) {
+                continue;
+            }
             for type_name in [str_field(method, "request"), str_field(method, "response")] {
                 if needs_typescript_api_alias(type_name, spec) {
                     names.insert(type_name.to_string());
@@ -418,9 +489,14 @@ fn typescript_api_alias_names(spec: &Value) -> BTreeSet<String> {
 fn typescript_api_module_model_imports(spec: &Value, module: &Value) -> BTreeSet<String> {
     let mut imports = BTreeSet::new();
     for method in child_arr(module, "methods") {
+        if is_connect_token_refresher_method(method) || is_bridge_internal_method(method) {
+            continue;
+        }
         for type_name in [str_field(method, "request"), str_field(method, "response")] {
             if is_known_ts_model_type(type_name, spec) {
                 imports.insert(type_name.to_string());
+            } else if is_model_list_type(type_name, spec) {
+                imports.insert(list_inner_type_name(type_name).to_string());
             }
         }
     }
@@ -438,6 +514,9 @@ fn typescript_api_module_model_imports(spec: &Value, module: &Value) -> BTreeSet
 fn typescript_api_module_alias_imports(spec: &Value, module: &Value) -> BTreeSet<String> {
     let mut imports = BTreeSet::new();
     for method in child_arr(module, "methods") {
+        if is_connect_token_refresher_method(method) || is_bridge_internal_method(method) {
+            continue;
+        }
         for type_name in [str_field(method, "request"), str_field(method, "response")] {
             if needs_typescript_api_types_import(type_name, spec) {
                 imports.insert(type_name.to_string());
@@ -447,10 +526,10 @@ fn typescript_api_module_alias_imports(spec: &Value, module: &Value) -> BTreeSet
     imports
 }
 
-fn module_uses_connection_state(module: &Value) -> bool {
+fn module_uses_connect_token_refresher(module: &Value) -> bool {
     child_arr(module, "methods")
         .iter()
-        .any(|method| str_field(method, "response") == "ConnectionStateResponse")
+        .any(is_connect_token_refresher_method)
 }
 
 fn typescript_api_method_summary(method: &Value) -> String {
@@ -476,112 +555,6 @@ fn typescript_api_method_summary(method: &Value) -> String {
             str_field(method, "operation")
         )
     }
-}
-
-fn emit_typescript_heartbeat_lifecycle_bridge() -> String {
-    [
-        "/** GENERATED. Do not edit by hand. */",
-        "import type { SetHeartbeatAppStateRequest } from \"../model/set_heartbeat_app_state_request\";",
-        "import { HeartbeatAppState } from \"../model/heartbeat_app_state\";",
-        "",
-        "export interface HeartbeatAppStateClient {",
-        "  setHeartbeatAppState(request: SetHeartbeatAppStateRequest): Promise<void>;",
-        "}",
-        "",
-        "export interface HeartbeatLifecycleBinding {",
-        "  sync(): Promise<void>;",
-        "  dispose(): void;",
-        "}",
-        "",
-        "export interface HeartbeatLifecycleOptions {",
-        "  onError?: (error: unknown) => void;",
-        "}",
-        "",
-        "export interface WebHeartbeatLifecycleOptions extends HeartbeatLifecycleOptions {",
-        "  document?: {",
-        "    readonly visibilityState?: DocumentVisibilityState | string;",
-        "    addEventListener(name: \"visibilitychange\", listener: () => void): void;",
-        "    removeEventListener(name: \"visibilitychange\", listener: () => void): void;",
-        "  };",
-        "  emitInitialState?: boolean;",
-        "}",
-        "",
-        "export class HeartbeatLifecycleBridge {",
-        "  constructor(",
-        "    private readonly client: HeartbeatAppStateClient,",
-        "    private readonly options: HeartbeatLifecycleOptions = {},",
-        "  ) {}",
-        "",
-        "  setForeground(): Promise<void> {",
-        "    return this.setAppState(HeartbeatAppState.Foreground);",
-        "  }",
-        "",
-        "  setBackground(): Promise<void> {",
-        "    return this.setAppState(HeartbeatAppState.Background);",
-        "  }",
-        "",
-        "  onResume(): Promise<void> {",
-        "    return this.setForeground();",
-        "  }",
-        "",
-        "  onPause(): Promise<void> {",
-        "    return this.setBackground();",
-        "  }",
-        "",
-        "  private async setAppState(appState: HeartbeatAppState): Promise<void> {",
-        "    try {",
-        "      await this.client.setHeartbeatAppState({ appState });",
-        "    } catch (error) {",
-        "      this.options.onError?.(error);",
-        "    }",
-        "  }",
-        "}",
-        "",
-        "export function installWebHeartbeatLifecycle(",
-        "  client: HeartbeatAppStateClient,",
-        "  options: WebHeartbeatLifecycleOptions = {},",
-        "): HeartbeatLifecycleBinding {",
-        "  const documentRef = options.document ?? globalThis.document;",
-        "  const bridge = new HeartbeatLifecycleBridge(client, options);",
-        "  let disposed = false;",
-        "",
-        "  const sync = () => {",
-        "    const hidden = documentRef?.visibilityState === \"hidden\";",
-        "    return hidden ? bridge.setBackground() : bridge.setForeground();",
-        "  };",
-        "",
-        "  if (!documentRef) {",
-        "    return {",
-        "      sync,",
-        "      dispose: () => {",
-        "        disposed = true;",
-        "      },",
-        "    };",
-        "  }",
-        "",
-        "  const listener = () => {",
-        "    if (!disposed) {",
-        "      void sync();",
-        "    }",
-        "  };",
-        "  documentRef.addEventListener(\"visibilitychange\", listener);",
-        "  if (options.emitInitialState !== false) {",
-        "    void sync();",
-        "  }",
-        "",
-        "  return {",
-        "    sync,",
-        "    dispose: () => {",
-        "      if (disposed) {",
-        "        return;",
-        "      }",
-        "      disposed = true;",
-        "      documentRef.removeEventListener(\"visibilitychange\", listener);",
-        "    },",
-        "  };",
-        "}",
-    ]
-    .join("\n")
 }
 
 fn ts_model_type(type_name: &str, spec: &Value) -> String {

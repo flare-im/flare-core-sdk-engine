@@ -1,0 +1,245 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "action": "connectNow",
+        "prefer": []
+      },
+      "input": {
+        "event": {
+          "event": "linkLost",
+          "loss": {
+            "class": "heartbeatDead",
+            "kind": "failed"
+          }
+        },
+        "windowUnit": 0.0
+      },
+      "name": "a dead heartbeat switches at once"
+    },
+    {
+      "expected": {
+        "action": "connectNow",
+        "prefer": []
+      },
+      "input": {
+        "event": {
+          "event": "linkLost",
+          "loss": {
+            "class": "unreachable",
+            "kind": "failed"
+          }
+        },
+        "windowUnit": 0.0
+      },
+      "name": "a peer close switches at once"
+    },
+    {
+      "expected": {
+        "action": "connectAfter",
+        "delayMs": 2000,
+        "prefer": [
+          "ap-b"
+        ]
+      },
+      "input": {
+        "event": {
+          "event": "linkLost",
+          "loss": {
+            "kind": "planned",
+            "prefer": [
+              "ap-b"
+            ],
+            "windowMs": [
+              1000,
+              5000
+            ]
+          }
+        },
+        "windowUnit": 0.25
+      },
+      "name": "a drain reconnects inside its window to the preferred access point"
+    },
+    {
+      "expected": {
+        "action": "connectNow",
+        "prefer": [
+          "ap-b",
+          "ap-c"
+        ]
+      },
+      "input": {
+        "event": {
+          "event": "linkLost",
+          "loss": {
+            "kind": "planned",
+            "prefer": [
+              "ap-b",
+              "ap-c"
+            ],
+            "windowMs": null
+          }
+        },
+        "windowUnit": 0.0
+      },
+      "name": "a drain without a window reconnects at once"
+    },
+    {
+      "expected": {
+        "action": "terminate",
+        "reason": "kicked"
+      },
+      "input": {
+        "event": {
+          "event": "linkLost",
+          "loss": {
+            "kind": "sessionEnded",
+            "reason": "kicked"
+          }
+        },
+        "windowUnit": 0.0
+      },
+      "name": "a session-ending kick terminates"
+    },
+    {
+      "expected": {
+        "action": "terminate",
+        "reason": "tenantUnavailable"
+      },
+      "input": {
+        "event": {
+          "event": "linkLost",
+          "loss": {
+            "kind": "sessionEnded",
+            "reason": "tenantUnavailable"
+          }
+        },
+        "windowUnit": 0.0
+      },
+      "name": "an unavailable tenant terminates"
+    },
+    {
+      "expected": {
+        "action": "backoff"
+      },
+      "input": {
+        "event": {
+          "event": "linkLost",
+          "loss": {
+            "kind": "kicked"
+          }
+        },
+        "windowUnit": 0.0
+      },
+      "name": "a kick that keeps the session backs off"
+    },
+    {
+      "expected": {
+        "action": "stay"
+      },
+      "input": {
+        "event": {
+          "event": "linkLost",
+          "loss": {
+            "kind": "clientRequested"
+          }
+        },
+        "windowUnit": 0.0
+      },
+      "name": "our own close does nothing"
+    },
+    {
+      "expected": {
+        "action": "backoff"
+      },
+      "input": {
+        "event": {
+          "event": "roundExhausted"
+        }
+      },
+      "name": "every candidate failed or open: back off"
+    },
+    {
+      "expected": {
+        "accessPoint": "ap-a",
+        "action": "retrySameAfter",
+        "delayMs": 2500
+      },
+      "input": {
+        "event": {
+          "accessPoint": "ap-a",
+          "event": "overloaded",
+          "retryAfterMs": 2500
+        }
+      },
+      "name": "overloaded waits on the same access point"
+    },
+    {
+      "expected": {
+        "accessPoint": "ap-a",
+        "action": "retrySameAfter",
+        "delayMs": 2000
+      },
+      "input": {
+        "event": {
+          "accessPoint": "ap-a",
+          "event": "overloaded"
+        }
+      },
+      "name": "overloaded without retry-after waits the default on the same access point"
+    },
+    {
+      "expected": {
+        "action": "probeWake"
+      },
+      "input": {
+        "event": {
+          "currentUnhealthy": false,
+          "event": "networkAvailable",
+          "linkAlive": true
+        }
+      },
+      "name": "network back with a healthy link probes it"
+    },
+    {
+      "expected": {
+        "action": "connectNow",
+        "prefer": []
+      },
+      "input": {
+        "event": {
+          "currentUnhealthy": true,
+          "event": "networkAvailable",
+          "linkAlive": true
+        }
+      },
+      "name": "network changed and the current access point is unhealthy there"
+    },
+    {
+      "expected": {
+        "action": "connectNow",
+        "prefer": []
+      },
+      "input": {
+        "event": {
+          "currentUnhealthy": false,
+          "event": "networkAvailable",
+          "linkAlive": false
+        }
+      },
+      "name": "network back without a link connects at once"
+    },
+    {
+      "expected": {
+        "action": "suspend"
+      },
+      "input": {
+        "event": {
+          "event": "networkUnavailable"
+        }
+      },
+      "name": "no network suspends"
+    }
+  ],
+  "description": "Failover decision table. input.event: linkLost{loss} | roundExhausted | overloaded{accessPoint, retryAfterMs?} | networkAvailable{linkAlive, currentUnhealthy} | networkUnavailable. loss.kind: failed{class} | planned{windowMs?, prefer} | sessionEnded{reason} | kicked | clientRequested. windowUnit in [0,1) picks the reconnect moment inside a server window: min + round((max - min) x unit). A failed current access point is replaced at once (no backoff); a round in which every candidate failed or is breaker-open backs off; OVERLOADED waits on the same access point (retryAfterMs, default 2000) and never switches."
+}

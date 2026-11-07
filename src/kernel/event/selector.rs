@@ -188,31 +188,25 @@ impl From<PluginEventType> for SdkEventType {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ConnectionEventType {
-    Connected,
-    Disconnected,
-    StateChanged,
+    Status,
     SyncStateChanged,
-    ServerError,
-    Reconnecting,
-    KickedOff,
-    TokenExpired,
+    AccessSwitched,
+    AccessChanged,
+    UpdateState,
 }
 
 impl ConnectionEventType {
     fn matches(&self, event: &ConnectionEvent) -> bool {
         matches!(
             (self, event),
-            (Self::Connected, ConnectionEvent::Connected)
-                | (Self::Disconnected, ConnectionEvent::Disconnected { .. })
-                | (Self::StateChanged, ConnectionEvent::StateChanged { .. })
+            (Self::Status, ConnectionEvent::Status(_))
                 | (
                     Self::SyncStateChanged,
                     ConnectionEvent::SyncStateChanged { .. }
                 )
-                | (Self::ServerError, ConnectionEvent::ServerError { .. })
-                | (Self::Reconnecting, ConnectionEvent::Reconnecting { .. })
-                | (Self::KickedOff, ConnectionEvent::KickedOff { .. })
-                | (Self::TokenExpired, ConnectionEvent::TokenExpired { .. })
+                | (Self::AccessSwitched, ConnectionEvent::AccessSwitched(_))
+                | (Self::AccessChanged, ConnectionEvent::AccessChanged(_))
+                | (Self::UpdateState, ConnectionEvent::UpdateState(_))
         )
     }
 }
@@ -278,6 +272,7 @@ impl MessageEventType {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum NotificationEventType {
     Received,
+    MessageSound,
     NotificationType(String),
 }
 
@@ -289,10 +284,12 @@ impl NotificationEventType {
     fn matches(&self, event: &NotificationEvent) -> bool {
         match (self, event) {
             (Self::Received, NotificationEvent::Received { .. }) => true,
+            (Self::MessageSound, NotificationEvent::MessageSound { .. }) => true,
             (Self::NotificationType(expected), NotificationEvent::Received { message }) => {
                 notification_type_of_message(message)
                     .is_some_and(|actual| actual.trim() == expected.as_str())
             }
+            _ => false,
         }
     }
 }
@@ -544,29 +541,20 @@ impl SdkEvent {
 
     pub fn event_type(&self) -> SdkEventType {
         match self {
-            Self::Connection(ConnectionEvent::Connected) => {
-                SdkEventType::Connection(ConnectionEventType::Connected)
-            }
-            Self::Connection(ConnectionEvent::Disconnected { .. }) => {
-                SdkEventType::Connection(ConnectionEventType::Disconnected)
-            }
-            Self::Connection(ConnectionEvent::StateChanged { .. }) => {
-                SdkEventType::Connection(ConnectionEventType::StateChanged)
+            Self::Connection(ConnectionEvent::Status(_)) => {
+                SdkEventType::Connection(ConnectionEventType::Status)
             }
             Self::Connection(ConnectionEvent::SyncStateChanged { .. }) => {
                 SdkEventType::Connection(ConnectionEventType::SyncStateChanged)
             }
-            Self::Connection(ConnectionEvent::ServerError { .. }) => {
-                SdkEventType::Connection(ConnectionEventType::ServerError)
+            Self::Connection(ConnectionEvent::AccessSwitched(_)) => {
+                SdkEventType::Connection(ConnectionEventType::AccessSwitched)
             }
-            Self::Connection(ConnectionEvent::Reconnecting { .. }) => {
-                SdkEventType::Connection(ConnectionEventType::Reconnecting)
+            Self::Connection(ConnectionEvent::AccessChanged(_)) => {
+                SdkEventType::Connection(ConnectionEventType::AccessChanged)
             }
-            Self::Connection(ConnectionEvent::KickedOff { .. }) => {
-                SdkEventType::Connection(ConnectionEventType::KickedOff)
-            }
-            Self::Connection(ConnectionEvent::TokenExpired { .. }) => {
-                SdkEventType::Connection(ConnectionEventType::TokenExpired)
+            Self::Connection(ConnectionEvent::UpdateState(_)) => {
+                SdkEventType::Connection(ConnectionEventType::UpdateState)
             }
             Self::Message(MessageEvent::Received { .. }) => {
                 SdkEventType::Message(MessageEventType::Received)
@@ -644,6 +632,9 @@ impl SdkEvent {
                     }
                     _ => SdkEventType::Notification(NotificationEventType::Received),
                 }
+            }
+            Self::Notification(NotificationEvent::MessageSound { .. }) => {
+                SdkEventType::Notification(NotificationEventType::MessageSound)
             }
             Self::Conversation(ConversationEvent::Synced { .. }) => {
                 SdkEventType::Conversation(ConversationEventType::Synced)

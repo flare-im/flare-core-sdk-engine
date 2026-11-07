@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "flare-im-core-sdk-bindings",
-  "contractVersion": "flare-im-ffi/v1",
+  "contractVersion": "flare-im-ffi/v2",
   "coreCrate": "flare-im-core-sdk",
   "sourceOfTruth": {
     "core": "../../src",

@@ -281,6 +281,13 @@
       "default": false,
       "type": "boolean"
     },
+    "isMentionOnly": {
+      "description": "Notification preference. None means the sync source did not supply it.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "isMuted": {
       "default": false,
       "type": "boolean"

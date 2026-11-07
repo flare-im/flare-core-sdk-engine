@@ -2,18 +2,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use flare_core::client::builder::flare::{FlareClient, FlareClientBuilder, MessageListener};
-#[cfg(not(target_arch = "wasm32"))]
-use flare_core::common::config_types::TransportProtocol as CoreTransport;
+use flare_core::client::link::{ConnectFailure, ConnectReport};
 use flare_core::common::device::{DeviceInfo, DevicePlatform};
 use flare_core::common::protocol::SerializationFormat;
 use flare_core::common::{HeartbeatAppState, HeartbeatConfig};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use crate::client::config::SdkConfig;
 use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
-use crate::shared::error::{ErrorCode, FlareError, Result};
-use crate::shared::util::timeout;
+use crate::runtime::link::OpenRequest;
+use crate::shared::error::Result;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_device_platform(target_os: &str) -> DevicePlatform {
@@ -53,7 +52,7 @@ fn sdk_device_info(config: &SdkConfig) -> DeviceInfo {
     if let Some(version) = config.effective_app_version() {
         device = device.with_app_version(version);
     }
-    if let Some(build) = config.app_build {
+    if let Some(build) = config.app.build {
         device = device.with_metadata(CONNECT_META_APP_BUILD.to_string(), build.to_string());
     }
     if let Some(distribution) = config.effective_distribution() {
@@ -68,27 +67,8 @@ const CONNECT_META_APP_BUILD: &str = "app_build";
 const CONNECT_META_DISTRIBUTION: &str = "distribution";
 const CONNECT_META_SDK_VERSION: &str = "sdk_version";
 
-/// 建连失败时保留下来的错误码：服务端明确拒绝的类别原样上报，其余都是连接失败。
-///
-/// `SERVICE_UNAVAILABLE` 是服务端的暂时性拒绝（例如网关读不到租户状态）：既不是令牌问题，
-/// 也不是租户被停用，应用与重连循环都应当退避重试，而不是提示重新登录或终止会话。
-fn connect_failure_code(error: &FlareError) -> ErrorCode {
-    match error.code() {
-        Some(
-            code @ (ErrorCode::AuthenticationFailed
-            | ErrorCode::AuthenticationExpired
-            | ErrorCode::AuthenticationInvalid
-            | ErrorCode::TokenInvalid
-            | ErrorCode::TokenExpired
-            | ErrorCode::PermissionDenied
-            | ErrorCode::ServiceUnavailable),
-        ) => code,
-        _ => ErrorCode::ConnectionFailed,
-    }
-}
-
-/// 对当前长连接做一次即时验活：立即发一枚 ping，验活窗口（8 s）内收不到 PONG 就按心跳超时
-/// 断开，之后由会话的重连监视器接手。
+/// 对当前长连接做一次即时验活：立即发一枚 ping，验活窗口（接入策略 `probeWakeTimeoutMs`，缺省 5 s）
+/// 内收不到 PONG 就按心跳超时断开，之后由链路状态机换线路重连。
 ///
 /// 用来戳穿「看起来连着、其实早已死掉」的半开连接：网络切换后旧路径上的连接常被中间设备静默
 /// 丢弃，本端收不到任何关闭信号，只靠周期心跳要等一个完整的心跳超时（前台 90 s）才发现。
@@ -130,7 +110,9 @@ impl LinkProbe for SocketLinkProbe {
     }
 }
 
-/// Socket 传输层 — 基于 flare-core 的多协议长连接封装
+/// Socket 传输层：持有当前长连接的客户端槽位。建连参数（接入点、协议顺序、交错间隔、时限、代数）
+/// 每次由链路状态机给出；这里只负责「按给定参数建一条连接」，从不自己重连。
+#[derive(Clone)]
 pub struct SocketTransport {
     config: SdkConfig,
     sender: Arc<PacketSender>,
@@ -168,126 +150,98 @@ impl SocketTransport {
         &self.sender
     }
 
-    pub async fn connect(
+    pub fn config(&self) -> &SdkConfig {
+        &self.config
+    }
+
+    /// 按链路状态机给出的目标建一条连接（交错竞速），返回即已收到 CONNECT_ACK。
+    ///
+    /// 先关掉旧连接再建新的：同设备两条 CONNECT 会被网关按「同设备替换」互踢，新连接的 CONNECT_ACK
+    /// 也可能被拖到旧连接过期之后。
+    pub(crate) async fn open(
         &self,
-        user_id: &str,
-        token: &str,
+        request: &OpenRequest,
         listener: Arc<dyn MessageListener>,
-        ready_notify: Arc<Notify>,
-    ) -> Result<()> {
-        let device = sdk_device_info(&self.config);
-
-        let ws_url = self.config.ws_url.as_deref().ok_or_else(|| {
-            FlareError::localized(ErrorCode::ConfigurationError, "ws_url not configured")
-        })?;
-        let primary_url = self
+    ) -> std::result::Result<ConnectReport, ConnectFailure> {
+        let target = &request.target;
+        let Some((_, primary_url)) = target.protocols.first() else {
+            // 接入点没有本端可用的 IM 入口：不是网络失败，没有任何尝试。
+            return Err(ConnectFailure {
+                attempts: Vec::new(),
+                skipped: Vec::new(),
+                elapsed: Duration::ZERO,
+            });
+        };
+        // 信任根（系统根 + 配置的私有 CA）加这个接入点自己的 SPKI 钉扎；清单没给钉扎时只做 CA 校验。
+        // 钉扎不符在握手阶段失败，报成 TLS 失败计入该接入点的健康记录。
+        // wasm 上 WebSocket 由浏览器建立、证书由浏览器校验，这里的 TLS 配置不生效，也就没有钉扎。
+        let tls = self
             .config
-            .primary_connect_url()
-            .unwrap_or_else(|| ws_url.to_string());
-
-        let mut builder = FlareClientBuilder::new(&primary_url)
-            .with_user_id(user_id.to_string())
-            .with_token(token.to_string())
-            .with_listener(listener)
-            .with_device_info(device)
-            .with_format(SerializationFormat::Protobuf)
-            .with_tls(self.config.core_tls_config())
-            .with_connect_timeout(Duration::from_secs(self.config.connect_timeout_secs()))
-            // 重连只走会话的重连监视器（新建 FlareClient）。flare-core 客户端默认会在断开后的下一次
-            // 发送时自己重连：两条路径并行时，旧客户端带着建连时的令牌连上，监视器又新建一个，同一
-            // 用户出现两条连接（网关按设备冲突处理），且旧客户端连上后没有重连后的同步。
-            .with_reconnect_on_send(false);
-
-        if let Some(secs) = self.config.reconnect_interval_secs {
-            builder = builder.with_reconnect_interval(Duration::from_secs(secs));
-        }
-        if let Some(max) = self.config.max_reconnect_attempts {
-            builder = builder.with_max_reconnect_attempts(Some(max));
-        }
-
-        let policy = self.config.effective_transport_policy();
-        #[cfg(not(target_arch = "wasm32"))]
-        if let (Some(race_order), Some(quic_url)) = (
-            self.config.effective_protocol_race_order(),
-            self.config.quic_url.as_ref(),
-        ) {
-            for protocol in &race_order {
-                let url = match protocol {
-                    CoreTransport::WebSocket => ws_url.to_string(),
-                    CoreTransport::QUIC => quic_url.clone(),
-                    _ => continue,
-                };
-                builder = builder.with_protocol_url(*protocol, url);
-            }
-            builder = builder.with_protocol_race(race_order.clone());
-            info!(
-                ws = ws_url,
-                quic = %quic_url,
-                race_order = ?race_order,
-                policy = ?policy,
-                "protocol race enabled"
-            );
+            .core_tls_config()
+            .with_spki_sha256_pins(target.spki_pins.clone());
+        let app_state = if request.foreground {
+            HeartbeatAppState::Foreground
         } else {
-            info!(
-                ws = ws_url,
-                primary = %primary_url,
-                policy = ?policy,
-                default_transport = ?self.config.default_transport,
-                "single transport (WebSocket entry)"
-            );
+            HeartbeatAppState::Background
+        };
+        let mut builder = FlareClientBuilder::new(primary_url)
+            .with_user_id(request.user_id.clone())
+            .with_token(request.token.clone())
+            .with_listener(listener)
+            .with_device_info(sdk_device_info(&self.config))
+            .with_format(SerializationFormat::Protobuf)
+            .with_tls(tls)
+            .with_heartbeat(link_heartbeat_config(
+                target.heartbeat,
+                target.probe_timeout,
+                app_state,
+            ))
+            .with_connect_timeout(
+                self.config
+                    .connect_timeout_override_ms()
+                    .map(|ms| Duration::from_millis(u64::from(ms)))
+                    .unwrap_or(target.connect_timeout),
+            )
+            .with_race_stagger(target.stagger)
+            .with_connection_epoch(request.epoch)
+            .with_access_serial(target.access_serial)
+            .with_ip_hints(target.ip_hints.clone());
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(doh) = &request.doh {
+            builder = builder.with_doh(doh.clone());
         }
-        #[cfg(target_arch = "wasm32")]
-        {
-            info!(
-                ws = ws_url,
-                primary = %primary_url,
-                policy = ?policy,
-                "wasm websocket transport (flare-core FlareClientBuilder)"
-            );
+        for (protocol, url) in &target.protocols {
+            builder = builder.with_protocol_url(*protocol, url.clone());
         }
+        builder = builder.with_protocol_race(
+            target
+                .protocols
+                .iter()
+                .map(|(protocol, _)| *protocol)
+                .collect(),
+        );
+        info!(
+            access_point = %target.access_point_id,
+            epoch = request.epoch,
+            protocols = ?target.protocols.iter().map(|(protocol, _)| *protocol).collect::<Vec<_>>(),
+            "connecting"
+        );
 
-        // Close the previous socket before opening the next one. Hot relogin and
-        // reconnect paths must not briefly overlap two same-user connections,
-        // because the gateway can legitimately delay the new CONNACK while it
-        // waits for the old connection to expire.
         if let Some(old_client) = self.client.lock().await.take()
             && let Err(error) = old_client.disconnect().await
         {
-            warn!(error = %error, "closing stale socket client before reconnect failed");
+            warn!(error = %error, "closing the previous socket before connecting failed");
         }
+        let client = builder.build_with_race().await?;
+        let report = client.connect_report().clone();
+        *self.client.lock().await = Some(client);
+        Ok(report)
+    }
 
-        let flare_client = builder
-            .build_with_race()
-            .await
-            .map_err(|e| {
-                let detail = format!(
-                    "connect failed primary={primary_url} ws={ws_url} policy={policy:?} default_transport={:?}: {e}",
-                    self.config.default_transport
-                );
-                // 网关拒绝 CONNECT 时传输层已经按服务端给的原因分好类：令牌问题是
-                // AUTHENTICATION_FAILED / TOKEN_*，租户不可用是 PERMISSION_DENIED。这里不能再一律
-                // 降级成 CONNECTION_FAILED，否则应用层只能把「密钥填错」「租户被停用」都显示成
-                // 「连不上服务器」，重连逻辑也分不清该换令牌还是该停手。
-                FlareError::localized(connect_failure_code(&e), detail)
-            })?;
-
-        *self.client.lock().await = Some(flare_client);
-
-        let wait = Duration::from_secs(self.config.connect_timeout_secs().max(1));
-        if timeout(wait, ready_notify.notified()).await.is_err() {
-            let timed_out_client = self.client.lock().await.take();
-            if let Some(client) = timed_out_client
-                && let Err(error) = client.disconnect().await
-            {
-                warn!(error = %error, "closing socket after CONNACK timeout failed");
-            }
-            return Err(FlareError::connection_failed(format!(
-                "CONNACK not received within {wait:?}"
-            )));
-        }
-
-        info!(user_id, "socket connected (CONNACK received)");
-        Ok(())
+    /// 最近一次心跳往返（没有连接或还没有被应答的 ping 时为 `None`）。
+    pub async fn heartbeat_round_trip(&self) -> Option<Duration> {
+        let client = self.client.lock().await.as_ref().cloned()?;
+        client.heartbeat_round_trip().await
     }
 
     pub async fn disconnect(&self) -> Result<()> {
@@ -297,13 +251,6 @@ impl SocketTransport {
             warn!(error = %error, "socket client disconnect failed");
         }
         info!("socket disconnected");
-        Ok(())
-    }
-
-    pub async fn update_heartbeat_config(&self, config: HeartbeatConfig) -> Result<()> {
-        if let Some(client) = self.client.lock().await.as_ref() {
-            client.update_heartbeat_config(config).await;
-        }
         Ok(())
     }
 
@@ -341,48 +288,65 @@ impl SocketTransport {
     }
 }
 
+/// 一条连接的心跳：节奏只来自生效的接入策略（`clientPolicy.heartbeat` 与 `probeWakeTimeoutMs`），宿主没有
+/// 别的入口。自适应上限放到后台间隔，否则传输层的默认上限（120 s）会把更长的后台间隔压回去；下限沿用
+/// `min(前台间隔, 15 s)`（NAT 超时较短时往下收敛的底）。
+fn link_heartbeat_config(
+    heartbeat: crate::runtime::link::LinkHeartbeat,
+    probe_timeout: Duration,
+    app_state: HeartbeatAppState,
+) -> HeartbeatConfig {
+    let floor = heartbeat.interval.min(Duration::from_secs(15));
+    let ceiling = heartbeat.background_interval.max(heartbeat.interval);
+    HeartbeatConfig::default()
+        .with_interval(heartbeat.interval)
+        .with_timeout(heartbeat.timeout)
+        .with_background_interval(heartbeat.background_interval)
+        .with_interval_bounds(floor, ceiling)
+        .with_probe_timeout(probe_timeout)
+        .with_app_state(app_state)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    /// 服务端给出的拒绝类别要一路带到应用层；只有真正的连不上才是 CONNECTION_FAILED。
+    /// 清单给了非默认心跳：前台、后台间隔、判死超时、验活窗口都按它，前后台切换换节奏。
     #[test]
-    fn connect_failure_keeps_the_rejection_class() {
-        let cases = [
-            (
-                FlareError::localized(
-                    ErrorCode::PermissionDenied,
-                    "TENANT_UNAVAILABLE: server rejected CONNECT",
-                ),
-                ErrorCode::PermissionDenied,
-            ),
-            (
-                FlareError::authentication_failed("AUTHENTICATION_FAILED: server rejected CONNECT"),
-                ErrorCode::AuthenticationFailed,
-            ),
-            // 服务端暂时放不了行（如读不到租户状态）：可重试，不能降级成连不上，也不是鉴权失败
-            (
-                FlareError::localized(
-                    ErrorCode::ServiceUnavailable,
-                    "SERVICE_UNAVAILABLE: server rejected CONNECT",
-                ),
-                ErrorCode::ServiceUnavailable,
-            ),
-            (
-                FlareError::connection_failed(
-                    "server closed the connection before CONNECT_ACK without a reason",
-                ),
-                ErrorCode::ConnectionFailed,
-            ),
-            (
-                FlareError::connection_timeout("Negotiation timeout"),
-                ErrorCode::ConnectionFailed,
-            ),
-        ];
-        for (error, expected) in cases {
-            assert_eq!(connect_failure_code(&error), expected, "{error}");
-        }
+    fn the_heartbeat_comes_from_the_access_policy() {
+        let policy = flare_access::ClientPolicy::resolve(&serde_json::json!({
+            "heartbeat": { "intervalSec": 45, "timeoutSec": 150, "backgroundIntervalSec": 300 },
+            "probeWakeTimeoutMs": 7_000
+        }));
+        let heartbeat = crate::runtime::link::LinkHeartbeat::from_policy(&policy);
+        let config = link_heartbeat_config(
+            heartbeat,
+            Duration::from_millis(u64::from(policy.probe_wake_timeout_ms)),
+            HeartbeatAppState::Foreground,
+        );
+        assert_eq!(config.effective_interval(), Duration::from_secs(45));
+        assert_eq!(config.timeout, Duration::from_secs(150));
+        assert_eq!(config.probe_timeout, Duration::from_secs(7));
+        assert_eq!(
+            config.clone().background().effective_interval(),
+            Duration::from_secs(300),
+            "the background interval is not capped at the transport's default 120 s"
+        );
+
+        // 越界的值按 POLICY_BOUNDS 夹紧（间隔 ≥ 10 s、验活窗口 ≥ 2 s），超时至少两倍间隔。
+        let clamped = flare_access::ClientPolicy::resolve(&serde_json::json!({
+            "heartbeat": { "intervalSec": 1, "timeoutSec": 1, "backgroundIntervalSec": 1 },
+            "probeWakeTimeoutMs": 10
+        }));
+        let config = link_heartbeat_config(
+            crate::runtime::link::LinkHeartbeat::from_policy(&clamped),
+            Duration::from_millis(u64::from(clamped.probe_wake_timeout_ms)),
+            HeartbeatAppState::Foreground,
+        );
+        assert_eq!(config.effective_interval(), Duration::from_secs(10));
+        assert!(config.timeout >= Duration::from_secs(20));
+        assert_eq!(config.probe_timeout, Duration::from_secs(2));
     }
+
+    use super::*;
 
     /// 连接状态查询绝不能在 async 上下文里再阻塞一次。
     ///
@@ -451,9 +415,13 @@ mod tests {
     #[test]
     fn sdk_device_info_carries_the_configured_app_version() {
         let config = SdkConfig::builder()
-            .app_version("3.2.1")
-            .app_build(30201)
-            .distribution("appstore")
+            .app(crate::client::config::SdkAppConfig {
+                version: Some("3.2.1".into()),
+                build: Some(30201),
+                distribution: Some("appstore".into()),
+                channel: Some("stable".into()),
+                ..Default::default()
+            })
             .build();
         let info = sdk_device_info(&config);
 

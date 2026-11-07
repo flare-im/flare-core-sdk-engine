@@ -1,0 +1,1444 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "available"
+          },
+          {
+            "error": "update.meteredConfirmationRequired",
+            "fallbackUrl": "https://dl.example.com/a.apk",
+            "prompt": "sheet",
+            "state": "available"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "downloading"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "verifying"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "readyToInstall"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "readyToInstall"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "installing"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "badge",
+            "state": "readyToInstall"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "direct",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "markSheet",
+          "downloadOnMetered",
+          "downloadOnMeteredAllowed",
+          "verifying",
+          "ready",
+          "install",
+          "handOver",
+          "installCancelled"
+        ]
+      },
+      "name": "optional with consent on a metered network, then cancelled"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "downloading"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "verifying"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "readyToInstall"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "direct",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "download",
+          "verifying",
+          "ready"
+        ]
+      },
+      "name": "started from the about page"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "downloading"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "direct",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {
+            "recommendBelowBuild": 20400
+          },
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "download"
+        ]
+      },
+      "name": "recommended started from the about page"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "available"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "downloading"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "none",
+            "state": "downloading"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "none",
+            "state": "verifying"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "readyToInstall"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "readyToInstall"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "installing"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "badge",
+            "state": "installing"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "direct",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {
+            "recommendBelowBuild": 20400
+          },
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "markModal",
+          "download",
+          "defer",
+          "verifying",
+          "ready",
+          "install",
+          "handOver",
+          "installCompleted"
+        ]
+      },
+      "name": "later while downloading"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "available"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "downloading"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "verifying"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "none",
+            "state": "verifying"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "readyToInstall"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "direct",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "markSheet",
+          "download",
+          "verifying",
+          "defer",
+          "ready"
+        ]
+      },
+      "name": "later while verifying"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "available"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "downloading"
+          },
+          {
+            "error": "update.downloadFailed",
+            "fallbackUrl": "https://dl.example.com/a.apk",
+            "prompt": "modal",
+            "state": "failed"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "badge",
+            "state": "available"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "direct",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {
+            "recommendBelowBuild": 20400
+          },
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "markModal",
+          "download",
+          "downloadFailed",
+          "defer"
+        ]
+      },
+      "name": "later after a failed download"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "available"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "downloading"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "none",
+            "state": "downloading"
+          },
+          {
+            "error": "update.downloadFailed",
+            "fallbackUrl": "https://dl.example.com/a.apk",
+            "prompt": "sheet",
+            "state": "failed"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "direct",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "markSheet",
+          "download",
+          "defer",
+          "downloadFailed"
+        ]
+      },
+      "name": "hidden prompt comes back on failure"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "required"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "downloading"
+          },
+          {
+            "error": "update.downloadFailed",
+            "fallbackUrl": "https://dl.example.com/a.apk",
+            "prompt": "modal",
+            "state": "failed"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "downloading"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "verifying"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "readyToInstall"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "direct",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {
+            "minBuild": 20400
+          },
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "markModal",
+          "download",
+          "downloadFailed",
+          "download",
+          "verifying",
+          "ready"
+        ]
+      },
+      "name": "required retries after a failure"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "required"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "badge",
+            "state": "required"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "required"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "direct",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {
+            "minBuild": 20400
+          },
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "markModal",
+          "defer",
+          "foreground"
+        ]
+      },
+      "name": "required later continues read only"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "required"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "required"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "modal",
+            "state": "required"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "badge",
+            "state": "required"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "direct",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {
+            "minBuild": 20400
+          },
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "foreground",
+          "markModal",
+          "foreground",
+          "defer"
+        ]
+      },
+      "name": "one return to the foreground reported twice"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "fullscreen",
+            "state": "downloading"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "fullscreen",
+            "state": "downloading"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "fullscreen",
+            "state": "verifying"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "fullscreen",
+            "state": "readyToInstall"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "fullscreen",
+            "state": "readyToInstall"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "fullscreen",
+            "state": "installing"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "direct",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {
+            "blockUi": true,
+            "minBuild": 20400
+          },
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "download",
+          "defer",
+          "verifying",
+          "ready",
+          "install",
+          "handOver"
+        ]
+      },
+      "name": "blocking stays fullscreen through later"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "available"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "installing"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "badge",
+            "state": "available"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "play",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "markSheet",
+          "install",
+          "installCompleted"
+        ]
+      },
+      "name": "store opens and returns"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "available"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "installing"
+          },
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "badge",
+            "state": "available"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "play",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "markSheet",
+          "install",
+          "installCancelled"
+        ]
+      },
+      "name": "store cancelled"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "installing"
+          },
+          {
+            "error": "update.installFailed",
+            "fallbackUrl": "https://play.google.com/store/apps/details?id=com.acme.chat",
+            "prompt": "sheet",
+            "state": "failed"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "play",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "install",
+          "installFailed"
+        ]
+      },
+      "name": "failed install names the store"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "downloading"
+          },
+          {
+            "error": "update.downloadFailed",
+            "fallbackUrl": "https://www.example.com/download",
+            "prompt": "sheet",
+            "state": "failed"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20302,
+        "distribution": "direct",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "storeUrl": "https://www.example.com/download",
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "download",
+          "downloadFailed"
+        ]
+      },
+      "name": "direct falls back to storeUrl first"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "error": null,
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "installing"
+          },
+          {
+            "error": "update.installFailed",
+            "fallbackUrl": null,
+            "prompt": "sheet",
+            "state": "failed"
+          }
+        ]
+      },
+      "input": {
+        "currentBuildId": "bundle-1",
+        "distribution": "web",
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "web": {
+                  "buildId": "bundle-2",
+                  "kind": "web_bundle",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "urls": [
+                    "https://app.example.com/assets.json"
+                  ]
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        },
+        "steps": [
+          "install",
+          "installFailed"
+        ]
+      },
+      "name": "web has no fallback"
+    }
+  ],
+  "description": "The prompt across an update flow, driven by the engine so a dialog does not vanish when the user taps Update. While downloading, verifying, readyToInstall, installing or failed, and while available or required carry an error, prompt is the form last marked in this session, or the one the release class implies (optional sheet, recommended and required modal, blocking fullscreen). It returns to the frequency rule on a clean stable state, on install completed or cancelled, or on defer. Defer while downloading or verifying only sets prompt to none, the download goes on and nothing is deferred; readyToInstall brings the form back. fallbackUrl: the web has none; a direct package prefers storeUrl, then its first download address. Each step reports the status right after it. One return to the foreground counts once however many times it is reported."
+}

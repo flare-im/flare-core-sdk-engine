@@ -73,4 +73,5 @@ pub struct ConversationUserSettingsPatch {
     pub is_muted: Option<bool>,
     pub is_archived: Option<bool>,
     pub draft: Option<String>,
+    pub clear_history_through_seq: Option<u64>,
 }

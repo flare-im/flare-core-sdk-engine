@@ -393,11 +393,16 @@ impl MessageReader for PersistingMessageStore {
         &self,
         query: &flare_im_core_sdk::model::MessageSearchQuery,
     ) -> Result<Vec<IMMessage>> {
-        self.inner.search_by_query(query).await
+        self.inner
+            .search_visible(query, self.conversations.as_ref())
+            .await
     }
 
     async fn search(&self, keyword: &str, limit: u32) -> Result<Vec<IMMessage>> {
-        self.inner.search(keyword, limit).await
+        self.search_by_query(&flare_im_core_sdk::model::MessageSearchQuery::text(
+            keyword, limit,
+        ))
+        .await
     }
 
     async fn search_in_conversation(
@@ -406,9 +411,14 @@ impl MessageReader for PersistingMessageStore {
         keyword: &str,
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
-        self.inner
-            .search_in_conversation(conversation_id, keyword, limit)
-            .await
+        self.search_by_query(
+            &flare_im_core_sdk::model::MessageSearchQuery::in_conversation(
+                conversation_id,
+                keyword,
+                limit,
+            ),
+        )
+        .await
     }
 }
 

@@ -83,7 +83,9 @@ impl ConversationIdentityService {
         current_user_id: &str,
         peer_hint: Option<&str>,
     ) -> bool {
-        if !conversation.conversation_type.is_single_chat_conversation() {
+        if !conversation.conversation_type.is_single_chat_conversation()
+            || is_reserved_sync_inbox(&conversation.conversation_id)
+        {
             return false;
         }
         let me = current_user_id.trim();
@@ -125,7 +127,9 @@ impl ConversationIdentityService {
         }
         // 同 canonicalize_single_chat_message：会话 ID 的类型前缀比 conversation_type
         // 字段更可信，后者会被下发链路上的任何一环填错。
-        if conversation_id::is_group_chat_conversation(&conversation.conversation_id) {
+        if conversation_id::is_group_chat_conversation(&conversation.conversation_id)
+            || is_reserved_sync_inbox(&conversation.conversation_id)
+        {
             return None;
         }
         let me = current_user_id.trim();
@@ -165,7 +169,9 @@ impl ConversationIdentityService {
         // 只信它的话，一条群消息就会被判成单聊，进而把**整个群会话**合并进某个
         // 单聊会话（实测群会话连同消息一起从列表里消失，moved=1）。
         // ID 是会话身份本身，不会因为某条消息填错而改变——用它兜住这类误判。
-        if conversation_id::is_group_chat_conversation(&message.conversation_id) {
+        if conversation_id::is_group_chat_conversation(&message.conversation_id)
+            || is_reserved_sync_inbox(&message.conversation_id)
+        {
             return None;
         }
         let me = current_user_id.trim();
@@ -239,6 +245,14 @@ impl ConversationIdentityService {
         summary.channel_id = channel_id;
         summary
     }
+}
+
+/// `sync:<owner>` is an internal delivery route, not a chat between sender and owner.
+/// Preserve even a foreign/empty owner: rewriting would conceal a misrouted notification and
+/// manufacture a single-chat merge. Recipient authorization belongs to the server/handler,
+/// not to this identity repair operation, which can only return an optional rewrite.
+fn is_reserved_sync_inbox(conversation_id: &str) -> bool {
+    conversation_id.trim().starts_with("sync:")
 }
 
 fn single_chat_peer_from_parts(
@@ -416,6 +430,124 @@ mod tests {
         assert_eq!(conversation.channel_id, "peer-1");
         assert_eq!(rewrite.from, "peer-1");
         assert_eq!(rewrite.to, expected);
+    }
+
+    #[test]
+    fn sync_notification_keeps_its_internal_route_and_wire_recipient() {
+        use flare_proto::common::message_content::Content;
+        use flare_proto::common::{Message, MessageContent, NotificationContent};
+
+        for route in ["sync:me-1", "sync:other-user", "sync:", " sync:me-1 "] {
+            let mut message = IMMessage::new(Message {
+                server_id: "notification-1".into(),
+                conversation_id: route.into(),
+                conversation_type: ConversationType::Single.to_proto_int(),
+                sender_id: "operator-9".into(),
+                channel_id: "operator-9".into(),
+                content: Some(MessageContent {
+                    content: Some(Content::Notification(NotificationContent {
+                        notification_type: "integration.state_changed".into(),
+                        target_user_ids: vec!["me-1".into()],
+                        ..Default::default()
+                    })),
+                }),
+                ..Default::default()
+            });
+            let wire_content = message.encoded_content.clone();
+
+            assert!(
+                ConversationIdentityService::canonicalize_single_chat_message(
+                    &mut message,
+                    "me-1",
+                )
+                .is_none(),
+                "reserved route must not produce a local chat merge: {route}"
+            );
+            assert_eq!(message.conversation_id, route);
+            assert_eq!(message.channel_id, "operator-9");
+            assert_eq!(message.server_id, "notification-1");
+            assert_eq!(message.encoded_content, wire_content);
+            let Some(crate::model::Elem::Notification(notification)) = message.content else {
+                panic!("the notification carrier must survive identity repair");
+            };
+            assert_eq!(notification.target_user_ids, ["me-1"]);
+            assert!(notification.title.is_empty() && notification.body.is_empty());
+            assert!(!notification.persistent && !notification.show_in_list);
+            assert!(!notification.show_badge && !notification.play_sound);
+            assert!(!notification.notify_all && notification.target_role_id.is_empty());
+        }
+    }
+
+    #[test]
+    fn sync_conversation_never_repairs_a_peer_or_requests_a_merge() {
+        for route in ["sync:me-1", "sync:other-user", "sync:", " sync:me-1 "] {
+            let mut conversation = Conversation::from_conversation_id(route.into());
+            conversation.conversation_type = ConversationType::Single;
+            conversation.channel_id = "original-route-channel".into();
+            conversation.last_sender_id = Some("operator-9".into());
+
+            assert!(
+                ConversationIdentityService::canonicalize_single_chat_conversation(
+                    &mut conversation,
+                    "me-1",
+                )
+                .is_none()
+            );
+            assert!(!ConversationIdentityService::repair_single_chat_channel(
+                &mut conversation,
+                "me-1",
+                Some("operator-9"),
+            ));
+            assert_eq!(conversation.conversation_id, route);
+            assert_eq!(conversation.channel_id, "original-route-channel");
+        }
+    }
+
+    #[test]
+    fn ordinary_single_message_still_canonicalizes_and_nearby_prefix_is_not_reserved() {
+        for old_id in ["server-single-id", "sync-me-1", "synch:me-1"] {
+            let mut message = IMMessage::new(flare_proto::common::Message {
+                conversation_id: old_id.into(),
+                conversation_type: ConversationType::Single.to_proto_int(),
+                sender_id: "peer-9".into(),
+                channel_id: "peer-9".into(),
+                ..Default::default()
+            });
+            let rewrite =
+                ConversationIdentityService::canonicalize_single_chat_message(&mut message, "me-1")
+                    .expect("ordinary single-chat IDs must retain identity repair");
+            let expected = conversation_id::generate_single_chat_conversation_id("me-1", "peer-9");
+            assert_eq!(rewrite.from, old_id);
+            assert_eq!(rewrite.to, expected);
+            assert_eq!(message.conversation_id, expected);
+        }
+    }
+
+    #[test]
+    fn ordinary_group_and_system_messages_keep_existing_identity_semantics() {
+        let group_id = conversation_id::generate_group_conversation_id("group-1");
+        let system_id = conversation_id::generate_system_conversation_id("system-1", None);
+        for (id, message_type) in [
+            (group_id, ConversationType::Single),
+            (system_id, ConversationType::System),
+        ] {
+            let mut message = IMMessage::new(flare_proto::common::Message {
+                conversation_id: id.clone(),
+                conversation_type: message_type.to_proto_int(),
+                sender_id: "peer-9".into(),
+                channel_id: "original-route-channel".into(),
+                ..Default::default()
+            });
+            assert!(
+                ConversationIdentityService::canonicalize_single_chat_message(
+                    &mut message,
+                    "me-1",
+                )
+                .is_none()
+            );
+            assert_eq!(message.conversation_id, id);
+            assert_eq!(message.channel_id, "original-route-channel");
+        }
     }
 
     #[test]

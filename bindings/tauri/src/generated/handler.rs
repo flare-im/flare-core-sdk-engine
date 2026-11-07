@@ -10,6 +10,8 @@ pub fn im_invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + 'stat
         crate::commands::lifecycle::sdk_login,
         crate::commands::lifecycle::sdk_prepare,
         crate::commands::lifecycle::sdk_connect,
-        crate::commands::lifecycle::sdk_logout
+        crate::commands::lifecycle::sdk_logout,
+        crate::commands::lifecycle::sdk_set_connect_token_refresher,
+        crate::commands::lifecycle::sdk_complete_connect_token_refresh
     ]
 }

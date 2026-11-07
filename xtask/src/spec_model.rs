@@ -26,7 +26,6 @@ const PLATFORM_EVENT_GROUPS: &[(&str, &[&str])] = &[
             "disposed",
         ],
     ),
-    ("connection", &["connecting", "reconnect_failed", "ready"]),
     ("message", &["burn_scheduled", "burned", "hard_deleted"]),
     ("presence", &["changed"]),
     (
@@ -1082,6 +1081,9 @@ fn c_abi_error_name_to_client_code(name: &str) -> Option<&'static str> {
         "FLARE_ERR_JSON_PARSE" => "jsonParse",
         "FLARE_ERR_NULL_POINTER" => "nullPointer",
         "FLARE_ERR_FFI_PANIC" => "ffiPanic",
+        "FLARE_ERR_OVERLOADED" => "overloaded",
+        "FLARE_ERR_UPGRADE_REQUIRED" => "upgradeRequired",
+        "FLARE_ERR_NETWORK_UNCERTAIN" => "networkUncertain",
         _ => "internal",
     })
 }

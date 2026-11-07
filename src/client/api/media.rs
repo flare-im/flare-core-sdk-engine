@@ -23,6 +23,7 @@ use crate::model::{
     UploadedMedia,
 };
 use crate::platform::adapters::media::MediaService;
+pub use crate::platform::ports::media::MessageMediaReference;
 use crate::platform::ports::media::{
     MediaMetadata, MediaServicePort, MediaSourceDescriptor, MediaSourceKind, ProcessedMedia,
     UploadProgressSink,
@@ -209,6 +210,39 @@ impl MediaApi {
         let handler = self.handler.clone();
         self.run_session_bound(async move { handler.get_file_url(file_id, expires_in).await })
             .await
+    }
+
+    pub async fn get_file_url_with_reference(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        reference: Option<&crate::platform::ports::media::MessageMediaReference>,
+    ) -> Result<MediaAccessUrl> {
+        let handler = self.handler.clone();
+        self.run_session_bound(async move {
+            handler
+                .get_file_url_with_reference(file_id, expires_in, reference)
+                .await
+        })
+        .await
+    }
+
+    pub async fn resolve_media_access_opts_with_reference(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        auto_cache: bool,
+        reference: Option<&crate::platform::ports::media::MessageMediaReference>,
+    ) -> Result<MediaResolvedAccess> {
+        let handler = self.handler.clone();
+        self.run_session_bound(async move {
+            handler
+                .resolve_media_access_opts_with_reference(
+                    file_id, expires_in, auto_cache, reference,
+                )
+                .await
+        })
+        .await
     }
 
     /// 网关临时直链（`download: true`，适合附件另存为）。

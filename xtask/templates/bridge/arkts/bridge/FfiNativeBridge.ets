@@ -1,17 +1,32 @@
 // GENERATED. Do not edit by hand.
-import { NativeBridge, NativeCallDescriptor } from '../contract/BridgeContract';
-import { SdkOperations } from '../contract/SdkContract';
+import { ConnectTokenRefresher, NativeBridge, NativeCallDescriptor } from '../contract/BridgeContract';
+import { SdkErrorCodes, SdkOperations } from '../contract/SdkContract';
 import { assertFfiContractVersion } from './FfiContractVersionGuard';
-import { FlareSdkException } from './FlareSdkException';
+import { FlareSdkException, sdkExceptionFromNative } from './FlareSdkException';
 import { FlareAppInfo } from './FlareAppInfo';
 import { wireDecodeResponse, wireEncodeRequest } from '../adapter/codec/WireCodec';
 import flareCoreNative from 'libflare_core_harmony_arkts_sdk.so';
 
-type NativeModule = {
+/** Receives every native SDK event on the ArkTS thread: the C ABI event code and its JSON payload. */
+export type NativeEventSink = (eventType: number, eventJson: string) => void;
+
+/** `FLARE_OK` and the C code of a refresh request the core no longer waits for. */
+const FLARE_OK = 0;
+const FLARE_ERR_INVALID_PARAM = 2;
+
+/** The core waits 20 s for a refreshed token; the host refresher gets a little less so its answer lands in time. */
+const CONNECT_TOKEN_REFRESH_BUDGET_MS = 19000;
+
+/**
+ * The NAPI module (`napi_bridge.cpp`). Sync calls return values or C result codes directly.
+ * Callbacks (`onEvent`, `onRequest`) run on the ArkTS thread that registered them: the module
+ * hops from the SDK's threads through threadsafe functions. An async call that fails in the C ABI
+ * rejects with an `Error` carrying `nativeCode` (the `FlareError.code`) and `detailsJson`.
+ */
+interface NativeModule {
   create(): number;
   release(handle: number): void;
   hardReset(): void;
-  connectionState(handle: number): number;
   isConnected(handle: number): boolean;
   sessionActive(handle: number): boolean;
   sdkVersion(): string;
@@ -28,11 +43,18 @@ type NativeModule = {
   sdkCurrentUserId(handle: number): Promise<string>;
   sdkDisconnect(handle: number): Promise<string>;
   sdkDataRoot(handle: number): Promise<string>;
-  subscribeEvents(handle: number): number;
+  subscribeEvents(handle: number, onEvent: NativeEventSink): number;
   subscribeEventsBatch(handle: number): number;
   unsubscribeEvents(subscription: number): void;
   unsubscribeAllEvents(): void;
-};
+  /**
+   * `flare_sdk_set_connect_token_refresher`; null removes it. Settles when the core has taken it.
+   * `onRequest` runs on this ArkTS thread for every refresh request the core makes.
+   */
+  setConnectTokenRefresher(handle: number, onRequest: ((requestId: number) => void) | null): Promise<void>;
+  /** `flare_sdk_complete_connect_token_refresh`; an empty token means none. Returns the C result code. */
+  completeConnectTokenRefresh(handle: number, requestId: number, token: string): number;
+}
 
 const nativeModule = flareCoreNative as NativeModule;
 
@@ -45,10 +67,35 @@ export class FfiNativeBridge implements NativeBridge {
   private contractVersionChecked: boolean = false;
   /** `sdk.init` 时补进配置的应用版本信息（宿主在请求里显式给的值优先）。 */
   private readonly appInfo: FlareAppInfo;
+  private eventSink: NativeEventSink | null = null;
 
   /** `appInfo` 默认从本应用的 bundle 信息自动采集；需要覆盖（如渠道）时显式传入。 */
   constructor(appInfo?: FlareAppInfo) {
     this.appInfo = appInfo ?? FlareAppInfo.fromBundle();
+  }
+
+  /** Where native events go once `event.subscribe` runs; the client's events module registers itself. */
+  registerEventSink(sink: NativeEventSink | null): void {
+    this.eventSink = sink;
+  }
+
+  /**
+   * Installs (or, with null, removes) the host's connect token refresher. When the gateway rejects
+   * the connect token the core asks once, from one of its own threads; the native module carries
+   * the request to this ArkTS thread, the refresher gets 19 s, and its answer goes back to the
+   * core exactly once (no token, a failure or the budget running out all count as none).
+   */
+  async setConnectTokenRefresher(refresher: ConnectTokenRefresher | null): Promise<void> {
+    this.ensureContractVersion();
+    const handle = this.requireHandle();
+    const onRequest = refresher === null ? null : (requestId: number) => {
+      this.answerTokenRefresh(handle, requestId, refresher);
+    };
+    try {
+      await nativeModule.setConnectTokenRefresher(handle, onRequest);
+    } catch (error) {
+      throw this.nativeFailure(error as Object, SdkOperations.sdkSetConnectTokenRefresher);
+    }
   }
 
   async invoke<T>(descriptor: NativeCallDescriptor, request?: Object): Promise<T> {
@@ -76,20 +123,36 @@ export class FfiNativeBridge implements NativeBridge {
       case 'sdk.session_active':
         value = nativeModule.sessionActive(this.requireHandle());
         break;
-      case 'connection.get_state':
-        value = this.connectionState(nativeModule.connectionState(this.requireHandle()));
+      case 'sdk.set_connect_token_refresher':
+        // 续期回调是宿主函数，走不了 JSON 请求；由 setConnectTokenRefresher(refresher) 安装。
+        throw new FlareSdkException(
+          SdkErrorCodes.capabilityUnavailable,
+          'Install the connect token refresher with FfiNativeBridge.setConnectTokenRefresher(refresher).',
+          descriptor.operation,
+          { cApi: descriptor.cApi },
+        );
+      case 'sdk.complete_connect_token_refresh':
+        value = this.completeConnectTokenRefresh(
+          this.requireHandle(),
+          this.numberField(request, 'requestId'),
+          this.stringField(request, 'token'),
+        );
         break;
       case 'diagnostics.sdk_version':
-        value = { version: nativeModule.sdkVersion() };
+        value = { version: nativeModule.sdkVersion() } as Record<string, Object>;
         break;
       case 'diagnostics.ffi_contract_version':
-        value = { version: nativeModule.ffiContractVersion() };
+        value = { version: nativeModule.ffiContractVersion() } as Record<string, Object>;
         break;
       case 'event.subscribe':
-        value = { subscription: nativeModule.subscribeEvents(this.requireHandle()) };
+        value = {
+          subscription: nativeModule.subscribeEvents(this.requireHandle(), (eventType: number, eventJson: string) => {
+            this.deliverEvent(eventType, eventJson);
+          }),
+        } as Record<string, Object>;
         break;
       case 'event.subscribe_batch':
-        value = { subscription: nativeModule.subscribeEventsBatch(this.requireHandle()) };
+        value = { subscription: nativeModule.subscribeEventsBatch(this.requireHandle()) } as Record<string, Object>;
         break;
       case 'event.unsubscribe':
         nativeModule.unsubscribeEvents(this.numberField(request, 'subscription'));
@@ -121,7 +184,8 @@ export class FfiNativeBridge implements NativeBridge {
     if (this.handle === 0) {
       throw new FlareSdkException('native_create_failed', 'flare_sdk_create returned an invalid handle.', 'sdk.create');
     }
-    return { handle: this.handle };
+    const created: Record<string, Object> = { handle: this.handle };
+    return created;
   }
 
   private releaseHandle(): void {
@@ -139,78 +203,143 @@ export class FfiNativeBridge implements NativeBridge {
     return this.handle;
   }
 
+  /** A listener that throws must not unwind into the native module. */
+  private deliverEvent(eventType: number, eventJson: string): void {
+    const sink = this.eventSink;
+    if (sink === null) {
+      return;
+    }
+    try {
+      sink(eventType, eventJson);
+    } catch (error) {
+      console.error(`flare-core event ${eventType} listener failed: ${error}`);
+    }
+  }
+
+  /** OK: answered. Invalid param: the core already gave up on this request. Anything else is a failure. */
+  private completeConnectTokenRefresh(handle: number, requestId: number, token: string): boolean {
+    const code = nativeModule.completeConnectTokenRefresh(handle, requestId, token);
+    if (code === FLARE_OK) {
+      return true;
+    }
+    if (code === FLARE_ERR_INVALID_PARAM) {
+      return false;
+    }
+    throw sdkExceptionFromNative(
+      code,
+      'flare_sdk_complete_connect_token_refresh failed',
+      '',
+      SdkOperations.sdkCompleteConnectTokenRefresh,
+    );
+  }
+
+  /** Runs the refresher for one core request and answers within the budget; a late answer finds the request gone. */
+  private answerTokenRefresh(handle: number, requestId: number, refresher: ConnectTokenRefresher): void {
+    let answered = false;
+    let timer = -1;
+    const answer = (token: string | null): void => {
+      if (answered) {
+        return;
+      }
+      answered = true;
+      clearTimeout(timer);
+      try {
+        this.completeConnectTokenRefresh(handle, requestId, token ?? '');
+      } catch (error) {
+        console.error(`flare-core connect token refresh ${requestId} could not be answered: ${error}`);
+      }
+    };
+    timer = setTimeout(() => answer(null), CONNECT_TOKEN_REFRESH_BUDGET_MS);
+    try {
+      refresher().then((token: string | null) => answer(token), () => answer(null));
+    } catch (error) {
+      answer(null);
+    }
+  }
+
   private async invokeAsync(descriptor: NativeCallDescriptor, request?: Object): Promise<Object | null> {
     let resultJson: string;
+    try {
+      resultJson = await this.callNative(descriptor, request);
+    } catch (error) {
+      throw this.nativeFailure(error as Object, descriptor.operation);
+    }
+    if (descriptor.responseEncoding === 'unit') {
+      return null;
+    }
+    if (resultJson.length === 0) {
+      return {} as Record<string, Object>;
+    }
+    return wireDecodeResponse(JSON.parse(resultJson)) as Object;
+  }
+
+  private callNative(descriptor: NativeCallDescriptor, request?: Object): Promise<string> {
     if (descriptor.transport === 'message-dispatch-json' && descriptor.cApi === 'flare_message_dispatch_json') {
-      resultJson = await nativeModule.messageDispatchJson(this.requireHandle(), descriptor.dispatchOp ?? '', this.encodeJson(request));
+      return nativeModule.messageDispatchJson(this.requireHandle(), descriptor.dispatchOp ?? '', this.encodeJson(request));
     } else if (descriptor.transport === 'capability-dispatch-json' && descriptor.cApi === 'flare_capability_dispatch_json') {
-      resultJson = await nativeModule.capabilityDispatchJson(this.requireHandle(), descriptor.dispatchOp ?? '', this.encodeJson(request));
+      return nativeModule.capabilityDispatchJson(this.requireHandle(), descriptor.dispatchOp ?? '', this.encodeJson(request));
     } else if (descriptor.transport === 'contract-invoke-json' && descriptor.cApi === 'flare_sdk_invoke_json') {
-      resultJson = await nativeModule.sdkInvokeJson(this.requireHandle(), descriptor.operation, this.encodeJson(request));
+      return nativeModule.sdkInvokeJson(this.requireHandle(), descriptor.operation, this.encodeJson(request));
     } else if (descriptor.transport === 'dispatch-json' && descriptor.cApi === 'flare_message_build_json') {
-      resultJson = await nativeModule.messageBuildJson(this.requireHandle(), this.encodeJson(request));
+      return nativeModule.messageBuildJson(this.requireHandle(), this.encodeJson(request));
     } else if (descriptor.transport === 'dispatch-json' && descriptor.cApi === 'flare_message_dispatch_json') {
       const op = this.stringField(request, 'op') || descriptor.dispatchOp || '';
-      resultJson = await nativeModule.messageDispatchJson(this.requireHandle(), op, this.encodeJson(request));
+      return nativeModule.messageDispatchJson(this.requireHandle(), op, this.encodeJson(request));
     } else if (descriptor.cApi === 'flare_sdk_init') {
-      resultJson = await nativeModule.sdkInit(
+      return nativeModule.sdkInit(
         this.requireHandle(),
         this.encodeJson(this.appInfo.fill(request)),
       );
     } else if (descriptor.cApi === 'flare_sdk_uninit') {
-      resultJson = await nativeModule.sdkUninit(this.requireHandle());
+      return nativeModule.sdkUninit(this.requireHandle());
     } else if (descriptor.cApi === 'flare_sdk_login') {
-      resultJson = await nativeModule.sdkLogin(
+      return nativeModule.sdkLogin(
         this.requireHandle(),
         this.stringField(request, 'userId'),
         this.stringField(request, 'token'),
         this.storeConfigJsonFromLogin(request),
       );
     } else if (descriptor.cApi === 'flare_sdk_logout') {
-      resultJson = await nativeModule.sdkLogout(this.requireHandle());
+      return nativeModule.sdkLogout(this.requireHandle());
     } else if (descriptor.cApi === 'flare_sdk_update_access_token') {
-      resultJson = await nativeModule.sdkUpdateAccessToken(
+      return nativeModule.sdkUpdateAccessToken(
         this.requireHandle(),
         this.stringField(request, 'accessToken'),
         this.stringField(request, 'tenantId'),
       );
     } else if (descriptor.cApi === 'flare_sdk_current_user_id') {
-      resultJson = await nativeModule.sdkCurrentUserId(this.requireHandle());
+      return nativeModule.sdkCurrentUserId(this.requireHandle());
     } else if (descriptor.cApi === 'flare_sdk_disconnect') {
-      resultJson = await nativeModule.sdkDisconnect(this.requireHandle());
+      return nativeModule.sdkDisconnect(this.requireHandle());
     } else if (descriptor.cApi === 'flare_sdk_data_root') {
-      resultJson = await nativeModule.sdkDataRoot(this.requireHandle());
-    } else {
-      throw new FlareSdkException(
-        'bridge.unsupported_operation',
-        `Unsupported ArkTS native operation: ${descriptor.operation}`,
-        descriptor.operation,
-        { cApi: descriptor.cApi, transport: descriptor.transport, returnMode: descriptor.returnMode },
-      );
+      return nativeModule.sdkDataRoot(this.requireHandle());
     }
-    if (descriptor.responseEncoding === 'unit') {
-      return null;
-    }
-    if (resultJson.length === 0) {
-      return {};
-    }
-    return wireDecodeResponse(JSON.parse(resultJson)) as Object;
+    throw new FlareSdkException(
+      'bridge.unsupported_operation',
+      `Unsupported ArkTS native operation: ${descriptor.operation}`,
+      descriptor.operation,
+      { cApi: descriptor.cApi, transport: descriptor.transport, returnMode: descriptor.returnMode },
+    );
   }
 
-  private connectionState(code: number): string {
-    switch (code) {
-      case 0: return 'disconnected';
-      case 1: return 'connecting';
-      case 2: return 'connected';
-      case 3: return 'ready';
-      case 4: return 'reconnecting';
-      default: throw new FlareSdkException(
-        'invalidParameter',
-        `invalid connection state code: ${code}`,
-        'connection.get_state',
-        { field: 'stateCode' },
-      );
+  /** A C ABI failure becomes its typed exception (12, 13 and 14 included); anything else passes through. */
+  private nativeFailure(error: Object, operation: string): Object {
+    if (error instanceof FlareSdkException || error === null || typeof error !== 'object') {
+      return error;
     }
+    const fields = error as Record<string, Object>;
+    const nativeCode = fields['nativeCode'];
+    if (typeof nativeCode !== 'number') {
+      return error;
+    }
+    const message = fields['message'];
+    const detailsJson = fields['detailsJson'];
+    return sdkExceptionFromNative(
+      nativeCode as number,
+      typeof message === 'string' ? message as string : '',
+      typeof detailsJson === 'string' ? detailsJson as string : '',
+      operation,
+    );
   }
 
   private encodeJson(value?: Object): string {

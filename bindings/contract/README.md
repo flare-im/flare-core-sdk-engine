@@ -29,7 +29,7 @@ scripts.
 | `events.json` | event id, C code, `im://*` name, C JSON shape notes |
 | `errors.json` | stable error codes |
 
-## Init and transport configuration
+## Init and access configuration
 
 Init uses the same JSON shape (camelCase) on all platforms:
 
@@ -42,10 +42,10 @@ Key fields:
 
 | Field | Description |
 |------|-------------|
-| `transportPolicy` | `auto` / `websocket_only` / `protocol_race` (the WASM runtime forces `websocket_only`) |
-| `defaultTransport` | `websocket` / `quic`, preferred when not racing |
-| `protocolRaceOrder` | e.g. `["quic","websocket"]`, race priority (earlier wins) |
-| `wsUrl` / `quicUrl` | both must be configured when racing |
+| `access` | Where to connect: a signed access manifest (`bootstrapId`, `trustRoots`, `seed`) or, with `trustMode: "development"`, plain `developmentEndpoints`. Endpoints, protocol order and timeouts all come from here; there are no single-address fields |
+| `app` | `version` / `build` / `distribution` / `channel` / `buildId` / `target` / `locale`; platform packages fill the keys the host leaves out |
+| `auth` | Present (even `{}`) means SDK-managed tokens issued on the Core API; `tokenEndpoint` is an optional relative path |
+| `connectTimeoutSecs` | Optional local override of one handshake, clamped to 2–30 |
 
 See `client_config.json` for examples; codegen emits
 `CLIENT_INIT_REQUEST_EXAMPLE_JSON` and the per-platform `flare_client_*` /

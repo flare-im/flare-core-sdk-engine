@@ -283,30 +283,28 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     );
     // 同平台新设备登录把本设备顶下线（「已在别处登录」）：上报一次 KickedOff(DEVICE_CONFLICT)、
     // 会话终止、不再自动重连，由本机回环两台同平台设备的集成测试守住。
+    // A session-ending kick (device conflict) stops the link supervisor in actionRequired/kicked
+    // and never reconnects: reconnecting would knock the new device off again.
     require_contains_all(
         &mut errors,
-        &sdk_root.join("src/infrastructure/transport/socket/socket_handler.rs"),
-        "device conflict kick reported as KickedOff",
+        &sdk_root.join("src/runtime/link/failover.rs"),
+        "session-ending kick classified as a terminal loss",
         &[
-            "fn report_session_ending_kick",
-            "flare_core::common::kick::is_device_conflict_reason(reason)",
-            "device_conflict_disconnect_is_reported_once_as_kicked_off",
+            "DisconnectReason::Kicked {",
+            "ends_session: true,",
+            "LinkLoss::SessionEnded(reason) => FailoverAction::Terminate(*reason)",
+            "FailoverAction::Terminate(ActionRequiredReason::Kicked)",
         ],
     );
     require_contains_all(
         &mut errors,
-        &sdk_root.join("src/client/im_client.rs"),
-        "device conflict kick never reconnects",
-        &["flare_core::common::kick::ends_session(reason)"],
-    );
-    require_contains_all(
-        &mut errors,
-        &sdk_root.join("tests/device_conflict_kick.rs"),
+        &sdk_root.join("tests/link_lifecycle.rs"),
         "device conflict kick loopback test",
         &[
-            "a_device_conflict_kick_ends_the_session_without_reconnecting",
-            "assert_eq!(owner_events.kicked_off(), vec![DEVICE_CONFLICT]);",
-            "a kicked session must not reconnect",
+            "async fn a_session_ending_kick_needs_the_user()",
+            "flare_core::common::kick::device_conflict_kicked(",
+            "assert_eq!(status.reason.as_deref(), Some(\"kicked\"));",
+            "\"no reconnect after a kick\"",
         ],
     );
     require_contains_all(

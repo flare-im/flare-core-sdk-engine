@@ -1,5 +1,6 @@
 import Foundation
 import CFlareImCoreSdkFFI
+import FlarePlatformLifecycle
 
 /// Real FFI bridge over `libflare_im_core_sdk_ffi`, aligned with Flutter `FfiNativeBridge`.
 public final class FfiNativeBridge: NativeBridgeProtocol, @unchecked Sendable {
@@ -58,7 +59,7 @@ public final class FfiNativeBridge: NativeBridgeProtocol, @unchecked Sendable {
             if descriptor.returnMode == "callback-unit" {
                 return nil
             }
-            return FfiJson.asResponseMap(future)
+            return FfiJson.asResponseValue(future)
         }
 
         if descriptor.transport == "dispatch-json",
@@ -79,11 +80,12 @@ public final class FfiNativeBridge: NativeBridgeProtocol, @unchecked Sendable {
             return nil
         case "sdk.hard_reset":
             bindings.sdkHardReset()
+            FfiTokenRefreshRouter.shared.removeAll()
             handle = 0
             released = true
             return nil
         case "sdk.init":
-            return try await callWithJson(bindings.sdkInit, appInfo.fill(request?.value))
+            return try await callWithJson(bindings.sdkInit, appInfo.fill(FfiJson.asMap(request?.value)))
         case "sdk.uninit":
             return try await call0(bindings.sdkUninit)
         case "sdk.login":
@@ -102,8 +104,6 @@ public final class FfiNativeBridge: NativeBridgeProtocol, @unchecked Sendable {
             return bindings.sdkIsConnected(try requireHandle())
         case "sdk.session_active":
             return bindings.sdkSessionActive(try requireHandle())
-        case "connection.get_state":
-            return try FfiConnectionState.from(code: bindings.sdkState(try requireHandle()))
         case "connection.disconnect":
             return try await call0(bindings.sdkDisconnect)
         case "message.create_text":
@@ -165,6 +165,41 @@ public final class FfiNativeBridge: NativeBridgeProtocol, @unchecked Sendable {
         }
     }
 
+    /// Installs (or, with nil, removes) the host's connect token refresher. The core calls back on
+    /// an SDK thread; the refresher runs on a task and its token goes back to the core.
+    public func setConnectTokenRefresher(_ refresher: ConnectTokenRefresher?) async throws {
+        try ensureContractVersion()
+        let handle = try requireHandle()
+        if let refresher {
+            let bindings = self.bindings
+            FfiTokenRefreshRouter.shared.install(handle: handle, refresher: refresher) { requestId, token in
+                // FLARE_ERR_INVALID_PARAM: the core stopped waiting; nothing to retry.
+                _ = FfiStringCodec.withCString(token ?? "") { pointer in
+                    bindings.sdkCompleteConnectTokenRefresh(handle, requestId, pointer)
+                }
+            }
+        } else {
+            FfiTokenRefreshRouter.shared.remove(handle: handle)
+        }
+        let id = FfiCallbackRouter.shared.reserveContextId()
+        do {
+            _ = try await FfiCallbackRouter.shared.wait(for: id, operation: "sdk.set_connect_token_refresher") { context in
+                bindings.sdkSetConnectTokenRefresher(
+                    handle,
+                    UnsafeMutableRawPointer(bitPattern: UInt(handle)),
+                    refresher == nil ? nil : FfiNativeCallbacks.tokenRefresh,
+                    context,
+                    FfiNativeCallbacks.result
+                )
+            }
+        } catch {
+            if refresher != nil {
+                FfiTokenRefreshRouter.shared.remove(handle: handle)
+            }
+            throw error
+        }
+    }
+
     private func ensureContractVersion() throws {
         if contractVersionChecked {
             return
@@ -187,6 +222,7 @@ public final class FfiNativeBridge: NativeBridgeProtocol, @unchecked Sendable {
     private func dispose() async throws {
         if handle != 0, !released {
             bindings.sdkRelease(handle)
+            FfiTokenRefreshRouter.shared.remove(handle: handle)
         }
         handle = 0
         released = true

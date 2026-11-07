@@ -1,0 +1,514 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "addresses": [
+          "198.51.100.7:443"
+        ],
+        "direct": false
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "198.51.100.7:443"
+          ]
+        },
+        "ipHints": [
+          "203.0.113.10"
+        ],
+        "port": 443
+      },
+      "name": "a resolved host ignores the hints"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "198.51.100.7:443",
+          "[2001:db8::7]:443",
+          "198.51.100.8:443"
+        ],
+        "direct": false
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "198.51.100.7:443",
+            "[2001:db8::7]:443",
+            "198.51.100.8:443"
+          ]
+        },
+        "ipHints": [
+          "203.0.113.10"
+        ],
+        "port": 443
+      },
+      "name": "the DNS answer keeps its order and size"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "198.51.100.7:8443"
+        ],
+        "direct": false
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "198.51.100.7:8443"
+          ]
+        },
+        "ipHints": [],
+        "port": 8443
+      },
+      "name": "a resolved host with no hints"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "203.0.113.10:8443",
+          "203.0.113.11:8443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "error": "notFound"
+        },
+        "ipHints": [
+          "203.0.113.10",
+          "203.0.113.11"
+        ],
+        "port": 8443
+      },
+      "name": "a failed lookup uses the hints on the URL port"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "203.0.113.10:443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "error": "timedOut"
+        },
+        "ipHints": [
+          "203.0.113.10"
+        ],
+        "port": 443
+      },
+      "name": "a timed-out lookup is a failure"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "203.0.113.10:443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "addresses": []
+        },
+        "ipHints": [
+          "203.0.113.10"
+        ],
+        "port": 443
+      },
+      "name": "an empty answer is a failure"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "[2001:db8::10]:443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "error": "notFound"
+        },
+        "ipHints": [
+          "2001:db8::10"
+        ],
+        "port": 443
+      },
+      "name": "IPv6 hints"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "203.0.113.10:443",
+          "203.0.113.11:443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "error": "notFound"
+        },
+        "ipHints": [
+          "203.0.113.10",
+          "203.0.113.11",
+          "203.0.113.12"
+        ],
+        "port": 443
+      },
+      "name": "at most two hints are dialed"
+    },
+    {
+      "expected": {
+        "error": "notFound"
+      },
+      "input": {
+        "dns": {
+          "error": "notFound"
+        },
+        "ipHints": [],
+        "port": 443
+      },
+      "name": "no hints: a failed lookup stands"
+    },
+    {
+      "expected": {
+        "error": "timedOut"
+      },
+      "input": {
+        "dns": {
+          "error": "timedOut"
+        },
+        "ipHints": [],
+        "port": 443
+      },
+      "name": "no hints: a timed-out lookup stands"
+    },
+    {
+      "expected": {
+        "error": "notFound"
+      },
+      "input": {
+        "dns": {
+          "addresses": []
+        },
+        "ipHints": [],
+        "port": 443
+      },
+      "name": "no hints: an empty answer is not found"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "203.0.113.10:443",
+          "10.1.2.3:443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "10.1.2.3:443"
+          ]
+        },
+        "ipHints": [
+          "203.0.113.10"
+        ],
+        "port": 443
+      },
+      "name": "a private answer gives way to a public hint"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "203.0.113.10:443",
+          "127.0.0.1:443",
+          "169.254.1.1:443",
+          "[fe80::1]:443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "127.0.0.1:443",
+            "169.254.1.1:443",
+            "[fe80::1]:443"
+          ]
+        },
+        "ipHints": [
+          "203.0.113.10"
+        ],
+        "port": 443
+      },
+      "name": "loopback and link-local answers are just as suspicious"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "[2001:db8::10]:8443",
+          "[fd00::1]:8443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "[fd00::1]:8443"
+          ]
+        },
+        "ipHints": [
+          "2001:db8::10"
+        ],
+        "port": 8443
+      },
+      "name": "a unique local answer gives way to a public IPv6 hint"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "203.0.113.10:443",
+          "203.0.113.11:443",
+          "10.1.2.3:443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "10.1.2.3:443"
+          ]
+        },
+        "ipHints": [
+          "10.0.0.9",
+          "203.0.113.10",
+          "203.0.113.11",
+          "203.0.113.12"
+        ],
+        "port": 443
+      },
+      "name": "a suspicious answer only gives way to public hints"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "10.1.2.3:443"
+        ],
+        "direct": false
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "10.1.2.3:443"
+          ]
+        },
+        "ipHints": [
+          "10.0.0.9"
+        ],
+        "port": 443
+      },
+      "name": "a private deployment keeps its private answer"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "10.1.2.3:443",
+          "198.51.100.7:443"
+        ],
+        "direct": false
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "10.1.2.3:443",
+            "198.51.100.7:443"
+          ]
+        },
+        "ipHints": [
+          "203.0.113.10"
+        ],
+        "port": 443
+      },
+      "name": "one public address clears the answer"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "10.1.2.3:443"
+        ],
+        "direct": false
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "10.1.2.3:443"
+          ]
+        },
+        "ipHints": [],
+        "port": 443
+      },
+      "name": "a private answer with no hints stands"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "198.51.100.20:443",
+          "203.0.113.10:443",
+          "198.51.100.7:443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "198.51.100.7:443"
+          ]
+        },
+        "doh": [
+          "198.51.100.20"
+        ],
+        "ipHints": [
+          "203.0.113.10"
+        ],
+        "port": 443
+      },
+      "name": "DoH answers go first, then public hints, then the DNS answer"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "198.51.100.20:8443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "error": "notFound"
+        },
+        "doh": [
+          "198.51.100.20"
+        ],
+        "ipHints": [],
+        "port": 8443
+      },
+      "name": "DoH answers rescue a failed lookup with no hints"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "198.51.100.20:443",
+          "[2001:db8::20]:443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "error": "timedOut"
+        },
+        "doh": [
+          "198.51.100.20",
+          "2001:db8::20",
+          "198.51.100.21"
+        ],
+        "ipHints": [],
+        "port": 443
+      },
+      "name": "at most two DoH answers are dialed"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "198.51.100.7:443"
+        ],
+        "direct": false
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "198.51.100.7:443"
+          ]
+        },
+        "doh": [
+          "10.0.0.9",
+          "127.0.0.1"
+        ],
+        "ipHints": [],
+        "port": 443
+      },
+      "name": "private DoH answers do not count"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "198.51.100.20:443",
+          "203.0.113.10:443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "error": "notFound"
+        },
+        "doh": [
+          "198.51.100.20"
+        ],
+        "ipHints": [
+          "10.0.0.9",
+          "203.0.113.10"
+        ],
+        "port": 443
+      },
+      "name": "private hints stay out behind a DoH answer"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "198.51.100.20:443",
+          "203.0.113.10:443",
+          "10.1.2.3:443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "10.1.2.3:443"
+          ]
+        },
+        "doh": [
+          "198.51.100.20"
+        ],
+        "ipHints": [
+          "203.0.113.10"
+        ],
+        "port": 443
+      },
+      "name": "a suspicious answer stays last behind a DoH answer"
+    },
+    {
+      "expected": {
+        "addresses": [
+          "198.51.100.20:443",
+          "198.51.100.7:443"
+        ],
+        "direct": true
+      },
+      "input": {
+        "dns": {
+          "addresses": [
+            "198.51.100.20:443",
+            "198.51.100.7:443"
+          ]
+        },
+        "doh": [
+          "198.51.100.20"
+        ],
+        "ipHints": [
+          "198.51.100.20"
+        ],
+        "port": 443
+      },
+      "name": "an address listed twice is dialed once"
+    }
+  ],
+  "description": "Which addresses to dial for a host (flare_core::client::dial::choose_addresses, shared by IM and HTTP). Public DoH answers, when there are any, go first (the first two), then the first two public hints, then the DNS answer, each address once (direct = true); private DoH answers do not count. Without them: a DNS answer with a public address is always used and the IP hints are ignored. A failed lookup, a timed-out lookup or an empty answer falls back to the first two hints on the URL port (direct = true); with no hints the failure stands, an empty answer reporting notFound. An answer with no public address (private, loopback, link-local or unspecified) gives way to the first two public hints and stays after them; when no hint is public it is used as is, so a private deployment with private hints keeps working. TLS SNI, certificate checks and SPKI pins stay on the host name in every case."
+}

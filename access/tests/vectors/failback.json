@@ -1,0 +1,211 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "decision": "switch"
+      },
+      "input": {
+        "currentScore": 100.0,
+        "foregrounded": false,
+        "idleMs": 60000,
+        "policy": {},
+        "preferredScore": 80.0,
+        "probeSpanMs": 300000,
+        "probeSuccesses": 3,
+        "sinceLastSwitchMs": 600000
+      },
+      "name": "all conditions met at the boundaries"
+    },
+    {
+      "expected": {
+        "decision": "stay",
+        "hold": "notEnoughProbes"
+      },
+      "input": {
+        "currentScore": 100.0,
+        "foregrounded": false,
+        "idleMs": 60000,
+        "policy": {},
+        "preferredScore": 80.0,
+        "probeSpanMs": 300000,
+        "probeSuccesses": 2,
+        "sinceLastSwitchMs": 600000
+      },
+      "name": "two probes"
+    },
+    {
+      "expected": {
+        "decision": "stay",
+        "hold": "probeSpanTooShort"
+      },
+      "input": {
+        "currentScore": 100.0,
+        "foregrounded": false,
+        "idleMs": 60000,
+        "policy": {},
+        "preferredScore": 80.0,
+        "probeSpanMs": 299999,
+        "probeSuccesses": 3,
+        "sinceLastSwitchMs": 600000
+      },
+      "name": "span too short"
+    },
+    {
+      "expected": {
+        "decision": "stay",
+        "hold": "notBetterEnough"
+      },
+      "input": {
+        "currentScore": 100.0,
+        "foregrounded": false,
+        "idleMs": 60000,
+        "policy": {},
+        "preferredScore": 80.1,
+        "probeSpanMs": 300000,
+        "probeSuccesses": 3,
+        "sinceLastSwitchMs": 600000
+      },
+      "name": "improvement just short"
+    },
+    {
+      "expected": {
+        "decision": "stay",
+        "hold": "switchedRecently"
+      },
+      "input": {
+        "currentScore": 100.0,
+        "foregrounded": false,
+        "idleMs": 60000,
+        "policy": {},
+        "preferredScore": 80.0,
+        "probeSpanMs": 300000,
+        "probeSuccesses": 3,
+        "sinceLastSwitchMs": 599999
+      },
+      "name": "switched recently"
+    },
+    {
+      "expected": {
+        "decision": "stay",
+        "hold": "notAtNaturalBoundary"
+      },
+      "input": {
+        "currentScore": 100.0,
+        "foregrounded": false,
+        "idleMs": 59999,
+        "policy": {},
+        "preferredScore": 80.0,
+        "probeSpanMs": 300000,
+        "probeSuccesses": 3,
+        "sinceLastSwitchMs": 600000
+      },
+      "name": "busy in foreground session"
+    },
+    {
+      "expected": {
+        "decision": "switch"
+      },
+      "input": {
+        "currentScore": 100.0,
+        "foregrounded": true,
+        "idleMs": 0,
+        "policy": {},
+        "preferredScore": 80.0,
+        "probeSpanMs": 300000,
+        "probeSuccesses": 3,
+        "sinceLastSwitchMs": 600000
+      },
+      "name": "foreground transition counts as boundary"
+    },
+    {
+      "expected": {
+        "decision": "stay",
+        "hold": "notAtNaturalBoundary"
+      },
+      "input": {
+        "currentScore": 100.0,
+        "foregrounded": false,
+        "idleMs": 1000,
+        "policy": {},
+        "preferredScore": 80.0,
+        "probeSpanMs": 300000,
+        "probeSuccesses": 3,
+        "sinceLastSwitchMs": 600000
+      },
+      "name": "busy in background session"
+    },
+    {
+      "expected": {
+        "decision": "stay",
+        "hold": "switchedRecently"
+      },
+      "input": {
+        "currentScore": 100.0,
+        "foregrounded": true,
+        "idleMs": 0,
+        "policy": {},
+        "preferredScore": 80.0,
+        "probeSpanMs": 300000,
+        "probeSuccesses": 3,
+        "sinceLastSwitchMs": 599999
+      },
+      "name": "a foreground boundary does not cut the minimum interval"
+    },
+    {
+      "expected": {
+        "decision": "stay",
+        "hold": "notBetterEnough"
+      },
+      "input": {
+        "currentScore": 100.0,
+        "foregrounded": false,
+        "idleMs": 60000,
+        "policy": {},
+        "preferredScore": 100.0,
+        "probeSpanMs": 300000,
+        "probeSuccesses": 3,
+        "sinceLastSwitchMs": 600000
+      },
+      "name": "not better at all"
+    },
+    {
+      "expected": {
+        "decision": "switch"
+      },
+      "input": {
+        "currentScore": 100.0,
+        "foregrounded": false,
+        "idleMs": 60000,
+        "policy": {
+          "failback": {
+            "minHealthySpanSec": 60,
+            "minImprovementRatio": 0.5,
+            "minIntervalSec": 60
+          }
+        },
+        "preferredScore": 50.0,
+        "probeSpanMs": 60000,
+        "probeSuccesses": 3,
+        "sinceLastSwitchMs": 60000
+      },
+      "name": "custom policy"
+    },
+    {
+      "expected": {
+        "decision": "switch"
+      },
+      "input": {
+        "currentScore": 1e300,
+        "foregrounded": false,
+        "idleMs": 60000,
+        "policy": {},
+        "preferredScore": 80.0,
+        "probeSpanMs": 300000,
+        "probeSuccesses": 3,
+        "sinceLastSwitchMs": 600000
+      },
+      "name": "current unavailable scores infinite"
+    }
+  ],
+  "description": "Failback to the preferred access point. Checks in order: probeSuccesses >= 3, probeSpanMs >= minHealthySpanSec, preferredScore <= currentScore x (1 - minImprovementRatio), sinceLastSwitchMs >= minIntervalSec, and a natural boundary (foregrounded, or idleMs >= 60000). The first failing check is reported as `hold`."
+}

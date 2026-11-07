@@ -5,6 +5,10 @@ use sqlx::{QueryBuilder, Sqlite, SqlitePool};
 use crate::domain::{PendingSendReader, PendingSendVo, PendingSendWriter};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
+/// 待发队列（SQLite）。
+///
+/// 发送顺序按入队时刻（发件箱保证它在一个队列里严格递增，跨重启也续得上）；入队时刻相同的旧条目
+/// 按写入先后（`rowid`），不看 `client_msg_id`（随机值，按它排会打乱会话内顺序）。
 pub struct SqlitePendingSendRepo {
     pool: SqlitePool,
 }
@@ -53,7 +57,7 @@ impl PendingSendReader for SqlitePendingSendRepo {
 
     async fn list(&self) -> Result<Vec<PendingSendVo>> {
         let rows: Vec<(Vec<u8>, i64)> = sqlx::query_as(
-            "SELECT data, enqueued_at_ms FROM pending_sends ORDER BY enqueued_at_ms ASC",
+            "SELECT data, enqueued_at_ms FROM pending_sends ORDER BY enqueued_at_ms ASC, rowid ASC",
         )
         .fetch_all(&self.pool)
         .await
@@ -71,7 +75,7 @@ impl PendingSendReader for SqlitePendingSendRepo {
             r#"SELECT data, enqueued_at_ms FROM pending_sends
                WHERE client_msg_id = (
                  SELECT client_msg_id FROM pending_sends
-                 ORDER BY enqueued_at_ms ASC LIMIT 1
+                 ORDER BY enqueued_at_ms ASC, rowid ASC LIMIT 1
                )"#,
         )
         .fetch_optional(&self.pool)
@@ -105,7 +109,7 @@ impl PendingSendReader for SqlitePendingSendRepo {
             }
             separated.push_unseparated(")");
         }
-        builder.push(" ORDER BY enqueued_at_ms ASC, client_msg_id ASC LIMIT ");
+        builder.push(" ORDER BY enqueued_at_ms ASC, rowid ASC LIMIT ");
         builder.push_bind(limit as i64);
 
         let rows: Vec<(Vec<u8>, i64)> = builder
@@ -194,5 +198,33 @@ mod tests {
             .map(|entry| entry.client_msg_id)
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["client-2".to_string(), "client-4".to_string()]);
+    }
+
+    /// 入队时刻相同（升级前写下的旧条目）时按写入先后，不按 client_msg_id：会话内顺序不被随机 ID 打乱。
+    #[tokio::test]
+    async fn equal_enqueue_times_keep_the_write_order() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        init_schema(&pool).await.unwrap();
+        let repo = SqlitePendingSendRepo::new(pool);
+        for id in ["zz-first", "mm-second", "aa-third"] {
+            repo.push(pending(id, 7)).await.unwrap();
+        }
+        repo.push(pending("00-later", 8)).await.unwrap();
+
+        let ids = |rows: Vec<PendingSendVo>| {
+            rows.into_iter()
+                .map(|entry| entry.client_msg_id)
+                .collect::<Vec<_>>()
+        };
+        let order = vec!["zz-first", "mm-second", "aa-third", "00-later"];
+        assert_eq!(
+            ids(repo.list_oldest_excluding(&[], 10).await.unwrap()),
+            order
+        );
+        assert_eq!(ids(repo.list().await.unwrap()), order);
+        assert_eq!(
+            repo.take_oldest().await.unwrap().unwrap().client_msg_id,
+            "zz-first"
+        );
     }
 }

@@ -100,30 +100,25 @@ fn with_sync_field(mut payload: Value, key: &'static str, value: Value) -> Value
 
 pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
     let row = match ev {
-        SdkEvent::Connection(ConnectionEvent::Connected) => ("connection.connected", json!({})),
-        SdkEvent::Connection(ConnectionEvent::Disconnected { reason }) => {
-            ("connection.disconnected", json!({ "reason": reason }))
-        }
-        SdkEvent::Connection(ConnectionEvent::StateChanged { state }) => (
-            "connection.state_changed",
-            json!({ "state": format!("{state:?}") }),
+        SdkEvent::Connection(ConnectionEvent::Status(status)) => (
+            "connection.status",
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
-        SdkEvent::Connection(ConnectionEvent::ServerError { code, message }) => (
-            "connection.server_error",
-            json!({ "code": code, "message": message }),
-        ),
-        SdkEvent::Connection(ConnectionEvent::Reconnecting { attempt }) => {
-            ("connection.reconnecting", json!({ "attempt": attempt }))
-        }
-        SdkEvent::Connection(ConnectionEvent::KickedOff { reason }) => {
-            ("connection.kicked_off", json!({ "reason": reason }))
-        }
-        SdkEvent::Connection(ConnectionEvent::TokenExpired { message }) => {
-            ("connection.token_expired", json!({ "message": message }))
-        }
         SdkEvent::Connection(ConnectionEvent::SyncStateChanged { state }) => (
             "connection.sync_state_changed",
             json!({ "state": format!("{state:?}") }),
+        ),
+        SdkEvent::Connection(ConnectionEvent::AccessSwitched(switched)) => (
+            "access.switched",
+            serde_json::to_value(switched).unwrap_or_else(|_| json!({})),
+        ),
+        SdkEvent::Connection(ConnectionEvent::AccessChanged(changed)) => (
+            "access.changed",
+            serde_json::to_value(changed).unwrap_or_else(|_| json!({})),
+        ),
+        SdkEvent::Connection(ConnectionEvent::UpdateState(status)) => (
+            "update.state",
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
 
         SdkEvent::Message(MessageEvent::Received { message }) => {
@@ -280,6 +275,13 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         SdkEvent::Notification(NotificationEvent::Received { message }) => {
             ("notification.received", message_json(message.as_ref()))
         }
+        SdkEvent::Notification(NotificationEvent::MessageSound {
+            conversation_id,
+            message_id,
+        }) => (
+            "notification.message_sound",
+            json!({ "conversationId": conversation_id, "messageId": message_id }),
+        ),
 
         SdkEvent::Conversation(ConversationEvent::Synced { conversation_ids }) => (
             "conversation.synced",
@@ -590,6 +592,26 @@ mod tests {
     }
 
     #[test]
+    fn update_state_is_forwarded_on_its_own_channel() {
+        use flare_im_core_sdk::link::flare_access::release::{UpdateApp, UpdateMachine};
+
+        let machine = UpdateMachine::new(UpdateApp {
+            channel: "stable".into(),
+            ..UpdateApp::default()
+        });
+        let event = SdkEvent::Connection(ConnectionEvent::UpdateState(Box::new(machine.status(0))));
+        let (id, payload) = sdk_event_payload(&event).expect("update event");
+        assert_eq!(id, "update.state");
+        assert_eq!(payload["state"], "idle");
+        assert_eq!(payload["current"]["channel"], "stable");
+        assert_eq!(sdk_event_code(&event), 1013);
+        assert_eq!(
+            sdk_event_web_payload(&event).expect("web payload")["channel"],
+            "update://state"
+        );
+    }
+
+    #[test]
     fn plugin_catalog_changed_is_forwarded_with_its_version() {
         let event = SdkEvent::Plugin(PluginEvent::CatalogChanged {
             version: "42".to_string(),
@@ -674,10 +696,16 @@ mod tests {
         let bus = EventBus::new();
         let mut rx = bus.subscribe_shared_raw();
 
-        bus.publish(SdkEvent::Connection(ConnectionEvent::Connected));
-        bus.publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
-            reason: "network".to_string(),
-        }));
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Status(
+            flare_im_core_sdk::event::ConnectionStatus::idle(false),
+        )));
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Status(
+            flare_im_core_sdk::event::ConnectionStatus {
+                phase: flare_im_core_sdk::event::ConnectionPhase::ActionRequired,
+                reason: Some("kicked".to_string()),
+                ..flare_im_core_sdk::event::ConnectionStatus::idle(false)
+            },
+        )));
 
         let first = rx.try_recv().expect("first event");
         let second = rx.try_recv().expect("second event");
@@ -693,18 +721,25 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(
             events[0].get("eventType").and_then(Value::as_i64),
-            Some(1001)
+            Some(1010)
         );
         assert_eq!(
             events[1].get("eventType").and_then(Value::as_i64),
-            Some(1002)
+            Some(1010)
+        );
+        assert_eq!(
+            events[1]
+                .get("payload")
+                .and_then(|payload| payload.get("phase"))
+                .and_then(Value::as_str),
+            Some("actionRequired")
         );
         assert_eq!(
             events[1]
                 .get("payload")
                 .and_then(|payload| payload.get("reason"))
                 .and_then(Value::as_str),
-            Some("network")
+            Some("kicked")
         );
     }
 }

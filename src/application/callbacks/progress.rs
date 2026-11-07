@@ -44,6 +44,10 @@ pub struct UserFileDownloadRequest {
     pub source_path: Option<String>,
     pub source_http_url: Option<String>,
     pub remote_file_id: Option<String>,
+    /// Optional server message reference for a recipient renewing a private
+    /// attachment URL. This is a hint; the server rechecks real visibility.
+    pub message_conversation_id: Option<String>,
+    pub message_seq: Option<i64>,
     pub expires_in: i32,
     pub on_progress: Option<FileDownloadProgressCallback>,
 }

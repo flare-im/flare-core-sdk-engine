@@ -135,7 +135,7 @@ mod tests {
 
         let response = client.invoke_json(
             serde_json::json!({
-                "api_id": "connection.get_state",
+                "api_id": "connection.get_status",
                 "payload": {}
             })
             .to_string(),

@@ -13,6 +13,7 @@ import com.flare.im.model.common.error.*
 import com.flare.im.model.content.*
 import com.flare.im.model.entity.*
 import com.flare.im.model.event.*
+import com.flare.im.model.event.access.*
 import com.flare.im.model.event.connection.*
 import com.flare.im.model.event.conversation.*
 import com.flare.im.model.event.lifecycle.*
@@ -37,8 +38,53 @@ fun messageReadReceiptMembersRequestToMap(request: MessageReadReceiptMembersRequ
 @Suppress("UNCHECKED_CAST")
 
 
-fun setHeartbeatAppStateRequestToMap(request: SetHeartbeatAppStateRequest): Map<String, Any?> = buildMap {
-    put("appState", request.appState.ordinal)
+fun appStateWireValue(value: AppState): String = when (value) {
+    AppState.FOREGROUND -> "foreground"
+    AppState.BACKGROUND -> "background"
+}
+
+fun setAppStateRequestToMap(request: SetAppStateRequest): Map<String, Any?> = buildMap {
+    put("appState", appStateWireValue(request.appState))
+}
+
+fun accessPinRequestToMap(request: AccessPinRequest): Map<String, Any?> = buildMap {
+    put("accessPointId", request.accessPointId)
+}
+
+fun accessImportRecoveryRequestToMap(request: AccessImportRecoveryRequest): Map<String, Any?> = buildMap {
+    put("link", request.link)
+}
+
+fun updateCheckRequestToMap(request: UpdateCheckRequest): Map<String, Any?> = buildMap {
+    put("manual", request.manual)
+}
+
+fun updateGetStateRequestToMap(request: UpdateGetStateRequest): Map<String, Any?> = buildMap {
+    request.foreground?.let { put("foreground", it) }
+}
+
+fun updateSetLocaleRequestToMap(request: UpdateSetLocaleRequest): Map<String, Any?> = buildMap {
+    put("locale", request.locale)
+}
+
+fun updateGetResourcesRequestToMap(request: UpdateGetResourcesRequest): Map<String, Any?> = emptyMap()
+
+fun updateDownloadRequestToMap(request: UpdateDownloadRequest): Map<String, Any?> = buildMap {
+    put("allowMetered", request.allowMetered)
+}
+
+fun updateReportInstallRequestToMap(request: UpdateReportInstallRequest): Map<String, Any?> = buildMap {
+    put("outcome", request.outcome)
+    request.code?.let { put("code", it) }
+}
+
+fun updateSkipRequestToMap(request: UpdateSkipRequest): Map<String, Any?> = buildMap {
+    put("build", request.build)
+}
+
+fun updateMarkPromptedRequestToMap(request: UpdateMarkPromptedRequest): Map<String, Any?> = buildMap {
+    put("form", request.form)
+    request.build?.let { put("build", it) }
 }
 
 fun setHeartbeatNatTimeoutRequestToMap(request: SetHeartbeatNatTimeoutRequest): Map<String, Any?> = buildMap {
@@ -59,6 +105,7 @@ fun networkChangeRequestToMap(request: NetworkChangeRequest): Map<String, Any?> 
     request.expensive?.let { put("expensive", it) }
     request.metered?.let { put("metered", it) }
     request.reason?.let { put("reason", it) }
+    request.fingerprintHint?.let { put("fingerprintHint", it) }
 }
 
 fun updateConversationDraftRequestToMap(request: UpdateConversationDraftRequest): Map<String, Any?> = buildMap {
@@ -686,14 +733,6 @@ fun lifecycleEventToMap(request: LifecycleEvent): Map<String, Any?> = buildMap {
     request.error?.let { put("error", sdkErrorPayloadToMap(it)) }
 }
 
-fun connectionEventToMap(request: ConnectionEvent): Map<String, Any?> = buildMap {
-    put("name", request.name.ordinal)
-    put("state", request.state.ordinal)
-    request.reason?.let { put("reason", it) }
-    request.attempt?.let { put("attempt", it) }
-    request.error?.let { put("error", sdkErrorPayloadToMap(it)) }
-}
-
 fun messageReceivedEventToMap(request: MessageReceivedEvent): Map<String, Any?> = buildMap {
     put("message", messageToWireMap(request.message))
 }
@@ -1084,18 +1123,416 @@ fun mapValue(value: Any?): Map<String, Any?> =
         else -> emptyMap()
     }
 
-fun networkChangeResponseFromJson(value: Any?): NetworkChangeResponse {
-    val json = mapValue(value)
-    return NetworkChangeResponse(
-        reconnected = requiredBooleanField(json, "reconnected", "NetworkChangeResponse"),
-    )
-}
-
 fun serverClockResponseFromJson(value: Any?): ServerClockResponse {
     val json = mapValue(value)
     return ServerClockResponse(
         offsetMs = requiredSignedLongField(json, "offsetMs", "ServerClockResponse"),
         estimated = requiredBooleanField(json, "estimated", "ServerClockResponse"),
+    )
+}
+
+private fun requiredWireObject(value: Any?, field: String): Map<String, Any?> {
+    if (value is Map<*, *>) return value.entries.associate { (k, v) -> k.toString() to v }
+    throw FlareSdkException(
+        SdkErrorCodes.INVALIDPARAMETER,
+        if (value == null) "$field is required" else "$field must be an object",
+        operation = "wire.decode",
+        details = mapOf("field" to field, "expected" to "object"),
+    )
+}
+
+/** An optional field: absent and JSON null read as null; a value of another type is a contract error. */
+private fun optionalWireString(json: Map<String, Any?>, key: String, context: String): String? {
+    val value = field(json, key) ?: return null
+    if (value is String) return value
+    throw FlareSdkException(
+        SdkErrorCodes.INVALIDPARAMETER,
+        "$context.$key must be a string",
+        operation = "wire.decode",
+        details = mapOf("field" to "$context.$key", "expected" to "string"),
+    )
+}
+
+private fun optionalWireUnsigned(json: Map<String, Any?>, key: String, context: String): Long? {
+    if (field(json, key) == null) return null
+    return requiredLongField(json, key, context)
+}
+
+private fun optionalWireSignedLong(json: Map<String, Any?>, key: String, context: String): Long? {
+    if (field(json, key) == null) return null
+    return requiredSignedLongField(json, key, context)
+}
+
+private fun optionalWireDouble(json: Map<String, Any?>, key: String, context: String): Double? {
+    val value = field(json, key) ?: return null
+    if (value is Number) {
+        val number = value.toDouble()
+        if (number.isFinite()) return number
+    }
+    throw FlareSdkException(
+        SdkErrorCodes.INVALIDPARAMETER,
+        "$context.$key must be a number",
+        operation = "wire.decode",
+        details = mapOf("field" to "$context.$key", "expected" to "number"),
+    )
+}
+
+fun connectionPhaseWireValue(value: ConnectionPhase): String = when (value) {
+    ConnectionPhase.IDLE -> "idle"
+    ConnectionPhase.CONNECTING -> "connecting"
+    ConnectionPhase.SYNCING -> "syncing"
+    ConnectionPhase.ONLINE -> "online"
+    ConnectionPhase.SWITCHING -> "switching"
+    ConnectionPhase.RECONNECTING -> "reconnecting"
+    ConnectionPhase.WAITING_FOR_NETWORK -> "waitingForNetwork"
+    ConnectionPhase.SERVICE_UNAVAILABLE -> "serviceUnavailable"
+    ConnectionPhase.ACTION_REQUIRED -> "actionRequired"
+}
+
+fun connectionQualityWireValue(value: ConnectionQuality): String = when (value) {
+    ConnectionQuality.GOOD -> "good"
+    ConnectionQuality.POOR -> "poor"
+}
+
+private fun connectionPhaseFromJson(value: Any?, field: String): ConnectionPhase =
+    ConnectionPhase.entries.firstOrNull { connectionPhaseWireValue(it) == value } ?: throw FlareSdkException(
+        SdkErrorCodes.INVALIDPARAMETER,
+        if (value == null) "$field is required" else "invalid connection phase: $value",
+        operation = "wire.decode",
+        details = mapOf("field" to field, "expected" to "ConnectionPhase"),
+    )
+
+private fun connectionQualityFromJson(value: Any?, field: String): ConnectionQuality? {
+    if (value == null) return null
+    return ConnectionQuality.entries.firstOrNull { connectionQualityWireValue(it) == value } ?: throw FlareSdkException(
+        SdkErrorCodes.INVALIDPARAMETER,
+        "invalid connection quality: $value",
+        operation = "wire.decode",
+        details = mapOf("field" to field, "expected" to "ConnectionQuality"),
+    )
+}
+
+/** `connection://status` and `connection.getStatus`: every field is present, null without a value. */
+fun connectionStatusFromJson(value: Any?): ConnectionStatus {
+    val json = mapValue(value)
+    val context = "ConnectionStatus"
+    return ConnectionStatus(
+        phase = connectionPhaseFromJson(field(json, "phase"), "$context.phase"),
+        quality = connectionQualityFromJson(field(json, "quality"), "$context.quality"),
+        accessPointId = optionalWireString(json, "accessPointId", context),
+        cellId = optionalWireString(json, "cellId", context),
+        regionId = optionalWireString(json, "regionId", context),
+        protocol = optionalWireString(json, "protocol", context),
+        rttMs = optionalWireUnsigned(json, "rttMs", context)?.toInt(),
+        attempt = requiredLongField(json, "attempt", context).toInt(),
+        nextRetryAt = optionalWireSignedLong(json, "nextRetryAt", context),
+        reason = optionalWireString(json, "reason", context),
+        developmentMode = requiredBooleanField(json, "developmentMode", context),
+    )
+}
+
+/** The coarse sync state hint carries a core state name only; it never fails to decode. */
+fun connectionSyncStateEventFromJson(value: Any?): ConnectionSyncStateEvent =
+    ConnectionSyncStateEvent(state = mapValue(value)["state"] as? String ?: "")
+
+fun accessPinFromJson(value: Any?): AccessPin {
+    val json = mapValue(value)
+    return AccessPin(
+        accessPointId = requiredStringField(json, "accessPointId", "AccessPin"),
+        expiresAtMs = requiredSignedLongField(json, "expiresAtMs", "AccessPin"),
+    )
+}
+
+fun accessStatusFromJson(value: Any?): AccessStatus {
+    val json = mapValue(value)
+    val context = "AccessStatus"
+    return AccessStatus(
+        loaded = requiredBooleanField(json, "loaded", context),
+        serial = requiredLongField(json, "serial", context),
+        source = optionalWireString(json, "source", context),
+        stale = requiredBooleanField(json, "stale", context),
+        developmentMode = requiredBooleanField(json, "developmentMode", context),
+        issuedAtMs = optionalWireSignedLong(json, "issuedAtMs", context),
+        expiresAtMs = optionalWireSignedLong(json, "expiresAtMs", context),
+        fetchedAtMs = optionalWireSignedLong(json, "fetchedAtMs", context),
+        regionId = optionalWireString(json, "regionId", context),
+        cellId = optionalWireString(json, "cellId", context),
+        keystateSerial = optionalWireUnsigned(json, "keystateSerial", context),
+        accessPointId = optionalWireString(json, "accessPointId", context),
+        protocol = optionalWireString(json, "protocol", context),
+        pinned = field(json, "pinned")?.let { accessPinFromJson(requiredWireObject(it, "$context.pinned")) },
+        connectAck = field(json, "connectAck")?.let {
+            accessConnectAckFromJson(requiredWireObject(it, "$context.connectAck"))
+        },
+        refresh = field(json, "refresh")?.let {
+            accessRefreshStatusFromJson(requiredWireObject(it, "$context.refresh"))
+        },
+        recovering = field(json, "recovering")?.let {
+            accessRecoveringStatusFromJson(requiredWireObject(it, "$context.recovering"))
+        },
+    )
+}
+
+/** Manifest refresh progress (`AccessStatus.refresh`). */
+fun accessRefreshStatusFromJson(value: Any?): AccessRefreshStatus {
+    val json = mapValue(value)
+    val context = "AccessRefreshStatus"
+    return AccessRefreshStatus(
+        lastAttemptAtMs = optionalWireSignedLong(json, "lastAttemptAtMs", context),
+        lastSuccessAtMs = optionalWireSignedLong(json, "lastSuccessAtMs", context),
+        lastOutcome = optionalWireString(json, "lastOutcome", context),
+        nextAtMs = optionalWireSignedLong(json, "nextAtMs", context),
+    )
+}
+
+/** Recovery state while every access point has failed (`AccessStatus.recovering`). */
+fun accessRecoveringStatusFromJson(value: Any?): AccessRecoveringStatus {
+    val json = mapValue(value)
+    val context = "AccessRecoveringStatus"
+    return AccessRecoveringStatus(
+        sinceMs = requiredSignedLongField(json, "sinceMs", context),
+        rounds = requiredLongField(json, "rounds", context).toInt(),
+        nextRoundAtMs = optionalWireSignedLong(json, "nextRoundAtMs", context),
+    )
+}
+
+fun accessRefreshAttemptFromJson(value: Any?): AccessRefreshAttempt {
+    val json = mapValue(value)
+    val context = "AccessRefreshAttempt"
+    return AccessRefreshAttempt(
+        source = requiredStringField(json, "source", context),
+        tier = requiredStringField(json, "tier", context),
+        document = requiredStringField(json, "document", context),
+        result = requiredStringField(json, "result", context),
+        code = optionalWireString(json, "code", context),
+        serial = optionalWireUnsigned(json, "serial", context),
+    )
+}
+
+/** `access.refresh`. */
+fun accessRefreshReportFromJson(value: Any?): AccessRefreshReport {
+    val json = mapValue(value)
+    val context = "AccessRefreshReport"
+    return AccessRefreshReport(
+        outcome = requiredStringField(json, "outcome", context),
+        mode = requiredStringField(json, "mode", context),
+        serial = requiredLongField(json, "serial", context),
+        source = optionalWireString(json, "source", context),
+        keystateSerial = optionalWireUnsigned(json, "keystateSerial", context),
+        attempts = requiredListOfMaps(field(json, "attempts"), "attempts", context).map(::accessRefreshAttemptFromJson),
+    )
+}
+
+/** `access.importRecovery`: a bad link is an answer here, not a thrown error. */
+fun accessRecoveryImportFromJson(value: Any?): AccessRecoveryImport {
+    val json = mapValue(value)
+    val context = "AccessRecoveryImport"
+    return AccessRecoveryImport(
+        outcome = requiredStringField(json, "outcome", context),
+        code = optionalWireString(json, "code", context),
+        serial = requiredLongField(json, "serial", context),
+    )
+}
+
+/** `update.getState` and the other `update.*` answers; also the `update://state` payload. */
+fun updateStatusFromJson(value: Any?): UpdateStatus {
+    val json = mapValue(value)
+    val context = "UpdateStatus"
+    return UpdateStatus(
+        state = requiredStringField(json, "state", context),
+        current = updateCurrentAppFromJson(requiredWireObject(field(json, "current"), "$context.current")),
+        release = field(json, "release")?.let {
+            updateReleaseSummaryFromJson(requiredWireObject(it, "$context.release"))
+        },
+        progress = field(json, "progress")?.let {
+            updateProgressFromJson(requiredWireObject(it, "$context.progress"))
+        },
+        prompt = requiredStringField(json, "prompt", context),
+        blockUi = requiredBooleanField(json, "blockUi", context),
+        readOnly = requiredBooleanField(json, "readOnly", context),
+        lastCheckedAt = optionalWireSignedLong(json, "lastCheckedAt", context),
+        error = field(json, "error")?.let {
+            updateErrorInfoFromJson(requiredWireObject(it, "$context.error"))
+        },
+        blockReason = optionalWireString(json, "blockReason", context),
+    )
+}
+
+fun updateCurrentAppFromJson(value: Any?): UpdateCurrentApp {
+    val json = mapValue(value)
+    val context = "UpdateCurrentApp"
+    return UpdateCurrentApp(
+        version = optionalWireString(json, "version", context),
+        build = optionalWireUnsigned(json, "build", context),
+        channel = requiredStringField(json, "channel", context),
+        distribution = optionalWireString(json, "distribution", context),
+    )
+}
+
+fun updateReleaseSummaryFromJson(value: Any?): UpdateReleaseSummary {
+    val json = mapValue(value)
+    val context = "UpdateReleaseSummary"
+    return UpdateReleaseSummary(
+        releaseId = requiredStringField(json, "releaseId", context),
+        version = requiredStringField(json, "version", context),
+        build = requiredLongField(json, "build", context),
+        notes = requiredStringList(field(json, "notes"), "notes", context),
+        sizeBytes = optionalWireUnsigned(json, "sizeBytes", context),
+        mandatory = requiredBooleanField(json, "mandatory", context),
+        recommended = requiredBooleanField(json, "recommended", context),
+        kind = requiredStringField(json, "kind", context),
+    )
+}
+
+fun updateProgressFromJson(value: Any?): UpdateProgress {
+    val json = mapValue(value)
+    val context = "UpdateProgress"
+    return UpdateProgress(
+        received = requiredLongField(json, "received", context),
+        total = requiredLongField(json, "total", context),
+    )
+}
+
+fun updateErrorInfoFromJson(value: Any?): UpdateErrorInfo {
+    val json = mapValue(value)
+    val context = "UpdateErrorInfo"
+    return UpdateErrorInfo(
+        code = requiredStringField(json, "code", context),
+        retryable = requiredBooleanField(json, "retryable", context),
+        fallbackUrl = optionalWireString(json, "fallbackUrl", context),
+    )
+}
+
+/** `update.get_resources`: `contentJson` stays text, for the Kit and the host to read. */
+fun updateResourcesFromJson(value: Any?): UpdateResources {
+    val json = mapValue(value)
+    val context = "UpdateResources"
+    return UpdateResources(
+        packs = requiredListOfMaps(field(json, "packs"), "packs", context).map(::updateResourcePackFromJson),
+    )
+}
+
+fun updateResourcePackFromJson(value: Any?): UpdateResourcePack {
+    val json = mapValue(value)
+    val context = "UpdateResourcePack"
+    return UpdateResourcePack(
+        id = requiredStringField(json, "id", context),
+        kind = requiredStringField(json, "kind", context),
+        packVersion = requiredLongField(json, "packVersion", context),
+        contentJson = requiredStringField(json, "contentJson", context),
+    )
+}
+
+/** `update.install`: `kind` selects the fields that apply. */
+fun updateInstallPlanFromJson(value: Any?): UpdateInstallPlan {
+    val json = mapValue(value)
+    val context = "UpdateInstallPlan"
+    fun optionalFlag(key: String): Boolean? = field(json, key)?.let { requiredBooleanField(json, key, context) }
+    return UpdateInstallPlan(
+        kind = requiredStringField(json, "kind", context),
+        store = optionalWireString(json, "store", context),
+        url = optionalWireString(json, "url", context),
+        packageName = optionalWireString(json, "packageName", context),
+        appId = optionalWireString(json, "appId", context),
+        immediate = optionalFlag("immediate"),
+        path = optionalWireString(json, "path", context),
+        sha256 = optionalWireString(json, "sha256", context),
+        signingCertSha256 = optionalWireString(json, "signingCertSha256", context),
+        build = optionalWireUnsigned(json, "build", context),
+        sizeBytes = optionalWireUnsigned(json, "sizeBytes", context),
+        buildId = optionalWireString(json, "buildId", context),
+        assetManifestUrls = field(json, "assetManifestUrls")?.let {
+            requiredStringList(it, "assetManifestUrls", context)
+        },
+        assetManifestSha256 = optionalWireString(json, "assetManifestSha256", context),
+        mandatory = optionalFlag("mandatory"),
+        blockUi = optionalFlag("blockUi"),
+        version = optionalWireString(json, "version", context),
+        target = optionalWireString(json, "target", context),
+    )
+}
+
+/** CONNECT_ACK diagnostics of the current connection (`AccessStatus.connectAck`); only shown. */
+fun accessConnectAckFromJson(value: Any?): AccessConnectAck {
+    val json = mapValue(value)
+    val context = "AccessConnectAck"
+    return AccessConnectAck(
+        gatewayId = optionalWireString(json, "gatewayId", context),
+        accessPointId = optionalWireString(json, "accessPointId", context),
+        accessSerial = optionalWireUnsigned(json, "accessSerial", context),
+        heartbeatIntervalHintSec = optionalWireUnsigned(json, "heartbeatIntervalHintSec", context)?.toInt(),
+        accessPointMismatch = requiredBooleanField(json, "accessPointMismatch", context),
+    )
+}
+
+fun accessPointInfoFromJson(value: Any?): AccessPointInfo {
+    val json = mapValue(value)
+    val context = "AccessPointInfo"
+    return AccessPointInfo(
+        accessPointId = requiredStringField(json, "accessPointId", context),
+        regionId = requiredStringField(json, "regionId", context),
+        host = requiredStringField(json, "host", context),
+        status = requiredStringField(json, "status", context),
+        rttMs = optionalWireDouble(json, "rttMs", context),
+        breaker = requiredStringField(json, "breaker", context),
+        protocolWinner = optionalWireString(json, "protocolWinner", context),
+        pinned = requiredBooleanField(json, "pinned", context),
+        current = requiredBooleanField(json, "current", context),
+    )
+}
+
+/** `access.listAccessPoints` answers with a bare JSON array. */
+fun accessPointInfoListFromJson(value: Any?): List<AccessPointInfo> {
+    if (value !is List<*>) {
+        throw FlareSdkException(
+            SdkErrorCodes.INVALIDPARAMETER,
+            "AccessPointInfoList must be an array",
+            operation = "wire.decode",
+            details = mapOf("field" to "AccessPointInfoList", "expected" to "array"),
+        )
+    }
+    return value.mapIndexed { index, item ->
+        accessPointInfoFromJson(requiredWireObject(item, "AccessPointInfoList[$index]"))
+    }
+}
+
+fun accessEndpointFromJson(value: Any?): AccessEndpoint {
+    val json = mapValue(value)
+    return AccessEndpoint(
+        ap = requiredStringField(json, "ap", "AccessEndpoint"),
+        protocol = requiredStringField(json, "protocol", "AccessEndpoint"),
+    )
+}
+
+fun accessSwitchedEventFromJson(value: Any?): AccessSwitchedEvent {
+    val json = mapValue(value)
+    val context = "AccessSwitchedEvent"
+    return AccessSwitchedEvent(
+        from = accessEndpointFromJson(requiredWireObject(field(json, "from"), "$context.from")),
+        to = accessEndpointFromJson(requiredWireObject(field(json, "to"), "$context.to")),
+        reason = requiredStringField(json, "reason", context),
+    )
+}
+
+fun accessChangesFromJson(value: Any?): AccessChanges {
+    val json = mapValue(value)
+    val context = "AccessChanges"
+    return AccessChanges(
+        accessPointsAdded = requiredStringList(field(json, "accessPointsAdded"), "accessPointsAdded", context),
+        accessPointsRemoved = requiredStringList(field(json, "accessPointsRemoved"), "accessPointsRemoved", context),
+        policyChanged = requiredBooleanField(json, "policyChanged", context),
+    )
+}
+
+fun accessChangedEventFromJson(value: Any?): AccessChangedEvent {
+    val json = mapValue(value)
+    val context = "AccessChangedEvent"
+    return AccessChangedEvent(
+        serial = requiredLongField(json, "serial", context),
+        source = requiredStringField(json, "source", context),
+        stale = requiredBooleanField(json, "stale", context),
+        developmentMode = requiredBooleanField(json, "developmentMode", context),
+        changes = accessChangesFromJson(requiredWireObject(field(json, "changes"), "$context.changes")),
     )
 }
 

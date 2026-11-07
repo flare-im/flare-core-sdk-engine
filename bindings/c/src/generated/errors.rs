@@ -15,6 +15,9 @@ pub const FLARE_ERR_INTERNAL: i32 = 8;
 pub const FLARE_ERR_JSON_PARSE: i32 = 9;
 pub const FLARE_ERR_NULL_POINTER: i32 = 10;
 pub const FLARE_ERR_FFI_PANIC: i32 = 11;
+pub const FLARE_ERR_OVERLOADED: i32 = 12;
+pub const FLARE_ERR_UPGRADE_REQUIRED: i32 = 13;
+pub const FLARE_ERR_NETWORK_UNCERTAIN: i32 = 14;
 
 pub fn error_code_to_c(code: flare_im_core_sdk::ErrorCode) -> i32 {
     use flare_im_core_sdk::ErrorCode;
@@ -34,13 +37,16 @@ pub fn error_code_to_c(code: flare_im_core_sdk::ErrorCode) -> i32 {
         ErrorCode::NetworkConnectionLost => FLARE_ERR_NETWORK_ERROR,
         ErrorCode::NetworkError => FLARE_ERR_NETWORK_ERROR,
         ErrorCode::NetworkTimeout => FLARE_ERR_OPERATION_TIMEOUT,
+        ErrorCode::NetworkUncertain => FLARE_ERR_NETWORK_UNCERTAIN,
         ErrorCode::NetworkUnreachable => FLARE_ERR_NETWORK_ERROR,
         ErrorCode::NotConnected => FLARE_ERR_NOT_CONNECTED,
         ErrorCode::OperationNotSupported => FLARE_ERR_INTERNAL,
         ErrorCode::OperationTimeout => FLARE_ERR_OPERATION_TIMEOUT,
+        ErrorCode::Overloaded => FLARE_ERR_OVERLOADED,
         ErrorCode::PermissionDenied => FLARE_ERR_INTERNAL,
         ErrorCode::ServiceUnavailable => FLARE_ERR_INTERNAL,
         ErrorCode::TokenExpired => FLARE_ERR_TOKEN_EXPIRED,
+        ErrorCode::UpgradeRequired => FLARE_ERR_UPGRADE_REQUIRED,
         _ => FLARE_ERR_INTERNAL,
     }
 }

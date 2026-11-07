@@ -2,6 +2,7 @@
 //! 与 flare-proto 对齐：上行 Ack(ReadAck)、Sync；下行 SyncRes。
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -13,7 +14,7 @@ use flare_proto::common::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::application::notification::NotificationInboundPipeline;
+use crate::application::notification::{InboundDelivery, NotificationInboundPipeline};
 use crate::application::services::EventDeduper;
 use crate::application::usecases::sync_request::SyncRequestUseCase;
 use crate::application::usecases::{SyncApplyUseCase, local_message_sync_start_seq};
@@ -115,6 +116,86 @@ fn non_empty(value: &str) -> Option<String> {
     } else {
         Some(value.to_string())
     }
+}
+
+/// Retry only temporary request/transport failures. Authorization and business refusals
+/// require a caller/session/state change, not another identical request. GeneralError is
+/// retained in the bounded legacy transport path: older DATA error envelopes and frame
+/// send failures do not carry a distinguishable typed code. Never infer denial from text.
+fn sync_request_can_retry(error: &FlareError) -> bool {
+    if let FlareError::Localized {
+        params: Some(params),
+        ..
+    } = error
+        && let Some(code) = params
+            .get(PacketSender::SYNC_REMOTE_ERROR_CODE_PARAM)
+            .and_then(|code| code.parse::<i32>().ok())
+            .and_then(|code| flare_proto::common::ErrorCode::try_from(code).ok())
+    {
+        // Unlike the legacy GeneralError transport fallback, a numeric envelope is an
+        // explicit server result. In particular ALREADY_EXISTS/CONFLICT/CANCELLED must
+        // not be reissued merely because the SDK maps their display category to general.
+        return matches!(
+            code,
+            flare_proto::common::ErrorCode::ResourceExhausted
+                | flare_proto::common::ErrorCode::RateLimited
+                | flare_proto::common::ErrorCode::SlowDown
+                | flare_proto::common::ErrorCode::NeedsRetry
+                | flare_proto::common::ErrorCode::Timeout
+                | flare_proto::common::ErrorCode::Unavailable
+        );
+    }
+    error.is_retryable()
+        || matches!(
+            error.code(),
+            Some(
+                ErrorCode::ConnectionFailed
+                    | ErrorCode::ConnectionRefused
+                    | ErrorCode::ConnectionLimitExceeded
+                    | ErrorCode::NotConnected
+                    | ErrorCode::ConnectionReconnecting
+                    | ErrorCode::NetworkError
+                    | ErrorCode::NetworkUnreachable
+                    | ErrorCode::OperationTimeout
+                    | ErrorCode::MessageRateLimitExceeded
+                    | ErrorCode::GeneralError
+                    | ErrorCode::UnknownError
+            )
+        )
+        || matches!(error, FlareError::Io(_))
+}
+
+/// The production request boundary; a double can exercise retries without opening a socket.
+/// Preserve the complete last error (including code/reason/details) instead of synthesizing
+/// GeneralError on exhaustion, so timeout can never become an authorization result.
+async fn request_sync_page_with_retry<F, Fut>(
+    conversation_id: &str,
+    mut request: F,
+) -> Result<SyncRes>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<SyncRes>>,
+{
+    const MAX_ATTEMPTS: u8 = 3;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match request().await {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                let retry = attempt < MAX_ATTEMPTS && sync_request_can_retry(&error);
+                tracing::warn!(
+                    conversation_id = %conversation_id,
+                    attempt,
+                    retry,
+                    error = %error,
+                    "message sync request failed"
+                );
+                if !retry {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    unreachable!("the last failed attempt returns its original error")
 }
 
 pub struct SyncProtocolAdapter {
@@ -610,6 +691,7 @@ impl SyncProtocolAdapter {
                 is_archived: patch.is_archived,
                 draft: patch.draft,
                 base_settings_version,
+                clear_history_through_seq: patch.clear_history_through_seq,
             })
             .await?;
         let Some(SyncResPayload::ConversationUserSettings(res)) = resp.payload else {
@@ -624,9 +706,37 @@ impl SyncProtocolAdapter {
                 "conversation user settings sync response missing settings",
             ));
         };
+        if patch.clear_history_through_seq.is_some()
+            && settings.history_cleared_through_seq.is_none()
+        {
+            return Err(FlareError::localized(
+                ErrorCode::GeneralError,
+                "server did not confirm the conversation history cutoff",
+            ));
+        }
         if let Some(mut conversation) = self.stores.conversations.get(conversation_id).await? {
+            if let Some(cutoff) = settings.history_cleared_through_seq {
+                let confirmed_floor =
+                    crate::domain::local_cleared_through_seq(&conversation.ext).max(cutoff);
+                crate::domain::set_local_cleared_through_seq(
+                    &mut conversation.ext,
+                    confirmed_floor,
+                );
+                conversation.visible_after_seq =
+                    conversation.visible_after_seq.max(confirmed_floor);
+                if cutoff > 0 && conversation.max_seq <= cutoff {
+                    conversation.last_message_id = None;
+                    conversation.last_sender_id = None;
+                    conversation.last_message_at = None;
+                    conversation.last_message_preview = None;
+                    conversation.last_message = None;
+                    conversation.unread_count = 0;
+                }
+                conversation.last_read_seq = conversation.last_read_seq.max(cutoff);
+            }
             conversation.is_pinned = settings.is_pinned;
             conversation.is_muted = settings.is_muted;
+            conversation.is_mention_only = Some(settings.is_mention_only);
             conversation.is_archived = settings.is_archived;
             conversation.draft = non_empty(&settings.draft);
             apply_remote_settings_version(&mut conversation, settings.settings_version);
@@ -652,6 +762,7 @@ impl SyncProtocolAdapter {
                 is_muted: Some(conversation.is_muted),
                 is_archived: Some(conversation.is_archived),
                 draft: conversation.draft.clone(),
+                ..Default::default()
             },
         )
         .await
@@ -735,7 +846,17 @@ impl SyncProtocolAdapter {
 
         let applied = self
             .sync_apply_use_case
-            .apply_single_conversation_page(conversation_id, &user_id, decode_after_seq, sc)
+            .apply_single_conversation_page(
+                conversation_id,
+                &user_id,
+                decode_after_seq,
+                sc,
+                if run.reason == crate::kernel::SyncReason::Startup {
+                    InboundDelivery::HistoryReplay
+                } else {
+                    InboundDelivery::CatchUp
+                },
+            )
             .await?;
         if applied.has_decoded_items {
             self.transition_sync(run, SyncTransition::DataReceived);
@@ -816,37 +937,23 @@ impl SyncProtocolAdapter {
             cursor = %cursor,
             "请求消息同步页面"
         );
-        let mut retries = 0u8;
-        loop {
-            match self
-                .sync_request_use_case
-                .request_single_page(conversation_id, last_seq, limit, cursor.clone())
-                .await
-            {
-                Ok(resp) => {
-                    return self
-                        .apply_sync_res_single(run, conversation_id, &resp, last_seq, &cursor)
-                        .await;
-                }
-                Err(e) => {
-                    retries += 1;
-                    tracing::warn!(
-                        conversation_id = %conversation_id,
-                        retry = retries,
-                        error = %e,
-                        "消息同步请求失败，准备重试"
-                    );
-                    if retries >= 3 {
-                        tracing::error!(
-                            conversation_id = %conversation_id,
-                            "消息同步请求重试次数超过上限(3次)"
-                        );
-                        self.transition_sync(run, SyncTransition::SyncFailed);
-                        return Err(FlareError::general_error(format!(
-                            "sdk.sync.single_conversation.timeout_or_failed conversation_id={conversation_id}"
-                        )));
-                    }
-                }
+        let response = request_sync_page_with_retry(conversation_id, || {
+            self.sync_request_use_case.request_single_page(
+                conversation_id,
+                last_seq,
+                limit,
+                cursor.clone(),
+            )
+        })
+        .await;
+        match response {
+            Ok(response) => {
+                self.apply_sync_res_single(run, conversation_id, &response, last_seq, &cursor)
+                    .await
+            }
+            Err(error) => {
+                self.transition_sync(run, SyncTransition::SyncFailed);
+                Err(error)
             }
         }
     }
@@ -984,6 +1091,20 @@ impl SyncProtocolAdapter {
 }
 
 impl SessionSyncRunner for SyncProtocolAdapter {
+    fn request_history_visibility_sync(
+        &self,
+        user_id: &str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        let user_id = user_id.to_owned();
+        Box::pin(async move {
+            self.sync_conversation_summaries(
+                &user_id,
+                SyncRunContext::silent_multidevice_private_data(),
+            )
+            .await
+        })
+    }
+
     fn request_message_sync(
         &self,
         conversation_id: &str,
@@ -1896,7 +2017,13 @@ impl SyncProtocolAdapter {
         let user_id = self.current_user_id().await;
         let applied = self
             .sync_apply_use_case
-            .apply_single_conversation_page(conversation_id, &user_id, 0, &sc)
+            .apply_single_conversation_page(
+                conversation_id,
+                &user_id,
+                0,
+                &sc,
+                InboundDelivery::HistoryReplay,
+            )
             .await?;
         if applied.has_decoded_items {
             self.transition_sync(&run, SyncTransition::DataReceived);
@@ -2043,10 +2170,222 @@ fn is_cold_start_tail_snapshot(
 mod tests {
     use super::{
         build_read_ack, is_cold_start_tail_snapshot, max_applied_event_prefix_seq,
-        should_repair_operation_only_gap, single_response_from_multi_slice,
+        request_sync_page_with_retry, should_repair_operation_only_gap,
+        single_response_from_multi_slice,
     };
+    use crate::shared::error::{ErrorCode, FlareError};
     use flare_proto::common::ack::Payload as AckPayload;
     use flare_proto::common::{ConversationSyncSlice, SyncSliceItem};
+
+    fn remote_error_frame(
+        code: flare_proto::common::ErrorCode,
+    ) -> flare_core::common::protocol::Frame {
+        use flare_core::common::protocol::{Reliability, builder};
+        use flare_proto::common::{CustomData, DataPacket, data_packet};
+        use prost::Message;
+        let packet = DataPacket {
+            payload: Some(data_packet::Payload::UserCustom(CustomData {
+                r#type: "error".into(),
+                payload: b"owned typed sync refusal".to_vec(),
+                attributes: std::collections::HashMap::from([
+                    ("error_code".into(), (code as i32).to_string()),
+                    ("error_reason".into(), "OWNED_SYNC_BOUNDARY_TEST".into()),
+                ]),
+            })),
+        };
+        let command = builder::data_message(
+            "owned-sync-boundary".into(),
+            packet.encode_to_vec(),
+            None,
+            None,
+        );
+        builder::frame_with_payload_command(command, Reliability::AtLeastOnce)
+    }
+
+    fn assert_original_error(actual: &FlareError, expected: &FlareError) {
+        assert_eq!(actual.code(), expected.code());
+        assert_eq!(actual.reason(), expected.reason());
+        let actual = actual.as_localized().unwrap();
+        let expected = expected.as_localized().unwrap();
+        assert_eq!(actual.details, expected.details);
+        assert_eq!(actual.params, expected.params);
+        assert_eq!(actual.timestamp, expected.timestamp);
+    }
+
+    #[tokio::test]
+    async fn sync_page_permission_denied_is_not_retried_and_keeps_the_original_error() {
+        let mut original = FlareError::localized(ErrorCode::PermissionDenied, "not a group member");
+        if let FlareError::Localized {
+            details, params, ..
+        } = &mut original
+        {
+            *details = Some("policy track is retained".into());
+            *params = Some(std::collections::HashMap::from([(
+                "scope".into(),
+                "group".into(),
+            )]));
+        }
+        let mut requests = 0;
+        let error = request_sync_page_with_retry("5Agroup", || {
+            requests += 1;
+            std::future::ready(Err(original.clone()))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(
+            requests, 1,
+            "a permanent refusal must not create a retry storm"
+        );
+        assert_original_error(&error, &original);
+    }
+
+    #[tokio::test]
+    async fn sync_page_authentication_and_business_refusals_are_immediate() {
+        for code in [
+            ErrorCode::AuthenticationFailed,
+            ErrorCode::AuthenticationExpired,
+            ErrorCode::AuthenticationInvalid,
+            ErrorCode::AuthenticationRequired,
+            ErrorCode::TokenInvalid,
+            ErrorCode::TokenExpired,
+            ErrorCode::InvalidParameter,
+            ErrorCode::OperationNotSupported,
+            ErrorCode::UserNotFound,
+            ErrorCode::UserBlocked,
+        ] {
+            let original = FlareError::localized(code, "permanent request refusal");
+            let mut requests = 0;
+            let error = request_sync_page_with_retry("5Agroup", || {
+                requests += 1;
+                std::future::ready(Err(original.clone()))
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(requests, 1, "{code}");
+            assert_original_error(&error, &original);
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_page_timeout_retries_are_bounded_and_never_become_denial() {
+        for code in [
+            ErrorCode::OperationTimeout,
+            ErrorCode::ConnectionTimeout,
+            ErrorCode::NetworkTimeout,
+            ErrorCode::ServiceUnavailable,
+            ErrorCode::GeneralError,
+        ] {
+            let original = FlareError::localized(code, "transport did not return a page");
+            let mut requests = 0;
+            let error = request_sync_page_with_retry("5Agroup", || {
+                requests += 1;
+                std::future::ready(Err(original.clone()))
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(requests, 3, "{code}");
+            assert_original_error(&error, &original);
+            assert_ne!(error.code(), Some(ErrorCode::PermissionDenied));
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_page_temporary_failure_can_recover_within_the_same_request_budget() {
+        let mut requests = 0;
+        let response = request_sync_page_with_retry("5Agroup", || {
+            requests += 1;
+            std::future::ready(if requests < 3 {
+                Err(FlareError::timeout("temporary timeout"))
+            } else {
+                Ok(flare_proto::common::SyncRes::default())
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(requests, 3);
+        assert!(response.payload.is_none());
+    }
+
+    #[tokio::test]
+    async fn sync_page_denial_after_a_temporary_failure_stops_and_is_not_hidden() {
+        let original = FlareError::localized(ErrorCode::PermissionDenied, "membership ended");
+        let mut requests = 0;
+        let error = request_sync_page_with_retry("5Agroup", || {
+            requests += 1;
+            std::future::ready(Err(if requests == 1 {
+                FlareError::timeout("temporary timeout")
+            } else {
+                original.clone()
+            }))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(requests, 2);
+        assert_original_error(&error, &original);
+    }
+
+    #[tokio::test]
+    async fn production_sync_parser_and_adapter_do_not_retry_numeric_auth_or_business_refusals() {
+        use crate::infrastructure::protocol::PacketSender;
+        use flare_proto::common::ErrorCode as ProtoErrorCode;
+        for (code, expected) in [
+            (
+                ProtoErrorCode::PermissionDenied,
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                ProtoErrorCode::Unauthenticated,
+                ErrorCode::AuthenticationFailed,
+            ),
+            (ProtoErrorCode::InvalidArgument, ErrorCode::InvalidParameter),
+            // The SDK's general display category is not permission nor a transport retry.
+            (ProtoErrorCode::AlreadyExists, ErrorCode::GeneralError),
+            (ProtoErrorCode::Conflict, ErrorCode::GeneralError),
+            (ProtoErrorCode::Cancelled, ErrorCode::GeneralError),
+        ] {
+            let frame = remote_error_frame(code);
+            let mut requests = 0;
+            let error = request_sync_page_with_retry("5Agroup", || {
+                requests += 1;
+                std::future::ready(PacketSender::decode_sync_response_frame(&frame))
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(
+                requests, 1,
+                "{code:?}: actual numeric error envelope is permanent"
+            );
+            assert_eq!(error.code(), Some(expected));
+            assert_eq!(error.reason(), "owned typed sync refusal");
+            assert_eq!(
+                error.as_localized().unwrap().details.as_deref(),
+                Some("OWNED_SYNC_BOUNDARY_TEST")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn production_sync_parser_and_adapter_keep_numeric_timeout_as_timeout() {
+        use crate::infrastructure::protocol::PacketSender;
+        use flare_proto::common::ErrorCode as ProtoErrorCode;
+        for (code, expected) in [
+            (ProtoErrorCode::Timeout, ErrorCode::OperationTimeout),
+            (ProtoErrorCode::Unavailable, ErrorCode::ServiceUnavailable),
+        ] {
+            let frame = remote_error_frame(code);
+            let mut requests = 0;
+            let error = request_sync_page_with_retry("5Agroup", || {
+                requests += 1;
+                std::future::ready(PacketSender::decode_sync_response_frame(&frame))
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(requests, 3, "{code:?}");
+            assert_eq!(error.code(), Some(expected));
+            assert_ne!(error.code(), Some(ErrorCode::PermissionDenied));
+            assert_eq!(error.reason(), "owned typed sync refusal");
+        }
+    }
 
     fn make_event(seq: u64) -> flare_proto::common::Event {
         flare_proto::common::Event {

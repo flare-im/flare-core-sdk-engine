@@ -136,10 +136,85 @@ Map<String, Object?> updateConversationDraftRequestToMap(
   };
 }
 
-Map<String, Object?> setHeartbeatAppStateRequestToMap(
-  SetHeartbeatAppStateRequest request,
-) {
+Map<String, Object?> setAppStateRequestToMap(SetAppStateRequest request) {
   return {'appState': request.appState.name};
+}
+
+Map<String, Object?> setConnectTokenRefresherRequestToMap(
+  SetConnectTokenRefresherRequest request,
+) {
+  return {'enabled': request.enabled};
+}
+
+Map<String, Object?> completeConnectTokenRefreshRequestToMap(
+  CompleteConnectTokenRefreshRequest request,
+) {
+  return {
+    'requestId': request.requestId,
+    if (request.token != null) 'token': request.token!,
+  };
+}
+
+Map<String, Object?> accessPinRequestToMap(AccessPinRequest request) {
+  return {'accessPointId': request.accessPointId};
+}
+
+Map<String, Object?> accessImportRecoveryRequestToMap(
+  AccessImportRecoveryRequest request,
+) {
+  return {'link': request.link};
+}
+
+Map<String, Object?> updateCheckRequestToMap(UpdateCheckRequest request) {
+  return {'manual': request.manual};
+}
+
+Map<String, Object?> updateGetStateRequestToMap(
+  UpdateGetStateRequest request,
+) {
+  return {
+    if (request.foreground != null) 'foreground': request.foreground,
+  };
+}
+
+Map<String, Object?> updateSetLocaleRequestToMap(
+  UpdateSetLocaleRequest request,
+) {
+  return {'locale': request.locale};
+}
+
+Map<String, Object?> updateGetResourcesRequestToMap(
+  UpdateGetResourcesRequest request,
+) {
+  return {};
+}
+
+Map<String, Object?> updateDownloadRequestToMap(
+  UpdateDownloadRequest request,
+) {
+  return {'allowMetered': request.allowMetered};
+}
+
+Map<String, Object?> updateReportInstallRequestToMap(
+  UpdateReportInstallRequest request,
+) {
+  return {
+    'outcome': request.outcome,
+    if (request.code != null) 'code': request.code,
+  };
+}
+
+Map<String, Object?> updateSkipRequestToMap(UpdateSkipRequest request) {
+  return {'build': request.build};
+}
+
+Map<String, Object?> updateMarkPromptedRequestToMap(
+  UpdateMarkPromptedRequest request,
+) {
+  return {
+    'form': request.form,
+    if (request.build != null) 'build': request.build,
+  };
 }
 
 Map<String, Object?> setHeartbeatNatTimeoutRequestToMap(
@@ -158,16 +233,470 @@ Map<String, Object?> networkChangeRequestToMap(NetworkChangeRequest request) {
     if (request.expensive != null) 'expensive': request.expensive!,
     if (request.metered != null) 'metered': request.metered!,
     if (request.reason != null) 'reason': request.reason!,
+    if (request.fingerprintHint != null)
+      'fingerprintHint': request.fingerprintHint!,
   };
 }
 
-NetworkChangeResponse networkChangeResponseFromJson(Object? value) {
-  final json = mapValue(value);
-  return NetworkChangeResponse(
-    reconnected: json['reconnected'] is bool
-        ? json['reconnected'] as bool
-        : false,
+ConnectionPhase connectionPhaseFromValue(Object? value) {
+  for (final phase in ConnectionPhase.values) {
+    if (phase.name == value) {
+      return phase;
+    }
+  }
+  throw FormatException(
+    'invalid connection phase: ${value ?? '<empty>'}',
+    value,
   );
+}
+
+ConnectionQuality connectionQualityFromValue(Object? value) {
+  for (final quality in ConnectionQuality.values) {
+    if (quality.name == value) {
+      return quality;
+    }
+  }
+  throw FormatException(
+    'invalid connection quality: ${value ?? '<empty>'}',
+    value,
+  );
+}
+
+/// `connection://status` 的载荷与 `connection.getStatus` 的返回值：每个字段都出现，无值为 null。
+ConnectionStatus connectionStatusFromJson(Object? value) {
+  const context = 'ConnectionStatus';
+  final json = mapValue(value);
+  final quality = json['quality'];
+  return ConnectionStatus(
+    phase: connectionPhaseFromValue(json['phase']),
+    quality: quality == null ? null : connectionQualityFromValue(quality),
+    accessPointId: _optionalStringField(json, 'accessPointId', context),
+    cellId: _optionalStringField(json, 'cellId', context),
+    regionId: _optionalStringField(json, 'regionId', context),
+    protocol: _optionalStringField(json, 'protocol', context),
+    rttMs: _optionalUnsignedField(json, 'rttMs', context),
+    attempt: requiredIntField(json, 'attempt', context),
+    nextRetryAt: _optionalSignedField(json, 'nextRetryAt', context),
+    reason: _optionalStringField(json, 'reason', context),
+    developmentMode: _requiredBoolField(json, 'developmentMode', context),
+  );
+}
+
+/// `connection.sync_state_changed` 只是粗粒度提示，没有监听器：宽松解码，不因载荷形状抛异常。
+ConnectionSyncStateEvent connectionSyncStateEventFromJson(Object? value) {
+  final state = mapValue(value)['state'];
+  return ConnectionSyncStateEvent(state: state is String ? state : '');
+}
+
+AccessPin accessPinFromJson(Object? value) {
+  const context = 'AccessPin';
+  final json = mapValue(value);
+  return AccessPin(
+    accessPointId: requiredStringField(json, 'accessPointId', context),
+    expiresAtMs: _requiredSignedField(json, 'expiresAtMs', context),
+  );
+}
+
+AccessStatus accessStatusFromJson(Object? value) {
+  const context = 'AccessStatus';
+  final json = mapValue(value);
+  final pinned = json['pinned'];
+  final connectAck = json['connectAck'];
+  final refresh = json['refresh'];
+  final recovering = json['recovering'];
+  return AccessStatus(
+    loaded: _requiredBoolField(json, 'loaded', context),
+    serial: requiredIntField(json, 'serial', context),
+    source: _optionalStringField(json, 'source', context),
+    stale: _requiredBoolField(json, 'stale', context),
+    developmentMode: _requiredBoolField(json, 'developmentMode', context),
+    issuedAtMs: _optionalSignedField(json, 'issuedAtMs', context),
+    expiresAtMs: _optionalSignedField(json, 'expiresAtMs', context),
+    fetchedAtMs: _optionalSignedField(json, 'fetchedAtMs', context),
+    regionId: _optionalStringField(json, 'regionId', context),
+    cellId: _optionalStringField(json, 'cellId', context),
+    keystateSerial: _optionalUnsignedField(json, 'keystateSerial', context),
+    accessPointId: _optionalStringField(json, 'accessPointId', context),
+    protocol: _optionalStringField(json, 'protocol', context),
+    pinned: pinned == null
+        ? null
+        : accessPinFromJson(_requiredMapField(json, 'pinned', context)),
+    connectAck: connectAck == null
+        ? null
+        : accessConnectAckFromJson(
+            _requiredMapField(json, 'connectAck', context),
+          ),
+    refresh: refresh == null
+        ? null
+        : accessRefreshStatusFromJson(
+            _requiredMapField(json, 'refresh', context),
+          ),
+    recovering: recovering == null
+        ? null
+        : accessRecoveringStatusFromJson(
+            _requiredMapField(json, 'recovering', context),
+          ),
+  );
+}
+
+/// 清单刷新进度（`AccessStatus.refresh`）。
+AccessRefreshStatus accessRefreshStatusFromJson(Object? value) {
+  const context = 'AccessRefreshStatus';
+  final json = mapValue(value);
+  return AccessRefreshStatus(
+    lastAttemptAtMs: _optionalSignedField(json, 'lastAttemptAtMs', context),
+    lastSuccessAtMs: _optionalSignedField(json, 'lastSuccessAtMs', context),
+    lastOutcome: _optionalStringField(json, 'lastOutcome', context),
+    nextAtMs: _optionalSignedField(json, 'nextAtMs', context),
+  );
+}
+
+/// 全部接入点失败时的恢复状态（`AccessStatus.recovering`）。
+AccessRecoveringStatus accessRecoveringStatusFromJson(Object? value) {
+  const context = 'AccessRecoveringStatus';
+  final json = mapValue(value);
+  return AccessRecoveringStatus(
+    sinceMs: _requiredSignedField(json, 'sinceMs', context),
+    rounds: requiredIntField(json, 'rounds', context),
+    nextRoundAtMs: _optionalSignedField(json, 'nextRoundAtMs', context),
+  );
+}
+
+AccessRefreshAttempt accessRefreshAttemptFromJson(Object? value) {
+  const context = 'AccessRefreshAttempt';
+  final json = mapValue(value);
+  return AccessRefreshAttempt(
+    source: requiredStringField(json, 'source', context),
+    tier: requiredStringField(json, 'tier', context),
+    document: requiredStringField(json, 'document', context),
+    result: requiredStringField(json, 'result', context),
+    code: _optionalStringField(json, 'code', context),
+    serial: _optionalUnsignedField(json, 'serial', context),
+  );
+}
+
+/// `update.getState` 等 `update.*` 的返回值，也是 `update://state` 的载荷。
+UpdateStatus updateStatusFromJson(Object? value) {
+  const context = 'UpdateStatus';
+  final json = mapValue(value);
+  final release = json['release'];
+  final progress = json['progress'];
+  final error = json['error'];
+  return UpdateStatus(
+    state: requiredStringField(json, 'state', context),
+    current: updateCurrentAppFromJson(
+      _requiredMapField(json, 'current', context),
+    ),
+    release: release == null
+        ? null
+        : updateReleaseSummaryFromJson(
+            _requiredMapField(json, 'release', context),
+          ),
+    progress: progress == null
+        ? null
+        : updateProgressFromJson(_requiredMapField(json, 'progress', context)),
+    prompt: requiredStringField(json, 'prompt', context),
+    blockUi: _requiredBoolField(json, 'blockUi', context),
+    readOnly: _requiredBoolField(json, 'readOnly', context),
+    lastCheckedAt: _optionalSignedField(json, 'lastCheckedAt', context),
+    error: error == null
+        ? null
+        : updateErrorInfoFromJson(_requiredMapField(json, 'error', context)),
+    blockReason: _optionalStringField(json, 'blockReason', context),
+  );
+}
+
+UpdateCurrentApp updateCurrentAppFromJson(Object? value) {
+  const context = 'UpdateCurrentApp';
+  final json = mapValue(value);
+  return UpdateCurrentApp(
+    version: _optionalStringField(json, 'version', context),
+    build: _optionalUnsignedField(json, 'build', context),
+    channel: requiredStringField(json, 'channel', context),
+    distribution: _optionalStringField(json, 'distribution', context),
+  );
+}
+
+UpdateReleaseSummary updateReleaseSummaryFromJson(Object? value) {
+  const context = 'UpdateReleaseSummary';
+  final json = mapValue(value);
+  return UpdateReleaseSummary(
+    releaseId: requiredStringField(json, 'releaseId', context),
+    version: requiredStringField(json, 'version', context),
+    build: requiredIntField(json, 'build', context),
+    notes: stringList(json['notes']),
+    sizeBytes: _optionalUnsignedField(json, 'sizeBytes', context),
+    mandatory: _requiredBoolField(json, 'mandatory', context),
+    recommended: _requiredBoolField(json, 'recommended', context),
+    kind: requiredStringField(json, 'kind', context),
+  );
+}
+
+UpdateProgress updateProgressFromJson(Object? value) {
+  const context = 'UpdateProgress';
+  final json = mapValue(value);
+  return UpdateProgress(
+    received: requiredIntField(json, 'received', context),
+    total: requiredIntField(json, 'total', context),
+  );
+}
+
+UpdateErrorInfo updateErrorInfoFromJson(Object? value) {
+  const context = 'UpdateErrorInfo';
+  final json = mapValue(value);
+  return UpdateErrorInfo(
+    code: requiredStringField(json, 'code', context),
+    retryable: _requiredBoolField(json, 'retryable', context),
+    fallbackUrl: _optionalStringField(json, 'fallbackUrl', context),
+  );
+}
+
+/// `update.get_resources` 的返回值：`contentJson` 是文本，由 Kit 和宿主解析。
+UpdateResources updateResourcesFromJson(Object? value) {
+  const context = 'UpdateResources';
+  final json = mapValue(value);
+  return UpdateResources(
+    packs: requiredWireListOfMaps(json['packs'], 'packs', context)
+        .map(updateResourcePackFromJson)
+        .toList(growable: false),
+  );
+}
+
+UpdateResourcePack updateResourcePackFromJson(Object? value) {
+  const context = 'UpdateResourcePack';
+  final json = mapValue(value);
+  return UpdateResourcePack(
+    id: requiredStringField(json, 'id', context),
+    kind: requiredStringField(json, 'kind', context),
+    packVersion: requiredIntField(json, 'packVersion', context),
+    contentJson: requiredStringField(json, 'contentJson', context),
+  );
+}
+
+/// `update.install` 的返回值：`kind` 决定哪些字段有值。
+UpdateInstallPlan updateInstallPlanFromJson(Object? value) {
+  const context = 'UpdateInstallPlan';
+  final json = mapValue(value);
+  bool? optionalFlag(String key) =>
+      json[key] == null ? null : _requiredBoolField(json, key, context);
+  final urls = json['assetManifestUrls'];
+  return UpdateInstallPlan(
+    kind: requiredStringField(json, 'kind', context),
+    store: _optionalStringField(json, 'store', context),
+    url: _optionalStringField(json, 'url', context),
+    packageName: _optionalStringField(json, 'packageName', context),
+    appId: _optionalStringField(json, 'appId', context),
+    immediate: optionalFlag('immediate'),
+    path: _optionalStringField(json, 'path', context),
+    sha256: _optionalStringField(json, 'sha256', context),
+    signingCertSha256: _optionalStringField(json, 'signingCertSha256', context),
+    build: _optionalUnsignedField(json, 'build', context),
+    sizeBytes: _optionalUnsignedField(json, 'sizeBytes', context),
+    buildId: _optionalStringField(json, 'buildId', context),
+    assetManifestUrls: urls == null ? null : stringList(urls),
+    assetManifestSha256:
+        _optionalStringField(json, 'assetManifestSha256', context),
+    mandatory: optionalFlag('mandatory'),
+    blockUi: optionalFlag('blockUi'),
+    version: _optionalStringField(json, 'version', context),
+    target: _optionalStringField(json, 'target', context),
+  );
+}
+
+/// `access.refresh` 的返回值。
+AccessRefreshReport accessRefreshReportFromJson(Object? value) {
+  const context = 'AccessRefreshReport';
+  final json = mapValue(value);
+  return AccessRefreshReport(
+    outcome: requiredStringField(json, 'outcome', context),
+    mode: requiredStringField(json, 'mode', context),
+    serial: requiredIntField(json, 'serial', context),
+    source: _optionalStringField(json, 'source', context),
+    keystateSerial: _optionalUnsignedField(json, 'keystateSerial', context),
+    attempts: requiredWireListOfMaps(json['attempts'], 'attempts', context)
+        .map(accessRefreshAttemptFromJson)
+        .toList(growable: false),
+  );
+}
+
+/// `access.importRecovery` 的返回值：链接有问题也在这里，不抛错。
+AccessRecoveryImport accessRecoveryImportFromJson(Object? value) {
+  const context = 'AccessRecoveryImport';
+  final json = mapValue(value);
+  return AccessRecoveryImport(
+    outcome: requiredStringField(json, 'outcome', context),
+    code: _optionalStringField(json, 'code', context),
+    serial: requiredIntField(json, 'serial', context),
+  );
+}
+
+/// 当前连接 CONNECT_ACK 带回的诊断字段（`AccessStatus.connectAck`），只用于展示。
+AccessConnectAck accessConnectAckFromJson(Object? value) {
+  const context = 'AccessConnectAck';
+  final json = mapValue(value);
+  return AccessConnectAck(
+    gatewayId: _optionalStringField(json, 'gatewayId', context),
+    accessPointId: _optionalStringField(json, 'accessPointId', context),
+    accessSerial: _optionalUnsignedField(json, 'accessSerial', context),
+    heartbeatIntervalHintSec:
+        _optionalUnsignedField(json, 'heartbeatIntervalHintSec', context),
+    accessPointMismatch:
+        _requiredBoolField(json, 'accessPointMismatch', context),
+  );
+}
+
+AccessPointInfo accessPointInfoFromJson(Object? value) {
+  const context = 'AccessPointInfo';
+  final json = mapValue(value);
+  return AccessPointInfo(
+    accessPointId: requiredStringField(json, 'accessPointId', context),
+    regionId: requiredStringField(json, 'regionId', context),
+    host: requiredStringField(json, 'host', context),
+    status: requiredStringField(json, 'status', context),
+    rttMs: _optionalDoubleField(json, 'rttMs', context),
+    breaker: requiredStringField(json, 'breaker', context),
+    protocolWinner: _optionalStringField(json, 'protocolWinner', context),
+    pinned: _requiredBoolField(json, 'pinned', context),
+    current: _requiredBoolField(json, 'current', context),
+  );
+}
+
+/// `access.listAccessPoints` 的响应是裸 JSON 数组；桥把数组包成 `{items: [...]}` 时同样接受。
+List<AccessPointInfo> accessPointInfoListFromJson(Object? value) {
+  final items = value is Map && value['items'] is List ? value['items'] : value;
+  return requiredWireListOfMaps(items, 'items', 'AccessPointInfoList')
+      .map(accessPointInfoFromJson)
+      .toList(growable: false);
+}
+
+AccessEndpoint accessEndpointFromJson(Object? value) {
+  const context = 'AccessEndpoint';
+  final json = mapValue(value);
+  return AccessEndpoint(
+    ap: requiredStringField(json, 'ap', context),
+    protocol: requiredStringField(json, 'protocol', context),
+  );
+}
+
+AccessSwitchedEvent accessSwitchedEventFromJson(Object? value) {
+  const context = 'AccessSwitchedEvent';
+  final json = mapValue(value);
+  return AccessSwitchedEvent(
+    from: accessEndpointFromJson(_requiredMapField(json, 'from', context)),
+    to: accessEndpointFromJson(_requiredMapField(json, 'to', context)),
+    reason: requiredStringField(json, 'reason', context),
+  );
+}
+
+AccessChanges accessChangesFromJson(Object? value) {
+  const context = 'AccessChanges';
+  final json = mapValue(value);
+  return AccessChanges(
+    accessPointsAdded: stringList(json['accessPointsAdded']),
+    accessPointsRemoved: stringList(json['accessPointsRemoved']),
+    policyChanged: _requiredBoolField(json, 'policyChanged', context),
+  );
+}
+
+AccessChangedEvent accessChangedEventFromJson(Object? value) {
+  const context = 'AccessChangedEvent';
+  final json = mapValue(value);
+  return AccessChangedEvent(
+    serial: requiredIntField(json, 'serial', context),
+    source: requiredStringField(json, 'source', context),
+    stale: _requiredBoolField(json, 'stale', context),
+    developmentMode: _requiredBoolField(json, 'developmentMode', context),
+    changes: accessChangesFromJson(_requiredMapField(json, 'changes', context)),
+  );
+}
+
+bool _requiredBoolField(
+  Map<String, Object?> json,
+  String key,
+  String context,
+) {
+  final value = json[key];
+  if (value is bool) return value;
+  throw ArgumentError.value(
+    json,
+    context,
+    value == null
+        ? '$context.$key is required'
+        : '$context.$key must be a boolean',
+  );
+}
+
+Map<String, Object?> _requiredMapField(
+  Map<String, Object?> json,
+  String key,
+  String context,
+) {
+  final value = json[key];
+  if (value is Map) return mapValue(value);
+  throw ArgumentError.value(
+    json,
+    context,
+    value == null
+        ? '$context.$key is required'
+        : '$context.$key must be an object',
+  );
+}
+
+String? _optionalStringField(
+  Map<String, Object?> json,
+  String key,
+  String context,
+) {
+  final value = json[key];
+  if (value == null || value is String) return value as String?;
+  throw ArgumentError.value(json, context, '$context.$key must be a string');
+}
+
+int? _optionalUnsignedField(
+  Map<String, Object?> json,
+  String key,
+  String context,
+) {
+  if (json[key] == null) return null;
+  return requiredIntField(json, key, context);
+}
+
+int _requiredSignedField(
+  Map<String, Object?> json,
+  String key,
+  String context,
+) {
+  final value = json[key];
+  if (value is num && value.isFinite && value.truncateToDouble() == value) {
+    return value.toInt();
+  }
+  throw ArgumentError.value(
+    json,
+    context,
+    value == null
+        ? '$context.$key is required'
+        : '$context.$key must be an integer',
+  );
+}
+
+int? _optionalSignedField(
+  Map<String, Object?> json,
+  String key,
+  String context,
+) {
+  if (json[key] == null) return null;
+  return _requiredSignedField(json, key, context);
+}
+
+double? _optionalDoubleField(
+  Map<String, Object?> json,
+  String key,
+  String context,
+) {
+  final value = json[key];
+  if (value == null) return null;
+  if (value is num && value.isFinite) return value.toDouble();
+  throw ArgumentError.value(json, context, '$context.$key must be a number');
 }
 
 ServerClockResponse serverClockResponseFromJson(Object? value) {

@@ -1,0 +1,1665 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "chosen": "a",
+        "fallbackRttMs": 60.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "a",
+            "rttKnown": true,
+            "rttMs": 40.0,
+            "score": 40.0
+          },
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": true,
+            "rttMs": 60.0,
+            "score": 78.0
+          },
+          {
+            "group": "untagged",
+            "id": "d",
+            "rttKnown": true,
+            "rttMs": 100.0,
+            "score": 100.0
+          },
+          {
+            "group": "untagged",
+            "id": "c",
+            "rttKnown": false,
+            "rttMs": 60.0,
+            "score": 110.0
+          }
+        ],
+        "tier": [
+          "a"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 40.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.1,
+              "rttMs": 60.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": null
+            },
+            "id": "c",
+            "priority": 1,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 100.0
+            },
+            "id": "d",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "fastest alone in tier"
+    },
+    {
+      "expected": {
+        "chosen": "b",
+        "fallbackRttMs": 60.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "a",
+            "rttKnown": true,
+            "rttMs": 40.0,
+            "score": 40.0
+          },
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": true,
+            "rttMs": 60.0,
+            "score": 48.0
+          },
+          {
+            "group": "untagged",
+            "id": "d",
+            "rttKnown": true,
+            "rttMs": 100.0,
+            "score": 100.0
+          },
+          {
+            "group": "untagged",
+            "id": "c",
+            "rttKnown": false,
+            "rttMs": 60.0,
+            "score": 110.0
+          }
+        ],
+        "tier": [
+          "a",
+          "b"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 40.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.1,
+              "rttMs": 60.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": null
+            },
+            "id": "c",
+            "priority": 1,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 100.0
+            },
+            "id": "d",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": "b",
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "sticky current joins and wins tier"
+    },
+    {
+      "expected": {
+        "chosen": "a",
+        "fallbackRttMs": 55.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "a",
+            "rttKnown": true,
+            "rttMs": 50.0,
+            "score": 50.0
+          },
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": true,
+            "rttMs": 55.0,
+            "score": 55.0
+          },
+          {
+            "group": "untagged",
+            "id": "c",
+            "rttKnown": true,
+            "rttMs": 500.0,
+            "score": 500.0
+          }
+        ],
+        "tier": [
+          "a",
+          "b"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 50.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 55.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 300
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 500.0
+            },
+            "id": "c",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.249,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "weighted pick low draw"
+    },
+    {
+      "expected": {
+        "chosen": "b",
+        "fallbackRttMs": 55.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "a",
+            "rttKnown": true,
+            "rttMs": 50.0,
+            "score": 50.0
+          },
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": true,
+            "rttMs": 55.0,
+            "score": 55.0
+          },
+          {
+            "group": "untagged",
+            "id": "c",
+            "rttKnown": true,
+            "rttMs": 500.0,
+            "score": 500.0
+          }
+        ],
+        "tier": [
+          "a",
+          "b"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 50.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 55.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 300
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 500.0
+            },
+            "id": "c",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.25,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "weighted pick boundary draw"
+    },
+    {
+      "expected": {
+        "chosen": "b",
+        "fallbackRttMs": 55.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "a",
+            "rttKnown": true,
+            "rttMs": 50.0,
+            "score": 50.0
+          },
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": true,
+            "rttMs": 55.0,
+            "score": 55.0
+          },
+          {
+            "group": "untagged",
+            "id": "c",
+            "rttKnown": true,
+            "rttMs": 500.0,
+            "score": 500.0
+          }
+        ],
+        "tier": [
+          "a",
+          "b"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 50.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 55.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 300
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 500.0
+            },
+            "id": "c",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.999,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "weighted pick high draw"
+    },
+    {
+      "expected": {
+        "chosen": "b",
+        "fallbackRttMs": 51.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "a",
+            "rttKnown": true,
+            "rttMs": 50.0,
+            "score": 50.0
+          },
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": true,
+            "rttMs": 52.0,
+            "score": 52.0
+          }
+        ],
+        "tier": [
+          "a",
+          "b"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 50.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 0
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 52.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 0
+          }
+        ],
+        "current": null,
+        "draw": 0.6,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "zero weights pick uniformly"
+    },
+    {
+      "expected": {
+        "chosen": "b",
+        "fallbackRttMs": 51.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "a",
+            "rttKnown": true,
+            "rttMs": 50.0,
+            "score": 50.0
+          },
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": true,
+            "rttMs": 52.0,
+            "score": 52.0
+          }
+        ],
+        "tier": [
+          "a",
+          "b"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 50.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 0
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 52.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "zero weight loses to weighted peer"
+    },
+    {
+      "expected": {
+        "chosen": "slow-matched",
+        "fallbackRttMs": 50.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "matched",
+            "id": "slow-matched",
+            "rttKnown": true,
+            "rttMs": 200.0,
+            "score": 200.0
+          },
+          {
+            "group": "untagged",
+            "id": "plain",
+            "rttKnown": true,
+            "rttMs": 50.0,
+            "score": 50.0
+          },
+          {
+            "group": "other",
+            "id": "fast-other",
+            "rttKnown": true,
+            "rttMs": 10.0,
+            "score": 10.0
+          }
+        ],
+        "tier": [
+          "slow-matched"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "fast-other",
+            "priority": 0,
+            "status": "active",
+            "tags": [
+              "isp:cm"
+            ],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 200.0
+            },
+            "id": "slow-matched",
+            "priority": 0,
+            "status": "active",
+            "tags": [
+              "isp:ct"
+            ],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 50.0
+            },
+            "id": "plain",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.0,
+        "netTags": [
+          "isp:ct"
+        ],
+        "pinned": null
+      },
+      "name": "matched tag beats faster untagged and other"
+    },
+    {
+      "expected": {
+        "chosen": "plain",
+        "fallbackRttMs": 50.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "plain",
+            "rttKnown": true,
+            "rttMs": 50.0,
+            "score": 50.0
+          },
+          {
+            "group": "other",
+            "id": "fast-other",
+            "rttKnown": true,
+            "rttMs": 10.0,
+            "score": 10.0
+          },
+          {
+            "group": "other",
+            "id": "slow-matched",
+            "rttKnown": true,
+            "rttMs": 200.0,
+            "score": 200.0
+          }
+        ],
+        "tier": [
+          "plain"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "fast-other",
+            "priority": 0,
+            "status": "active",
+            "tags": [
+              "isp:cm"
+            ],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 200.0
+            },
+            "id": "slow-matched",
+            "priority": 0,
+            "status": "active",
+            "tags": [
+              "isp:ct"
+            ],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 50.0
+            },
+            "id": "plain",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "untagged beats other-network tag"
+    },
+    {
+      "expected": {
+        "chosen": "fast-other",
+        "fallbackRttMs": 50.0,
+        "filtered": [
+          {
+            "id": "slow-matched",
+            "reason": "notPinned"
+          },
+          {
+            "id": "plain",
+            "reason": "notPinned"
+          }
+        ],
+        "pin": "applied",
+        "ranking": [
+          {
+            "group": "other",
+            "id": "fast-other",
+            "rttKnown": true,
+            "rttMs": 10.0,
+            "score": 10.0
+          }
+        ],
+        "tier": [
+          "fast-other"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "fast-other",
+            "priority": 0,
+            "status": "active",
+            "tags": [
+              "isp:cm"
+            ],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 200.0
+            },
+            "id": "slow-matched",
+            "priority": 0,
+            "status": "active",
+            "tags": [
+              "isp:ct"
+            ],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 50.0
+            },
+            "id": "plain",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": "fast-other"
+      },
+      "name": "pin applied"
+    },
+    {
+      "expected": {
+        "chosen": "plain",
+        "fallbackRttMs": 30.0,
+        "filtered": [
+          {
+            "id": "fast-other",
+            "reason": "breakerOpen"
+          }
+        ],
+        "pin": "unavailable",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "plain",
+            "rttKnown": true,
+            "rttMs": 50.0,
+            "score": 50.0
+          }
+        ],
+        "tier": [
+          "plain"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "open",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "fast-other",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 50.0
+            },
+            "id": "plain",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": "fast-other"
+      },
+      "name": "pin unavailable falls back"
+    },
+    {
+      "expected": {
+        "chosen": "plain",
+        "fallbackRttMs": 50.0,
+        "filtered": [],
+        "pin": "unavailable",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "plain",
+            "rttKnown": true,
+            "rttMs": 50.0,
+            "score": 50.0
+          },
+          {
+            "group": "other",
+            "id": "fast-other",
+            "rttKnown": true,
+            "rttMs": 10.0,
+            "score": 10.0
+          },
+          {
+            "group": "other",
+            "id": "slow-matched",
+            "rttKnown": true,
+            "rttMs": 200.0,
+            "score": 200.0
+          }
+        ],
+        "tier": [
+          "plain"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "fast-other",
+            "priority": 0,
+            "status": "active",
+            "tags": [
+              "isp:cm"
+            ],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 200.0
+            },
+            "id": "slow-matched",
+            "priority": 0,
+            "status": "active",
+            "tags": [
+              "isp:ct"
+            ],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 50.0
+            },
+            "id": "plain",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": "gone"
+      },
+      "name": "pin unknown access point"
+    },
+    {
+      "expected": {
+        "chosen": "ok",
+        "fallbackRttMs": 10.0,
+        "filtered": [
+          {
+            "id": "open",
+            "reason": "breakerOpen"
+          },
+          {
+            "id": "draining",
+            "reason": "notActive"
+          },
+          {
+            "id": "disabled",
+            "reason": "notActive"
+          },
+          {
+            "id": "busy",
+            "reason": "trialInFlight"
+          },
+          {
+            "id": "tried",
+            "reason": "excluded"
+          },
+          {
+            "id": "no-service",
+            "reason": "noService"
+          }
+        ],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "ok",
+            "rttKnown": true,
+            "rttMs": 90.0,
+            "score": 90.0
+          },
+          {
+            "group": "untagged",
+            "id": "half-open",
+            "rttKnown": true,
+            "rttMs": 80.0,
+            "score": 200.0
+          }
+        ],
+        "tier": [
+          "ok"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "open",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "open",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "draining",
+            "priority": 0,
+            "status": "draining",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "disabled",
+            "priority": 0,
+            "status": "disabled",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "halfOpenBusy",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "busy",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "excluded": true,
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "tried",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "no-service",
+            "offersService": false,
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "halfOpen",
+              "failureRatio": 0.5,
+              "rttMs": 80.0
+            },
+            "id": "half-open",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 90.0
+            },
+            "id": "ok",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "filters"
+    },
+    {
+      "expected": {
+        "chosen": "a",
+        "fallbackRttMs": 300.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "a",
+            "rttKnown": false,
+            "rttMs": 300.0,
+            "score": 300.0
+          },
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": false,
+            "rttMs": 300.0,
+            "score": 400.0
+          }
+        ],
+        "tier": [
+          "a"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": null
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": null
+            },
+            "id": "b",
+            "priority": 2,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "no samples anywhere"
+    },
+    {
+      "expected": {
+        "chosen": "a",
+        "fallbackRttMs": 60.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "a",
+            "rttKnown": true,
+            "rttMs": 40.0,
+            "score": 40.0
+          },
+          {
+            "group": "untagged",
+            "id": "c",
+            "rttKnown": false,
+            "rttMs": 60.0,
+            "score": 60.0
+          },
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": true,
+            "rttMs": 80.0,
+            "score": 80.0
+          }
+        ],
+        "tier": [
+          "a",
+          "c"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 40.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 80.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": null
+            },
+            "id": "c",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "even count median"
+    },
+    {
+      "expected": {
+        "chosen": "a",
+        "fallbackRttMs": 25.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "a",
+            "rttKnown": true,
+            "rttMs": 10.0,
+            "score": -20.0
+          },
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": true,
+            "rttMs": 25.0,
+            "score": 25.0
+          },
+          {
+            "group": "untagged",
+            "id": "c",
+            "rttKnown": true,
+            "rttMs": 30.0,
+            "score": 30.0
+          }
+        ],
+        "tier": [
+          "a"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 25.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 30.0
+            },
+            "id": "c",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": "a",
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "negative best score keeps slack only"
+    },
+    {
+      "expected": {
+        "chosen": null,
+        "fallbackRttMs": 10.0,
+        "filtered": [
+          {
+            "id": "a",
+            "reason": "breakerOpen"
+          }
+        ],
+        "pin": "none",
+        "ranking": [],
+        "tier": []
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "open",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "everything filtered"
+    },
+    {
+      "expected": {
+        "chosen": null,
+        "fallbackRttMs": 15.0,
+        "filtered": [
+          {
+            "id": "a",
+            "reason": "breakerOpen"
+          },
+          {
+            "id": "b",
+            "reason": "breakerOpen"
+          },
+          {
+            "id": "c",
+            "reason": "breakerOpen"
+          }
+        ],
+        "pin": "none",
+        "ranking": [],
+        "tier": []
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "open",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "open",
+              "failureRatio": 0.0,
+              "rttMs": 20.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "open",
+              "failureRatio": 0.0,
+              "rttMs": null
+            },
+            "id": "c",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": "a",
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "every access point open"
+    },
+    {
+      "expected": {
+        "chosen": null,
+        "fallbackRttMs": 15.0,
+        "filtered": [
+          {
+            "id": "a",
+            "reason": "breakerOpen"
+          },
+          {
+            "id": "b",
+            "reason": "trialInFlight"
+          }
+        ],
+        "pin": "none",
+        "ranking": [],
+        "tier": []
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "open",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "halfOpenBusy",
+              "failureRatio": 0.0,
+              "rttMs": 20.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": null,
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "every access point open or with its trial taken"
+    },
+    {
+      "expected": {
+        "chosen": "b",
+        "fallbackRttMs": 105.0,
+        "filtered": [
+          {
+            "id": "a",
+            "reason": "breakerOpen"
+          }
+        ],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": true,
+            "rttMs": 200.0,
+            "score": 500.0
+          }
+        ],
+        "tier": [
+          "b"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "open",
+              "failureRatio": 0.0,
+              "rttMs": 10.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "halfOpen",
+              "failureRatio": 0.5,
+              "rttMs": 200.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": "a",
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "only the half-open trial is left"
+    },
+    {
+      "expected": {
+        "chosen": "a",
+        "fallbackRttMs": 70.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "a",
+            "rttKnown": true,
+            "rttMs": 40.0,
+            "score": 40.0
+          },
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": true,
+            "rttMs": 100.0,
+            "score": 70.0
+          }
+        ],
+        "tier": [
+          "a"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 40.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 100.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": "b",
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "a current just outside the tier is left"
+    },
+    {
+      "expected": {
+        "chosen": "b",
+        "fallbackRttMs": 69.0,
+        "filtered": [],
+        "pin": "none",
+        "ranking": [
+          {
+            "group": "untagged",
+            "id": "a",
+            "rttKnown": true,
+            "rttMs": 40.0,
+            "score": 40.0
+          },
+          {
+            "group": "untagged",
+            "id": "b",
+            "rttKnown": true,
+            "rttMs": 98.0,
+            "score": 68.0
+          }
+        ],
+        "tier": [
+          "a",
+          "b"
+        ]
+      },
+      "input": {
+        "accessPoints": [
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 40.0
+            },
+            "id": "a",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          },
+          {
+            "health": {
+              "breaker": "closed",
+              "failureRatio": 0.0,
+              "rttMs": 98.0
+            },
+            "id": "b",
+            "priority": 0,
+            "status": "active",
+            "tags": [],
+            "weight": 100
+          }
+        ],
+        "current": "b",
+        "draw": 0.0,
+        "netTags": [],
+        "pinned": null
+      },
+      "name": "a current just inside the tier stays"
+    }
+  ],
+  "description": "Candidate filtering, scoring and tiered random pick. score = rtt x (1 + 3 x failureRatio) + 50 x priority - 30 (current, stickiness on). Unknown rtt uses the median of known rtts in the input (mean of the two middle values for an even count), else 300. Entries sort by tag group (matched < untagged < other), then score, then id. Tier = leading entries of the best group with score <= sMin + 0.2 x max(sMin, 0) + 20. Pick: current if inside the tier, else weighted by weight using draw in [0,1): first entry whose cumulative weight exceeds draw x total (uniform floor(draw x n) when all weights are 0). breaker: closed | open | halfOpen (trial available) | halfOpenBusy.",
+  "floatTolerance": 1e-9
+}

@@ -22,14 +22,32 @@ pub const DIRECT_INVOKE_ROUTES: &[&str] = &[
     "presence.get",
     "presence.batch_get",
     "presence.subscribe",
-    "connection.get_state",
+    "connection.get_status",
+    "connection.reconnect_now",
+    "access.get_status",
+    "access.list_access_points",
+    "access.pin",
+    "access.unpin",
+    "access.refresh",
+    "access.import_recovery",
+    "access.export_diagnostics",
+    "update.get_state",
+    "update.check",
+    "update.download",
+    "update.install",
+    "update.report_install",
+    "update.defer",
+    "update.skip",
+    "update.mark_prompted",
+    "update.set_locale",
+    "update.get_resources",
     "connection.server_clock",
     "connection.disconnect",
     "sdk.is_connected",
     "sdk.session_active",
     "sdk.current_user_id",
     "sdk.update_access_token",
-    "sdk.set_heartbeat_app_state",
+    "lifecycle.set_app_state",
     "sdk.set_heartbeat_nat_timeout",
     "sdk.heartbeat_effective_interval",
     "connection.notify_network_change",
@@ -67,14 +85,32 @@ pub fn is_direct_invoke_route(route: &str) -> bool {
         "presence.get" => true,
         "presence.batch_get" => true,
         "presence.subscribe" => true,
-        "connection.get_state" => true,
+        "connection.get_status" => true,
+        "connection.reconnect_now" => true,
+        "access.get_status" => true,
+        "access.list_access_points" => true,
+        "access.pin" => true,
+        "access.unpin" => true,
+        "access.refresh" => true,
+        "access.import_recovery" => true,
+        "access.export_diagnostics" => true,
+        "update.get_state" => true,
+        "update.check" => true,
+        "update.download" => true,
+        "update.install" => true,
+        "update.report_install" => true,
+        "update.defer" => true,
+        "update.skip" => true,
+        "update.mark_prompted" => true,
+        "update.set_locale" => true,
+        "update.get_resources" => true,
         "connection.server_clock" => true,
         "connection.disconnect" => true,
         "sdk.is_connected" => true,
         "sdk.session_active" => true,
         "sdk.current_user_id" => true,
         "sdk.update_access_token" => true,
-        "sdk.set_heartbeat_app_state" => true,
+        "lifecycle.set_app_state" => true,
         "sdk.set_heartbeat_nat_timeout" => true,
         "sdk.heartbeat_effective_interval" => true,
         "connection.notify_network_change" => true,
@@ -215,11 +251,115 @@ pub async fn dispatch_direct(
             client.subscribe_user_presence(user_ids).await?;
             Ok(BindingResponse::unit())
         }
-        "connection.get_state" => {
+        "connection.get_status" => {
             let client = session.client();
-            let state = client.state();
-            let (name, _code) = sdk_state_json(state);
-            dispatch_support::json(serde_json::json!(name))
+            let status = client.connection_status().await;
+            dispatch_support::json(status)
+        }
+        "connection.reconnect_now" => {
+            let client = session.client();
+            client.reconnect_now().await?;
+            Ok(BindingResponse::unit())
+        }
+        "access.get_status" => {
+            let client = session.client();
+            let status = client.access_status().await?;
+            dispatch_support::json(status)
+        }
+        "access.list_access_points" => {
+            let client = session.client();
+            let access_points = client.list_access_points().await?;
+            dispatch_support::json(access_points)
+        }
+        "access.pin" => {
+            let client = session.client();
+            let access_point_id = dispatch_support::json_string(request, "accessPointId")?;
+            let pinned = client.pin_access_point(&access_point_id).await?;
+            dispatch_support::json(pinned)
+        }
+        "access.unpin" => {
+            let client = session.client();
+            client.unpin_access_point().await?;
+            Ok(BindingResponse::unit())
+        }
+        "access.refresh" => {
+            let client = session.client();
+            let report = client.refresh_access().await?;
+            dispatch_support::json(report)
+        }
+        "access.import_recovery" => {
+            let client = session.client();
+            let link = dispatch_support::json_string(request, "link")?;
+            let imported = client.import_access_recovery(&link).await?;
+            dispatch_support::json(imported)
+        }
+        "access.export_diagnostics" => {
+            let client = session.client();
+            let diagnostics = client.export_access_diagnostics().await?;
+            dispatch_support::json(diagnostics)
+        }
+        "update.get_state" => {
+            let client = session.client();
+            let foreground =
+                dispatch_support::optional_bool(request, "foreground")?.unwrap_or(false);
+            let status = client.update_state(foreground).await?;
+            dispatch_support::json(status)
+        }
+        "update.check" => {
+            let client = session.client();
+            let manual = dispatch_support::optional_bool(request, "manual")?.unwrap_or(false);
+            let status = client.check_update(manual).await?;
+            dispatch_support::json(status)
+        }
+        "update.download" => {
+            let client = session.client();
+            let allow_metered =
+                dispatch_support::optional_bool(request, "allowMetered")?.unwrap_or(false);
+            let status = client.download_update(allow_metered).await?;
+            dispatch_support::json(status)
+        }
+        "update.install" => {
+            let client = session.client();
+            let plan = client.install_update().await?;
+            dispatch_support::json(plan)
+        }
+        "update.report_install" => {
+            let client = session.client();
+            let outcome = dispatch_support::json_string(request, "outcome")?;
+            let code = dispatch_support::optional_string(request, "code");
+            let status = client
+                .report_update_install(&outcome, code.as_deref())
+                .await?;
+            dispatch_support::json(status)
+        }
+        "update.defer" => {
+            let client = session.client();
+            let status = client.defer_update().await?;
+            dispatch_support::json(status)
+        }
+        "update.skip" => {
+            let client = session.client();
+            let build = dispatch_support::json_u64(request, "build")?;
+            let status = client.skip_update(build).await?;
+            dispatch_support::json(status)
+        }
+        "update.mark_prompted" => {
+            let client = session.client();
+            let build = dispatch_support::optional_value::<u64>(request, "build")?;
+            let form = dispatch_support::json_string(request, "form")?;
+            let status = client.mark_update_prompted(build, &form).await?;
+            dispatch_support::json(status)
+        }
+        "update.set_locale" => {
+            let client = session.client();
+            let locale = dispatch_support::json_string(request, "locale")?;
+            let status = client.set_update_locale(locale).await?;
+            dispatch_support::json(status)
+        }
+        "update.get_resources" => {
+            let client = session.client();
+            let resources = client.update_resources().await?;
+            dispatch_support::json(resources)
         }
         "connection.server_clock" => {
             let client = session.client();
@@ -259,10 +399,10 @@ pub async fn dispatch_direct(
                 .await?;
             Ok(BindingResponse::unit())
         }
-        "sdk.set_heartbeat_app_state" => {
+        "lifecycle.set_app_state" => {
             let client = session.client();
             let state = dispatch_support::heartbeat_app_state(request, "appState")?;
-            client.set_heartbeat_app_state(state).await?;
+            client.set_app_state(state).await?;
             Ok(BindingResponse::unit())
         }
         "sdk.set_heartbeat_nat_timeout" => {
@@ -300,9 +440,10 @@ pub async fn dispatch_direct(
                 expensive: dispatch_support::optional_bool(request, "expensive")?,
                 metered: dispatch_support::optional_bool(request, "metered")?,
                 reason: dispatch_support::optional_string(request, "reason"),
+                fingerprint_hint: dispatch_support::optional_string(request, "fingerprintHint"),
             };
-            let reconnected = client.notify_network_change(event).await?;
-            dispatch_support::json(serde_json::json!({ "reconnected": reconnected }))
+            client.notify_network_change(event).await?;
+            Ok(BindingResponse::unit())
         }
         "message_builder.list_catalog" => dispatch_support::json(
             serde_json::json!({ "entries": crate::operation::message_build_catalog() }),

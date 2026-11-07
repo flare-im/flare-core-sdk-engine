@@ -1,5 +1,6 @@
 mod coverage;
 mod decoding;
+mod display;
 mod event_applier;
 mod models;
 
@@ -11,7 +12,7 @@ use event_applier::SyncEventApplier;
 use models::{AppliedConversationIncremental, AppliedSingleConversationPage, ReplayMode};
 
 use crate::application::notification::{
-    NotificationInboundPipeline, partition_notification_durability,
+    InboundDelivery, NotificationInboundPipeline, partition_notification_durability,
 };
 use crate::domain::timeline::{contiguous_page_range, cursor_advance_range, snapshot_rows_range};
 use crate::domain::{
@@ -105,6 +106,7 @@ impl SyncApplyUseCase {
         user_id: &str,
         known_seq: u64,
         response: &SingleConversationSyncRes,
+        delivery: InboundDelivery,
     ) -> Result<AppliedSingleConversationPage> {
         let decoded = decode_single_conversation_items(response, known_seq);
 
@@ -125,7 +127,7 @@ impl SyncApplyUseCase {
                 .map(|(seq, _)| *seq),
         );
 
-        self.persist_converged_messages(user_id, conversation_id, decoded.messages)
+        self.persist_converged_messages(user_id, conversation_id, decoded.messages, delivery)
             .await?;
 
         let safe_max_seq = max_contiguous_seq(known_seq, &applied_item_seqs);
@@ -175,8 +177,13 @@ impl SyncApplyUseCase {
             snapshot_rows_range(row.messages.iter().map(|message| message.conversation_seq));
         // 按值消费：快照行的消息 move 进收敛管线（冷启 bundle 每页 50×30 条，免整页深拷贝）。
         let messages: Vec<IMMessage> = row.messages.into_iter().map(IMMessage::new).collect();
-        self.persist_converged_messages(user_id, &row.conversation_id, messages)
-            .await?;
+        self.persist_converged_messages(
+            user_id,
+            &row.conversation_id,
+            messages,
+            InboundDelivery::HistoryReplay,
+        )
+        .await?;
         // 快照行携带服务端权威已读/未读，直接覆盖本地摘要（LWW：快照即最新状态）。
         if let Err(error) = self
             .stores
@@ -205,6 +212,7 @@ impl SyncApplyUseCase {
         user_id: &str,
         conversation_id: &str,
         messages: Vec<IMMessage>,
+        delivery: InboundDelivery,
     ) -> Result<()> {
         let cleared_floor = self
             .stores
@@ -232,7 +240,9 @@ impl SyncApplyUseCase {
         }
         let mut inbound = durable_messages;
         inbound.extend(ephemeral_messages);
-        self.notification_pipeline.finish_batch(inbound).await;
+        self.notification_pipeline
+            .finish_batch_with_delivery(inbound, delivery)
+            .await;
         Ok(())
     }
 
@@ -327,6 +337,14 @@ impl SyncApplyUseCase {
                 {
                     message_sync_conversation_ids.push(conversation.conversation_id.clone());
                 }
+            }
+            // Core summaries may omit the business SDK's group profile. An
+            // unread/read synchronization must not erase its projected name.
+            for conversation in &mut conversations {
+                display::retain_projected_group_name(
+                    conversation,
+                    before_save.get(&conversation.conversation_id),
+                );
             }
             if let Err(error) = self.stores.conversations.save_batch(&conversations).await {
                 tracing::error!(%error, count = conversations.len(), "保存会话失败");

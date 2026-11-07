@@ -8,11 +8,11 @@ use crate::model::{Conversation, EXT_SETTINGS_DIRTY, EXT_USER_SETTINGS_VERSION};
 
 use super::{ReadPosition, local_cleared_through_seq};
 
-/// 摘要同步时保留本地 remark（服务端摘要不含通讯录备注）。
+/// 摘要同步时保留本地 remark；显式空串是本地投影的清除操作。
 #[must_use]
 pub fn preserve_local_remark(incoming: Option<&str>, local: Option<&str>) -> Option<String> {
-    if incoming.map(str::trim).is_some_and(|v| !v.is_empty()) {
-        return incoming.map(str::to_string);
+    if let Some(incoming) = incoming {
+        return (!incoming.trim().is_empty()).then(|| incoming.to_string());
     }
     local
         .map(str::trim)
@@ -57,7 +57,10 @@ pub fn merge_incoming_conversation_summary(
     merged.max_seq = merged.max_seq.max(merged_read.max_seq);
 
     if let Some(local) = local {
+        let confirmed_floor =
+            local_cleared_through_seq(&local.ext).max(local_cleared_through_seq(&merged.ext));
         merge_user_settings(local, &mut merged);
+        super::set_local_cleared_through_seq(&mut merged.ext, confirmed_floor);
         preserve_local_latest_message(local, incoming, &mut merged);
 
         merged.remark = preserve_local_remark(merged.remark.as_deref(), local.remark.as_deref());
@@ -100,10 +103,12 @@ fn merge_user_settings(local: &Conversation, merged: &mut Conversation) {
     let local_version = settings_version(&local.ext);
     let incoming_version = settings_version(&merged.ext);
     let local_dirty = settings_dirty(&local.ext);
+    merged.is_mention_only = merged.is_mention_only.or(local.is_mention_only);
 
     if local_dirty && incoming_version <= local_version {
         merged.is_pinned = local.is_pinned;
         merged.is_muted = local.is_muted;
+        merged.is_mention_only = local.is_mention_only;
         merged.is_archived = local.is_archived;
         merged.draft = local.draft.clone();
         merged.ext = local.ext.clone();
@@ -120,6 +125,7 @@ fn merge_user_settings(local: &Conversation, merged: &mut Conversation) {
     } else {
         merged.is_pinned = local.is_pinned;
         merged.is_muted = local.is_muted;
+        merged.is_mention_only = local.is_mention_only;
         merged.is_archived = local.is_archived;
         merged.draft = local.draft.clone();
         merged.ext = local.ext.clone();
@@ -241,6 +247,12 @@ mod tests {
             preserve_local_remark(Some("服务端"), Some("本地")),
             Some("服务端".to_string())
         );
+    }
+
+    #[test]
+    fn explicit_empty_remark_clears_local_projection() {
+        assert_eq!(preserve_local_remark(Some(""), Some("old")), None);
+        assert_eq!(preserve_local_remark(None, Some("old")), Some("old".into()));
     }
 
     #[test]

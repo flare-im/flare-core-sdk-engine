@@ -1,0 +1,517 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "code": "OVERLOADED",
+        "handling": {
+          "kind": "overloaded",
+          "retryAfterMs": 2500
+        },
+        "health": "neutral:overloaded"
+      },
+      "input": {
+        "rejection": {
+          "code": null,
+          "reason": "OVERLOADED",
+          "retryAfterMs": 2500
+        }
+      },
+      "name": "overloaded with a wait"
+    },
+    {
+      "expected": {
+        "code": "OVERLOADED",
+        "handling": {
+          "kind": "overloaded",
+          "retryAfterMs": null
+        },
+        "health": "neutral:overloaded"
+      },
+      "input": {
+        "rejection": {
+          "code": null,
+          "reason": "OVERLOADED",
+          "retryAfterMs": null
+        }
+      },
+      "name": "overloaded without a wait"
+    },
+    {
+      "expected": {
+        "code": "OVERLOADED",
+        "handling": {
+          "kind": "overloaded",
+          "retryAfterMs": 800
+        },
+        "health": "neutral:overloaded"
+      },
+      "input": {
+        "rejection": {
+          "code": "OVERLOADED",
+          "reason": "too many handshakes",
+          "retryAfterMs": 800
+        }
+      },
+      "name": "overloaded named only by the code"
+    },
+    {
+      "expected": {
+        "code": "UPGRADE_REQUIRED",
+        "handling": {
+          "kind": "terminal",
+          "reason": "upgradeRequired"
+        },
+        "health": "neutral:serverResponse"
+      },
+      "input": {
+        "rejection": {
+          "code": null,
+          "reason": "UPGRADE_REQUIRED",
+          "retryAfterMs": null
+        }
+      },
+      "name": "upgrade required"
+    },
+    {
+      "expected": {
+        "code": "PROTOCOL_VERSION_MISMATCH",
+        "handling": {
+          "kind": "terminal",
+          "reason": "upgradeRequired"
+        },
+        "health": "neutral:serverResponse"
+      },
+      "input": {
+        "rejection": {
+          "code": null,
+          "reason": "PROTOCOL_VERSION_MISMATCH",
+          "retryAfterMs": null
+        }
+      },
+      "name": "protocol version mismatch"
+    },
+    {
+      "expected": {
+        "code": "PERMISSION_DENIED",
+        "handling": {
+          "kind": "terminal",
+          "reason": "tenantUnavailable"
+        },
+        "health": "neutral:serverResponse"
+      },
+      "input": {
+        "rejection": {
+          "code": null,
+          "reason": "TENANT_UNAVAILABLE",
+          "retryAfterMs": null
+        }
+      },
+      "name": "tenant unavailable"
+    },
+    {
+      "expected": {
+        "code": "TOKEN_EXPIRED",
+        "handling": {
+          "kind": "auth"
+        },
+        "health": "neutral:authRejected"
+      },
+      "input": {
+        "rejection": {
+          "code": null,
+          "reason": "TOKEN_EXPIRED",
+          "retryAfterMs": null
+        }
+      },
+      "name": "token expired"
+    },
+    {
+      "expected": {
+        "code": "AUTHENTICATION_FAILED",
+        "handling": {
+          "kind": "auth"
+        },
+        "health": "neutral:authRejected"
+      },
+      "input": {
+        "rejection": {
+          "code": null,
+          "reason": "AUTHENTICATION_FAILED",
+          "retryAfterMs": null
+        }
+      },
+      "name": "authentication failed"
+    },
+    {
+      "expected": {
+        "code": "SERVICE_UNAVAILABLE",
+        "handling": {
+          "counted": false,
+          "kind": "nextCandidate"
+        },
+        "health": "neutral:draining"
+      },
+      "input": {
+        "rejection": {
+          "code": "SERVICE_UNAVAILABLE",
+          "reason": "DRAIN",
+          "retryAfterMs": null
+        }
+      },
+      "name": "drain during the handshake"
+    },
+    {
+      "expected": {
+        "code": "SERVICE_UNAVAILABLE",
+        "handling": {
+          "counted": false,
+          "kind": "nextCandidate"
+        },
+        "health": "neutral:draining"
+      },
+      "input": {
+        "rejection": {
+          "code": "SERVICE_UNAVAILABLE",
+          "reason": "SERVER_SHUTDOWN",
+          "retryAfterMs": null
+        }
+      },
+      "name": "server shutdown during the handshake"
+    },
+    {
+      "expected": {
+        "code": "SERVICE_UNAVAILABLE",
+        "handling": {
+          "counted": true,
+          "kind": "nextCandidate"
+        },
+        "health": "failure:unreachable"
+      },
+      "input": {
+        "rejection": {
+          "code": null,
+          "reason": "SERVICE_UNAVAILABLE",
+          "retryAfterMs": null
+        }
+      },
+      "name": "service unavailable"
+    },
+    {
+      "expected": {
+        "code": "CONNECTION_REFUSED",
+        "handling": {
+          "counted": true,
+          "kind": "nextCandidate"
+        },
+        "health": "failure:unreachable"
+      },
+      "input": {
+        "rejection": {
+          "code": null,
+          "reason": "go away",
+          "retryAfterMs": null
+        }
+      },
+      "name": "unrecognised refusal"
+    },
+    {
+      "expected": {
+        "health": "failure:unreachable"
+      },
+      "input": {
+        "attempt": {
+          "detail": "lab",
+          "kind": "unreachable"
+        }
+      },
+      "name": "handshake unreachable"
+    },
+    {
+      "expected": {
+        "health": "failure:tlsFailed"
+      },
+      "input": {
+        "attempt": {
+          "detail": "lab",
+          "kind": "tls"
+        }
+      },
+      "name": "handshake tls"
+    },
+    {
+      "expected": {
+        "health": "failure:handshakeTimeout"
+      },
+      "input": {
+        "attempt": {
+          "detail": "lab",
+          "kind": "timeout"
+        }
+      },
+      "name": "handshake timeout"
+    },
+    {
+      "expected": {
+        "health": "failure:connectAckTimeout"
+      },
+      "input": {
+        "attempt": {
+          "detail": "lab",
+          "kind": "connectAckTimeout"
+        }
+      },
+      "name": "connect ack timeout"
+    },
+    {
+      "expected": {
+        "health": "failure:unreachable"
+      },
+      "input": {
+        "attempt": {
+          "detail": "lab",
+          "kind": "closed"
+        }
+      },
+      "name": "closed before connect ack"
+    },
+    {
+      "expected": {
+        "health": null
+      },
+      "input": {
+        "attempt": {
+          "detail": "lab",
+          "kind": "unsupported"
+        }
+      },
+      "name": "protocol not supported here"
+    },
+    {
+      "expected": {
+        "action": {
+          "action": "stay"
+        },
+        "loss": {
+          "kind": "clientRequested"
+        }
+      },
+      "input": {
+        "disconnect": {
+          "kind": "clientRequested"
+        },
+        "windowUnit": 0.5
+      },
+      "name": "we closed it"
+    },
+    {
+      "expected": {
+        "action": {
+          "action": "connectAfter",
+          "delayMs": 650,
+          "prefer": [
+            "ap-b"
+          ]
+        },
+        "loss": {
+          "kind": "planned",
+          "prefer": [
+            "ap-b"
+          ],
+          "windowMs": [
+            400,
+            900
+          ]
+        }
+      },
+      "input": {
+        "disconnect": {
+          "close": "DRAIN",
+          "kind": "serverClose",
+          "prefer": [
+            "ap-b"
+          ],
+          "windowMs": [
+            400,
+            900
+          ]
+        },
+        "windowUnit": 0.5
+      },
+      "name": "drain with a window and preferred access points"
+    },
+    {
+      "expected": {
+        "action": {
+          "action": "connectNow",
+          "prefer": []
+        },
+        "loss": {
+          "kind": "planned",
+          "prefer": [],
+          "windowMs": null
+        }
+      },
+      "input": {
+        "disconnect": {
+          "close": "SERVER_SHUTDOWN",
+          "kind": "serverClose",
+          "prefer": [],
+          "windowMs": null
+        },
+        "windowUnit": 0.5
+      },
+      "name": "server shutdown without a window"
+    },
+    {
+      "expected": {
+        "action": {
+          "action": "connectAfter",
+          "delayMs": 3000,
+          "prefer": []
+        },
+        "loss": {
+          "kind": "planned",
+          "prefer": [],
+          "windowMs": [
+            1000,
+            5000
+          ]
+        }
+      },
+      "input": {
+        "disconnect": {
+          "close": "REBALANCE",
+          "kind": "serverClose",
+          "prefer": [],
+          "windowMs": [
+            1000,
+            5000
+          ]
+        },
+        "windowUnit": 0.5
+      },
+      "name": "rebalance"
+    },
+    {
+      "expected": {
+        "action": {
+          "action": "terminate",
+          "reason": "kicked"
+        },
+        "loss": {
+          "kind": "sessionEnded",
+          "reason": "kicked"
+        }
+      },
+      "input": {
+        "disconnect": {
+          "endsSession": true,
+          "kind": "kicked",
+          "reason": "DEVICE_CONFLICT"
+        },
+        "windowUnit": 0.5
+      },
+      "name": "session-ending kick"
+    },
+    {
+      "expected": {
+        "action": {
+          "action": "terminate",
+          "reason": "tenantUnavailable"
+        },
+        "loss": {
+          "kind": "sessionEnded",
+          "reason": "tenantUnavailable"
+        }
+      },
+      "input": {
+        "disconnect": {
+          "endsSession": true,
+          "kind": "kicked",
+          "reason": "TENANT_UNAVAILABLE"
+        },
+        "windowUnit": 0.5
+      },
+      "name": "tenant unavailable kick"
+    },
+    {
+      "expected": {
+        "action": {
+          "action": "backoff"
+        },
+        "loss": {
+          "kind": "kicked"
+        }
+      },
+      "input": {
+        "disconnect": {
+          "endsSession": false,
+          "kind": "kicked",
+          "reason": "ADMIN"
+        },
+        "windowUnit": 0.5
+      },
+      "name": "kick that keeps the session"
+    },
+    {
+      "expected": {
+        "action": {
+          "action": "connectNow",
+          "prefer": []
+        },
+        "loss": {
+          "class": "heartbeatDead",
+          "kind": "failed"
+        }
+      },
+      "input": {
+        "disconnect": {
+          "kind": "heartbeatTimeout"
+        },
+        "windowUnit": 0.5
+      },
+      "name": "heartbeat timeout"
+    },
+    {
+      "expected": {
+        "action": {
+          "action": "connectNow",
+          "prefer": []
+        },
+        "loss": {
+          "class": "unreachable",
+          "kind": "failed"
+        }
+      },
+      "input": {
+        "disconnect": {
+          "detail": "eof",
+          "kind": "peerClosed"
+        },
+        "windowUnit": 0.5
+      },
+      "name": "peer closed"
+    },
+    {
+      "expected": {
+        "action": {
+          "action": "connectNow",
+          "prefer": []
+        },
+        "loss": {
+          "class": "unreachable",
+          "kind": "failed"
+        }
+      },
+      "input": {
+        "disconnect": {
+          "detail": "reset",
+          "kind": "transportError"
+        },
+        "windowUnit": 0.5
+      },
+      "name": "transport error"
+    }
+  ],
+  "description": "Failure classification. input.rejection {reason, code?, retryAfterMs?}: the CONNECT rejection as read from the wire (code from reason, else from code text, TENANT_UNAVAILABLE -> PERMISSION_DENIED, unknown -> CONNECTION_REFUSED) -> handling (overloaded: same access point after retryAfterMs, never counted; auth: renew once; terminal: actionRequired; nextCandidate: try the next candidate, counted against the breaker or not) and the health observation it records. input.attempt {kind}: a handshake failure -> health observation (null: not recorded). input.disconnect: why an established link ended -> loss and the decision for it (windowUnit 0.5). health: success | failure:<class> | neutral:<reason>."
+}

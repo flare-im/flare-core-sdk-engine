@@ -228,6 +228,12 @@ fn bridge_targets(root: &Path) -> Vec<BridgeTarget> {
             body: include_str!("../../templates/bridge/cangjie/bridge/FfiNativeBridge.cj"),
         },
         BridgeTarget {
+            path: root.join(
+                "packages/flare-core-harmony-cangjie-sdk/src/bridge/FlareSdkException.cj",
+            ),
+            body: include_str!("../../templates/bridge/cangjie/bridge/FlareSdkException.cj"),
+        },
+        BridgeTarget {
             path: root.join("packages/flare-core-harmony-cangjie-sdk/src/FlareCoreSdk.cj"),
             body: include_str!("../../templates/bridge/cangjie/FlareCoreSdk.cj"),
         },

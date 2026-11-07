@@ -7,8 +7,9 @@ use std::{
 
 use crate::{
     GeneratedTextTarget, all_spec_enums, all_spec_models, arr, camel_const, child_arr,
-    core_contract_dir, facade_prop, is_known_ts_model_type, is_list_type_name, json_quote,
-    list_inner_type_name, load_expanded_client_spec, load_json, message_build_catalog_entries,
+    core_contract_dir, facade_prop, is_bridge_internal_method, is_connect_token_refresher_method,
+    is_known_ts_model_type, is_list_type_name, json_quote, list_inner_type_name,
+    load_expanded_client_spec, load_json, message_build_catalog_entries,
     message_builder_extra_methods, message_builder_request_models, pascal_case,
     remove_output_paths, single_trailing_newline, snake_case, spec_enum_map, spec_model_names,
     str_field, ts_api_interface_name, ts_model_from_json_fn, ts_model_to_map_fn, upsert_text_file,
@@ -396,7 +397,6 @@ fn ts_api_type(name: &str, spec: &Value) -> String {
     match name {
         "Unit" | "DisposeRequest" => "void".to_string(),
         "BooleanResponse" => "boolean".to_string(),
-        "ConnectionStateResponse" => "ConnectionState".to_string(),
         // JsonValue 就是"任意 JSON"，含 null。落到下面的兜底会被当成对象，
         // 生成 invokeMap，而 invokeMap 的 recordFromNative 只收 object——
         // 于是 message.dispatch 这类通用出口一旦转发到返回 unit 的 dispatchOp
@@ -405,8 +405,14 @@ fn ts_api_type(name: &str, spec: &Value) -> String {
         // typescript_contract.rs 早就把 JsonValue 映射成 unknown，这里对齐它。
         "JsonValue" => "unknown".to_string(),
         _ if is_known_ts_model_type(name, spec) => name.to_string(),
+        _ if is_ts_model_list(name, spec) => format!("{}[]", list_inner_type_name(name)),
         _ => "Record<string, unknown>".to_string(),
     }
+}
+
+/// `<Model>List`: a bare JSON array of one spec model.
+fn is_ts_model_list(name: &str, spec: &Value) -> bool {
+    is_list_type_name(name) && is_known_ts_model_type(list_inner_type_name(name), spec)
 }
 
 fn ts_api_type_resolved(name: &str, spec: &Value) -> String {
@@ -523,11 +529,6 @@ fn emit_typescript_adapter_method_body(method: &Value, spec: &Value, indent: &st
         "boolean" => vec![format!(
             "{indent}return await invokeBool(this.bridge, {call});"
         )],
-        "ConnectionState" => {
-            vec![format!(
-                "{indent}return await invokeConnectionState(this.bridge, {call});"
-            )]
-        }
         "Message" => vec![format!(
             "{indent}return await invokeMessage(this.bridge, {call});"
         )],
@@ -591,6 +592,20 @@ fn emit_typescript_adapter_method_body(method: &Value, spec: &Value, indent: &st
             format!("{indent}const raw = await invokeMap(this.bridge, {call});"),
             format!("{indent}return syncConversationSummariesResponseFromJson(raw);"),
         ],
+        // The same decoder as the `connection://status` event: the value Kit receives either way.
+        "ConnectionStatus" => vec![format!(
+            "{indent}return connectionStatusFromJson(await invokeMap(this.bridge, {call}));"
+        )],
+        "AccessStatus"
+        | "AccessPin"
+        | "AccessRefreshReport"
+        | "AccessRecoveryImport"
+        | "UpdateStatus"
+        | "UpdateInstallPlan" => {
+            vec![format!(
+                "{indent}return withoutNullFields(await invokeMap(this.bridge, {call})) as unknown as {res};"
+            )]
+        }
         "Record<string, unknown>" => {
             vec![format!(
                 "{indent}return await invokeMap(this.bridge, {call});"
@@ -599,6 +614,11 @@ fn emit_typescript_adapter_method_body(method: &Value, spec: &Value, indent: &st
         _ if is_known_ts_model_type(str_field(method, "response"), spec) => {
             vec![format!(
                 "{indent}return await invokeMap(this.bridge, {call}) as unknown as {res};"
+            )]
+        }
+        _ if is_ts_model_list(str_field(method, "response"), spec) => {
+            vec![format!(
+                "{indent}return await invokeList(this.bridge, {call}) as unknown as {res};"
             )]
         }
         _ => vec![format!(
@@ -624,29 +644,12 @@ fn ts_listener_predicate_expr(name: &str) -> Option<&'static str> {
         "onLoginFailed" => Some("lifecycleNameIs(event, LifecycleEventName.LoginFailed)"),
         "onLoggedOut" => Some("lifecycleNameIs(event, LifecycleEventName.LoggedOut)"),
         "onDisposed" => Some("lifecycleNameIs(event, LifecycleEventName.Disposed)"),
-        "onConnecting" => Some("eventNameIs(event, 'connection', ConnectionEventName.Connecting)"),
-        "onConnectSuccess" => {
-            Some("eventNameIs(event, 'connection', ConnectionEventName.Connected)")
+        "onConnectionStatusChanged" => {
+            Some("eventEventIs(event, 'connection', ConnectionEventName.Status)")
         }
-        "onConnectReady" => Some("eventNameIs(event, 'connection', ConnectionEventName.Ready)"),
-        "onConnectFailed" => {
-            Some("eventNameIs(event, 'connection', ConnectionEventName.ServerError)")
-        }
-        "onDisconnected" => {
-            Some("eventNameIs(event, 'connection', ConnectionEventName.Disconnected)")
-        }
-        "onReconnecting" => {
-            Some("eventNameIs(event, 'connection', ConnectionEventName.Reconnecting)")
-        }
-        "onReconnectFailed" => {
-            Some("eventNameIs(event, 'connection', ConnectionEventName.ReconnectFailed)")
-        }
-        "onKickedOffline" => {
-            Some("eventNameIs(event, 'connection', ConnectionEventName.KickedOff)")
-        }
-        "onUserTokenExpired" => {
-            Some("eventNameIs(event, 'connection', ConnectionEventName.TokenExpired)")
-        }
+        "onAccessSwitched" => Some("eventEventIs(event, 'access', AccessEventName.Switched)"),
+        "onAccessChanged" => Some("eventEventIs(event, 'access', AccessEventName.Changed)"),
+        "onUpdateState" => Some("eventEventIs(event, 'update', UpdateEventName.State)"),
         "onMessageReceived" => Some("eventEventIs(event, 'message', MessageEventName.Received)"),
         "onMessageReceivedBatch" => {
             Some("eventEventIs(event, 'message', MessageEventName.ReceivedBatch)")
@@ -703,6 +706,13 @@ fn ts_listener_predicate_expr(name: &str) -> Option<&'static str> {
     }
 }
 
+fn ts_listener_takes_payload_only(name: &str) -> bool {
+    matches!(
+        name,
+        "onConnectionStatusChanged" | "onAccessSwitched" | "onAccessChanged" | "onUpdateState"
+    )
+}
+
 fn ts_event_code_const_name(id: &str) -> String {
     format!(
         "EVENT_CODE_{}",
@@ -712,35 +722,11 @@ fn ts_event_code_const_name(id: &str) -> String {
 
 fn ts_event_decoder_expr(entry: &TypescriptEventRegistryEntry) -> String {
     match entry.id.as_str() {
-        "connection.connected" => {
-            "connectionEvent(ConnectionEventName.Connected, SdkConnectionState.Connected, \"connected\", payload)"
-                .to_string()
-        }
-        "connection.disconnected" => {
-            "connectionEvent(ConnectionEventName.Disconnected, SdkConnectionState.Disconnected, \"disconnected\", payload)"
-                .to_string()
-        }
-        "connection.reconnecting" => {
-            "connectionEvent(ConnectionEventName.Reconnecting, SdkConnectionState.Reconnecting, \"reconnecting\", payload)"
-                .to_string()
-        }
-        "connection.state_changed" => "connectionStateChangedEvent(payload)".to_string(),
-        "connection.sync_state_changed" => {
-            "connectionEvent(ConnectionEventName.SyncStateChanged, SdkConnectionState.Ready, \"sync_state_changed\", payload)"
-                .to_string()
-        }
-        "connection.server_error" => {
-            "connectionEvent(ConnectionEventName.ServerError, SdkConnectionState.Connected, \"server_error\", payload)"
-                .to_string()
-        }
-        "connection.kicked_off" => {
-            "connectionEvent(ConnectionEventName.KickedOff, SdkConnectionState.Disconnected, \"kicked_off\", payload)"
-                .to_string()
-        }
-        "connection.token_expired" => {
-            "connectionEvent(ConnectionEventName.TokenExpired, SdkConnectionState.Disconnected, \"token_expired\", payload)"
-                .to_string()
-        }
+        "connection.status" => "connectionStatusEvent(payload)".to_string(),
+        "connection.sync_state_changed" => "connectionSyncStateEvent(payload)".to_string(),
+        "access.switched" => "accessSwitchedEvent(payload)".to_string(),
+        "access.changed" => "accessChangedEvent(payload)".to_string(),
+        "update.state" => "updateStateEvent(payload)".to_string(),
         "message.received" => "messageReceivedEvent(payload)".to_string(),
         "message.received_batch" => "messageReceivedBatchEvent(payload)".to_string(),
         "message.send_ack" => "messageSendAckEvent(payload)".to_string(),
@@ -941,51 +927,107 @@ fn emit_typescript_native_event_decoder(
         "  };".to_string(),
         "}".to_string(),
         String::new(),
-        "function connectionStateFromWire(value: unknown): SdkConnectionState {".to_string(),
-        "  const raw = String(value ?? '').trim().toLowerCase();".to_string(),
-        "  switch (raw) {".to_string(),
-        "    case 'connecting': return SdkConnectionState.Connecting;".to_string(),
-        "    case 'connected': return SdkConnectionState.Connected;".to_string(),
-        "    case 'ready': return SdkConnectionState.Ready;".to_string(),
-        "    case 'reconnecting': return SdkConnectionState.Reconnecting;".to_string(),
-        "    case 'disconnected': return SdkConnectionState.Disconnected;".to_string(),
-        "    default: throw new FlareSdkException('invalidParameter', `invalid connection state: ${raw || '<empty>'}`, 'event.decode', { field: 'state' });".to_string(),
-        "  }".to_string(),
+        "function nullableString(value: unknown, field: string): string | undefined {".to_string(),
+        "  if (value === undefined || value === null) return undefined;".to_string(),
+        "  if (typeof value === 'string') return value;".to_string(),
+        "  return invalidEventField(field, 'string');".to_string(),
         "}".to_string(),
         String::new(),
-        "function connectionEvent(name: ConnectionEventName, state: SdkConnectionState, event: string, payload: unknown): ConnectionEvent & Record<string, unknown> {".to_string(),
+        "function requiredStringList(value: unknown, field: string): string[] {".to_string(),
+        "  return requiredArray(value, field).map((item, index) => requiredString(item, `${field}.${index}`));".to_string(),
+        "}".to_string(),
+        String::new(),
+        "function enumValue<T extends string>(values: Record<string, T>, value: unknown, field: string): T {".to_string(),
+        "  const known = Object.values(values) as string[];".to_string(),
+        "  if (typeof value === 'string' && known.includes(value)) return value as T;".to_string(),
+        "  return invalidEventField(field, known.join(' | '));".to_string(),
+        "}".to_string(),
+        String::new(),
+        "/** Decodes a `connection://status` payload. Absent and null fields are left out (never null). */".to_string(),
+        "export function connectionStatusFromJson(payload: unknown): ConnectionStatus {".to_string(),
         "  const record = eventPayloadRecord(payload);".to_string(),
-        "  const { error: rawError, ...rest } = record;".to_string(),
-        "  const error = sdkErrorPayloadFromJson(rawError);".to_string(),
-        "  const reason = optionalString(record.reason, 'reason');".to_string(),
-        "  const attempt = optionalNumber(record.attempt, 'attempt');".to_string(),
+        "  const status: ConnectionStatus = {".to_string(),
+        "    phase: enumValue(ConnectionPhase, record.phase, 'phase'),".to_string(),
+        "    attempt: requiredNumber(record.attempt, 'attempt'),".to_string(),
+        "    developmentMode: requiredBoolean(record.developmentMode, 'developmentMode'),".to_string(),
+        "  };".to_string(),
+        "  if (record.quality !== undefined && record.quality !== null) status.quality = enumValue(ConnectionQuality, record.quality, 'quality');".to_string(),
+        "  const accessPointId = nullableString(record.accessPointId, 'accessPointId');".to_string(),
+        "  if (accessPointId !== undefined) status.accessPointId = accessPointId;".to_string(),
+        "  const cellId = nullableString(record.cellId, 'cellId');".to_string(),
+        "  if (cellId !== undefined) status.cellId = cellId;".to_string(),
+        "  const regionId = nullableString(record.regionId, 'regionId');".to_string(),
+        "  if (regionId !== undefined) status.regionId = regionId;".to_string(),
+        "  const protocol = nullableString(record.protocol, 'protocol');".to_string(),
+        "  if (protocol !== undefined) status.protocol = protocol;".to_string(),
+        "  const rttMs = optionalNumber(record.rttMs, 'rttMs');".to_string(),
+        "  if (rttMs !== undefined) status.rttMs = rttMs;".to_string(),
+        "  const nextRetryAt = optionalNumber(record.nextRetryAt, 'nextRetryAt');".to_string(),
+        "  if (nextRetryAt !== undefined) status.nextRetryAt = nextRetryAt;".to_string(),
+        "  const reason = nullableString(record.reason, 'reason');".to_string(),
+        "  if (reason !== undefined) status.reason = reason;".to_string(),
+        "  return status;".to_string(),
+        "}".to_string(),
+        String::new(),
+        "function accessEndpointFromJson(value: unknown, field: string): AccessEndpoint {".to_string(),
+        "  if (!value || typeof value !== 'object' || Array.isArray(value)) invalidEventField(field, 'object');".to_string(),
+        "  const record = value as Record<string, unknown>;".to_string(),
+        "  return { ap: requiredString(record.ap, `${field}.ap`), protocol: requiredString(record.protocol, `${field}.protocol`) };".to_string(),
+        "}".to_string(),
+        String::new(),
+        "export function accessSwitchedEventFromJson(payload: unknown): AccessSwitchedEvent {".to_string(),
+        "  const record = eventPayloadRecord(payload);".to_string(),
         "  return {".to_string(),
-        "    ...rest,".to_string(),
-        "    type: 'connection',".to_string(),
-        "    event,".to_string(),
-        "    name,".to_string(),
-        "    state,".to_string(),
-        "    ...(reason !== undefined ? { reason } : {}),".to_string(),
-        "    ...(attempt !== undefined ? { attempt } : {}),".to_string(),
-        "    ...(error ? { error } : {}),".to_string(),
+        "    from: accessEndpointFromJson(record.from, 'from'),".to_string(),
+        "    to: accessEndpointFromJson(record.to, 'to'),".to_string(),
+        "    reason: requiredString(record.reason, 'reason'),".to_string(),
         "  };".to_string(),
         "}".to_string(),
         String::new(),
-        "function connectionStateChangedEvent(payload: unknown): ConnectionEvent & Record<string, unknown> {".to_string(),
+        "export function accessChangedEventFromJson(payload: unknown): AccessChangedEvent {".to_string(),
         "  const record = eventPayloadRecord(payload);".to_string(),
-        "  const state = connectionStateFromWire(record.state);".to_string(),
-        "  const name = connectionEventNameFromState(state);".to_string(),
-        "  return connectionEvent(name, state, 'state_changed', record);".to_string(),
+        "  const changes = record.changes;".to_string(),
+        "  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) invalidEventField('changes', 'object');".to_string(),
+        "  const changeRecord = changes as Record<string, unknown>;".to_string(),
+        "  const accessChanges: AccessChanges = {".to_string(),
+        "    accessPointsAdded: requiredStringList(changeRecord.accessPointsAdded, 'changes.accessPointsAdded'),".to_string(),
+        "    accessPointsRemoved: requiredStringList(changeRecord.accessPointsRemoved, 'changes.accessPointsRemoved'),".to_string(),
+        "    policyChanged: requiredBoolean(changeRecord.policyChanged, 'changes.policyChanged'),".to_string(),
+        "  };".to_string(),
+        "  return {".to_string(),
+        "    serial: requiredNumber(record.serial, 'serial'),".to_string(),
+        "    source: requiredString(record.source, 'source'),".to_string(),
+        "    stale: requiredBoolean(record.stale, 'stale'),".to_string(),
+        "    developmentMode: requiredBoolean(record.developmentMode, 'developmentMode'),".to_string(),
+        "    changes: accessChanges,".to_string(),
+        "  };".to_string(),
         "}".to_string(),
         String::new(),
-        "function connectionEventNameFromState(state: SdkConnectionState): ConnectionEventName {".to_string(),
-        "  switch (state) {".to_string(),
-        "    case SdkConnectionState.Connecting: return ConnectionEventName.Connecting;".to_string(),
-        "    case SdkConnectionState.Connected: return ConnectionEventName.Connected;".to_string(),
-        "    case SdkConnectionState.Ready: return ConnectionEventName.Ready;".to_string(),
-        "    case SdkConnectionState.Reconnecting: return ConnectionEventName.Reconnecting;".to_string(),
-        "    case SdkConnectionState.Disconnected: return ConnectionEventName.Disconnected;".to_string(),
-        "  }".to_string(),
+        "function connectionStatusEvent(payload: unknown): ConnectionStatus & Record<string, unknown> {".to_string(),
+        "  return { ...connectionStatusFromJson(payload), type: 'connection', event: ConnectionEventName.Status };".to_string(),
+        "}".to_string(),
+        String::new(),
+        "function connectionSyncStateEvent(payload: unknown): ConnectionSyncStateEvent & Record<string, unknown> {".to_string(),
+        "  const record = eventPayloadRecord(payload);".to_string(),
+        "  return { type: 'connection', event: ConnectionEventName.SyncStateChanged, state: requiredString(record.state, 'state') };".to_string(),
+        "}".to_string(),
+        String::new(),
+        "function accessSwitchedEvent(payload: unknown): AccessSwitchedEvent & Record<string, unknown> {".to_string(),
+        "  return { ...accessSwitchedEventFromJson(payload), type: 'access', event: AccessEventName.Switched };".to_string(),
+        "}".to_string(),
+        String::new(),
+        "function accessChangedEvent(payload: unknown): AccessChangedEvent & Record<string, unknown> {".to_string(),
+        "  return { ...accessChangedEventFromJson(payload), type: 'access', event: AccessEventName.Changed };".to_string(),
+        "}".to_string(),
+        String::new(),
+        "function updateStateEvent(payload: unknown): UpdateStatus & Record<string, unknown> {".to_string(),
+        "  return { ...(withoutNullFields(eventPayloadRecord(payload)) as unknown as UpdateStatus), type: 'update', event: UpdateEventName.State };".to_string(),
+        "}".to_string(),
+        String::new(),
+        "/** The event's own payload without the `type` / `event` routing keys the decoder adds. */".to_string(),
+        "function eventPayloadOf<T>(event: unknown): T {".to_string(),
+        "  const { type: _type, event: _event, ...payload } = event as Record<string, unknown>;".to_string(),
+        "  return payload as T;".to_string(),
         "}".to_string(),
         String::new(),
         "function messageReceivedEvent(payload: unknown): MessageReceivedEvent & Record<string, unknown> {".to_string(),
@@ -1207,8 +1249,18 @@ fn emit_typescript_adapter_events_api(
         .map(|listener| ts_listener_payload_type(str_field(listener, "payload")).to_string())
         .collect::<BTreeSet<_>>();
     let mut model_imports = [
-        "ConnectionEvent",
+        "AccessChangedEvent",
+        "AccessChanges",
+        "AccessEndpoint",
+        "AccessEventName",
+        "AccessSwitchedEvent",
+        "UpdateEventName",
+        "UpdateStatus",
         "ConnectionEventName",
+        "ConnectionPhase",
+        "ConnectionQuality",
+        "ConnectionStatus",
+        "ConnectionSyncStateEvent",
         "ConversationEvent",
         "ConversationEventName",
         "LifecycleEvent",
@@ -1226,7 +1278,6 @@ fn emit_typescript_adapter_events_api(
         "ProgressEventName",
         "ReactionChangedEvent",
         "ReadReceiptEvent",
-        "SdkConnectionState",
         "SdkErrorPayload",
         "SyncEvent",
         "SyncEventName",
@@ -1256,6 +1307,7 @@ fn emit_typescript_adapter_events_api(
         "import {".to_string(),
         format!("  {model_import_block},"),
         "} from '../../model';".to_string(),
+        "import { withoutNullFields } from '../codec/nativeInvoke';".to_string(),
         "import { messageFromJson, sendAckFromJson, viewUpdateFromJson, wireDecodeResponse } from '../codec/wireCodec';".to_string(),
         "import { FlareSdkException } from '../../bridge/flareSdkException';".to_string(),
         String::new(),
@@ -1356,6 +1408,10 @@ fn emit_typescript_adapter_events_api(
         let payload = ts_listener_payload_type(str_field(listener, "payload"));
         let name = str_field(listener, "name");
         let register_line = match ts_listener_predicate_expr(name) {
+            // Status and access listeners get the payload alone, as the contract defines it.
+            Some(predicate) if ts_listener_takes_payload_only(name) => format!(
+                "    return this.registerWhere(listener, (event) => {predicate}, eventPayloadOf);"
+            ),
             Some(predicate) => {
                 format!("    return this.registerWhere(listener, (event) => {predicate});")
             }
@@ -1404,10 +1460,11 @@ fn emit_typescript_adapter_events_api(
         "  private registerWhere<T>(".to_string(),
         "    listener: EventCallback<T>,".to_string(),
         "    predicate: (event: unknown) => boolean,".to_string(),
+        "    project: (event: unknown) => T = (event) => event as T,".to_string(),
         "  ): EventSubscription {".to_string(),
         "    return this.register((event: unknown) => {".to_string(),
         "      if (predicate(event)) {".to_string(),
-        "        listener(event as T);".to_string(),
+        "        listener(project(event));".to_string(),
         "      }".to_string(),
         "    });".to_string(),
         "  }".to_string(),
@@ -1506,34 +1563,26 @@ fn emit_typescript_adapter_events_api(
         "      }".to_string(),
         "    }".to_string(),
         "    if (type === 'connection') {".to_string(),
-        "      switch (name) {".to_string(),
-        "        case ConnectionEventName.Connecting:".to_string(),
-        "          listener.onConnecting?.(event as ConnectionEvent);".to_string(),
+        "      if (eventName === ConnectionEventName.Status) {".to_string(),
+        "        listener.onConnectionStatusChanged?.(eventPayloadOf<ConnectionStatus>(event));".to_string(),
+        "      }".to_string(),
+        "      return;".to_string(),
+        "    }".to_string(),
+        "    if (type === 'access') {".to_string(),
+        "      switch (eventName) {".to_string(),
+        "        case AccessEventName.Switched:".to_string(),
+        "          listener.onAccessSwitched?.(eventPayloadOf<AccessSwitchedEvent>(event));".to_string(),
         "          return;".to_string(),
-        "        case ConnectionEventName.Connected:".to_string(),
-        "          listener.onConnectSuccess?.(event as ConnectionEvent);".to_string(),
-        "          return;".to_string(),
-        "        case ConnectionEventName.Ready:".to_string(),
-        "          listener.onConnectReady?.(event as ConnectionEvent);".to_string(),
-        "          return;".to_string(),
-        "        case ConnectionEventName.Disconnected:".to_string(),
-        "          listener.onDisconnected?.(event as ConnectionEvent);".to_string(),
-        "          return;".to_string(),
-        "        case ConnectionEventName.Reconnecting:".to_string(),
-        "          listener.onReconnecting?.(event as ConnectionEvent);".to_string(),
-        "          return;".to_string(),
-        "        case ConnectionEventName.ReconnectFailed:".to_string(),
-        "          listener.onReconnectFailed?.(event as ConnectionEvent);".to_string(),
-        "          return;".to_string(),
-        "        case ConnectionEventName.KickedOff:".to_string(),
-        "          listener.onKickedOffline?.(event as ConnectionEvent);".to_string(),
-        "          return;".to_string(),
-        "        case ConnectionEventName.TokenExpired:".to_string(),
-        "          listener.onUserTokenExpired?.(event as ConnectionEvent);".to_string(),
+        "        case AccessEventName.Changed:".to_string(),
+        "          listener.onAccessChanged?.(eventPayloadOf<AccessChangedEvent>(event));".to_string(),
         "          return;".to_string(),
         "        default:".to_string(),
         "          return;".to_string(),
         "      }".to_string(),
+        "    }".to_string(),
+        "    if (type === 'update') {".to_string(),
+        "      if (eventName === UpdateEventName.State) listener.onUpdateState?.(eventPayloadOf<UpdateStatus>(event));".to_string(),
+        "      return;".to_string(),
         "    }".to_string(),
         "    if (type === 'view') {".to_string(),
         "      listener.onViewUpdated?.(event as ViewUpdate);".to_string(),
@@ -1590,7 +1639,15 @@ fn module_model_types(spec: &Value, module: &Value) -> Vec<String> {
     child_arr(module, "methods")
         .iter()
         .flat_map(|method| [str_field(method, "request"), str_field(method, "response")])
-        .filter(|type_name| is_known_ts_model_type(type_name, spec))
+        .filter_map(|type_name| {
+            if is_known_ts_model_type(type_name, spec) {
+                Some(type_name)
+            } else if is_ts_model_list(type_name, spec) {
+                Some(list_inner_type_name(type_name))
+            } else {
+                None
+            }
+        })
         .map(str::to_string)
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -1658,9 +1715,6 @@ fn emit_typescript_adapter_module_api(
                 .to_string(),
         );
     }
-    let connection_import = child_arr(module, "methods")
-        .iter()
-        .any(|method| str_field(method, "response") == "ConnectionStateResponse");
     let mut lines = vec![
         "// GENERATED. Do not edit by hand.".to_string(),
         "import { NativeBridge, NativeCallMap } from '../../contract/bridge_contract';".to_string(),
@@ -1669,11 +1723,6 @@ fn emit_typescript_adapter_module_api(
             str_field(module, "key")
         ),
     ];
-    if connection_import {
-        lines.push(
-            "import type { ConnectionState } from '../../contract/sdk_contract';".to_string(),
-        );
-    }
     lines.extend(listener_imports);
     if !model_import_line.is_empty() {
         lines.push(model_import_line);
@@ -1685,7 +1734,13 @@ fn emit_typescript_adapter_module_api(
         lines
             .push("import { pickDisplayUrlFromResolved } from '../media/mediaAccess';".to_string());
     }
-    lines.push("import { invokeBool, invokeConnectionState, invokeConversation, invokeConversationTimelineSnapshot, invokeHomeTimelineSnapshot, invokeListConversations, invokeListMessages, invokeMap, invokeMessage, invokeSendAck, invokeVoid, sdkErrorPayloadFromError } from '../codec/nativeInvoke';".to_string());
+    lines.push("import { invokeBool, invokeConversation, invokeConversationTimelineSnapshot, invokeHomeTimelineSnapshot, invokeList, invokeListConversations, invokeListMessages, invokeMap, invokeMessage, invokeSendAck, invokeVoid, sdkErrorPayloadFromError, withoutNullFields } from '../codec/nativeInvoke';".to_string());
+    if child_arr(module, "methods")
+        .iter()
+        .any(|method| str_field(method, "response") == "ConnectionStatus")
+    {
+        lines.push("import { connectionStatusFromJson } from './DefaultEventsApi';".to_string());
+    }
     lines.push(format!(
         "import {{ {} }} from '../codec/wireCodec';",
         wire_imports.join(", ")
@@ -1849,6 +1904,9 @@ fn emit_typescript_adapter_message_builder(spec: &Value) -> Option<String> {
 
 const ADAPTER_FACADE_PROPS: &[(&str, &str, &str)] = &[
     ("connection", "ConnectionApi", "Connection"),
+    ("access", "AccessApi", "Access"),
+    ("update", "UpdateApi", "Update"),
+    ("lifecycle", "LifecycleApi", "Lifecycle"),
     ("conversations", "ConversationsApi", "Conversations"),
     ("messageBuilder", "MessageBuilderApi", "MessageBuilder"),
     ("messages", "MessagesApi", "Messages"),
@@ -1875,14 +1933,24 @@ fn emit_typescript_adapter_flare_im_client(spec: &Value) -> Result<String> {
         props_init.push(format!("    this.{prop} = new {class_name}(bridge);"));
     }
     props_decl.push("  private readonly bridge: NativeBridge;".to_string());
+    props_decl.push("  private platformLifecycle: PlatformLifecycle | null = null;".to_string());
 
     let session = child_arr(spec, "modules")
         .iter()
         .find(|module| str_field(module, "facade") == "client")
         .context("missing client session module")?;
-    let session_model_types = module_model_types(spec, session);
+    let session_model_types = module_model_types(spec, session)
+        .into_iter()
+        .filter(|name| {
+            name != "SetConnectTokenRefresherRequest"
+                && name != "CompleteConnectTokenRefreshRequest"
+        })
+        .collect::<Vec<_>>();
     let session_wire_imports = child_arr(session, "methods")
         .iter()
+        .filter(|method| {
+            !is_connect_token_refresher_method(method) && !is_bridge_internal_method(method)
+        })
         .filter_map(|method| {
             let req = str_field(method, "request");
             is_known_ts_model_type(req, spec).then(|| ts_model_to_map_fn(req))
@@ -1892,8 +1960,15 @@ fn emit_typescript_adapter_flare_im_client(spec: &Value) -> Result<String> {
         .collect::<Vec<_>>();
     let mut session_methods = Vec::new();
     for method in child_arr(session, "methods") {
+        if is_bridge_internal_method(method) {
+            continue;
+        }
         let res = ts_api_type_resolved(str_field(method, "response"), spec);
-        let arg = ts_request_arg(method, spec);
+        let arg = if is_connect_token_refresher_method(method) {
+            "refresher: ConnectTokenRefresher | null".to_string()
+        } else {
+            ts_request_arg(method, spec)
+        };
         session_methods.push(format!(
             "  async {}({arg}): Promise<{res}> {{",
             str_field(method, "name")
@@ -1902,10 +1977,10 @@ fn emit_typescript_adapter_flare_im_client(spec: &Value) -> Result<String> {
             "init" => {
                 session_methods.extend([
                     "    emitLifecycleEvent(this.events as unknown as DefaultEventsApi, LifecycleEventName.Initializing, \"sdk.init\");".to_string(),
+                    "    const { installPlatformLifecycle, ...config } = request;".to_string(),
                     "    try {".to_string(),
-                ]);
-                session_methods.extend(emit_typescript_adapter_method_body(method, spec, "      "));
-                session_methods.extend([
+                    "      await invokeVoid(this.bridge, NativeCallMap.sdkInit, config);".to_string(),
+                    "      this.replacePlatformLifecycle(installPlatformLifecycle !== false);".to_string(),
                     "      emitLifecycleEvent(this.events as unknown as DefaultEventsApi, LifecycleEventName.Initialized, \"sdk.init\");".to_string(),
                     "    } catch (error) {".to_string(),
                     "      emitLifecycleEvent(".to_string(),
@@ -1948,7 +2023,22 @@ fn emit_typescript_adapter_flare_im_client(spec: &Value) -> Result<String> {
                     "  }".to_string(),
                 ]);
             }
+            "uninit" | "hardReset" => {
+                session_methods.push("    this.uninstallPlatformLifecycle();".to_string());
+                session_methods.extend(emit_typescript_adapter_method_body(method, spec, "    "));
+                session_methods.push("  }".to_string());
+            }
+            "setConnectTokenRefresher" => {
+                session_methods.extend([
+                    "    if (!this.bridge.setConnectTokenRefresher) {".to_string(),
+                    "      throw new FlareSdkException('capabilityUnavailable', 'this runtime cannot call back for a connect token', 'sdk.set_connect_token_refresher');".to_string(),
+                    "    }".to_string(),
+                    "    await this.bridge.setConnectTokenRefresher(refresher);".to_string(),
+                    "  }".to_string(),
+                ]);
+            }
             "dispose" => {
+                session_methods.push("    this.uninstallPlatformLifecycle();".to_string());
                 session_methods.push("    await this.events.unsubscribeAll();".to_string());
                 session_methods.extend(emit_typescript_adapter_method_body(method, spec, "    "));
                 session_methods.extend([
@@ -2002,6 +2092,11 @@ fn emit_typescript_adapter_flare_im_client(spec: &Value) -> Result<String> {
             session_wire_imports.join(", ")
         ));
     }
+    imports.push(
+        "import type { ConnectTokenRefresher } from '../contract/bridge_contract';".to_string(),
+    );
+    imports.push("import { FlareSdkException } from '../bridge/flareSdkException';".to_string());
+    imports.push("import { PlatformLifecycle } from '../lifecycle/platformLifecycle';".to_string());
     imports.push("import { DefaultEventsApi } from './module/DefaultEventsApi';".to_string());
     for (prop, _, pascal_suffix) in ADAPTER_FACADE_PROPS {
         if matches!(*prop, "events" | "messageBuilder") {
@@ -2029,6 +2124,33 @@ fn emit_typescript_adapter_flare_im_client(spec: &Value) -> Result<String> {
     lines.extend(props_init);
     lines.extend(["  }".to_string(), String::new()]);
     lines.extend(session_methods);
+    lines.extend([
+        String::new(),
+        "  /**".to_string(),
+        "   * Installs the PlatformLifecycle (replacing a previous one) unless init turned it off. Never".to_string(),
+        "   * throws: init has already succeeded in the core, so a runtime whose globals cannot carry".to_string(),
+        "   * listeners only loses the automatic reports.".to_string(),
+        "   */".to_string(),
+        "  private replacePlatformLifecycle(install: boolean): void {".to_string(),
+        "    this.uninstallPlatformLifecycle();".to_string(),
+        "    if (!install) return;".to_string(),
+        "    const reportFailure = (error: unknown) => console.warn('[flare-core] platform lifecycle', error);".to_string(),
+        "    try {".to_string(),
+        "      this.platformLifecycle = new PlatformLifecycle({".to_string(),
+        "        notifyNetworkChange: (request) => this.connection.notifyNetworkChange(request),".to_string(),
+        "        setAppState: (request) => this.lifecycle.setAppState(request),".to_string(),
+        "      }, { onError: reportFailure }).install();".to_string(),
+        "    } catch (error) {".to_string(),
+        "      this.platformLifecycle = null;".to_string(),
+        "      reportFailure(error);".to_string(),
+        "    }".to_string(),
+        "  }".to_string(),
+        String::new(),
+        "  private uninstallPlatformLifecycle(): void {".to_string(),
+        "    this.platformLifecycle?.dispose();".to_string(),
+        "    this.platformLifecycle = null;".to_string(),
+        "  }".to_string(),
+    ]);
     lines.push("}".to_string());
     Ok(lines.join("\n"))
 }

@@ -2,11 +2,11 @@
 import { bundleManager } from '@kit.AbilityKit';
 
 /**
- * 宿主应用的版本信息：随 `sdk.init` 交给引擎，引擎在 CONNECT 时上报
- * （`app_version` / `app_build` / `distribution`），服务端据此做版本兼容判断与排查。
+ * 宿主应用的版本信息：随 `sdk.init` 写进配置的 `app` 对象（`version` / `build` / `distribution`），
+ * 引擎在 CONNECT 时上报，服务端据此做版本兼容判断与排查。
  *
- * 默认用 [FlareAppInfo.fromBundle] 从本应用的 bundle 信息采集；宿主在 init 请求里显式给的
- * `appVersion` / `appBuild` / `distribution` 一律优先，这里只补缺的项。
+ * 默认用 [FlareAppInfo.fromBundle] 从本应用的 bundle 信息采集；宿主在 init 请求的 `app` 对象里
+ * 显式给的键一律优先，这里只补缺的键。
  */
 export class FlareAppInfo {
   /** 版本名，对应 `versionName`。 */
@@ -39,16 +39,21 @@ export class FlareAppInfo {
   }
 
   /**
-   * 把还没填的项补进 init 请求。引擎接受两种形状（与 `flare_sdk_init` 的解析一致）：
-   * 裸配置补在顶层；带 `environment` / `sdkConfig` 的包装补进 `sdkConfig`。
+   * 把还没填的项补进 init 请求的 `app` 对象。引擎接受两种形状（与 `flare_sdk_init` 的解析一致）：
+   * 裸配置的 `app` 在顶层；带 `environment` / `sdkConfig` 的包装在 `sdkConfig.app`。
+   * 引擎拿到 `app` 就整体替换构建期的值，所以宿主没给、这里也没有可补的项时不写空对象。
    */
   fill(request?: Object): Object {
     const root = FlareAppInfo.copyOf(request);
     const wrapped = root['sdkConfig'] !== undefined || root['environment'] !== undefined;
     const config = wrapped ? FlareAppInfo.copyOf(root['sdkConfig']) : root;
-    FlareAppInfo.setIfMissing(config, 'appVersion', this.appVersion);
-    FlareAppInfo.setIfMissing(config, 'appBuild', this.appBuild);
-    FlareAppInfo.setIfMissing(config, 'distribution', this.distribution);
+    const app = FlareAppInfo.copyOf(config['app']);
+    FlareAppInfo.setIfMissing(app, 'version', this.appVersion);
+    FlareAppInfo.setIfMissing(app, 'build', this.appBuild);
+    FlareAppInfo.setIfMissing(app, 'distribution', this.distribution);
+    if (Object.keys(app).length > 0) {
+      config['app'] = app;
+    }
     if (wrapped) {
       root['sdkConfig'] = config;
     }

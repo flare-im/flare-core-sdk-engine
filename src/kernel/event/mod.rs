@@ -6,12 +6,9 @@
 //! # SDK 用户注册回调示例
 //!
 //! ```ignore
-//! // 连接
-//! client.on_connected(|| { println!("connected"); });
-//! client.on_disconnected(|reason| { println!("disconnected: {}", reason); });
-//! client.on_state_changed(|state| { ... });
+//! // 连接（唯一的连接事件，载荷见 [`link_status::ConnectionStatus`]）
+//! client.on_connection_status(|status| { ... });
 //! client.on_sync_state_changed(|state| { ... });
-//! client.on_server_error(|code, msg| { ... });
 //!
 //! // 消息
 //! client.on_message(|msg| { ... });
@@ -40,6 +37,7 @@
 //! ```
 
 mod event_bus;
+pub mod link_status;
 mod name_change;
 mod selector;
 mod types;
@@ -54,8 +52,14 @@ pub use selector::{
     SdkEventKind, SdkEventType, SyncEventType, ViewEventType,
 };
 pub use types::{
-    ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent, NotificationEvent,
-    PluginEvent, PluginRealtime, ReadinessStage, SdkEvent, SyncNotify, SyncPhase,
+    ACCESS_MANIFEST_TOPIC, ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent,
+    NotificationEvent, PLUGIN_CATALOG_TOPIC, PluginEvent, PluginRealtime, RELEASE_MANIFEST_TOPIC,
+    ReadinessStage, SdkEvent, SyncNotify, SyncPhase, TENANT_NOTICE_SOURCE,
+};
+
+pub use link_status::{
+    AccessChanged, AccessChanges, AccessEndpoint, AccessSwitched, ActionRequiredReason,
+    ConnectionPhase, ConnectionStatus, LinkQuality, SwitchReason,
 };
 
 pub(crate) use name_change::NameChange;

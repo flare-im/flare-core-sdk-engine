@@ -1,0 +1,14 @@
+#!/bin/sh
+# `npm run build` 经 `CARGO` 把这个脚本交给 wasm-pack，让它读工程信息时不碰依赖。
+#
+# wasm-pack 只从 `cargo metadata` 取本包的信息和 target 目录，却不带 `--no-deps`：cargo 要把工作区里所有
+# 平台的依赖都下载好才回答。wasm 用不到 Windows、Tauri 那些 crate，注册表缓存不全时构建会一直卡在下载上。
+#
+# 其它子命令原样转给 cargo：cargo 把 `CARGO` 传给构建脚本，它们可能经这里调 cargo。
+# 文件名不带 `.sh`：仓库的 `.gitignore` 忽略 `*.sh`，CI 上会找不到它。
+set -eu
+if [ "${1:-}" = metadata ]; then
+  shift
+  exec cargo metadata --no-deps "$@"
+fi
+exec cargo "$@"

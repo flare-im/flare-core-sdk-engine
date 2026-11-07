@@ -145,10 +145,11 @@ impl MessageMutationUseCase {
     }
 
     pub async fn recall(&self, message_id: &str) -> Result<()> {
+        let actor = self.actor().await?;
         let resolved = self.resolve_message(message_id).await?;
         let conversation_id = resolved.conversation_id().to_string();
         let server_msg_id = resolved.server_id().to_string();
-        let plan = self.mutation_service.plan_recall(&resolved);
+        let plan = self.mutation_service.plan_recall(&actor, &resolved)?;
         self.dispatch_transport_action(&plan.transport_action)
             .await?;
         self.store
@@ -181,11 +182,15 @@ impl MessageMutationUseCase {
         message_id: &str,
         new_content: Vec<u8>,
     ) -> Result<()> {
+        let actor = self.actor().await?;
         let resolved = self.resolve_message(message_id).await?;
         let conversation_id = Self::require_resolved_conversation(conversation_id, &resolved)?;
-        let plan = self
-            .mutation_service
-            .plan_edit(conversation_id, &resolved, new_content.clone());
+        let plan = self.mutation_service.plan_edit(
+            &actor,
+            conversation_id,
+            &resolved,
+            new_content.clone(),
+        )?;
         self.dispatch_transport_action(&plan.transport_action)
             .await?;
         self.apply_local_update(plan.local_update).await?;
@@ -704,6 +709,50 @@ mod tests {
             "device-a",
             Some(EventBus::new()),
         )
+    }
+
+    #[tokio::test]
+    async fn unauthorized_recall_is_rejected_before_transport_or_local_change() {
+        let messages = Arc::new(MemoryMessageStore::new());
+        let mut message = text_message("c-denied", "s-denied", "m-denied", "keep original");
+        message.sender_id = "bob".into();
+        let original = message.text_for_storage();
+        messages.save_batch(&[message]).await.unwrap();
+        let case = usecase(messages.clone(), Arc::new(MemoryConversationStore::new()));
+        let error = case
+            .recall("m-denied")
+            .await
+            .expect_err("only sender recalls");
+        assert_eq!(error.code(), Some(ErrorCode::PermissionDenied));
+        let stored = messages
+            .get_by_client_msg_id("m-denied")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!stored.is_recalled);
+        assert_eq!(stored.text_for_storage(), original);
+    }
+
+    #[tokio::test]
+    async fn unauthorized_edit_is_rejected_before_transport_or_local_change() {
+        let messages = Arc::new(MemoryMessageStore::new());
+        let mut message = text_message("c-denied", "s-denied", "m-denied", "keep original");
+        message.sender_id = "bob".into();
+        let original = message.text_for_storage();
+        messages.save_batch(&[message]).await.unwrap();
+        let case = usecase(messages.clone(), Arc::new(MemoryConversationStore::new()));
+        let error = case
+            .edit("c-denied", "m-denied", encoded_text("unauthorized change"))
+            .await
+            .expect_err("only sender edits");
+        assert_eq!(error.code(), Some(ErrorCode::PermissionDenied));
+        let stored = messages
+            .get_by_client_msg_id("m-denied")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!stored.is_edited);
+        assert_eq!(stored.text_for_storage(), original);
     }
 
     #[test]

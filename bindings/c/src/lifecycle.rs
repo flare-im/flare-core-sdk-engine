@@ -85,6 +85,7 @@ pub extern "C" fn flare_sdk_create() -> FlareHandle {
 pub extern "C" fn flare_sdk_release(handle: FlareHandle) {
     abi::catch_ffi_void(|| {
         crate::event::unsubscribe_events_for_handle(handle);
+        crate::token_refresh::forget_handle(handle);
         release_instance(handle);
     });
 }
@@ -97,6 +98,7 @@ pub extern "C" fn flare_sdk_release(handle: FlareHandle) {
 pub extern "C" fn flare_sdk_hard_reset() {
     abi::catch_ffi_void(|| {
         crate::event::unsubscribe_all_events();
+        crate::token_refresh::forget_all();
         release_all_instances();
     });
 }

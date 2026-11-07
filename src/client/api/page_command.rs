@@ -134,7 +134,18 @@ impl CapabilityApi {
                             "sdk.plugin.outcome_unknown",
                         ));
                     }
-                    store.acknowledge(&scope, &old.command.command_id).await?;
+                    if let Err(error) = store.acknowledge(&scope, &old.command.command_id).await {
+                        // Another submit may already have replaced this completed
+                        // predecessor with our identical command. Join that original;
+                        // never acknowledge or replace a different financial command.
+                        let joined = store
+                            .pending(&scope)
+                            .await?
+                            .is_some_and(|record| record.command == command);
+                        if !joined {
+                            return Err(error);
+                        }
+                    }
                 }
                 store.prepare(&scope, &command).await?;
                 command

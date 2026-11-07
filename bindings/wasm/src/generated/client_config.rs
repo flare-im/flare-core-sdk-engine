@@ -9,7 +9,7 @@ pub fn flare_client_init_example_json() -> String {
     flare_im_core_sdk_bindings_runtime::CLIENT_INIT_REQUEST_EXAMPLE_JSON.to_string()
 }
 
-/// Full client config contract (transport policy, race order, URLs).
+/// Full client config contract (access, app, timeouts, TLS).
 #[wasm_bindgen(js_name = flareClientConfigContractJson)]
 pub fn flare_client_config_contract_json() -> String {
     flare_im_core_sdk_bindings_runtime::CLIENT_CONFIG_CONTRACT_JSON.to_string()

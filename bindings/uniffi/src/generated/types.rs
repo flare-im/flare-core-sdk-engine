@@ -18,19 +18,19 @@ pub enum BindingErrorCode {
     JsonParse = 9,
     NullPointer = 10,
     FfiPanic = 11,
+    Overloaded = 12,
+    UpgradeRequired = 13,
+    NetworkUncertain = 14,
 }
 
 /// Canonical SDK event ids for UniFFI consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindingEventId {
-    ConnectionConnected,
-    ConnectionDisconnected,
-    ConnectionReconnecting,
-    ConnectionStateChanged,
+    ConnectionStatus,
     ConnectionSyncStateChanged,
-    ConnectionServerError,
-    ConnectionKickedOff,
-    ConnectionTokenExpired,
+    AccessSwitched,
+    AccessChanged,
+    UpdateState,
     MessageReceived,
     MessageReceivedBatch,
     MessageSendAck,
@@ -59,6 +59,7 @@ pub enum BindingEventId {
     ConversationUnreadCountChanged,
     ConversationDeleted,
     NotificationReceived,
+    NotificationMessageSound,
     SyncStarted,
     SyncFinished,
     SyncFailed,

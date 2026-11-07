@@ -1,0 +1,234 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "accepted": true
+      },
+      "input": {
+        "body": "{\"schema\":\"flare.resource.v1\",\"kind\":\"strings\",\"locales\":{\"en\":{\"send\":\"Send\"}}}",
+        "pack": {
+          "id": "strings-main",
+          "kind": "strings",
+          "minBuild": 0,
+          "packVersion": 1,
+          "sha256": "b5b2a93f31f4b30426b87ce9a7fa9609f5eab8ea8a9f5efb06bea7f4c73a9221",
+          "sizeBytes": 80,
+          "url": [
+            "https://cdn.example.com/pack.json"
+          ]
+        }
+      },
+      "name": "the file the manifest lists"
+    },
+    {
+      "expected": {
+        "accepted": true
+      },
+      "input": {
+        "body": "{\"schema\":\"flare.resource.v1\",\"kind\":\"strings\",\"extra\":1}",
+        "pack": {
+          "id": "strings-main",
+          "kind": "strings",
+          "minBuild": 0,
+          "packVersion": 1,
+          "sha256": "163b18973ba3b7bef58c32f74a6ae309b91a4c12a2045def9b6d7d2f9c52e4da",
+          "sizeBytes": 57,
+          "url": [
+            "https://cdn.example.com/pack.json"
+          ]
+        }
+      },
+      "name": "unknown fields are fine"
+    },
+    {
+      "expected": {
+        "accepted": false,
+        "code": "sizeMismatch"
+      },
+      "input": {
+        "body": "{\"schema\":\"flare.resource.v1\",\"kind\":\"strings\",\"locales\":{\"en\":{\"send\":\"Send\"}}",
+        "pack": {
+          "id": "strings-main",
+          "kind": "strings",
+          "minBuild": 0,
+          "packVersion": 1,
+          "sha256": "b5b2a93f31f4b30426b87ce9a7fa9609f5eab8ea8a9f5efb06bea7f4c73a9221",
+          "sizeBytes": 80,
+          "url": [
+            "https://cdn.example.com/pack.json"
+          ]
+        }
+      },
+      "name": "shorter than listed"
+    },
+    {
+      "expected": {
+        "accepted": false,
+        "code": "hashMismatch"
+      },
+      "input": {
+        "body": "{\"schema\":\"flare.resource.v1\",\"kind\":\"strings\",\"locales\":{\"en\":{\"send\":\"Sent\"}}}",
+        "pack": {
+          "id": "strings-main",
+          "kind": "strings",
+          "minBuild": 0,
+          "packVersion": 1,
+          "sha256": "b5b2a93f31f4b30426b87ce9a7fa9609f5eab8ea8a9f5efb06bea7f4c73a9221",
+          "sizeBytes": 80,
+          "url": [
+            "https://cdn.example.com/pack.json"
+          ]
+        }
+      },
+      "name": "same size, other bytes"
+    },
+    {
+      "expected": {
+        "accepted": false,
+        "code": "malformed"
+      },
+      "input": {
+        "body": "{not json",
+        "pack": {
+          "id": "strings-main",
+          "kind": "strings",
+          "minBuild": 0,
+          "packVersion": 1,
+          "sha256": "92072df399cb74703f8e86f450d552bc0bb01eeeb98a90985a1b7772c8fd0016",
+          "sizeBytes": 9,
+          "url": [
+            "https://cdn.example.com/pack.json"
+          ]
+        }
+      },
+      "name": "not JSON"
+    },
+    {
+      "expected": {
+        "accepted": false,
+        "code": "malformed"
+      },
+      "input": {
+        "body": "{\"schema\":\"flare.resource.v1\",\"kind\":\"strings\"} x",
+        "pack": {
+          "id": "strings-main",
+          "kind": "strings",
+          "minBuild": 0,
+          "packVersion": 1,
+          "sha256": "f02e50832fd0cca54830cc6d1ab46b1aa6527fbbd29641365ec35f4d8c44af69",
+          "sizeBytes": 49,
+          "url": [
+            "https://cdn.example.com/pack.json"
+          ]
+        }
+      },
+      "name": "trailing garbage"
+    },
+    {
+      "expected": {
+        "accepted": false,
+        "code": "wrongSchema"
+      },
+      "input": {
+        "body": "[\"flare.resource.v1\",\"strings\"]",
+        "pack": {
+          "id": "strings-main",
+          "kind": "strings",
+          "minBuild": 0,
+          "packVersion": 1,
+          "sha256": "a7842c88055daa50db84ee92911043b3759a3a1817bcaff985ac15a4464036ec",
+          "sizeBytes": 31,
+          "url": [
+            "https://cdn.example.com/pack.json"
+          ]
+        }
+      },
+      "name": "an array is no pack"
+    },
+    {
+      "expected": {
+        "accepted": false,
+        "code": "wrongSchema"
+      },
+      "input": {
+        "body": "{\"kind\":\"strings\"}",
+        "pack": {
+          "id": "strings-main",
+          "kind": "strings",
+          "minBuild": 0,
+          "packVersion": 1,
+          "sha256": "86160ffc3a11b36f09bd642c704949d367a18d97fd4294805aacc971d5959c44",
+          "sizeBytes": 18,
+          "url": [
+            "https://cdn.example.com/pack.json"
+          ]
+        }
+      },
+      "name": "no schema"
+    },
+    {
+      "expected": {
+        "accepted": false,
+        "code": "wrongSchema"
+      },
+      "input": {
+        "body": "{\"schema\":\"flare.resource.v2\",\"kind\":\"strings\"}",
+        "pack": {
+          "id": "strings-main",
+          "kind": "strings",
+          "minBuild": 0,
+          "packVersion": 1,
+          "sha256": "cf53c08d7593b07742d31594d0b5f2a4fc1be382e7b214717fc3c5ad2129e93f",
+          "sizeBytes": 47,
+          "url": [
+            "https://cdn.example.com/pack.json"
+          ]
+        }
+      },
+      "name": "another schema"
+    },
+    {
+      "expected": {
+        "accepted": false,
+        "code": "wrongKind"
+      },
+      "input": {
+        "body": "{\"schema\":\"flare.resource.v1\",\"kind\":\"tokens\"}",
+        "pack": {
+          "id": "strings-main",
+          "kind": "strings",
+          "minBuild": 0,
+          "packVersion": 1,
+          "sha256": "bfdac7da28179219874dbbe49b77540703b4d933e023ee134b2797ee6093c81c",
+          "sizeBytes": 46,
+          "url": [
+            "https://cdn.example.com/pack.json"
+          ]
+        }
+      },
+      "name": "another kind"
+    },
+    {
+      "expected": {
+        "accepted": false,
+        "code": "wrongKind"
+      },
+      "input": {
+        "body": "{\"schema\":\"flare.resource.v1\"}",
+        "pack": {
+          "id": "strings-main",
+          "kind": "strings",
+          "minBuild": 0,
+          "packVersion": 1,
+          "sha256": "45b68114e64b81168e7f053a9acdec5f60d0dbbc14791b4b686a52b4c7b214c4",
+          "sizeBytes": 30,
+          "url": [
+            "https://cdn.example.com/pack.json"
+          ]
+        }
+      },
+      "name": "no kind"
+    }
+  ],
+  "description": "Checks on a downloaded pack file, in this order: sizeBytes, sha256, JSON, schema, kind. The manifest entry is pack; body is the file as text. Codes: sizeMismatch, hashMismatch, malformed, wrongSchema, wrongKind."
+}

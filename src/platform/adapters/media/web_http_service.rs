@@ -68,7 +68,7 @@ impl MediaService {
     }
 
     pub async fn get_file_url(&self, file_id: &str, expires_in: i32) -> Result<MediaAccessUrl> {
-        self.file_url(file_id, expires_in, false).await
+        self.file_url(file_id, expires_in, false, None).await
     }
 
     /// 附件直链（`download: true`：服务端可带 `Content-Disposition: attachment`），web 端「另存为」用。
@@ -84,7 +84,7 @@ impl MediaService {
                 "get_temp_url_for_file_download: empty file_id",
             ));
         }
-        self.file_url(fid, expires_in, true).await
+        self.file_url(fid, expires_in, true, None).await
     }
 
     async fn file_url(
@@ -92,12 +92,18 @@ impl MediaService {
         file_id: &str,
         expires_in: i32,
         download: bool,
+        reference: Option<&crate::platform::ports::media::MessageMediaReference>,
     ) -> Result<MediaAccessUrl> {
         let req = GetFileUrlHttpRequest {
             file_id: file_id.to_string(),
             expires_in,
             download,
             response_headers: HashMap::new(),
+            conversation_id: reference
+                .map(|r| r.conversation_id())
+                .unwrap_or_default()
+                .to_owned(),
+            message_seq: reference.map(|r| r.message_seq()).unwrap_or_default(),
         };
         let body: HttpApiResponse<GetFileUrlHttpResponse> =
             self.http.post("/api/v1/medias/file-url", &req).await?;
@@ -469,6 +475,15 @@ impl MediaServicePort for MediaService {
 
     async fn get_file_url(&self, file_id: &str, expires_in: i32) -> Result<MediaAccessUrl> {
         MediaService::get_file_url(self, file_id, expires_in).await
+    }
+
+    async fn get_file_url_with_reference(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        reference: Option<&crate::platform::ports::media::MessageMediaReference>,
+    ) -> Result<MediaAccessUrl> {
+        self.file_url(file_id, expires_in, false, reference).await
     }
 
     async fn get_temp_url_for_file_download(

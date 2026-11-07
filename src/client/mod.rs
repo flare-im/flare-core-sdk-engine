@@ -11,6 +11,7 @@ pub mod im_client;
 pub mod lifecycle;
 pub mod profile_center;
 pub mod push_lifecycle;
+pub mod token_broker;
 pub mod token_provider;
 
 pub use crate::extension::{
@@ -33,14 +34,16 @@ pub use api::{
 };
 pub use builder::IMClientBuilder;
 pub use config::{
-    SdkConfig, SdkConfigBuilder, SdkResourceProfile, SdkRuntimeResources, TransportKind,
-    TransportPolicy,
+    SdkAppConfig, SdkConfig, SdkConfigBuilder, SdkResourceProfile, SdkRuntimeResources,
 };
 pub use connected_apis::ConnectedApis;
-pub use flare_core::common::{HeartbeatAppState, HeartbeatConfig, TlsConfig};
-pub use im_client::{IMClient, NetworkChangeEvent, RuntimeHealthSnapshot, ServerClockEstimate};
-pub use lifecycle::{
-    LoginDbKind, SdkConfigOverlay, default_sdk_data_root, default_ws_url,
-    dev_data_dir_relative_to_cwd, merge_sdk_config, parse_data_url_to_path, resolve_connect_token,
-    resolve_sdk_data_root, resolve_user_db_path, sanitize_user_id_for_dir,
+pub use flare_core::common::{HeartbeatAppState, TlsConfig};
+pub use im_client::{
+    IMClient, NetworkChangeEvent, PinnedAccessPoint, RuntimeHealthSnapshot, ServerClockEstimate,
 };
+pub use lifecycle::{
+    LoginDbKind, SdkConfigOverlay, default_sdk_data_root, dev_data_dir_relative_to_cwd,
+    merge_sdk_config, parse_data_url_to_path, resolve_connect_token, resolve_sdk_data_root,
+    resolve_user_db_path, sanitize_user_id_for_dir,
+};
+pub use token_broker::HostTokenBroker;

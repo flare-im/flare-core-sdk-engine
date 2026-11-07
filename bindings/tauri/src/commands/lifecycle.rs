@@ -5,7 +5,7 @@ use tokio::sync::oneshot;
 use tracing::{info, warn};
 
 use crate::state::SdkState;
-use flare_im_core_sdk::client::{LoginDbKind, SdkConfigOverlay};
+use flare_im_core_sdk::client::{LoginDbKind, SdkAppConfig, SdkConfigOverlay};
 use flare_im_core_sdk::event::{SdkEvent, SharedEventReceiver};
 use flare_im_core_sdk_bindings_runtime::{SessionTaskSlot, platform_event_bridge_resync_marker};
 
@@ -34,10 +34,28 @@ pub async fn sdk_init(
         .map_err(super::map_sdk_err)
 }
 
+/// 更新中心的桌面目标，取值和 Tauri updater 端点的 `{{target}}-{{arch}}` 一致，如 `darwin-aarch64`。
+/// 前端拿不到准确的 CPU 架构，所以在这里补。移动端没有桌面制品，返回 `None`。
+fn updater_target() -> Option<String> {
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        "linux" => "linux",
+        "windows" => "windows",
+        _ => return None,
+    };
+    let arch = match std::env::consts::ARCH {
+        "x86" => "i686",
+        "arm" => "armv7",
+        arch => arch,
+    };
+    Some(format!("{os}-{arch}"))
+}
+
 /// Tauri 宿主的版本号由运行时自带（`tauri.conf.json` 的 `version`），零依赖就能拿到，渠道恒为
-/// `tauri`；CONNECT 时随设备信息上报。只补前端没给的项，前端显式传入的值优先。构建号 Tauri
-/// 没有独立来源，需要时由前端经 `sdkConfig.appBuild` 传入。
-fn with_tauri_app_info(
+/// `tauri`；CONNECT 时随设备信息上报。桌面目标也在这里补（见 [`updater_target`]）。只补前端没给的
+/// 项，前端显式传入的值优先。构建号与更新通道 Tauri 没有独立来源，需要时由前端经
+/// `sdkConfig.app.build` / `sdkConfig.app.channel` 传入。
+pub fn with_tauri_app_info(
     sdk_config: Option<SdkConfigOverlay>,
     package_version: String,
 ) -> SdkConfigOverlay {
@@ -45,11 +63,15 @@ fn with_tauri_app_info(
         value.map(str::trim).is_none_or(str::is_empty)
     }
     let mut overlay = sdk_config.unwrap_or_default();
-    if is_blank(overlay.app_version.as_deref()) && !package_version.trim().is_empty() {
-        overlay.app_version = Some(package_version);
+    let app = overlay.app.get_or_insert_with(SdkAppConfig::default);
+    if is_blank(app.version.as_deref()) && !package_version.trim().is_empty() {
+        app.version = Some(package_version);
     }
-    if is_blank(overlay.distribution.as_deref()) {
-        overlay.distribution = Some("tauri".to_string());
+    if is_blank(app.distribution.as_deref()) {
+        app.distribution = Some("tauri".to_string());
+    }
+    if is_blank(app.target.as_deref()) {
+        app.target = updater_target();
     }
     overlay
 }
@@ -57,27 +79,37 @@ fn with_tauri_app_info(
 #[cfg(test)]
 mod app_info_tests {
     use super::with_tauri_app_info;
-    use flare_im_core_sdk::client::SdkConfigOverlay;
+    use flare_im_core_sdk::client::{SdkAppConfig, SdkConfigOverlay};
 
     #[test]
     fn package_version_fills_only_what_the_frontend_left_out() {
         let filled = with_tauri_app_info(None, "2.4.0".to_string());
-        assert_eq!(filled.app_version.as_deref(), Some("2.4.0"));
-        assert_eq!(filled.distribution.as_deref(), Some("tauri"));
-        assert_eq!(filled.app_build, None);
+        let app = filled.app.expect("app info is filled");
+        assert_eq!(app.version.as_deref(), Some("2.4.0"));
+        assert_eq!(app.distribution.as_deref(), Some("tauri"));
+        assert_eq!(app.build, None);
+        assert_eq!(app.target, super::updater_target());
 
         let explicit = with_tauri_app_info(
             Some(SdkConfigOverlay {
-                app_version: Some("2.4.1-hotfix".to_string()),
-                app_build: Some(241),
-                distribution: Some("direct".to_string()),
+                app: Some(SdkAppConfig {
+                    version: Some("2.4.1-hotfix".to_string()),
+                    build: Some(241),
+                    distribution: Some("direct".to_string()),
+                    channel: Some("beta".to_string()),
+                    target: Some("linux-riscv64".to_string()),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             "2.4.0".to_string(),
         );
-        assert_eq!(explicit.app_version.as_deref(), Some("2.4.1-hotfix"));
-        assert_eq!(explicit.app_build, Some(241));
-        assert_eq!(explicit.distribution.as_deref(), Some("direct"));
+        let app = explicit.app.expect("app info is kept");
+        assert_eq!(app.version.as_deref(), Some("2.4.1-hotfix"));
+        assert_eq!(app.build, Some(241));
+        assert_eq!(app.distribution.as_deref(), Some("direct"));
+        assert_eq!(app.channel.as_deref(), Some("beta"));
+        assert_eq!(app.target.as_deref(), Some("linux-riscv64"));
     }
 }
 
@@ -159,7 +191,7 @@ pub async fn sdk_connect(
     Ok(())
 }
 
-/// EventBus → `im://*`，独立任务避免阻塞登录路径。
+/// EventBus → 契约事件名（`im://*`、`connection://status`、`access://*`），独立任务避免阻塞登录路径。
 fn spawn_event_bridge(app: tauri::AppHandle, rx: SharedEventReceiver, bridge: SessionTaskSlot) {
     let (cancel_tx, cancel_rx) = oneshot::channel();
     bridge.replace(move || {
@@ -260,6 +292,50 @@ pub async fn sdk_update_access_token(
         .map_err(super::map_sdk_err)
 }
 
+/// 前端托管令牌时的续期请求事件名；载荷 `{ requestId }`，前端换到令牌后调用
+/// [`sdk_complete_connect_token_refresh`] 交回。
+pub const CONNECT_TOKEN_REFRESH_EVENT: &str = "connection://token_refresh_requested";
+
+/// 装上（`enabled = true`）或卸下连接令牌续期回调。
+///
+/// 令牌由前端（业务网关）签发、刷新时，连接被网关按鉴权拒绝后核心向前端要一枚新的：发
+/// [`CONNECT_TOKEN_REFRESH_EVENT`]，前端 20 秒内交回，过期作废。SDK 托管令牌（初始化配置
+/// 里有 `auth`，空对象也算）时不需要。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sdk_set_connect_token_refresher(
+    state: State<'_, SdkState>,
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> std::result::Result<(), super::CommandError> {
+    let broker = enabled.then(|| {
+        flare_im_core_sdk::client::HostTokenBroker::new(move |request_id| {
+            if let Err(err) = app.emit(
+                CONNECT_TOKEN_REFRESH_EVENT,
+                serde_json::json!({ "requestId": request_id }),
+            ) {
+                warn!(%err, "failed to ask the webview for a fresh connect token");
+            }
+        })
+    });
+    let refresher = broker.as_ref().map(|broker| broker.refresher());
+    state.set_token_broker(broker);
+    state.client().set_connect_token_refresher(refresher).await;
+    Ok(())
+}
+
+/// 交回续期请求 `requestId` 的结果；`token` 为空表示换不到。请求已作废时返回 `false`。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn sdk_complete_connect_token_refresh(
+    state: State<'_, SdkState>,
+    request_id: u64,
+    token: Option<String>,
+) -> std::result::Result<bool, super::CommandError> {
+    let token = token.filter(|token| !token.trim().is_empty());
+    Ok(state
+        .token_broker()
+        .is_some_and(|broker| broker.complete(request_id, token)))
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub async fn sdk_is_connected(
     state: State<'_, SdkState>,
@@ -272,14 +348,6 @@ pub async fn sdk_current_user_id(
     state: State<'_, SdkState>,
 ) -> std::result::Result<Option<String>, super::CommandError> {
     Ok(state.client().current_user_id().await)
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn sdk_engine_state(
-    state: State<'_, SdkState>,
-) -> std::result::Result<String, super::CommandError> {
-    let c = state.client();
-    Ok(format!("{:?}", c.state()))
 }
 
 #[tauri::command(rename_all = "camelCase")]

@@ -88,7 +88,7 @@ impl IMClient {
 
     /// 安装宿主托管令牌的续期回调：重连被网关按鉴权拒绝时，核心向宿主要一枚新的连接令牌。
     ///
-    /// SDK 托管形态（配了 `auth.token_endpoint`）不需要它，核心自己会向网关换。
+    /// SDK 托管形态（配了 `auth`）不需要它，核心自己会向 Core API 换。
     /// 登录时重建会话也会保留它；传 `None` 卸下。
     pub async fn set_connect_token_refresher(
         &self,

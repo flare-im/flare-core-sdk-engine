@@ -9,7 +9,9 @@ use flare_im_core_sdk::content::message_elem::{
 };
 use flare_im_core_sdk::model::conversation::{Conversation, ConversationType};
 use flare_im_core_sdk::model::message::{IMMessage, ReactionEntry};
-use flare_im_core_sdk::prelude::SdkConfigOverlay;
+use flare_im_core_sdk::prelude::{
+    ConnectionPhase, ConnectionStatus, LinkQuality, SdkConfigOverlay,
+};
 use flare_im_core_sdk::spi::{
     extract_conversation_type as extract_cid_conversation_type, generate_group_conversation_id,
     generate_single_chat_conversation_id, generate_system_conversation_id,
@@ -24,7 +26,7 @@ use super::web_model::{
 use flare_im_core_sdk_bindings_runtime::{message_build_catalog, normalize_operation};
 use flare_proto::common::MentionType;
 
-const CONTRACT_VERSION: &str = "flare-im-ffi/v1";
+const CONTRACT_VERSION: &str = "flare-im-ffi/v2";
 
 #[derive(Debug, Default, Clone)]
 struct SmokeInitState {
@@ -121,11 +123,15 @@ impl FlareImWasmRuntime {
             }
             "sdk.is_connected" | "sdk.session_active" => Ok(json!(self.connected)),
             "sdk.update_access_token" => Ok(Value::Null),
-            "connection.get_state" => Ok(json!(if self.connected {
-                "ready"
-            } else {
-                "disconnected"
-            })),
+            "connection.get_status" => {
+                let mut status = ConnectionStatus::idle(false);
+                if self.connected {
+                    status.phase = ConnectionPhase::Online;
+                    status.quality = Some(LinkQuality::Good);
+                }
+                serde_json::to_value(status)
+                    .map_err(|error| js_error("wasm.serialize_failed", error))
+            }
             "conversation.list"
             | "conversation.list_raw"
             | "conversation.list_including_archived"
@@ -234,7 +240,8 @@ impl FlareImWasmRuntime {
                 }
                 Ok(Value::Null)
             }
-            "conversation.clear_local_chat_history" => {
+            "conversation.clear_local_chat_history"
+            | "conversation.clear_chat_history_for_self" => {
                 if let Some(id) = conversation_id(&request) {
                     self.messages.retain(|item| item.conversation_id != id);
                     if let Some(conversation) = self
@@ -392,10 +399,10 @@ impl FlareImWasmRuntime {
                     .unwrap_or_default();
                 Ok(json!({
                     "dataUrl": overlay.data_url.clone().unwrap_or_else(|| "memory://flare-im-core-sdk-wasm".to_string()),
-                    "wsUrl": overlay.ws_url,
-                    "quicUrl": overlay.quic_url,
-                    "transportPolicy": overlay.transport_policy,
-                    "protocolRaceOrder": overlay.protocol_race_order,
+                    "developmentMode": overlay
+                        .access
+                        .as_ref()
+                        .is_some_and(|access| access.development_endpoints.is_some()),
                     "tenantId": overlay.tenant_id
                 }))
             }

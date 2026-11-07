@@ -11,8 +11,7 @@
 //!   FLARE_E2E_USER=<user> \
 //!   FLARE_E2E_HTTP_URL=http://<host>/api      # 给了就走 SDK 托管：核心向网关签发/刷新 token
 //!   FLARE_E2E_TOKEN=<token>                    # 应用托管：显式 token（与 HTTP_URL 二选一即可）
-//!   FLARE_E2E_TRANSPORT=websocket|quic|race    # 与登录页「连接协议」三档一一对应，默认 websocket
-//!   FLARE_E2E_QUIC_URL=quic://<host>:60443 \
+//!   FLARE_E2E_QUIC_URL=quic://<host>:60443     # 给了就与 WebSocket 交错竞速（清单默认顺序 QUIC 在前）
 //!   FLARE_E2E_TLS_CA_CERT=<PEM 或 base64 DER 内联 CA> \
 //!   FLARE_E2E_MIN_CONVERSATIONS=<该账号至少应有的会话数，默认 0> \
 //!   FLARE_E2E_TAG=<发送端写进消息正文的标记> \
@@ -23,10 +22,11 @@ use std::time::{Duration, Instant};
 
 use flare_im_core_sdk::SdkEvent;
 use flare_im_core_sdk::client::IMClient;
-use flare_im_core_sdk::client::config::{SdkAuthConfig, TransportKind, TransportPolicy};
+use flare_im_core_sdk::client::config::SdkAuthConfig;
 use flare_im_core_sdk::client::lifecycle::{LoginDbKind, SdkConfigOverlay};
 use flare_im_core_sdk::model::StartupHomeSyncRequest;
 use flare_im_core_sdk::prelude::MessageEvent;
+use flare_im_core_sdk::prelude::{AccessConfig, DevelopmentEndpoints};
 
 fn env_var(key: &str) -> Option<String> {
     env::var(key).ok().filter(|value| !value.is_empty())
@@ -49,27 +49,6 @@ async fn desktop_stack_logs_in_and_receives_realtime_push() {
         token.is_some() || http_url.is_some(),
         "FLARE_E2E_TOKEN（应用托管）与 FLARE_E2E_HTTP_URL（SDK 托管签发）至少给一个"
     );
-    // 与 kit 登录页「连接协议」三档的 overlay 一一对应（useFlareCoreClient.ts）：
-    // websocket=websocket_only；quic=auto+默认 quic+竞速序 [quic]；race=protocol_race+[quic, websocket]。
-    let transport = env_var("FLARE_E2E_TRANSPORT").unwrap_or_else(|| "websocket".to_string());
-    let (transport_policy, default_transport, race_order) = match transport.as_str() {
-        "quic" => (
-            TransportPolicy::Auto,
-            TransportKind::Quic,
-            vec![TransportKind::Quic],
-        ),
-        "race" => (
-            TransportPolicy::ProtocolRace,
-            TransportKind::Quic,
-            vec![TransportKind::Quic, TransportKind::WebSocket],
-        ),
-        _ => (
-            TransportPolicy::WebSocketOnly,
-            TransportKind::WebSocket,
-            vec![TransportKind::WebSocket],
-        ),
-    };
-
     // 装上 subscriber，否则核心的 tracing 一行都不会输出——
     // 我曾据此误判"事件根本没到"。
     let _ = tracing_subscriber::fmt()
@@ -95,18 +74,17 @@ async fn desktop_stack_logs_in_and_receives_realtime_push() {
             None,
             Some(SdkConfigOverlay {
                 data_url: Some(format!("file://{}", data_root.display())),
-                ws_url: Some(ws_url),
-                quic_url: env_var("FLARE_E2E_QUIC_URL"),
-                http_url: http_url.clone(),
-                tls_ca_cert: env_var("FLARE_E2E_TLS_CA_CERT"),
-                transport_policy: Some(transport_policy),
-                default_transport: Some(default_transport),
-                protocol_race_order: Some(race_order),
-                tenant_id: Some("0".to_string()),
-                auth: http_url.as_ref().map(|endpoint| SdkAuthConfig {
-                    token_endpoint: Some(endpoint.clone()),
+                // 联调：开发模式接入。协议顺序、交错竞速由清单策略决定，不再有「连接协议」开关。
+                access: Some(AccessConfig::development(DevelopmentEndpoints {
+                    ws_url: Some(ws_url),
+                    quic_url: env_var("FLARE_E2E_QUIC_URL"),
+                    core_api_url: http_url.clone(),
                     ..Default::default()
-                }),
+                })),
+                tls_ca_cert: env_var("FLARE_E2E_TLS_CA_CERT"),
+                tenant_id: Some("0".to_string()),
+                // 有 Core HTTP 就由 SDK 托管令牌：向 coreApiUrl 上的标准签发路径签发。
+                auth: http_url.as_ref().map(|_| SdkAuthConfig::default()),
                 ..Default::default()
             }),
         )
@@ -136,7 +114,7 @@ async fn desktop_stack_logs_in_and_receives_realtime_push() {
         .await
         .expect("login against the real gateway must succeed");
     println!(
-        "LOGIN_OK transport={transport} auth={} elapsed_ms={}",
+        "LOGIN_OK auth={} elapsed_ms={}",
         if token.is_some() {
             "app-managed"
         } else {

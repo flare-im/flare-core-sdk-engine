@@ -30,6 +30,18 @@ public func jsonPutRaw(json: CjJsonObject, key: String, raw: String): Unit {
     json.put(key, jsonValueFromRaw(raw))
 }
 
+// The JSON object `raw` without the top-level `key` (a platform-package option the core must not see).
+public func jsonWithoutField(raw: String, key: String): String {
+    let source = jsonObjectFromRaw(raw)
+    let out = jsonObjectFromRaw("{}")
+    for ((name, value) in source.getFields()) {
+        if (name != key) {
+            out.put(name, value)
+        }
+    }
+    return out.toString()
+}
+
 public func pluginUiEvaluationRequestToJson(request: PluginUiEvaluationRequest): String {
     let json = CjJsonObject()
     jsonPutRaw(json, "payload", request.payload)
@@ -413,29 +425,13 @@ public func jsonMessageBuildOpField(object: CjJsonObject, key: String, fallback:
     }
 }
 
-let HEARTBEAT_APP_STATE_WIRE_ORDER: Array<HeartbeatAppState> = [HeartbeatAppState.Foreground, HeartbeatAppState.Background]
 let MESSAGE_SEARCH_KIND_WIRE_ORDER: Array<MessageSearchKind> = [MessageSearchKind.Message, MessageSearchKind.Text, MessageSearchKind.Media, MessageSearchKind.Image, MessageSearchKind.Video, MessageSearchKind.Audio, MessageSearchKind.File]
-let SDK_EVENT_KIND_WIRE_ORDER: Array<SdkEventKind> = [SdkEventKind.Lifecycle, SdkEventKind.Connection, SdkEventKind.Message, SdkEventKind.Notification, SdkEventKind.Conversation, SdkEventKind.Sync, SdkEventKind.Extension, SdkEventKind.ExtensionEvent, SdkEventKind.Presence, SdkEventKind.Media, SdkEventKind.Plugin]
+let SDK_EVENT_KIND_WIRE_ORDER: Array<SdkEventKind> = [SdkEventKind.Lifecycle, SdkEventKind.Connection, SdkEventKind.Access, SdkEventKind.Message, SdkEventKind.Notification, SdkEventKind.Conversation, SdkEventKind.Sync, SdkEventKind.Extension, SdkEventKind.ExtensionEvent, SdkEventKind.Presence, SdkEventKind.Media, SdkEventKind.Plugin, SdkEventKind.View]
 let LIFECYCLE_EVENT_NAME_WIRE_ORDER: Array<LifecycleEventName> = [LifecycleEventName.Initializing, LifecycleEventName.Initialized, LifecycleEventName.InitFailed, LifecycleEventName.LoginSucceeded, LifecycleEventName.LoginFailed, LifecycleEventName.LoggedOut, LifecycleEventName.Disposed]
-let SDK_CONNECTION_STATE_WIRE_ORDER: Array<SdkConnectionState> = [SdkConnectionState.Disconnected, SdkConnectionState.Connecting, SdkConnectionState.Connected, SdkConnectionState.Ready, SdkConnectionState.Reconnecting]
-let CONNECTION_EVENT_NAME_WIRE_ORDER: Array<ConnectionEventName> = [ConnectionEventName.Connecting, ConnectionEventName.Connected, ConnectionEventName.Ready, ConnectionEventName.Disconnected, ConnectionEventName.Reconnecting, ConnectionEventName.ReconnectFailed, ConnectionEventName.StateChanged, ConnectionEventName.SyncStateChanged, ConnectionEventName.ServerError, ConnectionEventName.KickedOff, ConnectionEventName.TokenExpired]
 let MESSAGE_EVENT_NAME_WIRE_ORDER: Array<MessageEventName> = [MessageEventName.Received, MessageEventName.ReceivedBatch, MessageEventName.SendAck, MessageEventName.SendFailed, MessageEventName.Recalled, MessageEventName.Typing, MessageEventName.Edited, MessageEventName.ReactionChanged, MessageEventName.Deleted, MessageEventName.ReadReceipt, MessageEventName.BurnScheduled, MessageEventName.Burned, MessageEventName.HardDeleted, MessageEventName.Pinned, MessageEventName.Unpinned, MessageEventName.Marked, MessageEventName.Unmarked, MessageEventName.RetentionScheduled, MessageEventName.RetentionExpired, MessageEventName.RetentionPurged, MessageEventName.PresenceChanged, MessageEventName.Custom, MessageEventName.PluginStateChanged, MessageEventName.ReadSummariesChanged]
 let CONVERSATION_EVENT_NAME_WIRE_ORDER: Array<ConversationEventName> = [ConversationEventName.Synced, ConversationEventName.Created, ConversationEventName.Updated, ConversationEventName.UnreadCountChanged, ConversationEventName.Deleted]
 let SYNC_EVENT_NAME_WIRE_ORDER: Array<SyncEventName> = [SyncEventName.StateChanged, SyncEventName.Started, SyncEventName.Finished, SyncEventName.Failed, SyncEventName.Progress, SyncEventName.TaskCompleted, SyncEventName.ResyncNeeded]
 let PROGRESS_EVENT_NAME_WIRE_ORDER: Array<ProgressEventName> = [ProgressEventName.SyncProgress, ProgressEventName.UploadProgress, ProgressEventName.DownloadProgress]
-
-public func connectionStateFromWire(value: String): ConnectionState {
-    if (value == "connecting") { return ConnectionState.Connecting }
-    if (value == "connected") { return ConnectionState.Connected }
-    if (value == "ready") { return ConnectionState.Ready }
-    if (value == "reconnecting") { return ConnectionState.Reconnecting }
-    try {
-        let object = jsonObjectFromRaw(value)
-        return connectionStateFromWire(jsonStringField(object, "state", "disconnected"))
-    } catch (_) {
-        return ConnectionState.Disconnected
-    }
-}
 
 public func booleanResponseFromWire(raw: String): BooleanResponse {
     if (raw == "true") { return BooleanResponse(true) }
@@ -443,21 +439,39 @@ public func booleanResponseFromWire(raw: String): BooleanResponse {
     return booleanResponseFromJson(raw)
 }
 
-public func setHeartbeatAppStateRequestToJson(request: SetHeartbeatAppStateRequest): String {
+public func appStateWireValue(value: AppState): String {
+    return match (value) {
+        case AppState.Foreground => "foreground"
+        case AppState.Background => "background"
+    }
+}
+
+public func setAppStateRequestToJson(request: SetAppStateRequest): String {
     let json = CjJsonObject()
-    jsonPutInt(json, "appState", enumWireIndex(HEARTBEAT_APP_STATE_WIRE_ORDER, request.appState))
+    jsonPutString(json, "appState", appStateWireValue(request.appState))
     return json.toJsonString()
 }
 
-public func setHeartbeatAppStateRequestFromJson(raw: String): SetHeartbeatAppStateRequest {
-    return setHeartbeatAppStateRequestFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+public func setConnectTokenRefresherRequestToJson(request: SetConnectTokenRefresherRequest): String {
+    let json = CjJsonObject()
+    jsonPutBool(json, "enabled", request.enabled)
+    return json.toJsonString()
 }
 
-public func setHeartbeatAppStateRequestFromObject(object: CjJsonObject): SetHeartbeatAppStateRequest {
-    let appState = jsonEnumField(HEARTBEAT_APP_STATE_WIRE_ORDER, object, "appState", HeartbeatAppState.Foreground)
-    return SetHeartbeatAppStateRequest(
-        appState: appState
-    )
+public func completeConnectTokenRefreshRequestToJson(request: CompleteConnectTokenRefreshRequest): String {
+    let json = CjJsonObject()
+    jsonPutInt(json, "requestId", Int64(request.requestId))
+    match (request.token) {
+        case Some(value) => jsonPutString(json, "token", value)
+        case None => ()
+    }
+    return json.toJsonString()
+}
+
+public func accessPinRequestToJson(request: AccessPinRequest): String {
+    let json = CjJsonObject()
+    jsonPutString(json, "accessPointId", request.accessPointId)
+    return json.toJsonString()
 }
 
 public func setHeartbeatNatTimeoutRequestToJson(request: SetHeartbeatNatTimeoutRequest): String {
@@ -486,7 +500,7 @@ public func networkChangeRequestToJson(request: NetworkChangeRequest): String {
         case Some(value) => jsonPutBool(json, "available", value)
         case None => ()
     }
-    match (request.interface) {
+    match (request.interfaceValue) {
         case Some(value) => jsonPutString(json, "interface", networkInterfaceKindWireValue(value))
         case None => ()
     }
@@ -502,6 +516,10 @@ public func networkChangeRequestToJson(request: NetworkChangeRequest): String {
         case Some(value) => jsonPutString(json, "reason", value)
         case None => ()
     }
+    match (request.fingerprintHint) {
+        case Some(value) => jsonPutString(json, "fingerprintHint", value)
+        case None => ()
+    }
     return json.toJsonString()
 }
 
@@ -515,29 +533,361 @@ public func networkChangeRequestFromObject(object: CjJsonObject): NetworkChangeR
     let expensive: ?Bool = jsonOptionalBoolField(object, "expensive")
     let metered: ?Bool = jsonOptionalBoolField(object, "metered")
     let reason: ?String = jsonOptionalStringField(object, "reason")
+    let fingerprintHint: ?String = jsonOptionalStringField(object, "fingerprintHint")
     return NetworkChangeRequest(
         available: available,
-        interface: interfaceValue,
+        interfaceValue: interfaceValue,
         expensive: expensive,
         metered: metered,
-        reason: reason
+        reason: reason,
+        fingerprintHint: fingerprintHint
     )
 }
 
-public func networkChangeResponseToJson(request: NetworkChangeResponse): String {
-    let json = CjJsonObject()
-    jsonPutBool(json, "reconnected", request.reconnected)
-    return json.toJsonString()
+// Every ConnectionStatus field is on the wire and null without a value; these read null, a missing key or a value of
+// another type as None.
+func jsonUInt32OrNone(object: CjJsonObject, key: String): ?UInt32 {
+    match (object.get(key)) {
+        case Some(value) =>
+            try {
+                return Some(UInt32(value.asInt().getValue()))
+            } catch (_) {
+                return None
+            }
+        case None => return None
+    }
 }
 
-public func networkChangeResponseFromJson(raw: String): NetworkChangeResponse {
-    return networkChangeResponseFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+func jsonInt64OrNone(object: CjJsonObject, key: String): ?Int64 {
+    match (object.get(key)) {
+        case Some(value) =>
+            try {
+                return Some(value.asInt().getValue())
+            } catch (_) {
+                return None
+            }
+        case None => return None
+    }
 }
 
-public func networkChangeResponseFromObject(object: CjJsonObject): NetworkChangeResponse {
-    let reconnected = jsonBoolField(object, "reconnected", false)
-    return NetworkChangeResponse(
-        reconnected: reconnected
+func jsonUInt64OrNone(object: CjJsonObject, key: String): ?UInt64 {
+    match (object.get(key)) {
+        case Some(value) =>
+            try {
+                return Some(UInt64(value.asInt().getValue()))
+            } catch (_) {
+                return None
+            }
+        case None => return None
+    }
+}
+
+func jsonFloat64OrNone(object: CjJsonObject, key: String): ?Float64 {
+    match (object.get(key)) {
+        case Some(value) =>
+            try {
+                return Some(Float64.parse(value.toJsonString()))
+            } catch (_) {
+                return None
+            }
+        case None => return None
+    }
+}
+
+public func connectionPhaseWireValue(value: ConnectionPhase): String {
+    return match (value) {
+        case ConnectionPhase.Idle => "idle"
+        case ConnectionPhase.Connecting => "connecting"
+        case ConnectionPhase.Syncing => "syncing"
+        case ConnectionPhase.Online => "online"
+        case ConnectionPhase.Switching => "switching"
+        case ConnectionPhase.Reconnecting => "reconnecting"
+        case ConnectionPhase.WaitingForNetwork => "waitingForNetwork"
+        case ConnectionPhase.ServiceUnavailable => "serviceUnavailable"
+        case ConnectionPhase.ActionRequired => "actionRequired"
+    }
+}
+
+// The phase is what every host shows: an unknown or missing phase breaks the status contract and throws.
+public func connectionPhaseFromWireString(value: String): ConnectionPhase {
+    if (value == "idle") { return ConnectionPhase.Idle }
+    if (value == "connecting") { return ConnectionPhase.Connecting }
+    if (value == "syncing") { return ConnectionPhase.Syncing }
+    if (value == "online") { return ConnectionPhase.Online }
+    if (value == "switching") { return ConnectionPhase.Switching }
+    if (value == "reconnecting") { return ConnectionPhase.Reconnecting }
+    if (value == "waitingForNetwork") { return ConnectionPhase.WaitingForNetwork }
+    if (value == "serviceUnavailable") { return ConnectionPhase.ServiceUnavailable }
+    if (value == "actionRequired") { return ConnectionPhase.ActionRequired }
+    throw Exception(
+        "FlareSdkException(code=invalidParameter, operation=wire.decode, field=ConnectionStatus.phase, expected=ConnectionPhase, message=ConnectionStatus.phase must be a connection phase, got ${value})"
+    )
+}
+
+public func connectionQualityWireValue(value: ConnectionQuality): String {
+    return match (value) {
+        case ConnectionQuality.Good => "good"
+        case ConnectionQuality.Poor => "poor"
+    }
+}
+
+// Line quality is informational: an unknown value reads as absent.
+public func connectionQualityFromWireString(value: String): ?ConnectionQuality {
+    if (value == "good") { return Some(ConnectionQuality.Good) }
+    if (value == "poor") { return Some(ConnectionQuality.Poor) }
+    return None
+}
+
+// Payload of `connection://status` and the value of `connection.getStatus`.
+public func connectionStatusFromJson(raw: String): ConnectionStatus {
+    return connectionStatusFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+}
+
+public func connectionStatusFromObject(object: CjJsonObject): ConnectionStatus {
+    let phase = connectionPhaseFromWireString(match (jsonStringOrNone(object, "phase")) {
+        case Some(value) => value
+        case None => ""
+    })
+    let quality: ?ConnectionQuality = match (jsonStringOrNone(object, "quality")) {
+        case Some(value) => connectionQualityFromWireString(value)
+        case None => None
+    }
+    let attempt = match (jsonUInt32OrNone(object, "attempt")) {
+        case Some(value) => value
+        case None => UInt32(0)
+    }
+    return ConnectionStatus(
+        phase: phase,
+        quality: quality,
+        accessPointId: jsonStringOrNone(object, "accessPointId"),
+        cellId: jsonStringOrNone(object, "cellId"),
+        regionId: jsonStringOrNone(object, "regionId"),
+        protocol: jsonStringOrNone(object, "protocol"),
+        rttMs: jsonUInt32OrNone(object, "rttMs"),
+        attempt: attempt,
+        nextRetryAt: jsonInt64OrNone(object, "nextRetryAt"),
+        reason: jsonStringOrNone(object, "reason"),
+        developmentMode: jsonBoolField(object, "developmentMode", false)
+    )
+}
+
+// Payload of the coarse sync state hint (`connection.sync_state_changed`); it never fails to decode.
+public func connectionSyncStateEventFromJson(raw: String): ConnectionSyncStateEvent {
+    try {
+        return connectionSyncStateEventFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+    } catch (_) {
+        return ConnectionSyncStateEvent(state: "")
+    }
+}
+
+public func connectionSyncStateEventFromObject(object: CjJsonObject): ConnectionSyncStateEvent {
+    return ConnectionSyncStateEvent(
+        state: match (jsonStringOrNone(object, "state")) {
+            case Some(value) => value
+            case None => ""
+        }
+    )
+}
+
+public func accessPinFromJson(raw: String): AccessPin {
+    return accessPinFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+}
+
+public func accessPinFromObject(object: CjJsonObject): AccessPin {
+    return AccessPin(
+        accessPointId: jsonStringField(object, "accessPointId", ""),
+        expiresAtMs: jsonIntField(object, "expiresAtMs", 0)
+    )
+}
+
+public func accessStatusFromJson(raw: String): AccessStatus {
+    return accessStatusFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+}
+
+public func accessStatusFromObject(object: CjJsonObject): AccessStatus {
+    let pinned: ?AccessPin = match (object.get("pinned")) {
+        case Some(value) => match (jsonObjectOrNone(value)) {
+            case Some(pin) => Some(accessPinFromObject(pin))
+            case None => None
+        }
+        case None => None
+    }
+    let connectAck: ?AccessConnectAck = match (object.get("connectAck")) {
+        case Some(value) => match (jsonObjectOrNone(value)) {
+            case Some(ack) => Some(accessConnectAckFromObject(ack))
+            case None => None
+        }
+        case None => None
+    }
+    return AccessStatus(
+        loaded: jsonBoolField(object, "loaded", false),
+        serial: UInt64(jsonIntField(object, "serial", 0)),
+        source: jsonStringOrNone(object, "source"),
+        stale: jsonBoolField(object, "stale", false),
+        developmentMode: jsonBoolField(object, "developmentMode", false),
+        expiresAtMs: jsonInt64OrNone(object, "expiresAtMs"),
+        regionId: jsonStringOrNone(object, "regionId"),
+        cellId: jsonStringOrNone(object, "cellId"),
+        keystateSerial: jsonUInt64OrNone(object, "keystateSerial"),
+        accessPointId: jsonStringOrNone(object, "accessPointId"),
+        protocol: jsonStringOrNone(object, "protocol"),
+        pinned: pinned,
+        connectAck: connectAck
+    )
+}
+
+// CONNECT_ACK diagnostics of the current connection (AccessStatus.connectAck); only shown.
+public func accessConnectAckFromObject(object: CjJsonObject): AccessConnectAck {
+    return AccessConnectAck(
+        gatewayId: jsonStringOrNone(object, "gatewayId"),
+        accessPointId: jsonStringOrNone(object, "accessPointId"),
+        accessSerial: jsonUInt64OrNone(object, "accessSerial"),
+        heartbeatIntervalHintSec: jsonUInt32OrNone(object, "heartbeatIntervalHintSec"),
+        accessPointMismatch: jsonBoolField(object, "accessPointMismatch", false)
+    )
+}
+
+public func accessPointInfoFromObject(object: CjJsonObject): AccessPointInfo {
+    return AccessPointInfo(
+        accessPointId: jsonStringField(object, "accessPointId", ""),
+        regionId: jsonStringField(object, "regionId", ""),
+        host: jsonStringField(object, "host", ""),
+        status: jsonStringField(object, "status", ""),
+        rttMs: jsonFloat64OrNone(object, "rttMs"),
+        breaker: jsonStringField(object, "breaker", ""),
+        protocolWinner: jsonStringOrNone(object, "protocolWinner"),
+        pinned: jsonBoolField(object, "pinned", false),
+        current: jsonBoolField(object, "current", false)
+    )
+}
+
+// `access.listAccessPoints` answers with a bare JSON array.
+public func accessPointInfoListFromJson(raw: String): Array<AccessPointInfo> {
+    let items = jsonValueFromRaw(wireDecodeResponse(raw)).asArray().getItems()
+    return Array<AccessPointInfo>(items.size, { index => accessPointInfoFromObject(items[index].asObject()) })
+}
+
+public func accessEndpointFromObject(object: CjJsonObject): AccessEndpoint {
+    return AccessEndpoint(
+        ap: jsonStringField(object, "ap", ""),
+        protocol: jsonStringField(object, "protocol", "")
+    )
+}
+
+func accessEndpointField(object: CjJsonObject, key: String): AccessEndpoint {
+    return match (object.get(key)) {
+        case Some(value) => match (jsonObjectOrNone(value)) {
+            case Some(endpoint) => accessEndpointFromObject(endpoint)
+            case None => AccessEndpoint(ap: "", protocol: "")
+        }
+        case None => AccessEndpoint(ap: "", protocol: "")
+    }
+}
+
+// Payload of `access://switched`.
+public func accessSwitchedEventFromJson(raw: String): AccessSwitchedEvent {
+    return accessSwitchedEventFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+}
+
+public func accessSwitchedEventFromObject(object: CjJsonObject): AccessSwitchedEvent {
+    return AccessSwitchedEvent(
+        from: accessEndpointField(object, "from"),
+        to: accessEndpointField(object, "to"),
+        reason: jsonStringField(object, "reason", "")
+    )
+}
+
+public func accessChangesFromObject(object: CjJsonObject): AccessChanges {
+    return AccessChanges(
+        accessPointsAdded: jsonRawField(object, "accessPointsAdded", "[]"),
+        accessPointsRemoved: jsonRawField(object, "accessPointsRemoved", "[]"),
+        policyChanged: jsonBoolField(object, "policyChanged", false)
+    )
+}
+
+// Payload of `access://changed`.
+public func accessChangedEventFromJson(raw: String): AccessChangedEvent {
+    return accessChangedEventFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+}
+
+public func accessChangedEventFromObject(object: CjJsonObject): AccessChangedEvent {
+    let changes = match (object.get("changes")) {
+        case Some(value) => match (jsonObjectOrNone(value)) {
+            case Some(inner) => accessChangesFromObject(inner)
+            case None => AccessChanges(accessPointsAdded: "[]", accessPointsRemoved: "[]", policyChanged: false)
+        }
+        case None => AccessChanges(accessPointsAdded: "[]", accessPointsRemoved: "[]", policyChanged: false)
+    }
+    return AccessChangedEvent(
+        serial: UInt64(jsonIntField(object, "serial", 0)),
+        source: jsonStringField(object, "source", ""),
+        stale: jsonBoolField(object, "stale", false),
+        developmentMode: jsonBoolField(object, "developmentMode", false),
+        changes: changes
+    )
+}
+
+public func runtimeHealthResponseFromJson(raw: String): RuntimeHealthResponse {
+    return runtimeHealthResponseFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+}
+
+public func runtimeHealthResponseFromObject(object: CjJsonObject): RuntimeHealthResponse {
+    return RuntimeHealthResponse(
+        metricsEnabled: jsonBoolField(object, "metricsEnabled", false),
+        state: jsonStringField(object, "state", ""),
+        stateCode: Int32(jsonIntField(object, "stateCode", 0)),
+        sessionGeneration: UInt64(jsonIntField(object, "sessionGeneration", 0)),
+        rawSubscriberDroppedTotal: UInt64(jsonIntField(object, "rawSubscriberDroppedTotal", 0)),
+        metricsJson: jsonStringField(object, "metricsJson", "")
+    )
+}
+
+// `ViewSnapshot.data` stays raw JSON; the view type says how to read it.
+public func viewSnapshotFromObject(object: CjJsonObject): ViewSnapshot {
+    return ViewSnapshot(
+        viewType: jsonStringField(object, "viewType", ""),
+        data: jsonRawField(object, "data", "{}")
+    )
+}
+
+public func viewOpenResponseFromJson(raw: String): ViewOpenResponse {
+    return viewOpenResponseFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+}
+
+public func viewOpenResponseFromObject(object: CjJsonObject): ViewOpenResponse {
+    let snapshot = match (object.get("snapshot")) {
+        case Some(value) => match (jsonObjectOrNone(value)) {
+            case Some(inner) => viewSnapshotFromObject(inner)
+            case None => ViewSnapshot(viewType: "", data: "{}")
+        }
+        case None => ViewSnapshot(viewType: "", data: "{}")
+    }
+    return ViewOpenResponse(
+        viewId: jsonStringField(object, "viewId", ""),
+        revision: UInt64(jsonIntField(object, "revision", 0)),
+        snapshot: snapshot
+    )
+}
+
+public func timelineViewPageResponseFromJson(raw: String): TimelineViewPageResponse {
+    return timelineViewPageResponseFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+}
+
+public func timelineViewPageResponseFromObject(object: CjJsonObject): TimelineViewPageResponse {
+    return TimelineViewPageResponse(
+        viewId: jsonStringField(object, "viewId", ""),
+        loadedCount: UInt32(jsonIntField(object, "loadedCount", 0)),
+        revision: UInt64(jsonIntField(object, "revision", 0))
+    )
+}
+
+public func closeViewResponseFromJson(raw: String): CloseViewResponse {
+    return closeViewResponseFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
+}
+
+public func closeViewResponseFromObject(object: CjJsonObject): CloseViewResponse {
+    return CloseViewResponse(
+        closed: jsonBoolField(object, "closed", false)
     )
 }
 
@@ -3099,47 +3449,6 @@ public func lifecycleEventFromObject(object: CjJsonObject): LifecycleEvent {
         operation: operation,
         userId: userId,
         sessionId: sessionId,
-        error: error
-    )
-}
-
-public func connectionEventToJson(request: ConnectionEvent): String {
-    let json = CjJsonObject()
-    jsonPutInt(json, "name", enumWireIndex(CONNECTION_EVENT_NAME_WIRE_ORDER, request.name))
-    jsonPutInt(json, "state", enumWireIndex(SDK_CONNECTION_STATE_WIRE_ORDER, request.state))
-    match (request.reason) {
-        case Some(value) => jsonPutString(json, "reason", value)
-        case None => ()
-    }
-    match (request.attempt) {
-        case Some(value) => jsonPutInt(json, "attempt", Int64(value))
-        case None => ()
-    }
-    match (request.error) {
-        case Some(value) => jsonPutRaw(json, "error", sdkErrorPayloadToJson(value))
-        case None => ()
-    }
-    return json.toJsonString()
-}
-
-public func connectionEventFromJson(raw: String): ConnectionEvent {
-    return connectionEventFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
-}
-
-public func connectionEventFromObject(object: CjJsonObject): ConnectionEvent {
-    let name = jsonEnumField(CONNECTION_EVENT_NAME_WIRE_ORDER, object, "name", ConnectionEventName.Connecting)
-    let state = jsonEnumField(SDK_CONNECTION_STATE_WIRE_ORDER, object, "state", SdkConnectionState.Disconnected)
-    let reason: ?String = jsonOptionalStringField(object, "reason")
-    let attempt: ?UInt32 = jsonOptionalUInt32Field(object, "attempt")
-    let error: ?SdkErrorPayload = match (object.get("error")) {
-            case Some(value) => Some(sdkErrorPayloadFromObject(value.asObject()))
-            case None => None
-        }
-    return ConnectionEvent(
-        name: name,
-        state: state,
-        reason: reason,
-        attempt: attempt,
         error: error
     )
 }

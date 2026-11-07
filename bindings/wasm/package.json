@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "wasm-pack build --target web --out-dir pkg --out-name flare_im_core_sdk",
+    "build": "CARGO=\"$PWD/scripts/cargo-metadata-no-deps\" wasm-pack build --target web --out-dir pkg --out-name flare_im_core_sdk",
     "check": "make check"
   },
   "devDependencies": {

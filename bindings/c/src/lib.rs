@@ -15,10 +15,11 @@ mod helpers;
 mod lifecycle;
 mod registry;
 mod session;
+mod token_refresh;
 pub mod types;
 
 pub use types::{
     FlareBytes, FlareBytesView, FlareError, FlareEventBatchCallback, FlareEventCallback,
     FlareHandle, FlareProgressCallback, FlareResultCallback, FlareString, FlareStringView,
-    FlareSubscriptionHandle, FlareTaskHandle,
+    FlareSubscriptionHandle, FlareTaskHandle, FlareTokenRefreshCallback,
 };

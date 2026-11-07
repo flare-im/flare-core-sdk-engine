@@ -75,7 +75,7 @@ const REQUIRED_PATHS: &[&str] = &[
     "packages/flare-core-flutter-sdk/lib/src/adapter/default_flare_im_client.dart",
     "packages/flare-core-flutter-sdk/lib/src/adapter/codec/wire_codec.dart",
     "packages/flare-core-flutter-sdk/lib/src/adapter/module/default_message_builder_api.dart",
-    "packages/flare-core-flutter-sdk/lib/src/lifecycle/heartbeat_lifecycle_bridge.dart",
+    "packages/flare-core-flutter-sdk/lib/src/lifecycle/platform_lifecycle.dart",
     "packages/flare-core-flutter-sdk/lib/src/bridge/ffi_native_bridge.dart",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/FlareCoreSdk.kt",
     "packages/flare-core-android-sdk/build.gradle.kts",
@@ -83,7 +83,6 @@ const REQUIRED_PATHS: &[&str] = &[
     "packages/flare-core-android-sdk/src/main/cpp/CMakeLists.txt",
     "packages/flare-core-android-sdk/src/main/cpp/flare_jni_bridge.cpp",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/api/FlareImClient.kt",
-    "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/api/ConnectionState.kt",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/api/messagebuilder/MessageBuilderApi.kt",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/callback/MessageSendCallback.kt",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/contract/SdkContract.kt",
@@ -108,7 +107,9 @@ const REQUIRED_PATHS: &[&str] = &[
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter/module/DefaultMessageBuilderApi.kt",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter/codec/NativeInvoke.kt",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter/codec/WireCodec.kt",
-    "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/lifecycle/HeartbeatLifecycleBridge.kt",
+    "packages/flare-core-android-lifecycle/build.gradle.kts",
+    "packages/flare-core-android-lifecycle/src/main/kotlin/com/flare/im/lifecycle/PlatformLifecycle.kt",
+    "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/lifecycle/ClientPlatformLifecycle.kt",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/bridge/JniNativeBridge.kt",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/bridge/FlareSdkException.kt",
     "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Contract/SdkContract.swift",
@@ -146,7 +147,7 @@ const REQUIRED_PATHS: &[&str] = &[
     "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/common/enums/ConversationType.swift",
     "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/common/enums/MessageContentType.swift",
     "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Model/event/lifecycle/LifecycleEventName.swift",
-    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Lifecycle/HeartbeatLifecycleBridge.swift",
+    "packages/flare-core-apple-sdk/Sources/FlarePlatformLifecycle/PlatformLifecycle.swift",
     "packages/flare-core-harmony-arkts-sdk/src/main/ets/contract/SdkContract.ets",
     "packages/flare-core-harmony-arkts-sdk/src/main/ets/Index.ets",
     "packages/flare-core-harmony-arkts-sdk/src/main/ets/api/index.ets",
@@ -173,7 +174,7 @@ const REQUIRED_PATHS: &[&str] = &[
     "packages/flare-core-harmony-arkts-sdk/src/main/ets/bridge/index.ets",
     "packages/flare-core-harmony-arkts-sdk/src/main/ets/adapter/codec/NativeInvoke.ets",
     "packages/flare-core-harmony-arkts-sdk/src/main/ets/adapter/codec/WireCodec.ets",
-    "packages/flare-core-harmony-arkts-sdk/src/main/ets/lifecycle/HeartbeatLifecycleBridge.ets",
+    "packages/flare-core-harmony-arkts-sdk/src/main/ets/lifecycle/PlatformLifecycle.ets",
     "packages/flare-core-harmony-cangjie-sdk/cjpm.toml",
     "packages/flare-core-harmony-cangjie-sdk/src/FlareCoreSdk.cj",
     "packages/flare-core-harmony-cangjie-sdk/src/bridge/FfiNativeBridge.cj",
@@ -197,7 +198,7 @@ const REQUIRED_PATHS: &[&str] = &[
     "packages/flare-core-harmony-cangjie-sdk/src/adapter/module/DefaultConnectionApi.cj",
     "packages/flare-core-harmony-cangjie-sdk/src/adapter/module/DefaultMessageBuilderApi.cj",
     "packages/flare-core-harmony-cangjie-sdk/src/adapter/codec/WireCodec.cj",
-    "packages/flare-core-harmony-cangjie-sdk/src/lifecycle/HeartbeatLifecycleBridge.cj",
+    "packages/flare-core-harmony-cangjie-sdk/src/lifecycle/PlatformLifecycle.cj",
     "packages/flare-core-typescript-sdk/src/index.ts",
     "packages/flare-core-typescript-sdk/src/api/index.ts",
     "packages/flare-core-typescript-sdk/src/contract/bridge_contract.ts",
@@ -216,7 +217,7 @@ const REQUIRED_PATHS: &[&str] = &[
     "packages/flare-core-typescript-sdk/src/model/conversation_type.ts",
     "packages/flare-core-typescript-sdk/src/model/message_content_type.ts",
     "packages/flare-core-typescript-sdk/src/model/lifecycle_event_name.ts",
-    "packages/flare-core-typescript-sdk/src/lifecycle/heartbeatLifecycle.ts",
+    "packages/flare-core-typescript-sdk/src/lifecycle/platformLifecycle.ts",
     "packages/flare-core-typescript-sdk/src/lifecycle/index.ts",
     "packages/flare-core-typescript-sdk/src/adapters/web/index.ts",
     "packages/flare-core-typescript-sdk/src/adapters/web/flareCoreSdk.ts",
@@ -231,6 +232,13 @@ const REQUIRED_PATHS: &[&str] = &[
 ];
 
 const RETIRED_PATHS: &[&str] = &[
+    // The generated foreground/background bridges, replaced by each platform's PlatformLifecycle.
+    "packages/flare-core-typescript-sdk/src/lifecycle/heartbeatLifecycle.ts",
+    "packages/flare-core-flutter-sdk/lib/src/lifecycle/heartbeat_lifecycle_bridge.dart",
+    "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/lifecycle/HeartbeatLifecycleBridge.kt",
+    "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Lifecycle/HeartbeatLifecycleBridge.swift",
+    "packages/flare-core-harmony-arkts-sdk/src/main/ets/lifecycle/HeartbeatLifecycleBridge.ets",
+    "packages/flare-core-harmony-cangjie-sdk/src/lifecycle/HeartbeatLifecycleBridge.cj",
     "CLIENT_API_PARITY.md",
     "ARCHITECTURE.md",
     "tools",
@@ -318,7 +326,7 @@ pub(crate) fn verify_structure(root: &Path) -> Result<()> {
     scan_forbidden_event_contract_json_fields(root, &mut errors)?;
     scan_removed_raw_build_api(root, &mut errors)?;
     verify_required_paths(root, &mut errors);
-    scan_heartbeat_lifecycle_wiring(root, &mut errors)?;
+    scan_platform_lifecycle_wiring(root, &mut errors)?;
     scan_l2_adapter_boundaries(root, &mut errors)?;
     verify_retired_paths_absent(root, &mut errors);
     scan_retired_package_refs(root, &mut errors)?;
@@ -529,94 +537,153 @@ fn scan_removed_raw_build_api(root: &Path, errors: &mut Vec<String>) -> Result<(
     Ok(())
 }
 
-fn scan_heartbeat_lifecycle_wiring(root: &Path, errors: &mut Vec<String>) -> Result<()> {
-    let requirements: &[(&str, &[&str])] = &[
-        (
-            "packages/flare-core-typescript-sdk/src/lifecycle/heartbeatLifecycle.ts",
-            &[
-                "setHeartbeatAppState",
-                "HeartbeatAppState.Foreground",
-                "HeartbeatAppState.Background",
-                "visibilitychange",
-            ],
-        ),
-        (
-            "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/lifecycle/HeartbeatLifecycleBridge.kt",
-            &[
-                "setHeartbeatAppState",
-                "HeartbeatAppState.FOREGROUND",
-                "HeartbeatAppState.BACKGROUND",
-                "onResume",
-                "onPause",
-            ],
-        ),
-        (
-            "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Lifecycle/HeartbeatLifecycleBridge.swift",
-            &[
-                "setHeartbeatAppState",
-                ".foreground",
-                ".background",
-                "applicationDidBecomeActive",
-                "applicationDidEnterBackground",
-            ],
-        ),
-        (
-            "packages/flare-core-flutter-sdk/lib/src/lifecycle/heartbeat_lifecycle_bridge.dart",
-            &[
-                "setHeartbeatAppState",
-                "HeartbeatAppState.foreground",
-                "HeartbeatAppState.background",
-                "onResume",
-                "onPause",
-            ],
-        ),
-        (
-            "packages/flare-core-harmony-arkts-sdk/src/main/ets/lifecycle/HeartbeatLifecycleBridge.ets",
-            &[
-                "setHeartbeatAppState",
-                "HeartbeatAppState.Foreground",
-                "HeartbeatAppState.Background",
-                "onShow",
-                "onHide",
-            ],
-        ),
-        (
-            "packages/flare-core-harmony-cangjie-sdk/src/lifecycle/HeartbeatLifecycleBridge.cj",
-            &[
-                "setHeartbeatAppState",
-                "HeartbeatAppState.Foreground",
-                "HeartbeatAppState.Background",
-                "onShow",
-                "onHide",
-            ],
-        ),
-    ];
+/// Every platform package ships a PlatformLifecycle that reports network changes and
+/// foreground/background to the core, and installs it at SDK init behind the
+/// `installPlatformLifecycle` option (see .planning platform-lifecycle contract).
+struct PlatformLifecycleRequirement {
+    file: &'static str,
+    tokens: &'static [&'static str],
+    /// Package sources searched for the init-time installation.
+    sources: &'static str,
+}
 
-    for (rel, tokens) in requirements {
+const PLATFORM_LIFECYCLE_REQUIREMENTS: &[PlatformLifecycleRequirement] = &[
+    PlatformLifecycleRequirement {
+        file: "packages/flare-core-typescript-sdk/src/lifecycle/platformLifecycle.ts",
+        tokens: &[
+            "lifecycle.setAppState",
+            "AppState.Foreground",
+            "AppState.Background",
+            "visibilitychange",
+            "pagehide",
+            "pageshow",
+            "notifyNetworkChange",
+            "fingerprintHint",
+        ],
+        sources: "packages/flare-core-typescript-sdk/src",
+    },
+    PlatformLifecycleRequirement {
+        // Its own Gradle module (flare-core-android-lifecycle), reusable without the core binding.
+        file: "packages/flare-core-android-lifecycle/src/main/kotlin/com/flare/im/lifecycle/PlatformLifecycle.kt",
+        tokens: &[
+            "lifecycle.setAppState",
+            "AppState.FOREGROUND",
+            "AppState.BACKGROUND",
+            "notifyNetworkChange",
+            "fingerprintHint",
+            "registerDefaultNetworkCallback",
+            "ProcessLifecycleOwner",
+        ],
+        sources: "packages/flare-core-android-sdk/src/main/kotlin",
+    },
+    PlatformLifecycleRequirement {
+        // Its own SwiftPM target (FlarePlatformLifecycle), reusable without the core binding.
+        file: "packages/flare-core-apple-sdk/Sources/FlarePlatformLifecycle/PlatformLifecycle.swift",
+        tokens: &[
+            "lifecycle.setAppState",
+            ".foreground",
+            ".background",
+            "notifyNetworkChange",
+            "fingerprintHint",
+            "NWPathMonitor",
+        ],
+        sources: "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK",
+    },
+    PlatformLifecycleRequirement {
+        file: "packages/flare-core-flutter-sdk/lib/src/lifecycle/platform_lifecycle.dart",
+        tokens: &[
+            "lifecycle.setAppState",
+            "AppState.foreground",
+            "AppState.background",
+            "notifyNetworkChange",
+            "fingerprintHint",
+        ],
+        // The core package is pure Dart: the Flutter sources (AppLifecycleListener, connectivity,
+        // app version) live in the flare-core-flutter-lifecycle plugin and are handed in at init.
+        sources: "packages/flare-core-flutter-sdk/lib",
+    },
+    PlatformLifecycleRequirement {
+        file: "packages/flare-core-harmony-arkts-sdk/src/main/ets/lifecycle/PlatformLifecycle.ets",
+        tokens: &[
+            "lifecycle.setAppState",
+            "AppState.Foreground",
+            "AppState.Background",
+            "notifyNetworkChange",
+            "fingerprintHint",
+            "netAvailable",
+            "applicationStateChange",
+        ],
+        sources: "packages/flare-core-harmony-arkts-sdk/src/main/ets",
+    },
+    PlatformLifecycleRequirement {
+        file: "packages/flare-core-harmony-cangjie-sdk/src/lifecycle/PlatformLifecycle.cj",
+        tokens: &[
+            "lifecycle.setAppState",
+            "AppState.Foreground",
+            "AppState.Background",
+            "notifyNetworkChange",
+            "fingerprintHint",
+        ],
+        sources: "packages/flare-core-harmony-cangjie-sdk/src",
+    },
+];
+
+fn scan_platform_lifecycle_wiring(root: &Path, errors: &mut Vec<String>) -> Result<()> {
+    for requirement in PLATFORM_LIFECYCLE_REQUIREMENTS {
+        let rel = requirement.file;
         let path = root.join(rel);
         let contents = match fs::read_to_string(&path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fail(
-                    errors,
-                    format!("missing heartbeat lifecycle wiring file: {rel}"),
-                );
+                fail(errors, format!("missing PlatformLifecycle: {rel}"));
                 continue;
             }
             Err(error) => {
                 return Err(error).with_context(|| format!("failed to read {}", path.display()));
             }
         };
-        for token in *tokens {
+        for token in requirement.tokens {
             if !contents.contains(token) {
                 fail(
                     errors,
-                    format!("heartbeat lifecycle wiring missing `{token}` in {rel}"),
+                    format!("PlatformLifecycle missing `{token}` in {rel}"),
                 );
             }
         }
+        // Installed at init: some other source of the package builds a PlatformLifecycle behind
+        // the `installPlatformLifecycle` option.
+        let sources = root.join(requirement.sources);
+        let mut installed = false;
+        if sources.is_dir() {
+            for file in files_under(&sources)? {
+                if file == path
+                    || file
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.contains(".test.") || name.ends_with("_test.dart"))
+                {
+                    continue;
+                }
+                let Ok(text) = fs::read_to_string(&file) else {
+                    continue;
+                };
+                if text.contains("installPlatformLifecycle") && text.contains("PlatformLifecycle(")
+                {
+                    installed = true;
+                    break;
+                }
+            }
+        }
+        if !installed {
+            fail(
+                errors,
+                format!(
+                    "PlatformLifecycle is not installed at init behind `installPlatformLifecycle` in {}",
+                    requirement.sources
+                ),
+            );
+        }
     }
-
     Ok(())
 }
 
@@ -632,6 +699,7 @@ fn scan_l2_adapter_boundaries(root: &Path, errors: &mut Vec<String>) -> Result<(
         "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter",
         "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/bridge",
         "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/lifecycle",
+        "packages/flare-core-android-lifecycle/src/main/kotlin/com/flare/im/lifecycle",
         "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/FlareCoreSdk.kt",
         "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Adapter",
         "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Bridge",
@@ -794,53 +862,42 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn heartbeat_lifecycle_wiring_scan_reports_missing_tokens() {
+    fn platform_lifecycle_scan_reports_missing_tokens_and_installation() {
         let root = env::temp_dir().join(format!(
-            "flare-xtask-heartbeat-lifecycle-{}",
+            "flare-xtask-platform-lifecycle-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock should be after unix epoch")
                 .as_nanos()
         ));
-        let fixtures = [
-            (
-                "packages/flare-core-typescript-sdk/src/lifecycle/heartbeatLifecycle.ts",
-                "setHeartbeatAppState HeartbeatAppState.Foreground HeartbeatAppState.Background",
-            ),
-            (
-                "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/lifecycle/HeartbeatLifecycleBridge.kt",
-                "setHeartbeatAppState HeartbeatAppState.FOREGROUND HeartbeatAppState.BACKGROUND onResume onPause",
-            ),
-            (
-                "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Lifecycle/HeartbeatLifecycleBridge.swift",
-                "setHeartbeatAppState .foreground .background applicationDidBecomeActive applicationDidEnterBackground",
-            ),
-            (
-                "packages/flare-core-flutter-sdk/lib/src/lifecycle/heartbeat_lifecycle_bridge.dart",
-                "setHeartbeatAppState HeartbeatAppState.foreground HeartbeatAppState.background onResume onPause",
-            ),
-            (
-                "packages/flare-core-harmony-arkts-sdk/src/main/ets/lifecycle/HeartbeatLifecycleBridge.ets",
-                "setHeartbeatAppState HeartbeatAppState.Foreground HeartbeatAppState.Background onShow onHide",
-            ),
-            (
-                "packages/flare-core-harmony-cangjie-sdk/src/lifecycle/HeartbeatLifecycleBridge.cj",
-                "setHeartbeatAppState HeartbeatAppState.Foreground HeartbeatAppState.Background onShow onHide",
-            ),
-        ];
-
-        for (rel, contents) in fixtures {
-            let path = root.join(rel);
+        for requirement in PLATFORM_LIFECYCLE_REQUIREMENTS {
+            let path = root.join(requirement.file);
             fs::create_dir_all(
                 path.parent()
                     .expect("fixture should have a parent directory"),
             )
             .expect("failed to create fixture directory");
-            fs::write(path, contents).expect("failed to write fixture");
+            fs::write(&path, requirement.tokens.join(" ")).expect("failed to write fixture");
+            let sources = root.join(requirement.sources);
+            fs::create_dir_all(&sources).expect("failed to create fixture directory");
+            fs::write(
+                sources.join("client.src"),
+                "installPlatformLifecycle PlatformLifecycle(",
+            )
+            .expect("failed to write fixture");
         }
+        // The TypeScript one drops a token and loses its installation.
+        let ts = &PLATFORM_LIFECYCLE_REQUIREMENTS[0];
+        fs::write(
+            root.join(ts.file),
+            "lifecycle.setAppState AppState.Foreground",
+        )
+        .expect("failed to write fixture");
+        fs::remove_file(root.join(ts.sources).join("client.src"))
+            .expect("failed to remove fixture");
 
         let mut errors: Vec<String> = Vec::new();
-        let result = scan_heartbeat_lifecycle_wiring(&root, &mut errors);
+        let result = scan_platform_lifecycle_wiring(&root, &mut errors);
         let _ = fs::remove_dir_all(&root);
 
         result.expect("scan should read fixtures");
@@ -849,6 +906,16 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("visibilitychange")),
             "expected missing visibilitychange token, got {errors:?}"
+        );
+        assert!(
+            errors.iter().any(
+                |error| error.contains("not installed at init") && error.contains("typescript")
+            ),
+            "expected missing installation, got {errors:?}"
+        );
+        assert!(
+            errors.iter().all(|error| error.contains("typescript")),
+            "only the TypeScript package should fail, got {errors:?}"
         );
     }
 

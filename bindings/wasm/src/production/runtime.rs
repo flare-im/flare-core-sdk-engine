@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 
 use flare_im_core_sdk::client::lifecycle::LoginDbKind;
 use flare_im_core_sdk::event::SharedEventReceiver;
+use flare_im_core_sdk::link::flare_access::AccessStore;
 use flare_im_core_sdk_bindings_runtime::{
     SessionTaskSlot, binding_response_to_value, boundary_error_js, invoke_api_id_json, sdk_error_js,
 };
@@ -16,9 +17,11 @@ use wasm_bindgen_futures::future_to_promise;
 
 use super::events::{clear_event_callback, forward_event_rx_to_js, set_event_callback};
 use super::session::WasmSdkState;
+use super::token_refresh::{WasmTokenRefresher, clear_refresh_callback, set_refresh_callback};
 use crate::tokio_runtime;
 use flare_im_core_sdk_storage_indexeddb::{
-    build_web_store_provider, clear_storage_host, set_storage_host, storage_host_configured,
+    JsGlobalStorageHost, build_web_store_provider, clear_storage_host, set_storage_host,
+    storage_host_configured,
 };
 
 fn js_error(code: &str, operation: &str, error: impl ToString) -> JsValue {
@@ -76,6 +79,47 @@ impl FlareImWasmRuntime {
         set_event_callback(self.state.runtime_id, callback);
     }
 
+    /// 页面托管令牌时装上续期函数：连接被网关按鉴权拒绝后核心调用 `callback()`，它返回新的连接令牌
+    /// （字符串或 Promise），换不到返回 `null`；传 `undefined` 卸下。SDK 托管令牌（初始化配置里有
+    /// `auth`，空对象也算）时不需要。
+    #[wasm_bindgen(js_name = setConnectTokenRefresher)]
+    pub fn set_connect_token_refresher(&self, callback: Option<Function>) -> js_sys::Promise {
+        let runtime_id = self.state.runtime_id;
+        let refresher = set_refresh_callback(runtime_id, callback).then(|| {
+            Arc::new(WasmTokenRefresher::new(runtime_id))
+                as Arc<dyn flare_im_core_sdk::spi::ConnectTokenRefresher>
+        });
+        let client = self.state.client();
+        future_to_promise(async move {
+            tokio_runtime::run_sdk(async move {
+                client.set_connect_token_refresher(refresher).await;
+                Ok(JsValue::UNDEFINED)
+            })
+            .await
+        })
+    }
+
+    /// 装上登录前全局存储的宿主（`get` / `commit` / `scan`，见 `flare_im_core_sdk_storage_indexeddb::JsGlobalStorageHost`），在 `sdk.init`
+    /// 之前调用；传 `null` / `undefined` 还原默认（内存）。缺方法时同步抛 `INVALID_PARAMETER`。
+    #[wasm_bindgen(js_name = setAccessStoreHost)]
+    pub fn set_access_store_host(&self, host: JsValue) -> Result<js_sys::Promise, JsValue> {
+        let store: Option<Arc<dyn AccessStore>> = if host.is_null() || host.is_undefined() {
+            None
+        } else {
+            let host = JsGlobalStorageHost::from_js(&host)
+                .map_err(|error| sdk_error_js(&error, Some("setAccessStoreHost")))?;
+            Some(Arc::new(host.into_access_store()))
+        };
+        let client = self.state.client();
+        Ok(future_to_promise(async move {
+            tokio_runtime::run_sdk(async move {
+                client.set_access_store(store).await;
+                Ok(JsValue::UNDEFINED)
+            })
+            .await
+        }))
+    }
+
     /// Install the JS persistence host before `sdk.login`: one object with the
     /// methods `loadSnapshot`, `saveMessage`, `saveConversation`, `saveCursor`,
     /// `savePendingSend`, `deleteMessage`, `deleteConversation` and
@@ -131,6 +175,7 @@ impl FlareImWasmRuntime {
     pub fn dispose(&self) -> js_sys::Promise {
         self.state.disposed.store(true, Ordering::Release);
         clear_event_callback(self.state.runtime_id);
+        clear_refresh_callback(self.state.runtime_id);
         self.state.clear_event_bridge();
         self.state.invocations.cancel_pending();
         let state = self.state.clone();

@@ -1,0 +1,709 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "accessPointId": null,
+        "attempt": 0,
+        "cellId": null,
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "idle",
+        "protocol": null,
+        "quality": null,
+        "reason": null,
+        "regionId": null,
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "idle"
+      },
+      "name": "idle"
+    },
+    {
+      "expected": {
+        "accessPointId": null,
+        "attempt": 0,
+        "cellId": null,
+        "developmentMode": true,
+        "nextRetryAt": null,
+        "phase": "idle",
+        "protocol": null,
+        "quality": null,
+        "reason": null,
+        "regionId": null,
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": true,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "idle"
+      },
+      "name": "idle in development mode"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 2,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "connecting",
+        "protocol": "quic",
+        "quality": null,
+        "reason": null,
+        "regionId": "sg",
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "resolving"
+      },
+      "name": "resolving before the first connect"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 2,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "connecting",
+        "protocol": "quic",
+        "quality": null,
+        "reason": null,
+        "regionId": "sg",
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "connecting"
+      },
+      "name": "connecting before the first connect"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 2,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "connecting",
+        "protocol": "quic",
+        "quality": null,
+        "reason": null,
+        "regionId": "sg",
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "authenticating"
+      },
+      "name": "authenticating before the first connect"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 2,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "switching",
+        "protocol": "quic",
+        "quality": null,
+        "reason": "failure",
+        "regionId": "sg",
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": "failure",
+          "wasOnline": true
+        },
+        "phase": "connecting"
+      },
+      "name": "connecting after a failure"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 2,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "switching",
+        "protocol": "quic",
+        "quality": null,
+        "reason": "drain",
+        "regionId": "sg",
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": "drain",
+          "wasOnline": true
+        },
+        "phase": "resolving"
+      },
+      "name": "resolving after a drain"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 2,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "switching",
+        "protocol": "quic",
+        "quality": null,
+        "reason": "failback",
+        "regionId": "sg",
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": "failback",
+          "wasOnline": true
+        },
+        "phase": "authenticating"
+      },
+      "name": "authenticating while failing back"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 2,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "switching",
+        "protocol": "ws",
+        "quality": null,
+        "reason": "manual",
+        "regionId": "sg",
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "ws",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": "manual",
+          "wasOnline": true
+        },
+        "phase": "connecting"
+      },
+      "name": "connecting to a pinned access point"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 2,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "switching",
+        "protocol": "quic",
+        "quality": null,
+        "reason": "manifest",
+        "regionId": "sg",
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": "manifest",
+          "wasOnline": true
+        },
+        "phase": "connecting"
+      },
+      "name": "connecting after a manifest change"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 0,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "syncing",
+        "protocol": "quic",
+        "quality": null,
+        "reason": null,
+        "regionId": "sg",
+        "rttMs": 42
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "syncing"
+      },
+      "name": "syncing"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 0,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "online",
+        "protocol": "quic",
+        "quality": "good",
+        "reason": null,
+        "regionId": "sg",
+        "rttMs": 42
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "ready"
+      },
+      "name": "ready"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 0,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "online",
+        "protocol": "quic",
+        "quality": "poor",
+        "reason": null,
+        "regionId": "sg",
+        "rttMs": 1800
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 1800,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "degraded"
+      },
+      "name": "degraded"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 2,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": 1793779204000,
+        "phase": "reconnecting",
+        "protocol": "quic",
+        "quality": null,
+        "reason": null,
+        "regionId": "sg",
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": true
+        },
+        "phase": "backoff"
+      },
+      "name": "backoff"
+    },
+    {
+      "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 1,
+        "cellId": "cell-sg-a",
+        "developmentMode": true,
+        "nextRetryAt": 1793779204000,
+        "phase": "reconnecting",
+        "protocol": "quic",
+        "quality": null,
+        "reason": null,
+        "regionId": "sg",
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 1,
+          "cellId": "cell-sg-a",
+          "developmentMode": true,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "backoff"
+      },
+      "name": "backoff in development mode"
+    },
+    {
+      "expected": {
+        "accessPointId": null,
+        "attempt": 3,
+        "cellId": null,
+        "developmentMode": false,
+        "nextRetryAt": 1793779204000,
+        "phase": "serviceUnavailable",
+        "protocol": null,
+        "quality": null,
+        "reason": null,
+        "regionId": null,
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 3,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "recovering"
+      },
+      "name": "recovering"
+    },
+    {
+      "expected": {
+        "accessPointId": null,
+        "attempt": 0,
+        "cellId": null,
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "waitingForNetwork",
+        "protocol": null,
+        "quality": null,
+        "reason": null,
+        "regionId": null,
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "suspended"
+      },
+      "name": "suspended"
+    },
+    {
+      "expected": {
+        "accessPointId": null,
+        "attempt": 0,
+        "cellId": null,
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "actionRequired",
+        "protocol": null,
+        "quality": null,
+        "reason": "kicked",
+        "regionId": null,
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": "kicked",
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "terminated"
+      },
+      "name": "terminated by a kick"
+    },
+    {
+      "expected": {
+        "accessPointId": null,
+        "attempt": 0,
+        "cellId": null,
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "actionRequired",
+        "protocol": null,
+        "quality": null,
+        "reason": "expired",
+        "regionId": null,
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": "expired",
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "terminated"
+      },
+      "name": "terminated by an expired token"
+    },
+    {
+      "expected": {
+        "accessPointId": null,
+        "attempt": 0,
+        "cellId": null,
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "actionRequired",
+        "protocol": null,
+        "quality": null,
+        "reason": "upgradeRequired",
+        "regionId": null,
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": "upgradeRequired",
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "terminated"
+      },
+      "name": "terminated for an upgrade"
+    },
+    {
+      "expected": {
+        "accessPointId": null,
+        "attempt": 0,
+        "cellId": null,
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "actionRequired",
+        "protocol": null,
+        "quality": null,
+        "reason": "tenantUnavailable",
+        "regionId": null,
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": "tenantUnavailable",
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "terminated"
+      },
+      "name": "terminated by an unavailable tenant"
+    },
+    {
+      "expected": {
+        "accessPointId": null,
+        "attempt": 0,
+        "cellId": null,
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "actionRequired",
+        "protocol": null,
+        "quality": null,
+        "reason": "expired",
+        "regionId": null,
+        "rttMs": null
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "terminated"
+      },
+      "name": "terminated without a recorded reason"
+    }
+  ],
+  "description": "Internal link phase + link facts -> the connection://status payload (every field present, null when absent). resolving / connecting / authenticating show connecting before the session was first online and switching (with the switch reason) after; syncing carries rttMs; ready and degraded are online with quality good / poor; backoff is reconnecting with the access point (cell, region, protocol) it will try next, attempt and nextRetryAt; recovering is serviceUnavailable with attempt and nextRetryAt and without the access point; suspended is waitingForNetwork; terminated is actionRequired with its reason (expired when none was recorded). developmentMode is carried in every phase."
+}

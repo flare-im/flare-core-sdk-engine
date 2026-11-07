@@ -599,6 +599,7 @@ async fn send_ack_is_published_once_when_reliable_queue_enabled() {
         max_retries: Some(3),
         max_in_flight: Some(32),
         metrics: MetricsRecorder::disabled(),
+        start_paused: false,
     }));
 
     let dispatcher = Dispatcher::new(
@@ -693,6 +694,7 @@ async fn self_sent_realtime_message_converges_to_send_ack_without_received() {
         max_retries: Some(3),
         max_in_flight: Some(32),
         metrics: MetricsRecorder::disabled(),
+        start_paused: false,
     }));
 
     let dispatcher = Dispatcher::new(
@@ -788,6 +790,7 @@ async fn out_of_order_ack_is_buffered_and_applied_once() {
         max_retries: Some(3),
         max_in_flight: Some(32),
         metrics: MetricsRecorder::disabled(),
+        start_paused: false,
     }));
     let dispatcher = Dispatcher::new(
         bus.clone(),
@@ -1028,6 +1031,7 @@ async fn realtime_and_sync_message_replay_share_message_deduper() {
                 hints: None,
                 stale: None,
             },
+            crate::application::notification::InboundDelivery::CatchUp,
         )
         .await
         .unwrap();
@@ -1142,6 +1146,7 @@ async fn sync_page_cursor_stops_before_failed_event_seq() {
                 hints: None,
                 stale: None,
             },
+            crate::application::notification::InboundDelivery::CatchUp,
         )
         .await
         .unwrap();

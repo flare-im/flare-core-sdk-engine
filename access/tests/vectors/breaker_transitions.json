@@ -1,0 +1,1491 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "steps": [
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 2,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 3,
+            "drawConsumed": true,
+            "failureRatio": 1.0,
+            "openUntilMs": 24002,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 3,
+            "transition": {
+              "cooldownMs": 30000,
+              "kind": "opened",
+              "untilMs": 24002
+            },
+            "udpBlockedUntilMs": null
+          },
+          {
+            "claimed": false,
+            "consecutiveFailures": 3,
+            "failureRatio": 1.0,
+            "openUntilMs": 24002,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 3,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "claimed": true,
+            "consecutiveFailures": 3,
+            "failureRatio": 1.0,
+            "openUntilMs": 24002,
+            "phase": "halfOpen",
+            "rttMs": null,
+            "samples": 3,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "claimed": false,
+            "consecutiveFailures": 3,
+            "failureRatio": 1.0,
+            "openUntilMs": 24002,
+            "phase": "halfOpen",
+            "rttMs": null,
+            "samples": 3,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 4,
+            "drawConsumed": true,
+            "failureRatio": 1.0,
+            "openUntilMs": 96010,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 4,
+            "transition": {
+              "cooldownMs": 60000,
+              "kind": "reopened",
+              "untilMs": 96010
+            },
+            "udpBlockedUntilMs": null
+          },
+          {
+            "claimed": true,
+            "consecutiveFailures": 4,
+            "failureRatio": 1.0,
+            "openUntilMs": 96010,
+            "phase": "halfOpen",
+            "rttMs": null,
+            "samples": 4,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": {
+              "kind": "closed"
+            },
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 0.5,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          }
+        ]
+      },
+      "input": {
+        "policy": {},
+        "steps": [
+          {
+            "atMs": 0,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 1,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 2,
+            "draw": 0.0,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "action": "claimTrial",
+            "atMs": 23999
+          },
+          {
+            "action": "claimTrial",
+            "atMs": 24002
+          },
+          {
+            "action": "claimTrial",
+            "atMs": 24003
+          },
+          {
+            "atMs": 24010,
+            "draw": 1.0,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "action": "claimTrial",
+            "atMs": 96010
+          },
+          {
+            "atMs": 96020,
+            "kind": "http",
+            "outcome": "success"
+          },
+          {
+            "atMs": 96030,
+            "kind": "http",
+            "outcome": "failure"
+          }
+        ]
+      },
+      "name": "open, failed trial doubles, successful trial closes"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 2,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 2,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 2,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 2,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.6666666666666666,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 3,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 0.75,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 4,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 2,
+            "drawConsumed": false,
+            "failureRatio": 0.8,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 5,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          }
+        ]
+      },
+      "input": {
+        "policy": {},
+        "steps": [
+          {
+            "atMs": 0,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 1,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 2,
+            "kind": "http",
+            "outcome": "neutral:authRejected"
+          },
+          {
+            "atMs": 3,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 4,
+            "kind": "http",
+            "outcome": "neutral:draining"
+          },
+          {
+            "atMs": 5,
+            "kind": "http",
+            "outcome": "neutral:noNetwork"
+          },
+          {
+            "atMs": 6,
+            "kind": "http",
+            "outcome": "neutral:cancelled"
+          },
+          {
+            "atMs": 7,
+            "kind": "http",
+            "outcome": "success"
+          },
+          {
+            "atMs": 8,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 9,
+            "kind": "http",
+            "outcome": "failure"
+          }
+        ]
+      },
+      "name": "neutral results never count"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 0.5,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.3333333333333333,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 3,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 0.5,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 4,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.4,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 5,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 0.5,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 6,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.42857142857142855,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 7,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 0.5,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 8,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.4444444444444444,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 9,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": true,
+            "failureRatio": 0.5,
+            "openUntilMs": 30009,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 10,
+            "transition": {
+              "cooldownMs": 30000,
+              "kind": "opened",
+              "untilMs": 30009
+            },
+            "udpBlockedUntilMs": null
+          }
+        ]
+      },
+      "input": {
+        "policy": {},
+        "steps": [
+          {
+            "atMs": 0,
+            "kind": "http",
+            "outcome": "success"
+          },
+          {
+            "atMs": 1,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 2,
+            "kind": "http",
+            "outcome": "success"
+          },
+          {
+            "atMs": 3,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 4,
+            "kind": "http",
+            "outcome": "success"
+          },
+          {
+            "atMs": 5,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 6,
+            "kind": "http",
+            "outcome": "success"
+          },
+          {
+            "atMs": 7,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 8,
+            "kind": "http",
+            "outcome": "success"
+          },
+          {
+            "atMs": 9,
+            "draw": 0.5,
+            "kind": "http",
+            "outcome": "failure"
+          }
+        ]
+      },
+      "name": "failure ratio needs ten samples"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 2,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 3,
+            "drawConsumed": true,
+            "failureRatio": 1.0,
+            "openUntilMs": 5002,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 3,
+            "transition": {
+              "cooldownMs": 5000,
+              "kind": "opened",
+              "untilMs": 5002
+            },
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 4,
+            "drawConsumed": true,
+            "failureRatio": 1.0,
+            "openUntilMs": 15002,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 4,
+            "transition": {
+              "cooldownMs": 10000,
+              "kind": "reopened",
+              "untilMs": 15002
+            },
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 5,
+            "drawConsumed": true,
+            "failureRatio": 1.0,
+            "openUntilMs": 35002,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 5,
+            "transition": {
+              "cooldownMs": 20000,
+              "kind": "reopened",
+              "untilMs": 35002
+            },
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 6,
+            "drawConsumed": true,
+            "failureRatio": 1.0,
+            "openUntilMs": 75002,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 6,
+            "transition": {
+              "cooldownMs": 40000,
+              "kind": "reopened",
+              "untilMs": 75002
+            },
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 7,
+            "drawConsumed": true,
+            "failureRatio": 1.0,
+            "openUntilMs": 135002,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 7,
+            "transition": {
+              "cooldownMs": 60000,
+              "kind": "reopened",
+              "untilMs": 135002
+            },
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 8,
+            "drawConsumed": true,
+            "failureRatio": 1.0,
+            "openUntilMs": 195002,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 8,
+            "transition": {
+              "cooldownMs": 60000,
+              "kind": "reopened",
+              "untilMs": 195002
+            },
+            "udpBlockedUntilMs": null
+          }
+        ]
+      },
+      "input": {
+        "policy": {
+          "breaker": {
+            "cooldownBaseSec": 5,
+            "cooldownMaxSec": 60
+          }
+        },
+        "steps": [
+          {
+            "atMs": 0,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 1,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 2,
+            "draw": 0.5,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 5002,
+            "draw": 0.5,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 15002,
+            "draw": 0.5,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 35002,
+            "draw": 0.5,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 75002,
+            "draw": 0.5,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 135002,
+            "draw": 0.5,
+            "kind": "http",
+            "outcome": "failure"
+          }
+        ]
+      },
+      "name": "cooldown caps at max"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 2,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          }
+        ]
+      },
+      "input": {
+        "policy": {},
+        "steps": [
+          {
+            "atMs": 0,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 1,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 2,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 3,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 4,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 5,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 6,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 7,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 8,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 9,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 10,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 11,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 12,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 13,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "atMs": 14,
+            "kind": "http",
+            "outcome": "failure"
+          }
+        ]
+      },
+      "name": "an overload storm never opens the breaker"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 2,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 3,
+            "drawConsumed": true,
+            "failureRatio": 1.0,
+            "openUntilMs": 30002,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 3,
+            "transition": {
+              "cooldownMs": 30000,
+              "kind": "opened",
+              "untilMs": 30002
+            },
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.75,
+            "openUntilMs": 30002,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 4,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 0.8,
+            "openUntilMs": 30002,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 5,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          }
+        ]
+      },
+      "input": {
+        "policy": {},
+        "steps": [
+          {
+            "atMs": 0,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 1,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 2,
+            "draw": 0.5,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 10,
+            "kind": "http",
+            "outcome": "success"
+          },
+          {
+            "atMs": 20,
+            "kind": "http",
+            "outcome": "failure"
+          }
+        ]
+      },
+      "name": "results while open do not move the breaker"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 2,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 3,
+            "drawConsumed": true,
+            "failureRatio": 1.0,
+            "openUntilMs": 30002,
+            "phase": "open",
+            "rttMs": null,
+            "samples": 3,
+            "transition": {
+              "cooldownMs": 30000,
+              "kind": "opened",
+              "untilMs": 30002
+            },
+            "udpBlockedUntilMs": null
+          },
+          {
+            "claimed": true,
+            "consecutiveFailures": 3,
+            "failureRatio": 1.0,
+            "openUntilMs": 30002,
+            "phase": "halfOpen",
+            "rttMs": null,
+            "samples": 3,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "claimed": false,
+            "consecutiveFailures": 3,
+            "failureRatio": 1.0,
+            "openUntilMs": 30002,
+            "phase": "halfOpen",
+            "rttMs": null,
+            "samples": 3,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "claimed": true,
+            "consecutiveFailures": 3,
+            "failureRatio": 1.0,
+            "openUntilMs": 30002,
+            "phase": "halfOpen",
+            "rttMs": null,
+            "samples": 3,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 3,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": 30002,
+            "phase": "halfOpen",
+            "rttMs": null,
+            "samples": 3,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "claimed": true,
+            "consecutiveFailures": 3,
+            "failureRatio": 1.0,
+            "openUntilMs": 30002,
+            "phase": "halfOpen",
+            "rttMs": null,
+            "samples": 3,
+            "udpBlockedUntilMs": null
+          }
+        ]
+      },
+      "input": {
+        "policy": {},
+        "steps": [
+          {
+            "atMs": 0,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 1,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 2,
+            "draw": 0.5,
+            "kind": "http",
+            "outcome": "failure"
+          },
+          {
+            "action": "claimTrial",
+            "atMs": 30002
+          },
+          {
+            "action": "claimTrial",
+            "atMs": 60001
+          },
+          {
+            "action": "claimTrial",
+            "atMs": 60002
+          },
+          {
+            "atMs": 60003,
+            "kind": "http",
+            "outcome": "neutral:overloaded"
+          },
+          {
+            "action": "claimTrial",
+            "atMs": 60004
+          }
+        ]
+      },
+      "name": "trial lease expires"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": 100.0,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": 130.0,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": 106.0,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": 70.0,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          }
+        ]
+      },
+      "input": {
+        "policy": {},
+        "steps": [
+          {
+            "atMs": 0,
+            "kind": "handshake:ws",
+            "outcome": "success",
+            "rttMs": 100
+          },
+          {
+            "atMs": 1000,
+            "kind": "heartbeat",
+            "outcome": "success",
+            "rttMs": 200
+          },
+          {
+            "atMs": 2000,
+            "kind": "http",
+            "outcome": "success",
+            "rttMs": 50
+          },
+          {
+            "atMs": 1802001,
+            "kind": "heartbeat",
+            "outcome": "success",
+            "rttMs": 70
+          }
+        ]
+      },
+      "name": "rtt ewma"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.5,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": 80.0,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": 86400003
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": 30.0,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": 70.0,
+            "samples": 0,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          }
+        ]
+      },
+      "input": {
+        "policy": {
+          "udpBlockedTtlHours": 24
+        },
+        "steps": [
+          {
+            "atMs": 0,
+            "kind": "handshake:quic",
+            "net": "home",
+            "outcome": "failure"
+          },
+          {
+            "ap": "ap-2",
+            "atMs": 1,
+            "kind": "handshake:quic",
+            "net": "home",
+            "outcome": "failure"
+          },
+          {
+            "ap": "ap-2",
+            "atMs": 2,
+            "kind": "handshake:ws",
+            "net": "home",
+            "outcome": "success",
+            "rttMs": 80
+          },
+          {
+            "ap": "ap-3",
+            "atMs": 3,
+            "draw": 0.5,
+            "kind": "handshake:quic",
+            "net": "home",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 4,
+            "kind": "handshake:ws",
+            "net": "office",
+            "outcome": "success",
+            "rttMs": 30
+          },
+          {
+            "atMs": 86400003,
+            "kind": "heartbeat",
+            "net": "home",
+            "outcome": "success",
+            "rttMs": 70
+          }
+        ]
+      },
+      "name": "udp blocked after three quic failures with ws success"
+    },
+    {
+      "expected": {
+        "steps": [
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 2,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.6666666666666666,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": 40.0,
+            "samples": 3,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 1,
+            "drawConsumed": false,
+            "failureRatio": 1.0,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": null,
+            "samples": 1,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          },
+          {
+            "consecutiveFailures": 0,
+            "drawConsumed": false,
+            "failureRatio": 0.5,
+            "openUntilMs": null,
+            "phase": "closed",
+            "rttMs": 60.0,
+            "samples": 2,
+            "transition": null,
+            "udpBlockedUntilMs": null
+          }
+        ]
+      },
+      "input": {
+        "policy": {},
+        "steps": [
+          {
+            "atMs": 0,
+            "kind": "handshake:quic",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 1,
+            "kind": "handshake:quic",
+            "outcome": "failure"
+          },
+          {
+            "atMs": 2,
+            "kind": "handshake:quic",
+            "outcome": "success",
+            "rttMs": 40
+          },
+          {
+            "ap": "ap-2",
+            "atMs": 3,
+            "kind": "handshake:quic",
+            "outcome": "failure"
+          },
+          {
+            "ap": "ap-2",
+            "atMs": 4,
+            "kind": "handshake:ws",
+            "outcome": "success",
+            "rttMs": 60
+          }
+        ]
+      },
+      "name": "quic success resets udp streak"
+    }
+  ],
+  "description": "HealthBook replay per (access point, network). Each step either records an observation (kind: http | handshake:ws | handshake:quic | heartbeat | probe; outcome: success | failure | neutral:<reason>) or claims a half-open trial. `draw` is the random value offered for this step; it is consumed only when the breaker opens or reopens (cooldown x [0.8 + 0.4 x draw]). Opening: consecutive failures >= failureThreshold, or >= 10 samples with failure ratio >= failureRatio. Half-open failure doubles the cooldown up to cooldownMaxSec; half-open success closes and clears the window. Results while open do not change the breaker. Neutral results release a trial claim and change nothing else. Heartbeat successes only feed the RTT EWMA (alpha 0.3). Trial claims expire after 30 s.",
+  "floatTolerance": 1e-9
+}

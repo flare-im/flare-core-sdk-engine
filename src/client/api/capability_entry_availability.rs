@@ -27,9 +27,9 @@ pub(crate) const AVAILABILITY_TIME_LIMIT: Duration = Duration::from_millis(2000)
 /// How long one answer is reused.
 pub(crate) const AVAILABILITY_TTL_MS: i64 = 10_000;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Answer {
-    admitted: bool,
+    data: Option<Value>,
     generation: u64,
     at_ms: i64,
 }
@@ -40,20 +40,31 @@ pub(super) struct EntryAvailability {
     answers: Mutex<HashMap<(String, String, String), Answer>>,
 }
 impl EntryAvailability {
-    fn answer(&self, key: &(String, String, String), generation: u64, now: i64) -> Option<bool> {
+    fn answer(
+        &self,
+        key: &(String, String, String),
+        generation: u64,
+        now: i64,
+    ) -> Option<Option<Value>> {
         let mut answers = self.answers.lock().unwrap_or_else(PoisonError::into_inner);
         // Answers of another catalog generation or past their lifetime go.
         answers.retain(|_, a| a.generation == generation && now - a.at_ms < AVAILABILITY_TTL_MS);
-        answers.get(key).map(|a| a.admitted)
+        answers.get(key).map(|a| a.data.clone())
     }
-    fn remember(&self, key: (String, String, String), admitted: bool, generation: u64, now: i64) {
+    fn remember(
+        &self,
+        key: (String, String, String),
+        data: Option<Value>,
+        generation: u64,
+        now: i64,
+    ) {
         self.answers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(
                 key,
                 Answer {
-                    admitted,
+                    data,
                     generation,
                     at_ms: now,
                 },
@@ -79,7 +90,7 @@ impl CapabilityApi {
         let generation = self.catalog_flight.generation();
         let now = now_ms();
         let mut asks: Vec<(String, UiEntryAvailability)> = Vec::new();
-        let mut known: HashMap<(String, String), bool> = HashMap::new();
+        let mut known: HashMap<(String, String), Option<Value>> = HashMap::new();
         for action in &actions {
             let Some(availability) = &action.availability else {
                 continue;
@@ -113,14 +124,14 @@ impl CapabilityApi {
             )
             .await
             {
-                Ok(Ok(result)) => result.success && availability.admits(&result.data),
+                Ok(Ok(result)) => result.success.then_some(result.data),
                 Ok(Err(error)) => {
                     tracing::debug!(target: "flare_sdk.plugin", operation = %availability.operation, %error, "composer entry availability unavailable; entry hidden");
-                    false
+                    None
                 }
                 Err(_) => {
                     tracing::debug!(target: "flare_sdk.plugin", operation = %availability.operation, "composer entry availability timed out; entry hidden");
-                    false
+                    None
                 }
             }
         }))
@@ -128,7 +139,7 @@ impl CapabilityApi {
         for ((plugin, availability), admitted) in asks.into_iter().zip(answers) {
             self.entry_availability.remember(
                 (user.clone(), plugin.clone(), availability.operation.clone()),
-                admitted,
+                admitted.clone(),
                 generation,
                 now_ms(),
             );
@@ -144,8 +155,8 @@ impl CapabilityApi {
                 action.availability.as_ref().is_none_or(|availability| {
                     known
                         .get(&(action.plugin_id.clone(), availability.operation.clone()))
-                        .copied()
-                        .unwrap_or(false)
+                        .and_then(Option::as_ref)
+                        .is_some_and(|data| availability.admits(data))
                 })
             })
             .collect())

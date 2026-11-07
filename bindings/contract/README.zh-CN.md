@@ -25,7 +25,7 @@ Rust `cargo xtask core-codegen` 是唯一 bindings 生成入口（类似 protoc�
 | `events.json` | 事件 id、C code、`im://*` 名称、C JSON 形状说明 |
 | `errors.json` | 稳定错误码 |
 
-## 初始化与传输配置
+## 初始化与接入配置
 
 所有平台的 init 使用同一 JSON 形状（camelCase）：
 
@@ -36,10 +36,10 @@ Rust `cargo xtask core-codegen` 是唯一 bindings 生成入口（类似 protoc�
 
 | 字段 | 说明 |
 |------|------|
-| `transportPolicy` | `auto` / `websocket_only` / `protocol_race`（WASM 运行时强制 `websocket_only`） |
-| `defaultTransport` | `websocket` / `quic`，非竞速时首选 |
-| `protocolRaceOrder` | 如 `["quic","websocket"]`，竞速优先级（前项优先） |
-| `wsUrl` / `quicUrl` | 竞速需同时配置 |
+| `access` | 连到哪里：已签名的接入清单（`bootstrapId`、`trustRoots`、`seed`），或 `trustMode: "development"` 时直接给 `developmentEndpoints`。接入点、协议顺序、超时都从这里来，没有单地址字段 |
+| `app` | `version` / `build` / `distribution` / `channel` / `buildId` / `target` / `locale`；宿主没给的键由平台包补 |
+| `auth` | 出现（空对象也算）即 SDK 托管令牌，在 Core API 上签发；`tokenEndpoint` 是可选的相对路径 |
+| `connectTimeoutSecs` | 单次握手的本机覆盖，夹紧到 2–30 |
 
 示例见 `client_config.json`；codegen 产出 `CLIENT_INIT_REQUEST_EXAMPLE_JSON` 与各平台 `flare_client_*` / `FLARE_SDK_CONFIG_EXAMPLE_JSON`。
 

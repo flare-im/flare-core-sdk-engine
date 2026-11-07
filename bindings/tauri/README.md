@@ -40,7 +40,20 @@ tauri::Builder::default()
 
 ```ts
 await invoke("sdk_init", {
-  args: { config: { wsUrl: "ws://localhost:60051" } }
+  args: {
+    config: {
+      environment: "development",
+      sdkConfig: {
+        access: {
+          trustMode: "development",
+          developmentEndpoints: {
+            wsUrl: "ws://localhost:60051",
+            coreApiUrl: "http://localhost:50050"
+          }
+        }
+      }
+    }
+  }
 });
 
 const response = await invoke("sdk_invoke_json", {

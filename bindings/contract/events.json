@@ -1,11 +1,12 @@
 {
   "schemaVersion": 1,
-  "eventContractVersion": "flare-im-events/v1",
+  "eventContractVersion": "flare-im-events/v2",
   "rules": [
     "Rust core SdkEvent is the source of truth.",
     "C ABI event_json uses camelCase SDK JSON fields and always includes type and event.",
     "C ABI numeric event_type callback parameter is stable and must be used for fast native dispatch.",
-    "Tauri emits im://* names with camelCase SDK JSON payloads.",
+    "Tauri emits im://* names with camelCase SDK JSON payloads; the single connection event is connection://status and access events are access://switched / access://changed.",
+    "Connection state has exactly one event (connection.status): kicked / token expiry are its actionRequired phase, not separate events.",
     "Notification events are separate from chat message events.",
     "Extension payload bytes are opaque and interpreted by the owning extension."
   ],
@@ -36,36 +37,12 @@
   },
   "events": [
     {
-      "id": "connection.connected",
-      "core": "SdkEvent::Connection(ConnectionEvent::Connected)",
-      "cCode": 1001,
-      "cCodeName": "FLARE_EVENT_CONNECTION_CONNECTED",
-      "cJson": { "type": "connection", "event": "connected" },
-      "tauri": "im://connected"
-    },
-    {
-      "id": "connection.disconnected",
-      "core": "SdkEvent::Connection(ConnectionEvent::Disconnected)",
-      "cCode": 1002,
-      "cCodeName": "FLARE_EVENT_CONNECTION_DISCONNECTED",
-      "cJson": { "type": "connection", "event": "disconnected", "fields": ["reason"] },
-      "tauri": "im://disconnected"
-    },
-    {
-      "id": "connection.reconnecting",
-      "core": "SdkEvent::Connection(ConnectionEvent::Reconnecting)",
-      "cCode": 1003,
-      "cCodeName": "FLARE_EVENT_CONNECTION_RECONNECTING",
-      "cJson": { "type": "connection", "event": "reconnecting", "fields": ["attempt"] },
-      "tauri": "im://reconnecting"
-    },
-    {
-      "id": "connection.state_changed",
-      "core": "SdkEvent::Connection(ConnectionEvent::StateChanged)",
-      "cCode": 1004,
-      "cCodeName": "FLARE_EVENT_CONNECTION_STATE_CHANGED",
-      "cJson": { "type": "connection", "event": "state_changed", "fields": ["state"] },
-      "tauri": "im://state"
+      "id": "connection.status",
+      "core": "SdkEvent::Connection(ConnectionEvent::Status)",
+      "cCode": 1010,
+      "cCodeName": "FLARE_EVENT_CONNECTION_STATUS",
+      "cJson": { "type": "connection", "event": "status", "fields": ["phase", "quality", "accessPointId", "cellId", "regionId", "protocol", "rttMs", "attempt", "nextRetryAt", "reason", "developmentMode"] },
+      "tauri": "connection://status"
     },
     {
       "id": "connection.sync_state_changed",
@@ -76,28 +53,28 @@
       "tauri": "im://sync_state_changed"
     },
     {
-      "id": "connection.server_error",
-      "core": "SdkEvent::Connection(ConnectionEvent::ServerError)",
-      "cCode": 1006,
-      "cCodeName": "FLARE_EVENT_CONNECTION_SERVER_ERROR",
-      "cJson": { "type": "connection", "event": "server_error", "fields": ["code", "message"] },
-      "tauri": "im://server_error"
+      "id": "access.switched",
+      "core": "SdkEvent::Connection(ConnectionEvent::AccessSwitched)",
+      "cCode": 1011,
+      "cCodeName": "FLARE_EVENT_ACCESS_SWITCHED",
+      "cJson": { "type": "access", "event": "switched", "fields": ["from", "to", "reason"] },
+      "tauri": "access://switched"
     },
     {
-      "id": "connection.kicked_off",
-      "core": "SdkEvent::Connection(ConnectionEvent::KickedOff)",
-      "cCode": 1007,
-      "cCodeName": "FLARE_EVENT_CONNECTION_KICKED_OFF",
-      "cJson": { "type": "connection", "event": "kicked_off", "fields": ["reason"] },
-      "tauri": "im://kicked_off"
+      "id": "access.changed",
+      "core": "SdkEvent::Connection(ConnectionEvent::AccessChanged)",
+      "cCode": 1012,
+      "cCodeName": "FLARE_EVENT_ACCESS_CHANGED",
+      "cJson": { "type": "access", "event": "changed", "fields": ["serial", "source", "stale", "developmentMode", "changes"] },
+      "tauri": "access://changed"
     },
     {
-      "id": "connection.token_expired",
-      "core": "SdkEvent::Connection(ConnectionEvent::TokenExpired)",
-      "cCode": 1008,
-      "cCodeName": "FLARE_EVENT_CONNECTION_TOKEN_EXPIRED",
-      "cJson": { "type": "connection", "event": "token_expired", "fields": ["message"] },
-      "tauri": "im://token_expired"
+      "id": "update.state",
+      "core": "SdkEvent::Connection(ConnectionEvent::UpdateState)",
+      "cCode": 1013,
+      "cCodeName": "FLARE_EVENT_UPDATE_STATE",
+      "cJson": { "type": "update", "event": "state", "fields": ["state", "current", "release", "progress", "prompt", "blockUi", "readOnly", "lastCheckedAt", "error"] },
+      "tauri": "update://state"
     },
     {
       "id": "message.received",
@@ -322,6 +299,14 @@
       "cCodeName": "FLARE_EVENT_NOTIFICATION_RECEIVED",
       "cJson": { "type": "notification", "event": "received", "fields": ["message"] },
       "tauri": "im://notification"
+    },
+    {
+      "id": "notification.message_sound",
+      "core": "SdkEvent::Notification(NotificationEvent::MessageSound)",
+      "cCode": 3502,
+      "cCodeName": "FLARE_EVENT_NOTIFICATION_MESSAGE_SOUND",
+      "cJson": { "type": "notification", "event": "message_sound", "fields": ["conversationId", "messageId"] },
+      "tauri": "im://message_sound"
     },
     {
       "id": "sync.started",

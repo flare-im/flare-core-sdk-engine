@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use flare_proto::common::SendAck;
 use rand::Rng;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{debug, warn};
 
 use crate::domain::{
@@ -29,14 +29,18 @@ use crate::shared::util::{
 };
 use crate::spi::metrics::{MetricLabel, MetricsRecorder};
 
+/// 写出队列满时告警的最短间隔：写出任务卡住时每一轮派发都会碰到。
+const WRITER_FULL_WARN_INTERVAL_MS: u64 = 30_000;
 const ADAPTIVE_INITIAL_MAX_IN_FLIGHT: usize = 4;
 const ADAPTIVE_MIN_IN_FLIGHT: usize = 1;
 
 /// 帧交给传输层后这么久还没等到 SendAck，就怀疑连接已经半开，请求一次验活。
 ///
-/// 正常往返远小于它；它又远短于 ACK 超时（默认 10 s）与心跳超时（前台 90 s），
-/// 半开连接能在下一次重发之前被戳穿。
-const SEND_STALL_PROBE_AFTER: Duration = Duration::from_secs(5);
+/// 正常往返（含服务端落库回执）远小于它；验活本身只是一枚 ping，代价很小，所以宁早勿晚：
+/// 有发送时发现半开连接的上限是它加上验活窗口（接入策略 `probeWakeTimeoutMs`，缺省 5 s），
+/// 合计约 6.5 s，在「有用户操作时 ≤ 8 s」之内。到点即查（不等一秒一次的例行检查）。
+/// 连接健康而回执慢于它时只多一枚 ping（且 30 s 内只验一次），不会断开连接。
+const SEND_STALL_PROBE_AFTER: Duration = Duration::from_millis(1_500);
 /// 两次验活至少相隔这么久：一批消息同时卡住只验一次，连接健康而服务端慢时也不会每条都验。
 /// 换了新连接（[`recover_pending_for_current_user`]）立即解除。
 const SEND_STALL_PROBE_MIN_INTERVAL: Duration = Duration::from_secs(30);
@@ -61,6 +65,22 @@ impl SendStallProbeGate {
         sent_at_ms
             .into_iter()
             .any(|sent| sent >= self.since_ms && now_ms.saturating_sub(sent) >= stall_ms)
+    }
+
+    /// 下一次可能要验活的时刻：最早一条还算数的未回执尝试满 [`SEND_STALL_PROBE_AFTER`]，且已过去抖间隔。
+    /// 没有这样的尝试时为 `None`。与 [`Self::should_probe`] 同一判据：到了这一刻它就返回 `true`。
+    fn next_due_ms(&self, sent_at_ms: impl IntoIterator<Item = u64>) -> Option<u64> {
+        let earliest = sent_at_ms
+            .into_iter()
+            .filter(|sent| *sent >= self.since_ms)
+            .min()?;
+        let due = earliest.saturating_add(SEND_STALL_PROBE_AFTER.as_millis() as u64);
+        Some(match self.last_probe_ms {
+            Some(last) => {
+                due.max(last.saturating_add(SEND_STALL_PROBE_MIN_INTERVAL.as_millis() as u64))
+            }
+            None => due,
+        })
     }
 
     fn record_probe(&mut self, now_ms: u64) {
@@ -95,8 +115,18 @@ enum QueueCommand {
     ResetPendingOnLogin {
         resp: oneshot::Sender<Result<Vec<String>>>,
     },
-    /// 连接/冷启动后：恢复当前账号下的 pending 队列，并做自愈扫描
-    RecoverPendingForCurrentUser {
+    /// 链路不可用（判死、切换线路、无网络）：暂停派发，冻结在途与等待持久化回执的超时计时。
+    Pause { resp: oneshot::Sender<()> },
+    /// 链路恢复：解除暂停，做自愈扫描并立即派发。`resend_in_flight` 为新连接时在途条目以原
+    /// `client_msg_id` 立即重发（服务端幂等返回原结果）；连接没断时只解冻计时。
+    Resume {
+        resend_in_flight: bool,
+        resp: oneshot::Sender<Result<Vec<String>>>,
+    },
+    /// 同一用户重新 prepare：创建时间早于 `max_age_ms` 的待发标为失败（避免几天前的消息突然发出），
+    /// 其余原样保留，等链路上线后继续发送。
+    ExpireStalePending {
+        max_age_ms: u64,
         resp: oneshot::Sender<Result<Vec<String>>>,
     },
     /// 暂时性拒绝的退避到期，该条消息可以重发了（`retries` 用来识别过期的到期通知）。
@@ -111,6 +141,8 @@ enum QueueCommand {
 pub struct ReliableSendQueue {
     tx: mpsc::Sender<QueueCommand>,
     worker: crate::shared::util::BackgroundTask,
+    /// 写出任务（[`run_writer`]）：帧按派发顺序一条条写到连接上。
+    writer: crate::shared::util::BackgroundTask,
 }
 
 pub struct ReliableSendQueueConfig {
@@ -125,6 +157,8 @@ pub struct ReliableSendQueueConfig {
     pub max_retries: Option<u32>,
     pub max_in_flight: Option<usize>,
     pub metrics: MetricsRecorder,
+    /// 以暂停态启动：引擎的队列在链路上线（`resume`）之前不派发，没有连接时发出去只会白白耗掉重试。
+    pub start_paused: bool,
 }
 
 struct QueueState {
@@ -152,6 +186,26 @@ struct QueueState {
     metrics: MetricsRecorder,
     link_probe: Option<Arc<dyn LinkProbe>>,
     stall_probe_gate: SendStallProbeGate,
+    /// 暂停的起点（链路不可用）。暂停期间不派发、超时计时冻结，恢复时按暂停时长顺延。
+    paused_since_ms: Option<u64>,
+    /// 最近一次入队的时刻（毫秒）。入队时刻也是待发队列的排序键：同一毫秒里连发的几条也要按入队
+    /// 先后发出，所以每次入队取 `max(now, last + 1)`，严格递增；启动与恢复时从已持久化的待发续上。
+    last_enqueued_at_ms: u64,
+    /// 写出队列：派发出的帧交给唯一的写出任务，按派发顺序写完一条再写下一条。在途窗口只决定能同时
+    /// 等多少条的回执；各自起任务去写会在连接锁上互相抢，相邻两条到服务端就会互换。
+    writer_tx: mpsc::Sender<SendJob>,
+    /// 上次告警写出队列满的时刻，见 [`note_writer_full`]。
+    writer_full_warned_at_ms: u64,
+    /// 派发代号：新连接上整体重发、登录清空时加一。写出任务丢掉旧代号的帧、放弃正在写的那条，
+    /// 免得旧连接上派发的帧插到新连接按序重发的前面。
+    dispatch_generation: watch::Sender<u64>,
+}
+
+/// 交给写出任务的一次发送尝试。
+struct SendJob {
+    entry: PendingSendVo,
+    retries: u32,
+    generation: u64,
 }
 
 struct InFlightSend {
@@ -254,17 +308,27 @@ impl ReliableSendQueue {
             max_retries,
             max_in_flight,
             metrics,
+            start_paused,
         } = config;
         static QUEUE_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let queue_id = QUEUE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         debug!(queue_id, "reliable queue instance created");
         let (tx, mut rx) = mpsc::channel::<QueueCommand>(256);
-        let timeout_duration =
-            Duration::from_secs(timeout_secs.unwrap_or(RELIABLE_QUEUE_TIMEOUT_SECS));
-        let max_retries = max_retries.unwrap_or(RELIABLE_QUEUE_MAX_RETRIES);
         let max_in_flight = max_in_flight
             .unwrap_or(RELIABLE_QUEUE_MAX_IN_FLIGHT)
             .clamp(1, 1024);
+        // 平时最多排满一个窗口；换连接时旧代号的帧还没被写出任务丢掉，所以留两个窗口。
+        let (writer_tx, writer_rx) = mpsc::channel::<SendJob>(max_in_flight * 2);
+        let (dispatch_generation, generation_rx) = watch::channel(0_u64);
+        let writer = spawn_background_task(run_writer(
+            sender.clone(),
+            tx.clone(),
+            writer_rx,
+            generation_rx,
+        ));
+        let timeout_duration =
+            Duration::from_secs(timeout_secs.unwrap_or(RELIABLE_QUEUE_TIMEOUT_SECS));
+        let max_retries = max_retries.unwrap_or(RELIABLE_QUEUE_MAX_RETRIES);
         let adaptive_window = AdaptiveInFlightWindow::new(max_in_flight);
 
         let mut state = QueueState {
@@ -287,6 +351,11 @@ impl ReliableSendQueue {
             metrics,
             link_probe,
             stall_probe_gate: SendStallProbeGate::default(),
+            paused_since_ms: start_paused.then(id::now_millis),
+            last_enqueued_at_ms: 0,
+            writer_tx,
+            writer_full_warned_at_ms: 0,
+            dispatch_generation,
         };
         state
             .metrics
@@ -297,7 +366,10 @@ impl ReliableSendQueue {
         );
 
         let worker = spawn_background_task(async move {
+            // 先于任何命令：入队时钟从已持久化的待发续上（重启后新消息仍排在旧消息之后）。
+            seed_enqueue_clock(&mut state).await;
             loop {
+                let stall_wait = send_stall_probe_wait(&state);
                 tokio::select! {
                     Some(cmd) = rx.recv() => {
                         debug!(queue_id, "reliable queue received command");
@@ -311,12 +383,15 @@ impl ReliableSendQueue {
                         }
                         probe_link_if_send_stalled(&mut state);
                     }
+                    _ = delay(stall_wait.unwrap_or_default()), if stall_wait.is_some() => {
+                        probe_link_if_send_stalled(&mut state);
+                    }
                     else => break,
                 }
             }
         });
 
-        Self { tx, worker }
+        Self { tx, worker, writer }
     }
 
     /// 入队发送（持久化后由 worker 按序发送，SDK 内部仅 IMMessage）
@@ -360,11 +435,28 @@ impl ReliableSendQueue {
         })?
     }
 
-    /// 冷启动/显式 connect 后：恢复当前账号下的 pending 队列，并自愈孤儿 sending / 跨账号脏 pending。
-    pub async fn recover_pending_for_current_user(&self) -> Result<Vec<String>> {
+    /// 链路不可用：暂停派发，冻结超时计时（长时间断网不会把在途消息耗成失败）。
+    pub async fn pause(&self) -> Result<()> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(QueueCommand::RecoverPendingForCurrentUser { resp: tx })
+            .send(QueueCommand::Pause { resp: tx })
+            .await
+            .map_err(|_| {
+                FlareError::localized(ErrorCode::InternalError, "reliable queue closed")
+            })?;
+        rx.await
+            .map_err(|_| FlareError::localized(ErrorCode::InternalError, "reliable queue closed"))
+    }
+
+    /// 链路恢复：解除暂停并立即派发；新连接（`resend_in_flight`）上在途条目以原 `client_msg_id`
+    /// 立即重发。顺带自愈孤儿 sending / 跨账号脏 pending。返回被收敛为失败的 `client_msg_id`。
+    pub async fn resume(&self, resend_in_flight: bool) -> Result<Vec<String>> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(QueueCommand::Resume {
+                resend_in_flight,
+                resp: tx,
+            })
             .await
             .map_err(|_| {
                 FlareError::localized(ErrorCode::InternalError, "reliable queue closed")
@@ -372,13 +464,34 @@ impl ReliableSendQueue {
         rx.await.map_err(|_| {
             FlareError::localized(
                 ErrorCode::InternalError,
-                "reliable queue recover response dropped",
+                "reliable queue resume response dropped",
+            )
+        })?
+    }
+
+    /// 同一用户重新 prepare：创建时间早于 `max_age_ms` 的待发标为失败并通知界面，其余保留。
+    pub async fn expire_stale_pending(&self, max_age_ms: u64) -> Result<Vec<String>> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(QueueCommand::ExpireStalePending {
+                max_age_ms,
+                resp: tx,
+            })
+            .await
+            .map_err(|_| {
+                FlareError::localized(ErrorCode::InternalError, "reliable queue closed")
+            })?;
+        rx.await.map_err(|_| {
+            FlareError::localized(
+                ErrorCode::InternalError,
+                "reliable queue expire response dropped",
             )
         })?
     }
 
     pub(crate) fn shutdown(&self) {
         self.worker.abort();
+        self.writer.abort();
     }
 }
 
@@ -395,10 +508,6 @@ impl ReliableSendQueuePort for ReliableSendQueue {
     async fn reset_pending_on_login(&self) -> Result<Vec<String>> {
         ReliableSendQueue::reset_pending_on_login(self).await
     }
-
-    async fn recover_pending_for_current_user(&self) -> Result<Vec<String>> {
-        ReliableSendQueue::recover_pending_for_current_user(self).await
-    }
 }
 
 impl Drop for ReliableSendQueue {
@@ -413,7 +522,7 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
         QueueCommand::Enqueue { message: msg, resp } => {
             st.metrics.counter("reliable_queue.enqueue_total", 1);
             let msg = *msg;
-            let enqueued_at_ms = id::now_millis();
+            let enqueued_at_ms = next_enqueue_ms(st, id::now_millis());
             let mut optimistic = msg.clone();
             optimistic.server_id = msg.client_msg_id.clone();
             optimistic.local_state = MessageLocalState {
@@ -563,8 +672,19 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
             let result = reset_pending_on_login(st).await;
             let _ = resp.send(result);
         }
-        QueueCommand::RecoverPendingForCurrentUser { resp } => {
-            let result = recover_pending_for_current_user(st).await;
+        QueueCommand::Pause { resp } => {
+            pause(st);
+            let _ = resp.send(());
+        }
+        QueueCommand::Resume {
+            resend_in_flight,
+            resp,
+        } => {
+            let result = resume(st, resend_in_flight).await;
+            let _ = resp.send(result);
+        }
+        QueueCommand::ExpireStalePending { max_age_ms, resp } => {
+            let result = expire_stale_pending(st, max_age_ms).await;
             let _ = resp.send(result);
         }
         QueueCommand::RetryBackoffElapsed {
@@ -666,25 +786,83 @@ fn dispatch_send_attempt(st: &mut QueueState, entry: PendingSendVo, retries: u32
         },
     );
 
-    let sender = st.sender.clone();
-    let command_tx = st.command_tx.clone();
-    let dispatch_id = entry.client_msg_id.clone();
-    debug!(client_msg_id = %dispatch_id, retries, "reliable queue dispatching send attempt");
-    let _ = spawn_background_task(async move {
-        let result = do_send_one(&sender, &entry).await;
+    debug!(client_msg_id = %entry.client_msg_id, retries, "reliable queue dispatching send attempt");
+    // 派发顺序就是写出顺序：`try_send_next` 按入队先后派发，写出任务按收到的先后写。
+    let generation = *st.dispatch_generation.borrow();
+    let job = SendJob {
+        entry,
+        retries,
+        generation,
+    };
+    // 只有重试走得到这里：首次派发在 `try_send_next` 里先看了空位，这个队列又只有 actor 写。
+    // 重试的条目已经派发过，排序不受影响；它留在 in_flight，到期再走超时路径重发或判失败。
+    if matches!(
+        st.writer_tx.try_send(job),
+        Err(mpsc::error::TrySendError::Full(_))
+    ) {
+        note_writer_full(st);
+    }
+}
+
+/// 写出队列满：计数，并限频告警。
+fn note_writer_full(st: &mut QueueState) {
+    st.metrics.counter("reliable_queue.writer_full_total", 1);
+    let now = id::now_millis();
+    if now.saturating_sub(st.writer_full_warned_at_ms) >= WRITER_FULL_WARN_INTERVAL_MS {
+        st.writer_full_warned_at_ms = now;
+        warn!(
+            in_flight = st.in_flight.len(),
+            "reliable queue writer is full, holding sends"
+        );
+    }
+}
+
+/// 新连接上整体重发、登录清空：之前派发、还没写出的帧作废，正在写的那条也放弃。
+fn bump_dispatch_generation(st: &QueueState) {
+    st.dispatch_generation
+        .send_modify(|generation| *generation = generation.wrapping_add(1));
+}
+
+/// 唯一的写出任务：严格按派发顺序把帧写到连接上，写完一条（交给传输层）再写下一条；回执照旧异步回来，
+/// 不在这里等。写出结果回流给 actor，由它统一处理重试与失败。
+async fn run_writer(
+    sender: Arc<PacketSender>,
+    command_tx: mpsc::Sender<QueueCommand>,
+    mut jobs: mpsc::Receiver<SendJob>,
+    mut generation: watch::Receiver<u64>,
+) {
+    while let Some(job) = jobs.recv().await {
+        if job.generation != *generation.borrow_and_update() {
+            // 旧连接上派发的：新连接上已按入队顺序重新派发。
+            continue;
+        }
+        let result = tokio::select! {
+            result = do_send_one(&sender, &job.entry) => result,
+            changed = generation.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+                // 写到一半连接换了：这次作废，新连接上的重发已经排在后面。
+                continue;
+            }
+        };
         debug!(
-            client_msg_id = %entry.client_msg_id,
+            client_msg_id = %job.entry.client_msg_id,
             ok = result.is_ok(),
             "reliable queue send attempt finished"
         );
-        let _ = command_tx
+        if command_tx
             .send(QueueCommand::SendAttemptFinished {
-                entry: Box::new(entry),
-                retries,
+                entry: Box::new(job.entry),
+                retries: job.retries,
                 result,
             })
-            .await;
-    });
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
 }
 
 async fn handle_send_attempt_finished(
@@ -711,6 +889,20 @@ async fn handle_send_attempt_finished(
     let Err(error) = result else {
         return Ok(());
     };
+    if st.paused_since_ms.is_some() {
+        // 链路正不可用：这次没发出去不怪这条消息，不计重试；恢复时随在途条目一起重发。
+        debug!(%error, client_msg_id = %entry.client_msg_id, "send attempt failed while the link is paused; resending on resume");
+        st.in_flight.insert(
+            entry.client_msg_id.clone(),
+            InFlightSend {
+                entry,
+                deadline_ms: deadline_after(st.timeout_duration),
+                sent_at_ms: id::now_millis(),
+                send_failed: true,
+            },
+        );
+        return Ok(());
+    }
     note_send_congestion(st, "send_error");
     match MessageDeliveryService::decide_send_attempt_failure(retries, st.max_retries) {
         RetryDecision::Retry { next_retry_count } => {
@@ -754,6 +946,8 @@ async fn handle_send_attempt_finished(
 
 async fn reset_pending_on_login(st: &mut QueueState) -> Result<Vec<String>> {
     let mut dropped = Vec::new();
+    // 清空的条目不能再被写出。
+    bump_dispatch_generation(st);
     // 退避中的条目仍在 pending 里，下面按 pending 一并判失败；这里只撤掉它们的重发排期。
     st.retry_backoff.clear();
 
@@ -804,6 +998,68 @@ async fn reset_pending_on_login(st: &mut QueueState) -> Result<Vec<String>> {
     Ok(dropped)
 }
 
+fn pause(st: &mut QueueState) {
+    if st.paused_since_ms.is_none() {
+        st.paused_since_ms = Some(id::now_millis());
+        debug!(
+            in_flight = st.in_flight.len(),
+            awaiting_durable = st.awaiting_durable.len(),
+            "reliable queue paused: the link is down"
+        );
+    }
+}
+
+async fn resume(st: &mut QueueState, resend_in_flight: bool) -> Result<Vec<String>> {
+    let now = id::now_millis();
+    let paused_for = st
+        .paused_since_ms
+        .take()
+        .map(|since| now.saturating_sub(since))
+        .unwrap_or(0);
+    // 暂停期间计时冻结：恢复后按暂停时长顺延，断网多久都不会把消息耗成超时失败。
+    for awaiting in st.awaiting_durable.values_mut() {
+        awaiting.deadline_ms = awaiting.deadline_ms.saturating_add(paused_for);
+    }
+    if resend_in_flight {
+        // 新连接：在途条目在旧连接上的回执不会再来，立即以原 client_msg_id 重发（重试次数不变）。
+        // 旧代号作废：还没写出的旧帧不会插到按入队顺序重发的前面。
+        bump_dispatch_generation(st);
+        let resend = st.in_flight.len();
+        st.in_flight.clear();
+        if resend > 0 {
+            debug!(
+                resend,
+                "reliable queue: resending in-flight entries on the new connection"
+            );
+        }
+    } else {
+        for in_flight in st.in_flight.values_mut() {
+            in_flight.deadline_ms = in_flight.deadline_ms.saturating_add(paused_for);
+        }
+    }
+    recover_pending_for_current_user(st).await
+}
+
+/// 同一用户重新 prepare 时，太旧的待发标为失败（[`QueueCommand::ExpireStalePending`]）。
+async fn expire_stale_pending(st: &mut QueueState, max_age_ms: u64) -> Result<Vec<String>> {
+    let cutoff = id::now_millis().saturating_sub(max_age_ms);
+    let mut expired = Vec::new();
+    for entry in st.pending_reader.list().await? {
+        if entry.enqueued_at_ms >= cutoff {
+            continue;
+        }
+        st.in_flight.remove(&entry.client_msg_id);
+        st.awaiting_durable.remove(&entry.client_msg_id);
+        st.retry_backoff.remove(&entry.client_msg_id);
+        mark_send_failed_and_publish(st, &entry, PENDING_EXPIRED_BEFORE_RESUME).await?;
+        expired.push(entry.client_msg_id);
+    }
+    Ok(expired)
+}
+
+/// 同一用户重新 prepare 时被判失败的待发的原因（创建时间超过恢复窗口）。
+pub(crate) const PENDING_EXPIRED_BEFORE_RESUME: &str = "pending send expired before reconnect";
+
 async fn recover_pending_for_current_user(st: &mut QueueState) -> Result<Vec<String>> {
     // 连接（重新）建好后调用：旧连接上没回执的尝试不再作数，新连接可以立即被验活。
     st.stall_probe_gate.on_new_connection(id::now_millis());
@@ -813,6 +1069,7 @@ async fn recover_pending_for_current_user(st: &mut QueueState) -> Result<Vec<Str
     }
 
     let pending_entries = st.pending_reader.list().await?;
+    note_persisted_enqueue_times(st, &pending_entries);
     let pending_ids: Vec<String> = pending_entries
         .iter()
         .map(|entry| entry.client_msg_id.clone())
@@ -882,6 +1139,12 @@ async fn recover_pending_for_current_user(st: &mut QueueState) -> Result<Vec<Str
 }
 
 async fn check_timeout(st: &mut QueueState) -> Result<()> {
+    if st.paused_since_ms.is_some() {
+        // 暂停期间不判超时、不派发；只收敛本地已有终态的条目（例如经同步已落库的消息）。
+        reconcile_in_flight_terminal_states(st).await?;
+        reconcile_awaiting_durable_terminal_states(st).await?;
+        return Ok(());
+    }
     if reconcile_in_flight_terminal_states(st).await? {
         try_send_next(st).await?;
         return Ok(());
@@ -950,15 +1213,57 @@ async fn check_timeout(st: &mut QueueState) -> Result<()> {
     Ok(())
 }
 
+/// 入队时刻：严格递增（见 [`QueueState::last_enqueued_at_ms`]）。
+fn next_enqueue_ms(st: &mut QueueState, now_ms: u64) -> u64 {
+    let at = now_ms.max(st.last_enqueued_at_ms.saturating_add(1));
+    st.last_enqueued_at_ms = at;
+    at
+}
+
+/// 已持久化的待发里最晚的入队时刻也算进入队时钟。
+fn note_persisted_enqueue_times(st: &mut QueueState, entries: &[PendingSendVo]) {
+    if let Some(latest) = entries.iter().map(|entry| entry.enqueued_at_ms).max() {
+        st.last_enqueued_at_ms = st.last_enqueued_at_ms.max(latest);
+    }
+}
+
+async fn seed_enqueue_clock(st: &mut QueueState) {
+    match st.pending_reader.list().await {
+        Ok(entries) => note_persisted_enqueue_times(st, &entries),
+        Err(error) => {
+            warn!(%error, "reading the persisted pending queue to seed the enqueue clock failed")
+        }
+    }
+}
+
+/// 离下一次可能要验活还有多久（见 [`SendStallProbeGate::next_due_ms`]）；暂停、没装验活出口、
+/// 没有未回执的尝试时为 `None`。
+fn send_stall_probe_wait(st: &QueueState) -> Option<Duration> {
+    if st.paused_since_ms.is_some() || st.link_probe.is_none() {
+        return None;
+    }
+    let due = st.stall_probe_gate.next_due_ms(
+        st.in_flight
+            .values()
+            .filter(|in_flight| !in_flight.send_failed)
+            .map(|in_flight| in_flight.sent_at_ms),
+    )?;
+    Some(Duration::from_millis(due.saturating_sub(id::now_millis())))
+}
+
 /// 有尝试发出 [`SEND_STALL_PROBE_AFTER`] 仍没等到 SendAck：请求对当前连接验活一次
 /// （去抖见 [`SendStallProbeGate`]）。
 ///
 /// 半开连接上帧照样「发送成功」（写进了本机缓冲），回执却永远不来；不验活就只能等 ACK 超时
-/// 在同一条死连接上重发，直到重试耗尽判失败。验活在 8 s 内把死连接断开，重连后照常重发。
+/// 在同一条死连接上重发，直到重试耗尽判失败。验活在验活窗口（`probeWakeTimeoutMs`）内把死连接断开，
+/// 重连后照常重发。
 ///
 /// 只看帧确实交给了传输层的尝试（`send_failed == false`）：没连上时发送直接失败，不算进来。
 /// 这里只请求验活，不改任何超时、重试与窗口状态。
 fn probe_link_if_send_stalled(st: &mut QueueState) {
+    if st.paused_since_ms.is_some() {
+        return;
+    }
     let Some(probe) = st.link_probe.as_ref() else {
         return;
     };
@@ -1175,6 +1480,10 @@ async fn reconcile_awaiting_durable_terminal_states(st: &mut QueueState) -> Resu
 }
 
 async fn try_send_next(st: &mut QueueState) -> Result<()> {
+    if st.paused_since_ms.is_some() {
+        // 链路不可用：消息已持久化并乐观上屏，等恢复后再派发。
+        return Ok(());
+    }
     loop {
         let current_limit = st.adaptive_window.current();
         let available = current_limit.saturating_sub(st.in_flight.len());
@@ -1298,6 +1607,12 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
                     continue;
                 }
                 PendingDispatchDecision::SendNow => {}
+            }
+            if st.writer_tx.capacity() == 0 {
+                // 写出任务跟不上：这条和后面的都留在 pending，下一轮仍从最老的取，所以不会乱序。
+                // 定时检查每秒都走到这里，所以就算没有回执也会接着发。
+                note_writer_full(st);
+                return Ok(());
             }
             dispatch_send_attempt(st, entry, retries);
             made_progress = true;
@@ -1588,6 +1903,7 @@ mod tests {
             max_retries: Some(3),
             max_in_flight: Some(32),
             metrics: MetricsRecorder::disabled(),
+            start_paused: false,
         });
         let mut message = IMMessage::new(flare_proto::common::Message::default());
         message.client_msg_id = "client-1".to_string();
@@ -1654,6 +1970,7 @@ mod tests {
             max_retries: Some(3),
             max_in_flight: Some(32),
             metrics: MetricsRecorder::disabled(),
+            start_paused: false,
         });
         let mut message = IMMessage::new(flare_proto::common::Message::default());
         message.client_msg_id = "client-ack".to_string();
@@ -1723,6 +2040,7 @@ mod tests {
             max_retries: Some(3),
             max_in_flight: Some(32),
             metrics: MetricsRecorder::disabled(),
+            start_paused: false,
         });
         let mut message = IMMessage::new(flare_proto::common::Message::default());
         message.client_msg_id = "client-broker".to_string();
@@ -1795,6 +2113,7 @@ mod tests {
             max_retries: Some(3),
             max_in_flight: Some(1),
             metrics: MetricsRecorder::disabled(),
+            start_paused: false,
         });
 
         for client_msg_id in ["client-broker-window-1", "client-broker-window-2"] {
@@ -1902,6 +2221,7 @@ mod tests {
             max_retries: Some(3),
             max_in_flight: Some(32),
             metrics: MetricsRecorder::disabled(),
+            start_paused: false,
         });
 
         queue
@@ -1961,6 +2281,7 @@ mod tests {
             max_retries: Some(3),
             max_in_flight: Some(32),
             metrics: MetricsRecorder::disabled(),
+            start_paused: false,
         });
 
         queue
@@ -2018,6 +2339,7 @@ mod tests {
             max_retries: Some(3),
             max_in_flight: Some(2),
             metrics: metrics.clone(),
+            start_paused: false,
         });
         // Both enqueue commands are queued before the actor handles the first. The dummy sender
         // is never connected, so a send attempt fails at once and its failure halves the window;
@@ -2122,6 +2444,7 @@ mod tests {
             max_retries: Some(3),
             max_in_flight: Some(32),
             metrics: metrics.clone(),
+            start_paused: false,
         });
         let mut message = IMMessage::new(flare_proto::common::Message::default());
         message.client_msg_id = "client-late".to_string();
@@ -2232,9 +2555,10 @@ mod tests {
             max_retries: Some(3),
             max_in_flight: Some(32),
             metrics: MetricsRecorder::disabled(),
+            start_paused: false,
         });
 
-        let affected = queue.recover_pending_for_current_user().await.unwrap();
+        let affected = queue.resume(true).await.unwrap();
         assert_eq!(affected, vec!["c1".to_string()]);
         assert!(pending_store.list().await.unwrap().is_empty());
 
@@ -2272,6 +2596,7 @@ mod tests {
             max_retries: Some(3),
             max_in_flight: Some(32),
             metrics: MetricsRecorder::disabled(),
+            start_paused: false,
         });
         let mut message = IMMessage::new(flare_proto::common::Message::default());
         message.client_msg_id = "client-card".to_string();
@@ -2351,9 +2676,10 @@ mod tests {
             max_retries: Some(3),
             max_in_flight: Some(32),
             metrics: MetricsRecorder::disabled(),
+            start_paused: false,
         });
 
-        let affected = queue.recover_pending_for_current_user().await.unwrap();
+        let affected = queue.resume(true).await.unwrap();
         assert_eq!(affected, vec!["orphan-1".to_string()]);
 
         let event = published(&mut receiver, "orphan send failed");
@@ -2371,6 +2697,70 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    /// 同一毫秒里连发：入队时刻严格递增，待发按入队先后排（不按随机的 client_msg_id）。
+    /// 重启（新队列、同一份持久化待发）后新入队的仍排在旧条目之后，哪怕旧条目的入队时刻比现在还晚。
+    #[tokio::test]
+    async fn the_enqueue_clock_is_strictly_increasing_and_survives_a_restart() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlite_init_schema(&pool).await.unwrap();
+        let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
+        let message = |client_msg_id: &str| {
+            let mut message = IMMessage::new(flare_proto::common::Message::default());
+            message.client_msg_id = client_msg_id.to_string();
+            message.conversation_id = "conv-1".to_string();
+            message.sender_id = "u1".to_string();
+            message
+        };
+        // 上一次运行留下的待发，入队时刻比现在晚一分钟（例如设备时钟之后被往回调了）。
+        let ahead = crate::shared::util::id::now_millis() + 60_000;
+        pending_store
+            .push(PendingSendVo {
+                client_msg_id: "persisted".to_string(),
+                conversation_id: "conv-1".to_string(),
+                message: message("persisted"),
+                enqueued_at_ms: ahead,
+            })
+            .await
+            .unwrap();
+        let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            pending_reader: pending_store.clone(),
+            pending_writer: pending_store.clone(),
+            sender: dummy_sender(),
+            message_store: Arc::new(SqliteMessageRepo::new(pool.clone())),
+            conversation_store: Arc::new(SqliteConversationRepo::new(pool)),
+            current_user_id: Arc::new(RwLock::new("u1".to_string())),
+            bus: EventBus::new(),
+            timeout_secs: Some(60),
+            max_retries: Some(3),
+            max_in_flight: Some(1),
+            metrics: MetricsRecorder::disabled(),
+            start_paused: true,
+        });
+        // 倒着起名：按 client_msg_id 排就会整个反过来。
+        let sent: Vec<String> = (0..20)
+            .map(|index| format!("client-{:02}", 19 - index))
+            .collect();
+        for client_msg_id in &sent {
+            queue.enqueue(message(client_msg_id)).await.unwrap();
+        }
+        handled(&queue).await;
+
+        let rows = pending_store.list_oldest_excluding(&[], 100).await.unwrap();
+        let ids: Vec<&str> = rows.iter().map(|row| row.client_msg_id.as_str()).collect();
+        let mut expected = vec!["persisted"];
+        expected.extend(sent.iter().map(String::as_str));
+        assert_eq!(ids, expected);
+        assert!(
+            rows.windows(2)
+                .all(|pair| pair[0].enqueued_at_ms < pair[1].enqueued_at_ms),
+            "enqueue times strictly increase: {:?}",
+            rows.iter()
+                .map(|row| row.enqueued_at_ms)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(rows[1].enqueued_at_ms, ahead + 1);
     }
 }
 
@@ -2457,6 +2847,7 @@ mod unsent_resend_tests {
             max_retries: Some(3),
             max_in_flight: Some(32),
             metrics: metrics.clone(),
+            start_paused: false,
         });
         let mut message = IMMessage::new(flare_proto::common::Message::default());
         message.client_msg_id = "client-offline-1".to_string();
@@ -2475,10 +2866,7 @@ mod unsent_resend_tests {
         );
 
         // 连接恢复：引擎建连后恢复当前账号的队列
-        queue
-            .recover_pending_for_current_user()
-            .await
-            .expect("recover pending");
+        queue.resume(true).await.expect("resume after reconnect");
         wait_for_counter(&metrics, resend, 1).await;
     }
 }
@@ -2487,7 +2875,9 @@ mod unsent_resend_tests {
 mod stall_probe_tests {
     use super::{
         AdaptiveInFlightWindow, InFlightSend, LinkProbe, QueueState, SEND_STALL_PROBE_AFTER,
-        SEND_STALL_PROBE_MIN_INTERVAL, SendStallProbeGate, probe_link_if_send_stalled,
+        SEND_STALL_PROBE_MIN_INTERVAL, SendJob, SendStallProbeGate, WRITER_FULL_WARN_INTERVAL_MS,
+        check_timeout, dispatch_send_attempt, note_writer_full, probe_link_if_send_stalled,
+        try_send_next,
     };
     use crate::domain::PendingSendVo;
     use crate::infrastructure::persistence::in_memory_im_provider;
@@ -2547,7 +2937,132 @@ mod stall_probe_tests {
             metrics: MetricsRecorder::disabled(),
             link_probe: Some(probe),
             stall_probe_gate: SendStallProbeGate::default(),
+            paused_since_ms: None,
+            last_enqueued_at_ms: 0,
+            writer_tx: mpsc::channel(1).0,
+            writer_full_warned_at_ms: 0,
+            dispatch_generation: tokio::sync::watch::channel(0).0,
         }
+    }
+
+    fn pending_entry(client_msg_id: &str, enqueued_at_ms: u64) -> PendingSendVo {
+        let mut message = IMMessage::new(flare_proto::common::Message::default());
+        message.client_msg_id = client_msg_id.to_string();
+        message.conversation_id = "conv-writer".to_string();
+        message.sender_id = "u1".to_string();
+        PendingSendVo {
+            client_msg_id: client_msg_id.to_string(),
+            conversation_id: "conv-writer".to_string(),
+            message,
+            enqueued_at_ms,
+        }
+    }
+
+    /// 写出任务收下队列里的帧，每条都算回执到了。返回写出的顺序。
+    async fn drain_and_ack(st: &mut QueueState, jobs: &mut mpsc::Receiver<SendJob>) -> Vec<String> {
+        let mut written = Vec::new();
+        while let Ok(job) = jobs.try_recv() {
+            let client_msg_id = job.entry.client_msg_id;
+            st.in_flight.remove(&client_msg_id);
+            st.pending_writer.pop(&client_msg_id).await.expect("pop");
+            written.push(client_msg_id);
+        }
+        written
+    }
+
+    /// 写出队列满时新消息不进 in_flight，也不丢：留在 pending，腾出位置后仍从最老的发，每条一次。
+    #[tokio::test]
+    async fn a_full_writer_holds_new_sends_and_keeps_their_order() {
+        let mut st = queue_state(Arc::new(CountingProbe::default()));
+        let (writer, mut jobs) = mpsc::channel(2);
+        st.writer_tx = writer;
+        let ids = ["m0", "m1", "m2", "m3", "m4"];
+        for (index, client_msg_id) in ids.iter().enumerate() {
+            let entry = pending_entry(client_msg_id, 1_000 + index as u64);
+            st.pending_writer.push(entry).await.expect("push");
+        }
+
+        try_send_next(&mut st).await.expect("dispatch");
+
+        assert_eq!(st.in_flight.len(), 2, "only what the writer has room for");
+        assert_eq!(st.pending_reader.list().await.expect("list").len(), 5);
+        assert!(st.writer_full_warned_at_ms > 0);
+
+        let mut written = Vec::new();
+        for _ in 0..ids.len() {
+            written.extend(drain_and_ack(&mut st, &mut jobs).await);
+            try_send_next(&mut st).await.expect("dispatch");
+        }
+
+        assert_eq!(written, ids, "oldest first, each exactly once");
+        assert!(st.in_flight.is_empty());
+        assert!(st.pending_reader.list().await.expect("list").is_empty());
+    }
+
+    /// 写出任务一直不动时，定时检查不会把还没派发的新消息判超时，腾出位置就接着发。
+    #[tokio::test]
+    async fn the_timer_picks_held_sends_up_without_any_ack() {
+        let mut st = queue_state(Arc::new(CountingProbe::default()));
+        let (writer, mut jobs) = mpsc::channel(1);
+        st.writer_tx = writer;
+        for (index, client_msg_id) in ["m0", "m1"].iter().enumerate() {
+            let entry = pending_entry(client_msg_id, 1_000 + index as u64);
+            st.pending_writer.push(entry).await.expect("push");
+        }
+        try_send_next(&mut st).await.expect("dispatch");
+        assert_eq!(jobs.try_recv().expect("oldest").entry.client_msg_id, "m0");
+        assert!(!st.in_flight.contains_key("m1"));
+
+        check_timeout(&mut st).await.expect("tick");
+
+        let held = jobs.try_recv().expect("the tick dispatches it");
+        assert_eq!(held.entry.client_msg_id, "m1");
+        assert_eq!(held.retries, 0, "being held costs no retry");
+    }
+
+    /// 重试碰上队列满：条目不丢，留在 in_flight，到期由超时路径再发一次，`client_msg_id` 不变。
+    #[tokio::test]
+    async fn a_retry_with_no_room_stays_in_flight_for_the_timeout_path() {
+        let mut st = queue_state(Arc::new(CountingProbe::default()));
+        let (writer, mut jobs) = mpsc::channel(1);
+        st.writer_tx = writer;
+        let entry = pending_entry("m0", 1_000);
+        st.pending_writer.push(entry.clone()).await.expect("push");
+        dispatch_send_attempt(&mut st, pending_entry("filler", 999), 0);
+        st.retry_count.insert("m0".to_string(), 1);
+
+        dispatch_send_attempt(&mut st, entry, 1);
+
+        assert!(st.in_flight.contains_key("m0"));
+        assert_eq!(
+            jobs.try_recv().expect("filler").entry.client_msg_id,
+            "filler"
+        );
+        assert!(jobs.try_recv().is_err(), "the retry found no room");
+
+        st.in_flight.get_mut("m0").expect("in flight").deadline_ms = 0;
+        check_timeout(&mut st).await.expect("tick");
+
+        let retry = jobs.try_recv().expect("the timeout path sends it again");
+        assert_eq!(retry.entry.client_msg_id, "m0");
+        assert_eq!(retry.retries, 2);
+        assert!(jobs.try_recv().is_err(), "exactly one more attempt");
+        assert_eq!(st.pending_reader.list().await.expect("list").len(), 1);
+    }
+
+    #[test]
+    fn the_writer_full_warning_is_rate_limited() {
+        let mut st = queue_state(Arc::new(CountingProbe::default()));
+
+        note_writer_full(&mut st);
+        let first = st.writer_full_warned_at_ms;
+        assert!(first > 0);
+        note_writer_full(&mut st);
+        assert_eq!(st.writer_full_warned_at_ms, first);
+
+        st.writer_full_warned_at_ms = first - WRITER_FULL_WARN_INTERVAL_MS;
+        note_writer_full(&mut st);
+        assert!(st.writer_full_warned_at_ms >= first);
     }
 
     fn in_flight(st: &mut QueueState, client_msg_id: &str, sent_ago_ms: u64, send_failed: bool) {
@@ -2587,6 +3102,27 @@ mod stall_probe_tests {
         let after_window = t0 + STALL_MS + WINDOW_MS;
         assert!(!gate.should_probe(after_window, [t0]));
         assert!(gate.should_probe(after_window, [later]));
+    }
+
+    /// 到点即查：下一次验活时刻与 `should_probe` 同一判据——到那一刻才验、到了就验。
+    #[test]
+    fn the_next_due_moment_matches_the_gate() {
+        let mut gate = SendStallProbeGate::default();
+        assert_eq!(gate.next_due_ms(std::iter::empty()), None);
+        let t0 = 1_000_000;
+        let due = gate.next_due_ms([t0 + 300, t0]).unwrap();
+        assert_eq!(due, t0 + STALL_MS);
+        assert!(!gate.should_probe(due - 1, [t0 + 300, t0]));
+        assert!(gate.should_probe(due, [t0 + 300, t0]));
+
+        gate.record_probe(due);
+        // 验活之前发出的不再算；之后发出的要等满停滞时长，且不早于去抖间隔。
+        assert_eq!(gate.next_due_ms([t0]), None);
+        let later = due + 10;
+        let next = gate.next_due_ms([t0, later]).unwrap();
+        assert_eq!(next, due + WINDOW_MS);
+        assert!(!gate.should_probe(next - 1, [t0, later]));
+        assert!(gate.should_probe(next, [t0, later]));
     }
 
     /// 换了新连接：旧连接上的尝试不再触发验活，新连接上卡住的尝试立即可以触发，不受旧窗口限制。

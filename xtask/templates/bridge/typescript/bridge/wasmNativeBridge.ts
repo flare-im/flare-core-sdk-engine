@@ -1,5 +1,5 @@
 // GENERATED. Do not edit by hand.
-import type { NativeBridge, NativeCallDescriptor } from '../contract/bridge_contract';
+import type { ConnectTokenRefresher, NativeBridge, NativeCallDescriptor } from '../contract/bridge_contract';
 import { wireDecodeResponse, wireEncodeRequest } from '../adapter/codec/wireCodec';
 import { assertBindingContractVersion } from './contractVersion';
 import { FlareSdkException } from './flareSdkException';
@@ -11,6 +11,8 @@ export interface FlareWasmRuntime {
   dispose?(): Promise<void> | void;
   /** Cancel local operations without replacing the authenticated runtime. */
   cancelPendingInvocations?(): boolean;
+  /** Installs (or, with undefined, removes) the page's connect token refresher. */
+  setConnectTokenRefresher?(refresher: ConnectTokenRefresher | undefined): Promise<void> | void;
 }
 
 export type WasmBridgeOptions = {
@@ -44,6 +46,7 @@ function withContractVersion(runtime: RuntimeShape, fromModule?: () => string): 
     invoke: runtime.invoke.bind(runtime),
     ...(runtime.dispose ? { dispose: runtime.dispose.bind(runtime) } : {}),
     ...(runtime.cancelPendingInvocations ? { cancelPendingInvocations: runtime.cancelPendingInvocations.bind(runtime) } : {}),
+    ...(runtime.setConnectTokenRefresher ? { setConnectTokenRefresher: runtime.setConnectTokenRefresher.bind(runtime) } : {}),
     flareBindingContractVersion: () => {
       if (!contractVersion) {
         return '';
@@ -144,5 +147,17 @@ export class WasmNativeBridge implements NativeBridge {
         { cApi: descriptor.cApi, transport: descriptor.transport },
       );
     }
+  }
+
+  async setConnectTokenRefresher(refresher: ConnectTokenRefresher | null): Promise<void> {
+    const runtime = await this.ensureRuntime();
+    if (!runtime.setConnectTokenRefresher) {
+      throw new FlareSdkException(
+        'capabilityUnavailable',
+        'this wasm runtime has no connect token refresher hook',
+        'sdk.set_connect_token_refresher',
+      );
+    }
+    await runtime.setConnectTokenRefresher(refresher ?? undefined);
   }
 }

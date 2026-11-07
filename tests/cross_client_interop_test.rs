@@ -51,7 +51,13 @@ async fn login(ws_url: &str, user_id: &str, token: &str) -> (Session, UnboundedR
             None,
             Some(SdkConfigOverlay {
                 data_url: Some(format!("file://{}", root.display())),
-                ws_url: Some(ws_url.to_string()),
+                // 联调：开发模式接入，端点就是给定的网关。
+                access: Some(flare_im_core_sdk::prelude::AccessConfig::development(
+                    flare_im_core_sdk::prelude::DevelopmentEndpoints {
+                        ws_url: Some(ws_url.to_string()),
+                        ..Default::default()
+                    },
+                )),
                 tenant_id: Some("0".to_string()),
                 ..Default::default()
             }),

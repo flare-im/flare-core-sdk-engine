@@ -10,10 +10,11 @@ pub use crate::domain::{
 };
 
 pub use crate::application::{
-    InboundNotificationView, LocalConversationClearResult, LocalConversationVisibility,
-    NotificationDispatchReport, NotificationHandleResult, NotificationHandler,
-    ParticipantDisplayProjectionApplier,
+    InboundDelivery, InboundNotificationView, LocalConversationClearResult,
+    LocalConversationVisibility, NotificationDispatchReport, NotificationHandleResult,
+    NotificationHandler, ParticipantDisplayProjectionApplier,
 };
+pub use crate::client::token_broker::HostTokenBroker;
 pub use crate::client::token_provider::ConnectTokenRefresher;
 pub use crate::domain::UserProfile;
 pub use crate::domain::conversation::id::{
@@ -56,9 +57,13 @@ pub use crate::platform::ports::storage::{
     LOCAL_DATABASE_KEY_BYTES, SecureKeyDescriptor, SecureKeyStore, SecureSecret,
     VolatileSecureKeyStore, load_or_create_local_database_key, validate_local_database_key,
 };
+/// Connect failures the link recovers from by itself.
+pub use crate::shared::error::link_keeps_session;
 /// Cross-platform async delay (JS timers on wasm, tokio on native) for
 /// bounded backoff in extensions.
 pub use crate::shared::util::time::delay;
+/// Event bus and payloads, and the link's access and HTTP routing, for business SDKs.
+pub use crate::{event, link};
 pub use metrics::{
     HistogramSnapshot, InMemoryMetricsSink, MetricLabel, MetricsRecorder, MetricsSink,
     MetricsSnapshot,

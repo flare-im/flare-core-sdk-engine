@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "errorContractVersion": "flare-im-errors/v1",
+  "errorContractVersion": "flare-im-errors/v2",
   "rules": [
     "C ABI synchronous return codes describe submit/argument failure only.",
     "Asynchronous failures are delivered through FlareResultCallback(error, result_json).",
     "FlareError.code is stable. FlareError.message is human-readable and must not be parsed.",
-    "details_json carries the structured error {code, reason, retryable, httpStatus?, remoteCode?, machineReason?, refusedMessageIds?}: code is the core ErrorCode wire name (INTERNAL_ERROR without one), reason the localized key (for people, not to be parsed), httpStatus (100..=599) and remoteCode numbers, machineReason Core's or the plugin's code, refusedMessageIds the messages the operation refused (1 to 500 ids, each 1 to 128 bytes of ASCII letters, digits, '.', '_', ':' or '-'; a list breaking any of this is left out whole); no other error params leave the SDK. The wasm runtime throws an Error with these as properties; Tauri commands reject with this object plus message and operation.",
+    "details_json carries the structured error {code, reason, retryable, retryAfterMs?, httpStatus?, remoteCode?, machineReason?, refusedMessageIds?}: code is the core ErrorCode wire name (INTERNAL_ERROR without one), reason the localized key (for people, not to be parsed), retryAfterMs (OVERLOADED only, when the server gave one) the milliseconds the server asked to wait before retrying, at most a day, httpStatus (100..=599) and remoteCode numbers, machineReason Core's or the plugin's code, refusedMessageIds the messages the operation refused (1 to 500 ids, each 1 to 128 bytes of ASCII letters, digits, '.', '_', ':' or '-'; a list breaking any of this is left out whole); no other error params leave the SDK. The wasm runtime throws an Error with these as properties; Tauri commands reject with this object plus message and operation.",
     "Platform SDKs must map codes to typed errors instead of string matching messages."
   ],
   "cAbi": {
@@ -79,6 +79,30 @@
         "name": "FLARE_ERR_FFI_PANIC",
         "code": 11,
         "meaning": "panic was caught at the FFI boundary"
+      },
+      {
+        "name": "FLARE_ERR_OVERLOADED",
+        "code": 12,
+        "coreCodes": [
+          "Overloaded"
+        ],
+        "meaning": "the server is shedding load; retry after details retryAfterMs on the same access point, never treat it as an access point failure"
+      },
+      {
+        "name": "FLARE_ERR_UPGRADE_REQUIRED",
+        "code": 13,
+        "coreCodes": [
+          "UpgradeRequired"
+        ],
+        "meaning": "the client build is below the server minimum; the session stays terminated until the user upgrades"
+      },
+      {
+        "name": "FLARE_ERR_NETWORK_UNCERTAIN",
+        "code": 14,
+        "coreCodes": [
+          "NetworkUncertain"
+        ],
+        "meaning": "a non-idempotent request may or may not have reached the server; reconcile with the same Idempotency-Key before retrying"
       }
     ]
   },
@@ -96,7 +120,10 @@
         "InternalSdkError",
         "JsonParseError",
         "NullPointerError",
-        "FfiPanicError"
+        "FfiPanicError",
+        "OverloadedError",
+        "UpgradeRequiredError",
+        "NetworkUncertainError"
       ]
     },
     "kotlin": {

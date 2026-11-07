@@ -4,6 +4,7 @@ import flare_core_harmony_cangjie_sdk.contract.*
 import flare_core_harmony_cangjie_sdk.api.modules.*
 import flare_core_harmony_cangjie_sdk.model.*
 import flare_core_harmony_cangjie_sdk.adapter.*
+import flare_core_harmony_cangjie_sdk.lifecycle.*
 
 // GENERATED. Do not edit by hand.
 // Typed adapter implementing `api.FlareImClient` (JSON bridge to native).
@@ -11,6 +12,8 @@ import flare_core_harmony_cangjie_sdk.adapter.*
 public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImClient {
     private let bridge: NativeBridge
     private let connectionApi: ConnectionApi
+    private let accessApi: AccessApi
+    private let lifecycleApi: LifecycleApi
     private let conversationsApi: ConversationsApi
     private let messageBuilderApi: MessageBuilderApi
     private let messagesApi: MessagesApi
@@ -20,10 +23,23 @@ public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImC
     private let capabilitiesApi: CapabilitiesApi
     private let eventsApi: EventsApi
     private let diagnosticsApi: DiagnosticsApi
+    private var platformLifecycle: ?PlatformLifecycle = None
 
     public prop connection: ConnectionApi {
         get() {
             return connectionApi
+        }
+    }
+
+    public prop access: AccessApi {
+        get() {
+            return accessApi
+        }
+    }
+
+    public prop lifecycle: LifecycleApi {
+        get() {
+            return lifecycleApi
         }
     }
 
@@ -84,6 +100,8 @@ public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImC
     public init(bridge: NativeBridge) {
         this.bridge = bridge
         this.connectionApi = DefaultConnectionApi(bridge)
+        this.accessApi = DefaultAccessApi(bridge)
+        this.lifecycleApi = DefaultLifecycleApi(bridge)
         this.conversationsApi = DefaultConversationsApi(bridge)
         this.messageBuilderApi = DefaultMessageBuilderApi(bridge)
         this.messagesApi = DefaultMessagesApi(bridge)
@@ -99,11 +117,19 @@ public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImC
         return bridge.invoke(descriptor: NativeCallMap.sdkCreate, requestJson: wireEncodeRequest(requestJson))
     }
 
+    // `installPlatformLifecycle` (default true) belongs to the platform package and never reaches the core.
     public func initSdk(requestJson: String): Unit {
-        let _ignored = bridge.invoke(descriptor: NativeCallMap.sdkInit, requestJson: wireEncodeRequest(requestJson))
+        let install = match (jsonOptionalBoolField(jsonObjectFromRaw(requestJson), "installPlatformLifecycle")) {
+            case Some(value) => value
+            case None => true
+        }
+        let config = jsonWithoutField(requestJson, "installPlatformLifecycle")
+        let _ignored = bridge.invoke(descriptor: NativeCallMap.sdkInit, requestJson: wireEncodeRequest(config))
+        replacePlatformLifecycle(install)
     }
 
     public func uninit(): Unit {
+        uninstallPlatformLifecycle()
         let _ignored = bridge.invoke(descriptor: NativeCallMap.sdkUninit, requestJson: wireEncodeRequest("{}"))
     }
 
@@ -123,8 +149,9 @@ public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImC
         let _ignored = bridge.invoke(descriptor: NativeCallMap.sdkUpdateAccessToken, requestJson: wireEncodeRequest(requestJson))
     }
 
-    public func setHeartbeatAppState(request: SetHeartbeatAppStateRequest): Unit {
-        let _ignored = bridge.invoke(descriptor: NativeCallMap.sdkSetHeartbeatAppState, requestJson: wireEncodeRequest(setHeartbeatAppStateRequestToJson(request)))
+    // Installs (None removes) the host's connect token refresher; the bridge answers the core's requests.
+    public func setConnectTokenRefresher(refresher: ?ConnectTokenRefresher): Unit {
+        bridge.setConnectTokenRefresher(refresher)
     }
 
     public func setHeartbeatNatTimeout(request: SetHeartbeatNatTimeoutRequest): Unit {
@@ -186,10 +213,12 @@ public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImC
     }
 
     public func dispose(): Unit {
+        uninstallPlatformLifecycle()
         let _ignored = bridge.invoke(descriptor: NativeCallMap.sdkDispose, requestJson: wireEncodeRequest("{}"))
     }
 
     public func hardReset(): Unit {
+        uninstallPlatformLifecycle()
         let _ignored = bridge.invoke(descriptor: NativeCallMap.sdkHardReset, requestJson: wireEncodeRequest("{}"))
     }
 
@@ -205,4 +234,19 @@ public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImC
         return booleanResponseFromWire(bridge.invoke(descriptor: NativeCallMap.sdkSessionActive, requestJson: wireEncodeRequest("{}")))
     }
 
+    // Installs the PlatformLifecycle (replacing a previous one) unless init turned it off.
+    private func replacePlatformLifecycle(install: Bool): Unit {
+        uninstallPlatformLifecycle()
+        if (install) {
+            platformLifecycle = Some(PlatformLifecycle(this).install())
+        }
+    }
+
+    private func uninstallPlatformLifecycle(): Unit {
+        match (platformLifecycle) {
+            case Some(installed) => installed.dispose()
+            case None => ()
+        }
+        platformLifecycle = None
+    }
 }

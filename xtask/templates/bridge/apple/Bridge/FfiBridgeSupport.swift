@@ -29,6 +29,19 @@ enum FfiJson {
         return decoded.mapValues { AnySendable($0) }
     }
 
+    /// Like `asResponseMap`, but a bare JSON array answer (`access.list_access_points`) stays an
+    /// array of plain JSON values instead of collapsing to an empty object.
+    static func asResponseValue(_ value: Any?) -> Any {
+        if let sendable = value as? AnySendable {
+            return asResponseValue(sendable.value)
+        }
+        if let list = value as? [Any] {
+            let plain = list.map { unwrapSendableValue($0) }
+            return FfiWireBoundary.decodeResponse(plain) as? [Any] ?? plain
+        }
+        return asResponseMap(value)
+    }
+
     private static func unwrapSendableValue(_ value: Any) -> Any {
         if let sendable = value as? AnySendable {
             return unwrapSendableValue(sendable.value)
@@ -236,7 +249,93 @@ final class FfiCallbackRouter: @unchecked Sendable {
     }
 }
 
+/// Routes the core's connect token requests (`FlareTokenRefreshCallback`, called on an SDK thread)
+/// to the refresher installed for that handle and hands the answer back through `complete`
+/// (`flare_sdk_complete_connect_token_refresh`) within the core's 20 second wait.
+final class FfiTokenRefreshRouter: @unchecked Sendable {
+    static let shared = FfiTokenRefreshRouter()
+
+    private struct Entry {
+        let refresher: ConnectTokenRefresher
+        let complete: @Sendable (UInt64, String?) -> Void
+    }
+
+    private let timeoutNanos: UInt64
+    private let lock = NSLock()
+    private var entries: [FlareHandle: Entry] = [:]
+
+    init(timeoutNanos: UInt64 = 20_000_000_000) {
+        self.timeoutNanos = timeoutNanos
+    }
+
+    func install(
+        handle: FlareHandle,
+        refresher: @escaping ConnectTokenRefresher,
+        complete: @escaping @Sendable (_ requestId: UInt64, _ token: String?) -> Void
+    ) {
+        lock.lock()
+        entries[handle] = Entry(refresher: refresher, complete: complete)
+        lock.unlock()
+    }
+
+    func remove(handle: FlareHandle) {
+        lock.lock()
+        entries.removeValue(forKey: handle)
+        lock.unlock()
+    }
+
+    func removeAll() {
+        lock.lock()
+        entries.removeAll()
+        lock.unlock()
+    }
+
+    /// Returns at once: the refresher runs on a task, off the SDK thread that asked.
+    func request(handle: FlareHandle, requestId: UInt64) {
+        lock.lock()
+        let entry = entries[handle]
+        lock.unlock()
+        // No refresher any more: the core's request was dropped with it.
+        guard let entry else { return }
+        let answer = FfiOnce()
+        let work = Task.detached {
+            let token = await entry.refresher()
+            if answer.claim() {
+                entry.complete(requestId, token.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 })
+            }
+        }
+        let timeoutNanos = self.timeoutNanos
+        Task.detached {
+            try? await Task.sleep(nanoseconds: timeoutNanos)
+            if answer.claim() {
+                work.cancel()
+                entry.complete(requestId, nil)
+            }
+        }
+    }
+}
+
+/// The first `claim()` wins.
+final class FfiOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if claimed { return false }
+        claimed = true
+        return true
+    }
+}
+
 enum FfiNativeCallbacks {
+    /// The core needs a new connect token; the context is the client handle.
+    static let tokenRefresh: TokenRefreshCallbackFn = { context, requestId in
+        guard let context else { return }
+        FfiTokenRefreshRouter.shared.request(handle: FlareHandle(UInt(bitPattern: context)), requestId: requestId)
+    }
+
     static let result: FlareResultCallback = { context, error, result in
         guard let context else { return }
         let id = UInt64(UInt(bitPattern: context))
@@ -287,25 +386,6 @@ enum FfiNativeCallbacks {
         if let value = value as? NSNumber { return value.int32Value }
         if let value = value as? String, let parsed = Int32(value) { return parsed }
         return nil
-    }
-}
-
-enum FfiConnectionState {
-    static func from(code: Int32) throws -> ConnectionState {
-        switch code {
-        case 0: return .disconnected
-        case 1: return .connecting
-        case 2: return .connected
-        case 3: return .ready
-        case 4: return .reconnecting
-        default:
-            throw FlareSdkException(
-                code: SdkErrorCodes.invalidParameter,
-                message: "invalid connection state code: \(code)",
-                operation: "connection.get_state",
-                details: ["field": "stateCode"]
-            )
-        }
     }
 }
 

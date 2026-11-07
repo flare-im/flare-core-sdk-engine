@@ -19,6 +19,7 @@ import com.flare.im.model.common.error.*
 import com.flare.im.model.content.*
 import com.flare.im.model.entity.*
 import com.flare.im.model.event.*
+import com.flare.im.model.event.access.*
 import com.flare.im.model.event.connection.*
 import com.flare.im.model.event.conversation.*
 import com.flare.im.model.event.lifecycle.*
@@ -109,32 +110,17 @@ class DefaultEventsApi(
     override fun onDisposed(listener: EventCallback<LifecycleEvent>): EventSubscription =
         registerTyped(LifecycleEvent::class.java, listener)
 
-    override fun onConnecting(listener: EventCallback<ConnectionEvent>): EventSubscription =
-        registerTyped(ConnectionEvent::class.java, listener)
+    override fun onConnectionStatusChanged(listener: EventCallback<ConnectionStatus>): EventSubscription =
+        registerTyped(ConnectionStatus::class.java, listener)
 
-    override fun onConnectSuccess(listener: EventCallback<ConnectionEvent>): EventSubscription =
-        registerTyped(ConnectionEvent::class.java, listener)
+    override fun onAccessSwitched(listener: EventCallback<AccessSwitchedEvent>): EventSubscription =
+        registerTyped(AccessSwitchedEvent::class.java, listener)
 
-    override fun onConnectReady(listener: EventCallback<ConnectionEvent>): EventSubscription =
-        registerTyped(ConnectionEvent::class.java, listener)
+    override fun onAccessChanged(listener: EventCallback<AccessChangedEvent>): EventSubscription =
+        registerTyped(AccessChangedEvent::class.java, listener)
 
-    override fun onConnectFailed(listener: EventCallback<ConnectionEvent>): EventSubscription =
-        registerTyped(ConnectionEvent::class.java, listener)
-
-    override fun onDisconnected(listener: EventCallback<ConnectionEvent>): EventSubscription =
-        registerTyped(ConnectionEvent::class.java, listener)
-
-    override fun onReconnecting(listener: EventCallback<ConnectionEvent>): EventSubscription =
-        registerTyped(ConnectionEvent::class.java, listener)
-
-    override fun onReconnectFailed(listener: EventCallback<ConnectionEvent>): EventSubscription =
-        registerTyped(ConnectionEvent::class.java, listener)
-
-    override fun onKickedOffline(listener: EventCallback<ConnectionEvent>): EventSubscription =
-        registerTyped(ConnectionEvent::class.java, listener)
-
-    override fun onUserTokenExpired(listener: EventCallback<ConnectionEvent>): EventSubscription =
-        registerTyped(ConnectionEvent::class.java, listener)
+    override fun onUpdateState(listener: EventCallback<UpdateStatus>): EventSubscription =
+        registerTyped(UpdateStatus::class.java, listener)
 
     override fun onMessageReceived(listener: EventCallback<MessageReceivedEvent>): EventSubscription =
         registerTyped(MessageReceivedEvent::class.java, listener)
@@ -270,19 +256,10 @@ class DefaultEventsApi(
                 LifecycleEventName.LOGGED_OUT -> listener.onLoggedOut(event)
                 LifecycleEventName.DISPOSED -> listener.onDisposed(event)
             }
-            is ConnectionEvent -> when (event.name) {
-                ConnectionEventName.CONNECTING -> listener.onConnecting(event)
-                ConnectionEventName.CONNECTED -> listener.onConnectSuccess(event)
-                ConnectionEventName.READY -> listener.onConnectReady(event)
-                ConnectionEventName.DISCONNECTED -> listener.onDisconnected(event)
-                ConnectionEventName.RECONNECTING -> listener.onReconnecting(event)
-                ConnectionEventName.RECONNECT_FAILED -> listener.onReconnectFailed(event)
-                ConnectionEventName.KICKED_OFF -> listener.onKickedOffline(event)
-                ConnectionEventName.TOKEN_EXPIRED -> listener.onUserTokenExpired(event)
-                ConnectionEventName.STATE_CHANGED,
-                ConnectionEventName.SYNC_STATE_CHANGED,
-                ConnectionEventName.SERVER_ERROR -> Unit
-            }
+            is ConnectionStatus -> listener.onConnectionStatusChanged(event)
+            is AccessSwitchedEvent -> listener.onAccessSwitched(event)
+            is AccessChangedEvent -> listener.onAccessChanged(event)
+            is UpdateStatus -> listener.onUpdateState(event)
             is MessageReceivedEvent -> listener.onMessageReceived(event)
             is MessageReceivedBatchEvent -> listener.onMessageReceivedBatch(event)
             is MessageSendAckEvent -> listener.onMessageSendAck(event)
@@ -357,14 +334,11 @@ private class DefaultEventSubscription(
 
 private fun nativeEventFromCode(eventType: Int, payload: Map<String, Any?>): Any =
     when (eventType) {
-        EventCode.CONNECTION_CONNECTED,
-        EventCode.CONNECTION_DISCONNECTED,
-        EventCode.CONNECTION_RECONNECTING,
-        EventCode.CONNECTION_STATE_CHANGED,
-        EventCode.CONNECTION_SYNC_STATE_CHANGED,
-        EventCode.CONNECTION_SERVER_ERROR,
-        EventCode.CONNECTION_KICKED_OFF,
-        EventCode.CONNECTION_TOKEN_EXPIRED -> connectionEventFromCode(eventType, payload)
+        EventCode.CONNECTION_STATUS -> connectionStatusFromJson(payload)
+        EventCode.CONNECTION_SYNC_STATE_CHANGED -> connectionSyncStateEventFromJson(payload)
+        EventCode.ACCESS_SWITCHED -> accessSwitchedEventFromJson(payload)
+        EventCode.ACCESS_CHANGED -> accessChangedEventFromJson(payload)
+        EventCode.UPDATE_STATE -> updateStatusFromJson(payload)
         EventCode.MESSAGE_SEND_ACK -> MessageSendAckEvent(
             ack = sendAckFromJson(requiredEventMap(payload["ack"], "ack")),
         )
@@ -460,76 +434,6 @@ private fun messageMutationFromPayload(
         userId = optionalEventString(payload["userId"], "userId"),
         reason = optionalEventString(payload["reason"], "reason"),
     )
-
-private fun connectionEventFromCode(eventType: Int, payload: Map<String, Any?>): ConnectionEvent {
-    val name = connectionEventNameFromCode(eventType, payload)
-    return ConnectionEvent(
-        name = name,
-        state = connectionStateForEvent(name, payload["state"]),
-        reason = optionalEventString(payload["reason"], "reason"),
-        attempt = optionalEventInt(payload["attempt"], "attempt"),
-        error = sdkErrorPayloadFromEvent(payload["error"]),
-    )
-}
-
-private fun connectionEventNameFromCode(
-    eventType: Int,
-    payload: Map<String, Any?>,
-): ConnectionEventName {
-    if (eventType == EventCode.CONNECTION_STATE_CHANGED) {
-        return when (connectionStateFromWire(payload["state"])) {
-            SdkConnectionState.CONNECTING -> ConnectionEventName.CONNECTING
-            SdkConnectionState.CONNECTED -> ConnectionEventName.CONNECTED
-            SdkConnectionState.READY -> ConnectionEventName.READY
-            SdkConnectionState.RECONNECTING -> ConnectionEventName.RECONNECTING
-            SdkConnectionState.DISCONNECTED -> ConnectionEventName.DISCONNECTED
-        }
-    }
-    return when (eventType) {
-        EventCode.CONNECTION_CONNECTED -> ConnectionEventName.CONNECTED
-        EventCode.CONNECTION_DISCONNECTED -> ConnectionEventName.DISCONNECTED
-        EventCode.CONNECTION_RECONNECTING -> ConnectionEventName.RECONNECTING
-        EventCode.CONNECTION_SYNC_STATE_CHANGED -> ConnectionEventName.SYNC_STATE_CHANGED
-        EventCode.CONNECTION_SERVER_ERROR -> ConnectionEventName.SERVER_ERROR
-        EventCode.CONNECTION_KICKED_OFF -> ConnectionEventName.KICKED_OFF
-        EventCode.CONNECTION_TOKEN_EXPIRED -> ConnectionEventName.TOKEN_EXPIRED
-        else -> invalidEventCode(eventType)
-    }
-}
-
-private fun connectionStateForEvent(name: ConnectionEventName, state: Any?): SdkConnectionState {
-    if (state != null) {
-        return connectionStateFromWire(state)
-    }
-    return when (name) {
-        ConnectionEventName.CONNECTING -> SdkConnectionState.CONNECTING
-        ConnectionEventName.CONNECTED -> SdkConnectionState.CONNECTED
-        ConnectionEventName.READY -> SdkConnectionState.READY
-        ConnectionEventName.RECONNECTING -> SdkConnectionState.RECONNECTING
-        ConnectionEventName.SYNC_STATE_CHANGED -> SdkConnectionState.READY
-        ConnectionEventName.SERVER_ERROR -> SdkConnectionState.CONNECTED
-        ConnectionEventName.DISCONNECTED,
-        ConnectionEventName.RECONNECT_FAILED,
-        ConnectionEventName.KICKED_OFF,
-        ConnectionEventName.TOKEN_EXPIRED -> SdkConnectionState.DISCONNECTED
-        ConnectionEventName.STATE_CHANGED -> invalidEventField("state", "non-empty string")
-    }
-}
-
-private fun connectionStateFromWire(value: Any?): SdkConnectionState =
-    when (val raw = requiredEventString(value, "state").trim().lowercase()) {
-        "connecting" -> SdkConnectionState.CONNECTING
-        "connected" -> SdkConnectionState.CONNECTED
-        "ready" -> SdkConnectionState.READY
-        "reconnecting" -> SdkConnectionState.RECONNECTING
-        "disconnected" -> SdkConnectionState.DISCONNECTED
-        else -> throw FlareSdkException(
-            SdkErrorCodes.INVALIDPARAMETER,
-            "invalid connection state: ${if (raw.isEmpty()) "<empty>" else raw}",
-            operation = "event.decode",
-            details = mapOf("field" to "state"),
-        )
-    }
 
 private fun conversationEventFromCode(eventType: Int, payload: Map<String, Any?>): ConversationEvent =
     ConversationEvent(

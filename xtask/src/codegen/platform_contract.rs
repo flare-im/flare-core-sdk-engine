@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::naming::cangjie_field_name;
 use crate::{
     GeneratedTextTarget, all_spec_enums, all_spec_models, arr, child_arr, core_root,
     is_known_ts_model_type, is_list_type_name, json_quote, kotlin_model_package_imports,
@@ -50,6 +51,18 @@ fn clean_platform_contract_outputs(root: &Path) -> Result<()> {
         root.join("packages/flare-core-harmony-arkts-sdk/src/main/ets/listener"),
         root.join("packages/flare-core-harmony-cangjie-sdk/src/model"),
         root.join("packages/flare-core-harmony-cangjie-sdk/src/listener"),
+        // Retired: each platform's hand-written PlatformLifecycle replaces the generated bridge.
+        root.join("packages/flare-core-flutter-sdk/lib/src/lifecycle/heartbeat_lifecycle_bridge.dart"),
+        root.join(
+            "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/lifecycle/HeartbeatLifecycleBridge.kt",
+        ),
+        root.join(
+            "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Lifecycle/HeartbeatLifecycleBridge.swift",
+        ),
+        root.join(
+            "packages/flare-core-harmony-arkts-sdk/src/main/ets/lifecycle/HeartbeatLifecycleBridge.ets",
+        ),
+        root.join("packages/flare-core-harmony-cangjie-sdk/src/lifecycle/HeartbeatLifecycleBridge.cj"),
     ])
 }
 
@@ -96,6 +109,12 @@ fn native_bridge_contract_targets(root: &Path, spec: &Value) -> Vec<GeneratedTex
                 "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/contract/NativeCallDescriptor.kt",
             ),
             body: emit_kotlin_native_call_descriptor(),
+        },
+        GeneratedTextTarget {
+            path: root.join(
+                "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/contract/NativeBridge.kt",
+            ),
+            body: emit_kotlin_native_bridge(),
         },
         GeneratedTextTarget {
             path: root.join(
@@ -247,7 +266,19 @@ fn emit_typescript_bridge_contract(entries: &[NativeDescriptorEntry]) -> String 
             .to_string(),
         "export interface NativeBridge {".to_string(),
         "  invoke<T>(descriptor: NativeCallDescriptor, request?: unknown): Promise<T>;".to_string(),
+        "  /**".to_string(),
+        "   * Installs (or, with null, removes) the host's connect token refresher. Runtimes without".to_string(),
+        "   * a refresh channel leave it out and the client reports capabilityUnavailable.".to_string(),
+        "   */".to_string(),
+        "  setConnectTokenRefresher?(refresher: ConnectTokenRefresher | null): Promise<void>;".to_string(),
         "}".to_string(),
+        String::new(),
+        "/**".to_string(),
+        " * Host-managed connect token refresh: called once after the gateway rejects a connection on".to_string(),
+        " * authentication. Resolve the new token, or null when none can be obtained; the core waits at".to_string(),
+        " * most 20 seconds and then treats it as null.".to_string(),
+        " */".to_string(),
+        "export type ConnectTokenRefresher = () => Promise<string | null>;".to_string(),
         String::new(),
         "/** Complete generated operation-to-native call map. */".to_string(),
         "export const NativeCallMap = {".to_string(),
@@ -317,8 +348,21 @@ fn emit_dart_bridge_contract(entries: &[NativeDescriptorEntry]) -> String {
         String::new(),
         "/// Platform runtimes implement this bridge using FFI, JNI, N-API, WASM or host IPC."
             .to_string(),
+        "/// Host-managed connect token refresh: resolves the new connect token, or null when none".to_string(),
+        "/// can be obtained. Called on a background isolate task; the core waits at most 20 seconds.".to_string(),
+        "typedef ConnectTokenRefresher = Future<String?> Function();".to_string(),
+        String::new(),
         "abstract interface class NativeBridge {".to_string(),
         "  Future<T> invoke<T>(NativeCallDescriptor descriptor, [Object? request]);".to_string(),
+        "}".to_string(),
+        String::new(),
+        "/// Implemented by bridges that can call back for a connect token (the FFI bridge); the client".to_string(),
+        "/// reports capabilityUnavailable for a bridge without it.".to_string(),
+        "abstract interface class ConnectTokenRefresherBridge {".to_string(),
+        "  /// Installs (or, with null, removes) the connect token refresher: registers the native".to_string(),
+        "  /// trampoline with flare_sdk_set_connect_token_refresher and answers every request with".to_string(),
+        "  /// flare_sdk_complete_connect_token_refresh.".to_string(),
+        "  Future<void> setConnectTokenRefresher(ConnectTokenRefresher? refresher);".to_string(),
         "}".to_string(),
         String::new(),
         "abstract final class NativeCallMap {".to_string(),
@@ -363,6 +407,41 @@ fn emit_dart_bridge_contract(entries: &[NativeDescriptorEntry]) -> String {
     }
     lines.push("}".to_string());
     lines.join("\n")
+}
+
+fn emit_kotlin_native_bridge() -> String {
+    [
+        "package com.flare.im.contract",
+        "",
+        "import com.flare.im.bridge.FlareSdkException",
+        "",
+        "/** GENERATED. Do not edit by hand. */",
+        "/**",
+        " * Host-managed connect token refresh: returns the new connect token, or null when none can be",
+        " * obtained. The core waits at most 20 seconds.",
+        " */",
+        "typealias ConnectTokenRefresher = suspend () -> String?",
+        "",
+        "/** Platform runtimes implement this bridge using FFI, JNI, N-API, WASM or host IPC. */",
+        "interface NativeBridge {",
+        "    suspend fun <T> invoke(descriptor: NativeCallDescriptor, request: Any? = null): T",
+        "",
+        "    /**",
+        "     * Installs (or, with null, removes) the connect token refresher: registers the native",
+        "     * trampoline with flare_sdk_set_connect_token_refresher and answers every request with",
+        "     * flare_sdk_complete_connect_token_refresh.",
+        "     */",
+        "    suspend fun setConnectTokenRefresher(refresher: ConnectTokenRefresher?) {",
+        "        // Bridges without a refresh channel (test doubles) report capabilityUnavailable.",
+        "        throw FlareSdkException(",
+        "            code = SdkErrorCodes.CAPABILITYUNAVAILABLE,",
+        "            message = \"This bridge cannot call back for a connect token.\",",
+        "            operation = SdkOperations.SDK_SET_CONNECT_TOKEN_REFRESHER,",
+        "        )",
+        "    }",
+        "}",
+    ]
+    .join("\n")
 }
 
 fn emit_kotlin_native_call_descriptor() -> String {
@@ -444,9 +523,28 @@ fn emit_swift_bridge_contract(entries: &[NativeDescriptorEntry]) -> String {
         "    public let handlePolicy: String".to_string(),
         "}".to_string(),
         String::new(),
+        "/// Host-managed connect token refresh: returns the new connect token, or nil when none can be".to_string(),
+        "/// obtained. The core waits at most 20 seconds.".to_string(),
+        "public typealias ConnectTokenRefresher = @Sendable () async -> String?".to_string(),
+        String::new(),
         "/// Platform runtimes implement this bridge using FFI, JNI, N-API, WASM or host IPC.".to_string(),
         "public protocol NativeBridgeProtocol: AnyObject {".to_string(),
         "    func invoke(_ descriptor: NativeCallDescriptor, request: AnySendable?) async throws -> AnySendable".to_string(),
+        "    /// Installs (or, with nil, removes) the connect token refresher: registers the C trampoline".to_string(),
+        "    /// with flare_sdk_set_connect_token_refresher and answers every request with".to_string(),
+        "    /// flare_sdk_complete_connect_token_refresh.".to_string(),
+        "    func setConnectTokenRefresher(_ refresher: ConnectTokenRefresher?) async throws".to_string(),
+        "}".to_string(),
+        String::new(),
+        "extension NativeBridgeProtocol {".to_string(),
+        "    /// Bridges without a refresh channel (test doubles) report capabilityUnavailable.".to_string(),
+        "    public func setConnectTokenRefresher(_ refresher: ConnectTokenRefresher?) async throws {".to_string(),
+        "        throw FlareSdkException(".to_string(),
+        "            code: SdkErrorCodes.capabilityUnavailable,".to_string(),
+        "            message: \"This bridge cannot call back for a connect token.\",".to_string(),
+        "            operation: SdkOperations.sdkSetConnectTokenRefresher".to_string(),
+        "        )".to_string(),
+        "    }".to_string(),
         "}".to_string(),
         String::new(),
         "public enum NativeCallMap {".to_string(),
@@ -495,8 +593,16 @@ fn emit_arkts_bridge_contract(entries: &[NativeDescriptorEntry]) -> String {
         String::new(),
         "/** Platform runtimes implement this bridge using FFI, JNI, N-API, WASM or host IPC. */"
             .to_string(),
+        "/** Host-managed connect token refresh: resolves the new connect token, or null when none can be obtained. */".to_string(),
+        "export type ConnectTokenRefresher = () => Promise<string | null>;".to_string(),
+        String::new(),
         "export interface NativeBridge {".to_string(),
         "  invoke<T>(descriptor: NativeCallDescriptor, request?: Object): Promise<T>;".to_string(),
+        "  /**".to_string(),
+        "   * Installs (or, with null, removes) the connect token refresher: registers the native".to_string(),
+        "   * trampoline and answers every request with flare_sdk_complete_connect_token_refresh.".to_string(),
+        "   */".to_string(),
+        "  setConnectTokenRefresher?(refresher: ConnectTokenRefresher | null): Promise<void>;".to_string(),
         "}".to_string(),
         String::new(),
         "export const NativeCallMap = {".to_string(),
@@ -566,8 +672,18 @@ fn emit_cangjie_bridge_contract(entries: &[NativeDescriptorEntry]) -> String {
         "}".to_string(),
         String::new(),
         "// Runtime implementations call the real C ABI here and return native result JSON.".to_string(),
+        "// Host-managed connect token refresh: returns the new connect token, or None when none can be".to_string(),
+        "// obtained. Called off the caller's thread; the core waits at most 20 seconds.".to_string(),
+        "public type ConnectTokenRefresher = () -> ?String".to_string(),
+        String::new(),
         "public interface NativeBridge {".to_string(),
         "    func invoke(descriptor!: NativeCallDescriptor, requestJson!: String): String".to_string(),
+        "    // Installs (or, with None, removes) the connect token refresher: registers the native".to_string(),
+        "    // trampoline and answers every request with flare_sdk_complete_connect_token_refresh.".to_string(),
+        "    func setConnectTokenRefresher(refresher: ?ConnectTokenRefresher): Unit {".to_string(),
+        "        // Bridges without a refresh channel (test doubles) report capabilityUnavailable.".to_string(),
+        "        throw Exception(\"FlareSdkException(code=capabilityUnavailable, operation=sdk.set_connect_token_refresher, message=This bridge cannot call back for a connect token.)\")".to_string(),
+        "    }".to_string(),
         "}".to_string(),
         String::new(),
         "public class NativeCallMap {".to_string(),
@@ -787,44 +903,7 @@ fn dart_contract_targets(
         body: "// GENERATED. Do not edit by hand.\nexport 'message_send_callback.dart';"
             .to_string(),
     });
-    targets.push(GeneratedTextTarget {
-        path: src_root.join("lifecycle/heartbeat_lifecycle_bridge.dart"),
-        body: emit_dart_heartbeat_lifecycle_bridge(),
-    });
     targets
-}
-
-fn emit_dart_heartbeat_lifecycle_bridge() -> String {
-    [
-        "// GENERATED. Do not edit by hand.",
-        "import '../api/client.dart';",
-        "import '../model/command/set_heartbeat_app_state_request.dart';",
-        "import '../model/entity/heartbeat_app_state.dart';",
-        "",
-        "/// Thin Flutter lifecycle bridge for adaptive heartbeat scheduling.",
-        "final class HeartbeatLifecycleBridge {",
-        "  const HeartbeatLifecycleBridge(this._client);",
-        "",
-        "  final FlareImClient _client;",
-        "",
-        "  Future<void> onResume() => setForeground();",
-        "",
-        "  Future<void> onPause() => setBackground();",
-        "",
-        "  Future<void> setForeground() => _client.setHeartbeatAppState(",
-        "        const SetHeartbeatAppStateRequest(",
-        "          appState: HeartbeatAppState.foreground,",
-        "        ),",
-        "      );",
-        "",
-        "  Future<void> setBackground() => _client.setHeartbeatAppState(",
-        "        const SetHeartbeatAppStateRequest(",
-        "          appState: HeartbeatAppState.background,",
-        "        ),",
-        "      );",
-        "}",
-    ]
-    .join("\n")
 }
 
 fn emit_dart_event_code(event_codes: &[EventCodeEntry]) -> String {
@@ -952,6 +1031,14 @@ fn emit_dart_model_class(model: &Value, spec: &Value) -> String {
             dart_field_type(field, spec),
             str_field(field, "name")
         ));
+    }
+    // Dart 不接受空的命名参数列表。
+    if child_arr(model, "fields").is_empty() {
+        lines.extend([
+            format!("  const {}();", str_field(model, "name")),
+            "}".to_string(),
+        ]);
+        return lines.join("\n");
     }
     lines.extend([
         String::new(),
@@ -1158,43 +1245,7 @@ fn kotlin_contract_targets(
         path: callback_root.join("MessageSendCallback.kt"),
         body: emit_kotlin_message_send_callback(spec),
     });
-    targets.push(GeneratedTextTarget {
-        path: src_root.join("lifecycle/HeartbeatLifecycleBridge.kt"),
-        body: emit_kotlin_heartbeat_lifecycle_bridge(),
-    });
     targets
-}
-
-fn emit_kotlin_heartbeat_lifecycle_bridge() -> String {
-    [
-        "package com.flare.im.lifecycle",
-        "",
-        "import com.flare.im.api.FlareImClient",
-        "import com.flare.im.model.command.SetHeartbeatAppStateRequest",
-        "import com.flare.im.model.entity.HeartbeatAppState",
-        "",
-        "/** GENERATED. Do not edit by hand. */",
-        "class HeartbeatLifecycleBridge(",
-        "    private val client: FlareImClient,",
-        ") {",
-        "    suspend fun onResume() {",
-        "        setForeground()",
-        "    }",
-        "",
-        "    suspend fun onPause() {",
-        "        setBackground()",
-        "    }",
-        "",
-        "    suspend fun setForeground() {",
-        "        client.setHeartbeatAppState(SetHeartbeatAppStateRequest(HeartbeatAppState.FOREGROUND))",
-        "    }",
-        "",
-        "    suspend fun setBackground() {",
-        "        client.setHeartbeatAppState(SetHeartbeatAppStateRequest(HeartbeatAppState.BACKGROUND))",
-        "    }",
-        "}",
-    ]
-    .join("\n")
 }
 
 fn emit_kotlin_event_code(event_codes: &[EventCodeEntry]) -> String {
@@ -1341,8 +1392,13 @@ fn emit_kotlin_model_class(model: &Value, spec: &Value) -> String {
     lines.extend([
         "/** GENERATED. Do not edit by hand. */".to_string(),
         format!("/** {} */", str_field(model, "description")),
-        format!("data class {name}("),
     ]);
+    // data class 至少要一个参数。
+    if child_arr(model, "fields").is_empty() {
+        lines.push(format!("class {name}"));
+        return lines.join("\n");
+    }
+    lines.push(format!("data class {name}("));
     for field in child_arr(model, "fields") {
         lines.push(format!(
             "    /** wire: `{}`. {} */",
@@ -1521,43 +1577,7 @@ fn swift_contract_targets(
         path: callback_root.join("MessageSendCallback.swift"),
         body: emit_swift_message_send_callback(),
     });
-    targets.push(GeneratedTextTarget {
-        path: src_root.join("Lifecycle/HeartbeatLifecycleBridge.swift"),
-        body: emit_swift_heartbeat_lifecycle_bridge(),
-    });
     targets
-}
-
-fn emit_swift_heartbeat_lifecycle_bridge() -> String {
-    [
-        "import Foundation",
-        "",
-        "/// GENERATED. Do not edit by hand.",
-        "public final class HeartbeatLifecycleBridge {",
-        "    private let client: any FlareImClientProtocol",
-        "",
-        "    public init(client: any FlareImClientProtocol) {",
-        "        self.client = client",
-        "    }",
-        "",
-        "    public func applicationDidBecomeActive() async throws {",
-        "        try await setForeground()",
-        "    }",
-        "",
-        "    public func applicationDidEnterBackground() async throws {",
-        "        try await setBackground()",
-        "    }",
-        "",
-        "    public func setForeground() async throws {",
-        "        try await client.setHeartbeatAppState(SetHeartbeatAppStateRequest(appState: .foreground))",
-        "    }",
-        "",
-        "    public func setBackground() async throws {",
-        "        try await client.setHeartbeatAppState(SetHeartbeatAppStateRequest(appState: .background))",
-        "    }",
-        "}",
-    ]
-    .join("\n")
 }
 
 fn emit_swift_event_code(event_codes: &[EventCodeEntry]) -> String {
@@ -1872,40 +1892,7 @@ fn arkts_contract_targets(root: &Path, spec: &Value) -> Vec<GeneratedTextTarget>
         path: listener_root.join("index.ets"),
         body: emit_arkts_listener_index(spec),
     });
-    targets.push(GeneratedTextTarget {
-        path: src_root.join("lifecycle/HeartbeatLifecycleBridge.ets"),
-        body: emit_arkts_heartbeat_lifecycle_bridge(),
-    });
     targets
-}
-
-fn emit_arkts_heartbeat_lifecycle_bridge() -> String {
-    [
-        "import type { FlareImClient } from '../api/client';",
-        "import { HeartbeatAppState } from '../model';",
-        "",
-        "/** GENERATED. Do not edit by hand. */",
-        "export class HeartbeatLifecycleBridge {",
-        "  constructor(private readonly client: FlareImClient) {}",
-        "",
-        "  async onShow(): Promise<void> {",
-        "    await this.setForeground();",
-        "  }",
-        "",
-        "  async onHide(): Promise<void> {",
-        "    await this.setBackground();",
-        "  }",
-        "",
-        "  async setForeground(): Promise<void> {",
-        "    await this.client.setHeartbeatAppState({ appState: HeartbeatAppState.Foreground });",
-        "  }",
-        "",
-        "  async setBackground(): Promise<void> {",
-        "    await this.client.setHeartbeatAppState({ appState: HeartbeatAppState.Background });",
-        "  }",
-        "}",
-    ]
-    .join("\n")
 }
 
 fn arkts_contract_type(type_name: &str, spec: &Value) -> String {
@@ -2048,7 +2035,7 @@ fn emit_arkts_listener_group(kind: &str, listeners: &[&Value]) -> String {
         lines.extend([
             "}".to_string(),
             String::new(),
-            "/** Direct callback for `messages.sendMessage(request, callback)` progress and terminal states.".to_string(),
+            "/** Direct callback for `messages.sendMessage(request, callback)` progress and terminal states. */".to_string(),
             "export interface MessageSendCallback {".to_string(),
             "  /** Message upload or send progress changed. */".to_string(),
             "  onProgress?(event: ProgressEvent): void;".to_string(),
@@ -2142,46 +2129,7 @@ fn cangjie_contract_targets(root: &Path, spec: &Value) -> Vec<GeneratedTextTarge
         path: listener_root.join("FlareImEventListener.cj"),
         body: emit_cangjie_listener_index(spec),
     });
-    targets.push(GeneratedTextTarget {
-        path: src_root.join("lifecycle/HeartbeatLifecycleBridge.cj"),
-        body: emit_cangjie_heartbeat_lifecycle_bridge(),
-    });
     targets
-}
-
-fn emit_cangjie_heartbeat_lifecycle_bridge() -> String {
-    [
-        "package flare_core_harmony_cangjie_sdk.lifecycle",
-        "",
-        "import flare_core_harmony_cangjie_sdk.api.*",
-        "import flare_core_harmony_cangjie_sdk.model.*",
-        "",
-        "// GENERATED. Do not edit by hand.",
-        "public class HeartbeatLifecycleBridge {",
-        "    private let client: FlareImClient",
-        "",
-        "    public init(client: FlareImClient) {",
-        "        this.client = client",
-        "    }",
-        "",
-        "    public func onShow(): Unit {",
-        "        setForeground()",
-        "    }",
-        "",
-        "    public func onHide(): Unit {",
-        "        setBackground()",
-        "    }",
-        "",
-        "    public func setForeground(): Unit {",
-        "        client.setHeartbeatAppState(SetHeartbeatAppStateRequest(appState: HeartbeatAppState.Foreground))",
-        "    }",
-        "",
-        "    public func setBackground(): Unit {",
-        "        client.setHeartbeatAppState(SetHeartbeatAppStateRequest(appState: HeartbeatAppState.Background))",
-        "    }",
-        "}",
-    ]
-    .join("\n")
 }
 
 fn cangjie_contract_type(type_name: &str, spec: &Value) -> String {
@@ -2258,7 +2206,7 @@ fn emit_cangjie_model_class(model: &Value, spec: &Value) -> String {
         ));
         lines.push(format!(
             "    public let {}: {}",
-            str_field(field, "name"),
+            cangjie_field_name(str_field(field, "name")),
             cangjie_field_type(field, spec)
         ));
     }
@@ -2267,7 +2215,7 @@ fn emit_cangjie_model_class(model: &Value, spec: &Value) -> String {
         .map(|field| {
             format!(
                 "{}!: {}",
-                str_field(field, "name"),
+                cangjie_field_name(str_field(field, "name")),
                 cangjie_field_type(field, spec)
             )
         })
@@ -2275,7 +2223,7 @@ fn emit_cangjie_model_class(model: &Value, spec: &Value) -> String {
         .join(", ");
     lines.extend([String::new(), format!("    public init({params}) {{")]);
     for field in child_arr(model, "fields") {
-        let name = str_field(field, "name");
+        let name = cangjie_field_name(str_field(field, "name"));
         lines.push(format!("        this.{name} = {name}"));
     }
     lines.extend(["    }".to_string(), "}".to_string()]);

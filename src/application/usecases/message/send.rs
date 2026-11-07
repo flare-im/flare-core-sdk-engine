@@ -1360,10 +1360,6 @@ mod tests {
         async fn reset_pending_on_login(&self) -> Result<Vec<String>> {
             Ok(Vec::new())
         }
-
-        async fn recover_pending_for_current_user(&self) -> Result<Vec<String>> {
-            Ok(Vec::new())
-        }
     }
 
     fn bare_message(content: crate::content::content_builder::BuiltContent) -> IMMessage {

@@ -57,6 +57,28 @@ pub fn json<T: serde::Serialize>(value: T) -> Result<BindingResponse> {
         })
 }
 
+pub fn optional_media_reference(
+    params: &Value,
+) -> Result<Option<flare_im_core_sdk::client::api::MessageMediaReference>> {
+    #[derive(Deserialize)]
+    #[serde(crate = "flare_im_core_sdk::serde", rename_all = "camelCase")]
+    struct Fields {
+        conversation_id: Option<String>,
+        message_seq: Option<i64>,
+    }
+    let fields: Fields = serde_json::from_value(params.clone())
+        .map_err(|_| binding_invalid_parameter("invalid message media reference"))?;
+    match (fields.conversation_id, fields.message_seq) {
+        (None, None) => Ok(None),
+        (Some(id), Some(seq)) => {
+            flare_im_core_sdk::client::api::MessageMediaReference::new(id, seq).map(Some)
+        }
+        _ => Err(binding_invalid_parameter(
+            "message media reference requires conversationId and messageSeq",
+        )),
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn run_cpu_bound<T, F>(label: &'static str, work: F) -> Result<T>
 where
@@ -593,6 +615,15 @@ pub fn build_user_download_request(
         source_path: pick(&["sourcePath", "localPath"]),
         source_http_url: pick(&["sourceUrl", "sourceHttpUrl"]),
         remote_file_id: pick(&["fileId", "remoteFileId", "mediaId"]),
+        message_conversation_id: pick(&["conversationId"]),
+        message_seq: if params
+            .get("messageSeq")
+            .is_some_and(|value| !value.is_null())
+        {
+            Some(json_i64(&params, "messageSeq")?)
+        } else {
+            None
+        },
         expires_in: optional_i32(&params, "expiresIn")?.unwrap_or(3600),
         on_progress: None,
     })
@@ -690,6 +721,50 @@ impl From<CreateRichDocJson> for CreateRichDocRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_media_preview_reference_is_paired_strict_and_positive() {
+        let r = optional_media_reference(
+            &serde_json::json!({"fileId":"f","conversationId":"chat-1","messageSeq":7}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(r.conversation_id(), "chat-1");
+        assert_eq!(r.message_seq(), 7);
+        assert!(
+            optional_media_reference(&serde_json::json!({"fileId":"f"}))
+                .unwrap()
+                .is_none()
+        );
+        for bad in [
+            serde_json::json!({"conversationId":"chat-1"}),
+            serde_json::json!({"messageSeq":7}),
+            serde_json::json!({"conversationId":"chat-1","messageSeq":"7"}),
+            serde_json::json!({"conversationId":false,"messageSeq":7}),
+            serde_json::json!({"conversationId":" chat-1","messageSeq":7}),
+            serde_json::json!({"conversationId":"chat-1","messageSeq":0}),
+        ] {
+            assert!(optional_media_reference(&bad).is_err());
+        }
+    }
+
+    #[test]
+    fn message_bound_media_download_builder_keeps_typed_server_reference() {
+        let input = serde_json::json!({"fileId":"file-1","conversationId":"chat-1","messageSeq":7});
+        let request = build_user_download_request(input).expect("typed download reference");
+        assert_eq!(request.message_conversation_id.as_deref(), Some("chat-1"));
+        assert_eq!(request.message_seq, Some(7));
+        assert!(
+            build_user_download_request(serde_json::json!({"fileId":"file-1","messageSeq":"7"}))
+                .is_err()
+        );
+        assert_eq!(
+            build_user_download_request(serde_json::json!({"fileId":"file-1"}))
+                .unwrap()
+                .message_seq,
+            None
+        );
+    }
     use flare_im_core_sdk::model::{
         CloseViewRequest, CloseViewResponse, ConversationTimelineSnapshot, Elem,
         HomeTimelineSnapshot, IMMessage, LoadNewerTimelineViewRequest,

@@ -1,6 +1,5 @@
 // GENERATED. Do not edit by hand.
 import { NativeBridge, NativeCallDescriptor } from '../../contract/bridge_contract';
-import type { ConnectionState } from '../../contract/sdk_contract';
 import { FlareSdkException } from '../../bridge/flareSdkException';
 import {
   Conversation,
@@ -38,8 +37,6 @@ function recordFromNative(value: unknown, operation: string): Record<string, unk
   throw new FlareSdkException('invalidParameter', 'native response must be an object', operation, { expected: 'object' });
 }
 
-const CONNECTION_STATE_VALUES = new Set<ConnectionState>(['disconnected', 'connecting', 'connected', 'ready', 'reconnecting']);
-
 export async function invokeVoid(
   bridge: NativeBridge,
   descriptor: NativeCallDescriptor,
@@ -68,16 +65,35 @@ export async function invokeBool(
   throw new FlareSdkException('invalidParameter', 'native response must be a boolean', descriptor.operation, { expected: 'boolean' });
 }
 
-export async function invokeConnectionState(
+/**
+ * A copy of `value` without null fields, recursively through nested objects and arrays. Core
+ * DTOs serialize "no value" as null; the generated models express it as an absent field.
+ */
+export function withoutNullFields<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => withoutNullFields(item)) as unknown as T;
+  }
+  if (value && typeof value === 'object' && !(value instanceof Uint8Array)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (item !== null && item !== undefined) out[key] = withoutNullFields(item);
+    }
+    return out as T;
+  }
+  return value;
+}
+
+/** A response that is a bare JSON array of model objects (null fields left out). */
+export async function invokeList(
   bridge: NativeBridge,
   descriptor: NativeCallDescriptor,
   request?: unknown,
-): Promise<ConnectionState> {
+): Promise<Record<string, unknown>[]> {
   const value = await bridge.invoke<unknown>(descriptor, request);
-  if (typeof value === 'string' && CONNECTION_STATE_VALUES.has(value as ConnectionState)) {
-    return value as ConnectionState;
+  if (!Array.isArray(value)) {
+    throw new FlareSdkException('invalidParameter', 'native response must be an array', descriptor.operation, { expected: 'array' });
   }
-  throw new FlareSdkException('invalidParameter', 'native response must be a canonical connection state', descriptor.operation, { expected: 'ConnectionState' });
+  return value.map((item) => withoutNullFields(recordFromNative(item, descriptor.operation)));
 }
 
 export async function invokeMessage(

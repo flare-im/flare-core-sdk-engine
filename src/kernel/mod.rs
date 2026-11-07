@@ -6,19 +6,17 @@
 
 pub mod event;
 pub mod fsm;
-mod plugin_catalog;
 mod reliable_queue;
 pub mod server_clock;
 pub mod sync;
+mod tenant_notice;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 pub use fsm::{
-    ConnectionEvent, ConnectionFsm, ConnectionState, MessageState, MessageStateEvent,
-    MessageStateFsm, SyncFsm, SyncState, SyncTransition,
+    MessageState, MessageStateEvent, MessageStateFsm, SyncFsm, SyncState, SyncTransition,
 };
-pub use plugin_catalog::PluginCatalogNoticePort;
 pub use reliable_queue::ReliableSendQueuePort;
 pub use server_clock::ServerClock;
 pub use sync::{
@@ -30,8 +28,9 @@ pub use sync::{
     SyncPhase, SyncProgress, SyncReason, SyncResponseHandler, SyncResult, SyncRunContext,
     SyncScope, SyncTask, SyncTaskResult, SyncTrigger, SyncVisibility, watermark_provably_clean,
 };
+pub use tenant_notice::TenantNoticePort;
 
-/// 对外暴露的连接状态（与 kernel FSM `ConnectionState` 对齐，便于 UI 展示）
+/// 粗粒度的会话连接态，由链路状态机的对外阶段派生（`connection://status` 才是对外的连接状态）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SdkState {
     Disconnected,
@@ -59,19 +58,6 @@ impl SdkState {
             3 => SdkState::Ready,
             4 => SdkState::Reconnecting,
             _ => SdkState::Disconnected,
-        }
-    }
-}
-
-impl From<ConnectionState> for SdkState {
-    fn from(s: ConnectionState) -> Self {
-        use ConnectionState as S;
-        match s {
-            S::Disconnected => SdkState::Disconnected,
-            S::Connecting => SdkState::Connecting,
-            S::Connected => SdkState::Connected,
-            S::Ready => SdkState::Ready,
-            S::Reconnecting => SdkState::Reconnecting,
         }
     }
 }

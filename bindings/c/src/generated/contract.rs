@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 pub const PLATFORM_BINDING: &str = "c";
-pub const BINDING_CONTRACT_VERSION: &str = "flare-im-ffi/v1";
+pub const BINDING_CONTRACT_VERSION: &str = "flare-im-ffi/v2";
 
 pub const C_API_SYMBOLS: &[&str] = &[
     "flare_capability_dispatch_json",
@@ -28,6 +28,7 @@ pub const C_API_SYMBOLS: &[&str] = &[
     "flare_message_recall",
     "flare_message_send",
     "flare_sdk_batch_get_user_presence",
+    "flare_sdk_complete_connect_token_refresh",
     "flare_sdk_connect",
     "flare_sdk_create",
     "flare_sdk_current_user_id",
@@ -44,7 +45,7 @@ pub const C_API_SYMBOLS: &[&str] = &[
     "flare_sdk_prepare",
     "flare_sdk_release",
     "flare_sdk_session_active",
-    "flare_sdk_state",
+    "flare_sdk_set_connect_token_refresher",
     "flare_sdk_subscribe_user_presence",
     "flare_sdk_sync_conversation",
     "flare_sdk_sync_messages",
@@ -176,14 +177,11 @@ pub const C_DISPATCH_OPS: &[(&str, &str)] = &[
 ];
 
 pub const EVENT_CODES: &[(&str, i32)] = &[
-    ("connection.connected", 1001),
-    ("connection.disconnected", 1002),
-    ("connection.reconnecting", 1003),
-    ("connection.state_changed", 1004),
+    ("connection.status", 1010),
     ("connection.sync_state_changed", 1005),
-    ("connection.server_error", 1006),
-    ("connection.kicked_off", 1007),
-    ("connection.token_expired", 1008),
+    ("access.switched", 1011),
+    ("access.changed", 1012),
+    ("update.state", 1013),
     ("message.received", 2001),
     ("message.received_batch", 2002),
     ("message.send_ack", 2003),
@@ -212,6 +210,7 @@ pub const EVENT_CODES: &[(&str, i32)] = &[
     ("conversation.unread_count_changed", 3004),
     ("conversation.deleted", 3005),
     ("notification.received", 3501),
+    ("notification.message_sound", 3502),
     ("sync.started", 4001),
     ("sync.finished", 4002),
     ("sync.failed", 4003),
@@ -239,4 +238,7 @@ pub const ERROR_CODES: &[(&str, i32)] = &[
     ("FLARE_ERR_JSON_PARSE", 9),
     ("FLARE_ERR_NULL_POINTER", 10),
     ("FLARE_ERR_FFI_PANIC", 11),
+    ("FLARE_ERR_OVERLOADED", 12),
+    ("FLARE_ERR_UPGRADE_REQUIRED", 13),
+    ("FLARE_ERR_NETWORK_UNCERTAIN", 14),
 ];

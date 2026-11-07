@@ -12,11 +12,10 @@ pub mod event {
 }
 
 pub use crate::kernel::{
-    ConnectionEvent, ConnectionFsm, ConnectionState, ConversationSummarySync, CurrentUserIdStore,
-    MessageState, MessageStateEvent, MessageStateFsm, SessionSyncRunner, SyncContext,
-    SyncFailurePolicy, SyncFsm, SyncManager, SyncMode, SyncPhase, SyncProgress, SyncReason,
-    SyncResponseHandler, SyncResult, SyncRunContext, SyncScope, SyncState, SyncTask,
-    SyncTaskResult, SyncTransition, SyncTrigger, SyncVisibility,
+    ConversationSummarySync, CurrentUserIdStore, MessageState, MessageStateEvent, MessageStateFsm,
+    SessionSyncRunner, SyncContext, SyncFailurePolicy, SyncFsm, SyncManager, SyncMode, SyncPhase,
+    SyncProgress, SyncReason, SyncResponseHandler, SyncResult, SyncRunContext, SyncScope,
+    SyncState, SyncTask, SyncTaskResult, SyncTransition, SyncTrigger, SyncVisibility,
 };
 pub use crate::runtime::{Dispatcher, SdkEngine, SdkState};
 pub(crate) use crate::runtime::{ReliableSendQueue, ReliableSendQueueConfig, SdkEngineConfig};

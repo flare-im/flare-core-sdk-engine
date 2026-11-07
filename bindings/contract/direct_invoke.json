@@ -69,10 +69,116 @@
       "body": "\n            let user_ids = dispatch_support::json_vec_string(request, \"userIds\")?;\n            client.subscribe_user_presence(user_ids).await?;\n        "
     },
     {
-      "route": "connection.get_state",
+      "route": "connection.get_status",
       "result": "json",
-      "body": "\n            let state = client.state();\n            let (name, _code) = sdk_state_json(state);\n        ",
-      "json_expr": "serde_json::json!(name)"
+      "body": "\n            let status = client.connection_status().await;\n        ",
+      "json_expr": "status"
+    },
+    {
+      "route": "connection.reconnect_now",
+      "result": "unit",
+      "body": "\n            client.reconnect_now().await?;\n        "
+    },
+    {
+      "route": "access.get_status",
+      "result": "json",
+      "body": "\n            let status = client.access_status().await?;\n        ",
+      "json_expr": "status"
+    },
+    {
+      "route": "access.list_access_points",
+      "result": "json",
+      "body": "\n            let access_points = client.list_access_points().await?;\n        ",
+      "json_expr": "access_points"
+    },
+    {
+      "route": "access.pin",
+      "result": "json",
+      "body": "\n            let access_point_id = dispatch_support::json_string(request, \"accessPointId\")?;\n            let pinned = client.pin_access_point(&access_point_id).await?;\n        ",
+      "json_expr": "pinned"
+    },
+    {
+      "route": "access.unpin",
+      "result": "unit",
+      "body": "\n            client.unpin_access_point().await?;\n        "
+    },
+    {
+      "route": "access.refresh",
+      "result": "json",
+      "body": "\n            let report = client.refresh_access().await?;\n        ",
+      "json_expr": "report"
+    },
+    {
+      "route": "access.import_recovery",
+      "result": "json",
+      "body": "\n            let link = dispatch_support::json_string(request, \"link\")?;\n            let imported = client.import_access_recovery(&link).await?;\n        ",
+      "json_expr": "imported"
+    },
+    {
+      "route": "access.export_diagnostics",
+      "result": "json",
+      "body": "\n            let diagnostics = client.export_access_diagnostics().await?;\n        ",
+      "json_expr": "diagnostics"
+    },
+    {
+      "route": "update.get_state",
+      "result": "json",
+      "body": "\n            let foreground = dispatch_support::optional_bool(request, \"foreground\")?.unwrap_or(false);\n            let status = client.update_state(foreground).await?;\n        ",
+      "json_expr": "status"
+    },
+    {
+      "route": "update.check",
+      "result": "json",
+      "body": "\n            let manual = dispatch_support::optional_bool(request, \"manual\")?.unwrap_or(false);\n            let status = client.check_update(manual).await?;\n        ",
+      "json_expr": "status"
+    },
+    {
+      "route": "update.download",
+      "result": "json",
+      "body": "\n            let allow_metered = dispatch_support::optional_bool(request, \"allowMetered\")?.unwrap_or(false);\n            let status = client.download_update(allow_metered).await?;\n        ",
+      "json_expr": "status"
+    },
+    {
+      "route": "update.install",
+      "result": "json",
+      "body": "\n            let plan = client.install_update().await?;\n        ",
+      "json_expr": "plan"
+    },
+    {
+      "route": "update.report_install",
+      "result": "json",
+      "body": "\n            let outcome = dispatch_support::json_string(request, \"outcome\")?;\n            let code = dispatch_support::optional_string(request, \"code\");\n            let status = client.report_update_install(&outcome, code.as_deref()).await?;\n        ",
+      "json_expr": "status"
+    },
+    {
+      "route": "update.defer",
+      "result": "json",
+      "body": "\n            let status = client.defer_update().await?;\n        ",
+      "json_expr": "status"
+    },
+    {
+      "route": "update.skip",
+      "result": "json",
+      "body": "\n            let build = dispatch_support::json_u64(request, \"build\")?;\n            let status = client.skip_update(build).await?;\n        ",
+      "json_expr": "status"
+    },
+    {
+      "route": "update.mark_prompted",
+      "result": "json",
+      "body": "\n            let build = dispatch_support::optional_value::<u64>(request, \"build\")?;\n            let form = dispatch_support::json_string(request, \"form\")?;\n            let status = client.mark_update_prompted(build, &form).await?;\n        ",
+      "json_expr": "status"
+    },
+    {
+      "route": "update.set_locale",
+      "result": "json",
+      "body": "\n            let locale = dispatch_support::json_string(request, \"locale\")?;\n            let status = client.set_update_locale(locale).await?;\n        ",
+      "json_expr": "status"
+    },
+    {
+      "route": "update.get_resources",
+      "result": "json",
+      "body": "\n            let resources = client.update_resources().await?;\n        ",
+      "json_expr": "resources"
     },
     {
       "route": "connection.server_clock",
@@ -109,9 +215,9 @@
       "body": "\n            let access_token = dispatch_support::json_string(request, \"accessToken\")?;\n            let tenant_id = dispatch_support::optional_string(request, \"tenantId\");\n            client\n                .update_access_token(access_token, tenant_id.as_deref())\n                .await?;\n        "
     },
     {
-      "route": "sdk.set_heartbeat_app_state",
+      "route": "lifecycle.set_app_state",
       "result": "unit",
-      "body": "\n            let state = dispatch_support::heartbeat_app_state(request, \"appState\")?;\n            client.set_heartbeat_app_state(state).await?;\n        "
+      "body": "\n            let state = dispatch_support::heartbeat_app_state(request, \"appState\")?;\n            client.set_app_state(state).await?;\n        "
     },
     {
       "route": "sdk.set_heartbeat_nat_timeout",
@@ -126,9 +232,8 @@
     },
     {
       "route": "connection.notify_network_change",
-      "result": "json",
-      "body": "\n            let event = flare_im_core_sdk::client::NetworkChangeEvent {\n                available: dispatch_support::optional_bool(request, \"available\")?.unwrap_or(true),\n                interface: dispatch_support::optional_string(request, \"interface\"),\n                expensive: dispatch_support::optional_bool(request, \"expensive\")?,\n                metered: dispatch_support::optional_bool(request, \"metered\")?,\n                reason: dispatch_support::optional_string(request, \"reason\"),\n            };\n            let reconnected = client.notify_network_change(event).await?;\n        ",
-      "json_expr": "serde_json::json!({ \"reconnected\": reconnected })"
+      "result": "unit",
+      "body": "\n            let event = flare_im_core_sdk::client::NetworkChangeEvent {\n                available: dispatch_support::optional_bool(request, \"available\")?.unwrap_or(true),\n                interface: dispatch_support::optional_string(request, \"interface\"),\n                expensive: dispatch_support::optional_bool(request, \"expensive\")?,\n                metered: dispatch_support::optional_bool(request, \"metered\")?,\n                reason: dispatch_support::optional_string(request, \"reason\"),\n                fingerprint_hint: dispatch_support::optional_string(request, \"fingerprintHint\"),\n            };\n            client.notify_network_change(event).await?;\n        "
     },
     {
       "route": "message_builder.list_catalog",

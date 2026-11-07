@@ -102,7 +102,11 @@ pub async fn dispatch_media(
         "get_url" => {
             let file_id_s = string_any(&params, &["fileId", "mediaId"])?;
             let expires_in_v = optional_i32(&params, "expiresIn")?.unwrap_or(3600);
-            json(api.get_file_url(&file_id_s, expires_in_v).await?)
+            let reference_o = optional_media_reference(&params)?;
+            json(
+                api.get_file_url_with_reference(&file_id_s, expires_in_v, reference_o.as_ref())
+                    .await?,
+            )
         }
         "temp_download_url" => {
             let file_id_s = json_string(&params, "fileId")?;
@@ -116,9 +120,15 @@ pub async fn dispatch_media(
             let file_id_s = json_string(&params, "fileId")?;
             let expires_in_v = optional_i32(&params, "expiresIn")?.unwrap_or(3600);
             let auto_cache_v = optional_bool(&params, "autoCache")?.unwrap_or(false);
+            let reference_o = optional_media_reference(&params)?;
             json(
-                api.resolve_media_access_opts(&file_id_s, expires_in_v, auto_cache_v)
-                    .await?,
+                api.resolve_media_access_opts_with_reference(
+                    &file_id_s,
+                    expires_in_v,
+                    auto_cache_v,
+                    reference_o.as_ref(),
+                )
+                .await?,
             )
         }
         "cache_remote" => {

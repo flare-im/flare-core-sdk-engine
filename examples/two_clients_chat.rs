@@ -350,7 +350,10 @@ async fn main() -> Result<()> {
     );
 
     let overlay = SdkConfigOverlay {
-        ws_url: Some(ws_url),
+        access: Some(AccessConfig::development(DevelopmentEndpoints {
+            ws_url: Some(ws_url),
+            ..Default::default()
+        })),
         tenant_id: Some(tenant_id.clone()),
         ..Default::default()
     };

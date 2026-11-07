@@ -58,7 +58,10 @@ async fn login_client(
     let client = IMClient::new();
     let device_id = format!("{run}-{user}-dev");
     let overlay = SdkConfigOverlay {
-        ws_url: Some(ws.to_string()),
+        access: Some(AccessConfig::development(DevelopmentEndpoints {
+            ws_url: Some(ws.to_string()),
+            ..Default::default()
+        })),
         tenant_id: Some(tenant.to_string()),
         device_id: Some(device_id.clone()),
         ..Default::default()

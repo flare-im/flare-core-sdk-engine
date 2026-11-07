@@ -9,34 +9,27 @@ use flare_proto::common::{
     ReadReceiptEvent, SendAck, TypingAggregatePacket, TypingStatePacket, UnmarkEvent, UnpinEvent,
 };
 
-use crate::kernel::{SdkState, SyncRunContext, SyncState};
+use crate::kernel::{SyncRunContext, SyncState};
 use crate::model::{IMMessage, ViewUpdate};
 
 // ========== 域事件枚举（Domain events） ==========
 
-/// 连接域事件：连接生命周期、状态变更、服务端错误、被踢下线、登录凭证过期
+/// 连接域事件：连接状态、同步状态、接入线路的切换与装载。
 ///
-/// 与飞书级 IM 对齐：支持多端登录冲突（被踢）、Token 过期需重新登录等场景。
+/// 连接只有一个对外事件 [`ConnectionEvent::Status`]（`connection://status`）：阶段、线路、质量、
+/// 重试倒计时、需要用户动作的原因都在里面。被踢、令牌不可续等终局并入 `actionRequired` 阶段。
 #[derive(Clone, Debug)]
 pub enum ConnectionEvent {
-    /// 已连接（含认证通过）
-    Connected,
-    /// 断开连接（含原因描述）
-    Disconnected { reason: String },
-    /// 连接状态变更（Disconnected / Connecting / Connected / Ready / Reconnecting）
-    StateChanged { state: SdkState },
+    /// 连接状态变化（对外阶段或附加字段变了才发）。
+    Status(super::link_status::ConnectionStatus),
     /// 同步状态变更（Idle / Syncing / CatchingUp / Error）
     SyncStateChanged { state: SyncState },
-    /// 服务端返回错误（code + message）
-    ServerError { code: i32, message: String },
-    /// 重连中（attempt 为当前第几次重试）
-    Reconnecting { attempt: u32 },
-    /// 当前设备被服务端踢下线，会话随之终止、不自动重连，恢复要由应用重新登录。`reason` 为类型化原因：
-    /// `DEVICE_CONFLICT`（同一账号在同一平台的新设备登录，即「已在别处登录」）、`TENANT_UNAVAILABLE`
-    /// （所属租户已停用或正在删除），或服务端给出的其他踢线原因（如运维踢线 `DEVICE_KICKED`）
-    KickedOff { reason: String },
-    /// 登录凭证已过期，需要重新登录（如刷新 Token 或跳转登录页）
-    TokenExpired { message: String },
+    /// IM 换到了另一个接入点（切换完成、补同步就绪时一次）。
+    AccessSwitched(super::link_status::AccessSwitched),
+    /// 接入目录装载或变化（本阶段在开发模式 / LKG / 种子装载时发一次）。
+    AccessChanged(super::link_status::AccessChanged),
+    /// 更新中心状态变化（`update://state`）。
+    UpdateState(Box<flare_access::release::UpdateStatus>),
 }
 
 /// 消息域事件：收到新消息、发送成功/失败、撤回、正在输入、批量新消息
@@ -267,6 +260,18 @@ impl SyncNotify {
     }
 }
 
+/// `ExtensionEvent.source` of a tenant config notice for an extension's topic:
+/// `event_type` is the topic, `payload` `{"version": "<decimal>", "tenantWide": bool}`.
+/// Published after the notice's spread; Core never interprets a topic.
+pub const TENANT_NOTICE_SOURCE: &str = "flare.tenant_notice";
+/// The topic of the tenant's plugin catalog, which the SDK handles itself
+/// (announced as `PluginEvent::CatalogChanged`).
+pub const PLUGIN_CATALOG_TOPIC: &str = "flare.plugin.catalog";
+/// 租户通知里接入清单的 topic：`version` 是最新清单的 serial。
+pub const ACCESS_MANIFEST_TOPIC: &str = "flare.access";
+/// 租户通知里发布清单的 topic：只作触发，`version` 不与具体平台渠道的 serial 对应。
+pub const RELEASE_MANIFEST_TOPIC: &str = "flare.release";
+
 /// 扩展域事件：业务自定义推送
 #[derive(Clone, Debug)]
 pub struct ExtensionEvent {
@@ -314,7 +319,14 @@ pub enum PluginEvent {
 /// Notification 域事件：IM 下行 `NotificationContent`（与聊天 `MessageEvent::Received` 分离）。
 #[derive(Clone, Debug)]
 pub enum NotificationEvent {
-    Received { message: Box<IMMessage> },
+    Received {
+        message: Box<IMMessage>,
+    },
+    /// One optional foreground sound for a newly delivered message batch.
+    MessageSound {
+        conversation_id: String,
+        message_id: String,
+    },
 }
 
 /// 同步阶段（用于 SyncFinished）

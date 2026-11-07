@@ -10,37 +10,37 @@ pub(crate) fn verify_network_reconnect_gate(root: &Path) -> Result<()> {
     require_contains_all(
         &mut errors,
         &root.join("docs/client-network-reconnect.md"),
-        "network reconnect doc",
+        "network change doc",
         &[
             "client.connection.notifyNetworkChange",
             "connection.notify_network_change",
-            "active reconnect",
-            "single-flight",
+            "fingerprintHint",
+            "lifecycle.setAppState",
+            "link supervisor",
         ],
     );
 
+    // The link supervisor owns reconnecting; a network change only updates the fingerprint and
+    // tells the supervisor.
     require_contains_all(
         &mut errors,
         &sdk_root.join("src/client/im_client/session_lifecycle.rs"),
-        "network reconnect runtime",
+        "network change runtime",
         &[
             "pub async fn notify_network_change",
-            "reconnect_snapshot",
-            "reconnect_current_engine",
-            "try_begin_network_reconnect",
-            "finish_network_reconnect",
-            "network change reconnect already in flight; coalescing event",
-            "network change reported; proactively reconnecting SDK session",
+            "access.set_network(",
+            "link.network_changed(event.available, changed)",
         ],
     );
 
     require_contains_all(
         &mut errors,
         &sdk_root.join("bindings/contract/direct_invoke.json"),
-        "network reconnect direct invoke contract",
+        "network change direct invoke contract",
         &[
             "\"route\": \"connection.notify_network_change\"",
             "NetworkChangeEvent",
+            "fingerprint_hint: dispatch_support::optional_string(request, \\\"fingerprintHint\\\")",
             "client.notify_network_change(event).await",
         ],
     );
@@ -48,18 +48,17 @@ pub(crate) fn verify_network_reconnect_gate(root: &Path) -> Result<()> {
     require_contains_all(
         &mut errors,
         &root.join("sdk-spec/modules/connection.json"),
-        "network reconnect SDK API contract",
+        "network change SDK API contract",
         &[
             "\"name\": \"notifyNetworkChange\"",
             "\"operation\": \"connection.notify_network_change\"",
             "\"request\": \"NetworkChangeRequest\"",
-            "\"response\": \"NetworkChangeResponse\"",
         ],
     );
     require_contains_all(
         &mut errors,
         &root.join("sdk-spec/models/connection.json"),
-        "network reconnect SDK model contract",
+        "network change SDK model contract",
         &[
             "\"name\": \"NetworkChangeRequest\"",
             "\"name\": \"NetworkInterfaceKind\"",
@@ -69,19 +68,24 @@ pub(crate) fn verify_network_reconnect_gate(root: &Path) -> Result<()> {
             "\"name\": \"available\"",
             "\"name\": \"interface\"",
             "\"type\": \"NetworkInterfaceKind\"",
-            "\"name\": \"NetworkChangeResponse\"",
-            "\"name\": \"reconnected\"",
+            "\"name\": \"fingerprintHint\"",
         ],
+    );
+    require_absent(
+        &mut errors,
+        &root.join("sdk-spec/models/connection.json"),
+        "network change SDK model contract",
+        &["NetworkChangeResponse", "\"reconnected\""],
     );
 
     require_contains_all(
         &mut errors,
         &root.join("packages/flare-core-flutter-sdk/lib/src/adapter/codec/wire_codec.dart"),
-        "Flutter network reconnect codec",
+        "Flutter network change codec",
         &[
             "Map<String, Object?> networkChangeRequestToMap(NetworkChangeRequest request)",
             "'interface': request.interface!.name",
-            "NetworkChangeResponse networkChangeResponseFromJson",
+            "'fingerprintHint': request.fingerprintHint!",
         ],
     );
     require_contains_all(
@@ -89,11 +93,11 @@ pub(crate) fn verify_network_reconnect_gate(root: &Path) -> Result<()> {
         &root.join(
             "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Adapter/Codec/WireCodec.swift",
         ),
-        "Apple network reconnect codec",
+        "Apple network change codec",
         &[
             "func networkChangeRequestToMap(_ request: NetworkChangeRequest)",
-            "\"interface\": wrapSendable(request.interface?.rawValue)",
-            "func networkChangeResponseToMap(_ request: NetworkChangeResponse)",
+            "map[\"interface\"] = wrapSendable(interface.rawValue)",
+            "map[\"fingerprintHint\"]",
         ],
     );
     require_contains_all(
@@ -101,7 +105,7 @@ pub(crate) fn verify_network_reconnect_gate(root: &Path) -> Result<()> {
         &root.join(
             "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/model/command/NetworkChangeRequest.kt",
         ),
-        "Android network reconnect model",
+        "Android network change model",
         &["val `interface`: NetworkInterfaceKind? = null"],
     );
     require_contains_all(
@@ -109,11 +113,11 @@ pub(crate) fn verify_network_reconnect_gate(root: &Path) -> Result<()> {
         &root.join(
             "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter/codec/WireCodec.kt",
         ),
-        "Android network reconnect codec",
+        "Android network change codec",
         &[
             "fun networkInterfaceKindWireValue(value: NetworkInterfaceKind): String",
             "request.`interface`?.let { put(\"interface\", networkInterfaceKindWireValue(it)) }",
-            "fun networkChangeResponseFromJson(value: Any?): NetworkChangeResponse",
+            "request.fingerprintHint?.let { put(\"fingerprintHint\", it) }",
         ],
     );
     require_contains_all(
@@ -121,21 +125,18 @@ pub(crate) fn verify_network_reconnect_gate(root: &Path) -> Result<()> {
         &root.join(
             "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter/module/DefaultConnectionApi.kt",
         ),
-        "Android network reconnect adapter",
-        &[
-            "override suspend fun notifyNetworkChange(request: NetworkChangeRequest): NetworkChangeResponse",
-            "networkChangeResponseFromJson(invokeMap(bridge, NativeCallMap.CONNECTION_NOTIFY_NETWORK_CHANGE, networkChangeRequestToMap(request)))",
-        ],
+        "Android network change adapter",
+        &["override suspend fun notifyNetworkChange(request: NetworkChangeRequest): Unit"],
     );
     require_contains_all(
         &mut errors,
         &root
             .join("packages/flare-core-harmony-arkts-sdk/src/main/ets/adapter/codec/WireCodec.ets"),
-        "ArkTS network reconnect codec",
+        "ArkTS network change codec",
         &[
             "export function networkChangeRequestToMap(request: NetworkChangeRequest)",
             "interface: request.interface",
-            "export function networkChangeResponseFromJson(value: Object | undefined): NetworkChangeResponse",
+            "fingerprintHint: request.fingerprintHint",
         ],
     );
     require_contains_all(
@@ -143,20 +144,17 @@ pub(crate) fn verify_network_reconnect_gate(root: &Path) -> Result<()> {
         &root.join(
             "packages/flare-core-harmony-arkts-sdk/src/main/ets/adapter/module/DefaultConnectionApi.ets",
         ),
-        "ArkTS network reconnect adapter",
-        &[
-            "async notifyNetworkChange(request: NetworkChangeRequest): Promise<NetworkChangeResponse>",
-            "networkChangeResponseFromJson(raw)",
-        ],
+        "ArkTS network change adapter",
+        &["async notifyNetworkChange(request: NetworkChangeRequest): Promise<void>"],
     );
     require_contains_all(
         &mut errors,
         &root.join("packages/flare-core-harmony-cangjie-sdk/src/adapter/codec/WireCodec.cj"),
-        "Cangjie network reconnect codec",
+        "Cangjie network change codec",
         &[
             "public func networkInterfaceKindWireValue(value: NetworkInterfaceKind): String",
             "jsonPutString(json, \"interface\", networkInterfaceKindWireValue(value))",
-            "public func networkChangeResponseFromJson(raw: String): NetworkChangeResponse",
+            "jsonPutString(json, \"fingerprintHint\", value)",
         ],
     );
     require_contains_all(
@@ -164,25 +162,46 @@ pub(crate) fn verify_network_reconnect_gate(root: &Path) -> Result<()> {
         &root.join(
             "packages/flare-core-harmony-cangjie-sdk/src/adapter/module/DefaultConnectionApi.cj",
         ),
-        "Cangjie network reconnect adapter",
+        "Cangjie network change adapter",
+        &["public func notifyNetworkChange(request: NetworkChangeRequest): Unit"],
+    );
+    // Browser runtimes report reachability from the platform lifecycle installed at init.
+    require_contains_all(
+        &mut errors,
+        &root.join("packages/flare-core-typescript-sdk/src/lifecycle/platformLifecycle.ts"),
+        "TypeScript platform lifecycle",
         &[
-            "public func notifyNetworkChange(request: NetworkChangeRequest): NetworkChangeResponse",
-            "networkChangeResponseFromJson(raw)",
+            "connection.notifyNetworkChange",
+            "fingerprintHint",
+            "\"online\"",
+            "\"offline\"",
+            "lifecycle.setAppState",
         ],
     );
 
     require_contains_all(
         &mut errors,
         &sdk_root.join("src/client/im_client/tests.rs"),
-        "network reconnect regression test",
-        &[
-            "network_change_is_noop_without_session",
-            "network_change_reconnect_is_single_flight",
-            "notify_network_change(NetworkChangeEvent",
-        ],
+        "network change regression test",
+        &["network_change_without_session_only_updates_the_fingerprint"],
     );
 
     emit_errors("network reconnect gate", errors)
+}
+
+fn require_absent(errors: &mut Vec<String>, path: &Path, label: &str, needles: &[&str]) {
+    let Ok(text) = fs::read_to_string(path) else {
+        fail(
+            errors,
+            format!("{label} missing or unreadable: {}", path.display()),
+        );
+        return;
+    };
+    for needle in needles {
+        if text.contains(needle) {
+            fail(errors, format!("{label} still contains removed `{needle}`"));
+        }
+    }
 }
 
 fn require_contains_all(errors: &mut Vec<String>, path: &Path, label: &str, needles: &[&str]) {

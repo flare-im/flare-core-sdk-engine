@@ -21,9 +21,12 @@ async fn runtime_health_reports_event_bus_backpressure_metrics() {
     let _slow_subscriber = bus.subscribe_raw();
 
     for attempt in 0..4 {
-        let _ = bus.publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
-            reason: format!("test-backpressure-{attempt}"),
-        }));
+        let _ = bus.publish(SdkEvent::Connection(ConnectionEvent::Status(
+            ConnectionStatus {
+                attempt,
+                ..ConnectionStatus::idle(false)
+            },
+        )));
     }
 
     let snapshot = client.runtime_health_snapshot().await;

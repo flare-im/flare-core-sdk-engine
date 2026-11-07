@@ -1,0 +1,344 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "prompt": "sheet"
+      },
+      "input": {
+        "build": 20400,
+        "history": {},
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "optional"
+      },
+      "name": "optional, first time"
+    },
+    {
+      "expected": {
+        "prompt": "badge"
+      },
+      "input": {
+        "build": 20400,
+        "history": {
+          "sheetShownBuilds": [
+            20400
+          ]
+        },
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "optional"
+      },
+      "name": "optional, sheet already shown"
+    },
+    {
+      "expected": {
+        "prompt": "sheet"
+      },
+      "input": {
+        "build": 20400,
+        "history": {
+          "sheetShownBuilds": [
+            20302
+          ]
+        },
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "optional"
+      },
+      "name": "optional, sheet shown for an older version"
+    },
+    {
+      "expected": {
+        "prompt": "badge"
+      },
+      "input": {
+        "build": 20400,
+        "history": {},
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": [
+            20400
+          ]
+        },
+        "urgency": "optional"
+      },
+      "name": "optional, shown this session"
+    },
+    {
+      "expected": {
+        "prompt": "none"
+      },
+      "input": {
+        "build": 20400,
+        "history": {
+          "skippedBuilds": [
+            20400
+          ]
+        },
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "optional"
+      },
+      "name": "optional, skipped"
+    },
+    {
+      "expected": {
+        "prompt": "modal"
+      },
+      "input": {
+        "build": 20400,
+        "history": {},
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "recommended"
+      },
+      "name": "recommended, first time"
+    },
+    {
+      "expected": {
+        "prompt": "badge"
+      },
+      "input": {
+        "build": 20400,
+        "history": {
+          "lastModalAtMs": 1793775600000
+        },
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "recommended"
+      },
+      "name": "recommended, shown an hour ago"
+    },
+    {
+      "expected": {
+        "prompt": "badge"
+      },
+      "input": {
+        "build": 20400,
+        "history": {
+          "lastModalAtMs": 1793692800001
+        },
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "recommended"
+      },
+      "name": "recommended, shown just under a day ago"
+    },
+    {
+      "expected": {
+        "prompt": "modal"
+      },
+      "input": {
+        "build": 20400,
+        "history": {
+          "lastModalAtMs": 1793692800000
+        },
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "recommended"
+      },
+      "name": "recommended, shown a day ago"
+    },
+    {
+      "expected": {
+        "prompt": "badge"
+      },
+      "input": {
+        "build": 20400,
+        "history": {
+          "deferredUntilMs": 1793779200001
+        },
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "recommended"
+      },
+      "name": "recommended, deferred"
+    },
+    {
+      "expected": {
+        "prompt": "modal"
+      },
+      "input": {
+        "build": 20400,
+        "history": {
+          "deferredUntilMs": 1793779200000
+        },
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "recommended"
+      },
+      "name": "recommended, deferral over"
+    },
+    {
+      "expected": {
+        "prompt": "badge"
+      },
+      "input": {
+        "build": 20400,
+        "history": {},
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": [
+            20400
+          ]
+        },
+        "urgency": "recommended"
+      },
+      "name": "recommended, shown this session"
+    },
+    {
+      "expected": {
+        "prompt": "none"
+      },
+      "input": {
+        "build": 20400,
+        "history": {
+          "skippedBuilds": [
+            20400
+          ]
+        },
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "recommended"
+      },
+      "name": "recommended, skipped"
+    },
+    {
+      "expected": {
+        "prompt": "modal"
+      },
+      "input": {
+        "build": 20400,
+        "history": {},
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "required"
+      },
+      "name": "required, launch"
+    },
+    {
+      "expected": {
+        "prompt": "badge"
+      },
+      "input": {
+        "build": 20400,
+        "history": {},
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": true,
+          "shownBuilds": []
+        },
+        "urgency": "required"
+      },
+      "name": "required, shown since the last foreground"
+    },
+    {
+      "expected": {
+        "prompt": "modal"
+      },
+      "input": {
+        "build": 20400,
+        "history": {
+          "deferredUntilMs": 1793779200001,
+          "skippedBuilds": [
+            20400
+          ]
+        },
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "required"
+      },
+      "name": "required ignores deferral and skip"
+    },
+    {
+      "expected": {
+        "prompt": "modal"
+      },
+      "input": {
+        "build": null,
+        "history": {},
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "required"
+      },
+      "name": "required without a release"
+    },
+    {
+      "expected": {
+        "prompt": "fullscreen"
+      },
+      "input": {
+        "build": 20400,
+        "history": {},
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": false,
+          "shownBuilds": []
+        },
+        "urgency": "blocking"
+      },
+      "name": "blocking, launch"
+    },
+    {
+      "expected": {
+        "prompt": "fullscreen"
+      },
+      "input": {
+        "build": 20400,
+        "history": {},
+        "nowMs": 1793779200000,
+        "session": {
+          "requiredShown": true,
+          "shownBuilds": []
+        },
+        "urgency": "blocking"
+      },
+      "name": "blocking, already shown"
+    }
+  ],
+  "description": "Update prompt frequency. optional: badge, one sheet per version. recommended: modal at most once in 24 hours, deferring silences it for 24 hours. required: modal at each launch and foreground (requiredShown resets), then badge; blocking stays fullscreen. Within one session a version never pops twice. A skipped version stays quiet. build is null when a forced update has no usable release."
+}

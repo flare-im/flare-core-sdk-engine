@@ -13,7 +13,7 @@ use crate::shared::error::{ErrorCode, FlareError, Result};
 /// 宿主托管令牌时的连接令牌续期回调。
 ///
 /// 核心自己只会向 SDK 托管的签发端点换令牌（[`GatewayTokenProvider`]，要配
-/// `auth.token_endpoint`）。令牌由宿主递进来时（例如社交网关连同 IM 连接令牌一起签发），
+/// `auth`）。令牌由宿主递进来时（例如社交网关连同 IM 连接令牌一起签发），
 /// 核心没有渠道换新：连接一断，重连就一直拿着那枚过期令牌去撞网关，网关回通用的鉴权失败，
 /// 核心只记日志、不发任何事件，宿主也就无从知道该续期了。实测 web 端因此两个多小时重连
 /// 三百多次、始终连不上。
@@ -77,33 +77,48 @@ struct IssueBody<'a> {
     device_id: Option<&'a str>,
 }
 
-/// 向网关签发/刷新 token。`base_url` 是网关基址（`http://host/api`），路径由这里拼。
-#[derive(Debug, Clone)]
+/// 向 Core API 签发/换新连接令牌（SDK 托管形态）。
+///
+/// 请求经按服务路由的 Core API 客户端发出（换接入点与重试照 §3.9），基址来自接入配置；这里只有路径：
+/// 签发是配置的路径（默认 `/api/v1/auth/tokens`），换新是它后面加 `/refresh`。
+#[derive(Clone)]
 pub struct GatewayTokenProvider {
-    base_url: String,
+    issue_path: String,
     tenant_id: Option<String>,
     device_id: Option<String>,
+    http: HttpClient,
+}
+
+impl std::fmt::Debug for GatewayTokenProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GatewayTokenProvider")
+            .field("issue_path", &self.issue_path)
+            .finish()
+    }
 }
 
 impl GatewayTokenProvider {
+    /// `http` 是 Core API 的路由客户端，不该带会话鉴权头：签发与换新各自给出凭据。
     pub fn new(
-        base_url: impl Into<String>,
+        http: HttpClient,
+        issue_path: impl Into<String>,
         tenant_id: Option<String>,
         device_id: Option<String>,
     ) -> Self {
         Self {
-            base_url: base_url.into().trim().trim_end_matches('/').to_string(),
+            issue_path: issue_path.into(),
             tenant_id,
             device_id,
+            http,
         }
     }
 
-    pub fn issue_url(&self) -> String {
-        format!("{}/api/v1/auth/tokens", self.base_url)
+    pub fn issue_path(&self) -> &str {
+        &self.issue_path
     }
 
-    pub fn refresh_url(&self) -> String {
-        format!("{}/api/v1/auth/tokens/refresh", self.base_url)
+    pub fn refresh_path(&self) -> String {
+        format!("{}/refresh", self.issue_path)
     }
 
     pub async fn issue(&self, user_id: &str) -> Result<IssuedAccessToken> {
@@ -114,52 +129,58 @@ impl GatewayTokenProvider {
                 "user_id is required",
             ));
         }
-        let client = HttpClient::new(self.base_url.clone());
         let body = IssueBody {
             user_id,
             tenant_id: self.tenant_id.as_deref(),
             device_id: self.device_id.as_deref(),
         };
-        let envelope: Envelope<IssuedAccessToken> = client
-            .post_full_url(&self.issue_url(), &body)
-            .await
-            .map_err(|err| token_endpoint_error("issue", &self.issue_url(), err))?;
+        let envelope: Envelope<IssuedAccessToken> =
+            self.http
+                .post(&self.issue_path, &body)
+                .await
+                .map_err(|err| token_endpoint_error("issue", &self.issue_path, err))?;
         unwrap_envelope("issue", envelope)
     }
 
     pub async fn refresh(&self, current_token: &str) -> Result<IssuedAccessToken> {
-        let client = HttpClient::new(self.base_url.clone());
         let mut headers = HashMap::new();
         headers.insert(
             "Authorization".to_string(),
             format!("Bearer {}", current_token.trim()),
         );
-        let envelope: Envelope<IssuedAccessToken> = client
-            .post_with_headers(
-                "/api/v1/auth/tokens/refresh",
-                &serde_json::json!({}),
-                &headers,
-            )
+        let refresh_path = self.refresh_path();
+        let envelope: Envelope<IssuedAccessToken> = self
+            .http
+            .post_with_headers(&refresh_path, &serde_json::json!({}), &headers)
             .await
-            .map_err(|err| token_endpoint_error("refresh", &self.refresh_url(), err))?;
+            .map_err(|err| token_endpoint_error("refresh", &refresh_path, err))?;
         unwrap_envelope("refresh", envelope)
     }
 }
 
-fn token_endpoint_error(action: &str, url: &str, err: FlareError) -> FlareError {
-    // 网关 401/403 是鉴权问题（联调开关没开 / 凭据不对 / 旧 token 超宽限），其余是网关不可达。
-    let text = err.to_string();
+fn token_endpoint_error(action: &str, path: &str, err: FlareError) -> FlareError {
+    // 网关 401/403 是鉴权问题（联调开关没开 / 凭据不对 / 旧 token 超宽限）；网关答了别的是服务不可用；
+    // 没有答复（连不上、结果未知）是网络问题——链路按网络失败退避，`connect` 报 NETWORK_UNREACHABLE。
+    let status = err
+        .as_localized()
+        .and_then(|error| error.params)
+        .and_then(|params| {
+            params
+                .get("httpStatus")
+                .and_then(|status| status.parse::<u16>().ok())
+        });
     let code = if matches!(err.code(), Some(ErrorCode::AuthenticationFailed))
-        || text.contains("401")
-        || text.contains("403")
+        || matches!(status, Some(401 | 403))
     {
         ErrorCode::AuthenticationFailed
-    } else {
+    } else if status.is_some() {
         ErrorCode::ServiceUnavailable
+    } else {
+        ErrorCode::NetworkUnreachable
     };
     FlareError::localized(
         code,
-        format!("token {action} via gateway failed ({url}): {err}"),
+        format!("token {action} via the Core API failed ({path}): {err}"),
     )
 }
 
@@ -224,13 +245,15 @@ mod tests {
     }
 
     #[test]
-    fn urls_are_built_from_the_base_without_double_slashes() {
-        let p = GatewayTokenProvider::new("http://host/api/", None, None);
-        assert_eq!(p.issue_url(), "http://host/api/api/v1/auth/tokens");
-        assert_eq!(
-            p.refresh_url(),
-            "http://host/api/api/v1/auth/tokens/refresh"
+    fn refresh_follows_the_issue_path() {
+        let p = GatewayTokenProvider::new(
+            HttpClient::new(""),
+            crate::client::config::SdkAuthConfig::DEFAULT_TOKEN_PATH,
+            None,
+            None,
         );
+        assert_eq!(p.issue_path(), "/api/v1/auth/tokens");
+        assert_eq!(p.refresh_path(), "/api/v1/auth/tokens/refresh");
     }
 
     #[test]

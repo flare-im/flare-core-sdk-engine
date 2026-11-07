@@ -6,21 +6,27 @@ use crate::{
 impl IMClient {
     pub(super) async fn configure_push_transport(&self) {
         use crate::client::lifecycle::merge_sdk_config_onto;
-        use crate::infrastructure::transport::http::HttpClient;
+        use crate::infrastructure::transport::http::router::HttpRouter;
+        use crate::infrastructure::transport::http::{HttpClient, HttpRequestContext};
         let configured = {
             let g = self.inner.read().await;
             let base = g.configured_config.clone().unwrap_or_default();
-            let config = merge_sdk_config_onto(base, "", g.sdk_config.as_ref());
+            let config = merge_sdk_config_onto(base, g.sdk_config.as_ref());
             match (
-                config.http_url.clone(),
+                g.access.clone(),
                 config.device_id.clone(),
                 g.data_root.clone(),
             ) {
-                (Some(url), Some(device), Some(root)) if !url.is_empty() && !device.is_empty() => {
+                (Some(access), Some(device), Some(root))
+                    if access.config().is_some() && !device.is_empty() =>
+                {
+                    // 推送撤销走 Core API，与其它 REST 一样按接入点路由；不带任何会话凭据。
+                    let router = HttpRouter::new(access, flare_access::ServiceClass::CoreApi);
+                    let context = std::sync::Arc::new(HttpRequestContext::new());
                     #[cfg(not(target_arch = "wasm32"))]
-                    let http = HttpClient::with_tls(url, config.core_tls_config());
+                    let http = HttpClient::routed(router, context, config.core_tls_config());
                     #[cfg(target_arch = "wasm32")]
-                    let http = HttpClient::new(url);
+                    let http = HttpClient::routed(router, context);
                     Some((http, root, device))
                 }
                 _ => None,

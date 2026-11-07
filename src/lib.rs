@@ -41,6 +41,23 @@ pub use serde;
 pub use serde_json;
 
 /// Event subscription and SDK event payload facade.
+/// 客户端链路：接入配置、接入运行时与诊断数据、HTTP 路由（社交 SDK 等经它按服务路由与带幂等键重试）。
+pub mod link {
+    pub use crate::infrastructure::transport::http::fetch::PlatformHttpFetch;
+    pub use crate::infrastructure::transport::http::router::{
+        HttpRouter, IDEMPOTENCY_KEY_HEADER, new_idempotency_key,
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    #[doc(hidden)]
+    pub use crate::runtime::link::{AccessLab, DialRewrite};
+    pub use crate::runtime::link::{
+        AccessPointDto, AccessRuntime, AccessStatusDto, AccessStoreSource, AccessUnavailable,
+        ConnectAckSummary, RecoveringStatus, RecoveryImportDto, RefreshAttemptDto,
+        RefreshReportDto, RefreshStatus,
+    };
+    pub use flare_access;
+}
+
 pub mod event {
     pub use crate::domain::SendFailure;
     pub use crate::kernel::event::*;
@@ -100,12 +117,16 @@ pub use core::event::{
     FilteredEventReceiver, PublishOutcome, RawSdkEvent, SdkEvent, SdkEventKind, SdkEventType,
     SharedEventReceiver,
 };
+/// Connect failures the link recovers from by itself: `login` / `connect` succeed and the session stays.
+pub use shared::error::link_keeps_session;
 pub use shared::error::{ErrorCode, FlareError, Result};
 /// An error naming the messages an operation refused (`refusedMessageIds` in the binding error).
 pub use shared::error::{
     MAX_REFUSED_MESSAGE_ID_BYTES, MAX_REFUSED_MESSAGE_IDS, REFUSED_MESSAGE_IDS,
     refused_message_ids, refusing_messages,
 };
+/// An overload error carrying the server's retry wait (`retryAfterMs` in the binding error).
+pub use shared::error::{MAX_RETRY_AFTER_MS, RETRY_AFTER_MS, retry_after_ms, retrying_after};
 /// 跨平台异步延时（wasm 用 JS 定时器，native 用 tokio）。供 SDK 上层做有界重试等。
 pub use shared::util::time::delay;
 
@@ -121,9 +142,9 @@ pub mod prelude {
         CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, ConnectedApis,
         ConversationApi, CoreTokenConfig, CreateLocationRequest, CreateRichDocRequest,
         CreateStickerRequest, EditRichDocRequest, IMClient, IMClientBuilder, LoginDbKind, MediaApi,
-        MessageApi, MessageBuildApi, NetworkChangeEvent, RuntimeHealthSnapshot, SdkConfig,
-        SdkConfigBuilder, SdkConfigOverlay, SdkResourceProfile, SdkRuntimeResources,
-        ServerClockEstimate, TlsConfig, TransportKind, TransportPolicy, UserCapabilityGrantDto,
+        MessageApi, MessageBuildApi, NetworkChangeEvent, PinnedAccessPoint, RuntimeHealthSnapshot,
+        SdkAppConfig, SdkConfig, SdkConfigBuilder, SdkConfigOverlay, SdkResourceProfile,
+        SdkRuntimeResources, ServerClockEstimate, TlsConfig, UserCapabilityGrantDto,
     };
     pub use crate::domain::{
         ConversationStore, DEFAULT_MEDIA_CACHE_MAX_BYTES, MediaCacheEntryVo, MediaCacheStatsVo,
@@ -160,6 +181,10 @@ pub mod prelude {
     pub use crate::infrastructure::transport::{
         HttpApiResponse, HttpClient, HttpRequestContext, unwrap_api_response,
         unwrap_optional_api_response, unwrap_void_api_response,
+    };
+    pub use crate::kernel::event::{
+        AccessChanged, AccessSwitched, ActionRequiredReason, ConnectionPhase, ConnectionStatus,
+        LinkQuality, SwitchReason,
     };
     pub use crate::kernel::event::{
         ConnectionEvent, ConnectionEventType, ConversationEvent, ConversationEventType,
@@ -207,4 +232,5 @@ pub mod prelude {
         HistogramSnapshot, InMemoryMetricsSink, MetricLabel, MetricsRecorder, MetricsSink,
         MetricsSnapshot,
     };
+    pub use flare_access::{AccessConfig, DevelopmentAccessPoint, DevelopmentEndpoints, TrustMode};
 }

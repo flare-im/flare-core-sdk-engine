@@ -8,7 +8,7 @@ use crate::types::{FlareError, FlareString};
 use flare_im_core_sdk::FlareError as SdkError;
 
 /// 从 SDK FlareError 创建 C ABI FlareError；`details_json` 是结构化错误
-/// `{code, reason, retryable, httpStatus?, remoteCode?, machineReason?, refusedMessageIds?}`
+/// `{code, reason, retryable, retryAfterMs?, httpStatus?, remoteCode?, machineReason?, refusedMessageIds?}`
 /// （`contract/errors.json`），宿主据此识别错误，不解析 `message`。
 #[inline]
 pub fn make_error(err: &SdkError) -> FlareError {
@@ -103,6 +103,28 @@ mod tests {
             details["refusedMessageIds"],
             serde_json::json!(["s-2", "s-3"])
         );
+    }
+
+    /// 过载（C 码 12）的 `details_json` 带着服务端要求的等待时间 `retryAfterMs`，宿主的
+    /// OverloadedException 据此安排重试；服务端没给就不写，别的错误码也不写。
+    #[test]
+    fn an_overload_hands_the_retry_wait_to_the_host() {
+        let overloaded = flare_im_core_sdk::retrying_after(
+            SdkError::localized(ErrorCode::Overloaded, "OVERLOADED"),
+            1_500,
+        );
+        assert_eq!(c_code_of(&overloaded), FLARE_ERR_OVERLOADED);
+        let details = details_of(&overloaded);
+        assert_eq!(details["code"], "OVERLOADED");
+        assert_eq!(details["retryAfterMs"], 1_500);
+
+        let without_wait = SdkError::localized(ErrorCode::Overloaded, "OVERLOADED");
+        assert!(details_of(&without_wait).get("retryAfterMs").is_none());
+        let not_overloaded = flare_im_core_sdk::retrying_after(
+            SdkError::localized(ErrorCode::ServiceUnavailable, "SERVICE_UNAVAILABLE"),
+            1_500,
+        );
+        assert!(details_of(&not_overloaded).get("retryAfterMs").is_none());
     }
 
     /// 连接建立失败、连接被关闭、网络连接丢失都是网络类失败：经 C ABI 交给宿主时是

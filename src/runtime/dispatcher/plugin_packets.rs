@@ -1,25 +1,14 @@
-//! Downlink `DataPacket.capability`: plugin realtime packets and the tenant's
-//! plugin catalog-changed notices (the only capability packets Core sends).
+//! Downlink `DataPacket.capability`: plugin realtime packets (the only
+//! capability packets Core sends; tenant notices have their own payload).
 
 use flare_proto::common::CapabilityPacket;
 use serde_json::Value;
 
 use crate::kernel::event::PluginRealtime;
 
-/// `capability_id` of the tenant's plugin catalog-changed notice.
-pub(super) const PLUGIN_CATALOG_CAPABILITY_ID: &str = "flare.plugin.catalog";
-/// `packet_type` of the catalog-changed notice.
-pub(super) const PLUGIN_CATALOG_CHANGED: &str = "changed";
-
 const ATTR_CONVERSATION_ID: &str = "conversation_id";
 const ATTR_DELIVERY_ID: &str = "delivery_id";
 const ATTR_EXPIRES_AT_MS: &str = "expires_at_ms";
-
-#[derive(Debug, PartialEq)]
-pub(super) enum PluginPacket {
-    Realtime(Box<PluginRealtime>),
-    CatalogChanged { version: String },
-}
 
 /// Why a capability packet was dropped (logged, never surfaced).
 #[derive(Debug, PartialEq, Eq)]
@@ -30,25 +19,11 @@ pub(super) enum Dropped {
 
 /// Reads one downlink capability packet at `now_ms`, the server time estimate
 /// (`expires_at_ms` is the server's clock).
-pub(super) fn classify(packet: CapabilityPacket, now_ms: u64) -> Result<PluginPacket, Dropped> {
-    if packet.capability_id == PLUGIN_CATALOG_CAPABILITY_ID {
-        return catalog_changed(&packet);
-    }
-    realtime(packet, now_ms).map(|realtime| PluginPacket::Realtime(Box::new(realtime)))
-}
-
-fn catalog_changed(packet: &CapabilityPacket) -> Result<PluginPacket, Dropped> {
-    if packet.packet_type != PLUGIN_CATALOG_CHANGED {
-        return Err(Dropped::Malformed("catalog packet_type"));
-    }
-    let payload = serde_json::from_slice::<Value>(&packet.payload)
-        .map_err(|_| Dropped::Malformed("catalog payload"))?;
-    match payload.get("version").and_then(Value::as_str) {
-        Some(version) if !version.is_empty() => Ok(PluginPacket::CatalogChanged {
-            version: version.to_string(),
-        }),
-        _ => Err(Dropped::Malformed("catalog version")),
-    }
+pub(super) fn classify(
+    packet: CapabilityPacket,
+    now_ms: u64,
+) -> Result<Box<PluginRealtime>, Dropped> {
+    realtime(packet, now_ms).map(Box::new)
 }
 
 fn realtime(packet: CapabilityPacket, now_ms: u64) -> Result<PluginRealtime, Dropped> {
@@ -121,21 +96,10 @@ mod tests {
         }
     }
 
-    fn catalog_packet(payload: &[u8]) -> CapabilityPacket {
-        CapabilityPacket {
-            capability_id: PLUGIN_CATALOG_CAPABILITY_ID.into(),
-            packet_type: PLUGIN_CATALOG_CHANGED.into(),
-            version: "1".into(),
-            payload: payload.to_vec(),
-            attributes: HashMap::from([("tenant_id".into(), "t1".into())]),
-            correlation_id: None,
-        }
-    }
-
     #[test]
     fn a_live_realtime_packet_becomes_the_typed_event() {
         let packet = realtime_packet(br#"{"callId":"c-1","version":3}"#, NOW + 60_000);
-        let Ok(PluginPacket::Realtime(realtime)) = classify(packet, NOW) else {
+        let Ok(realtime) = classify(packet, NOW) else {
             panic!("live packet must be delivered");
         };
         assert_eq!(
@@ -204,30 +168,10 @@ mod tests {
         let mut packet = realtime_packet(b"{}", NOW + 1_000);
         packet.attributes.remove("delivery_id");
         packet.correlation_id = Some("d-9".into());
-        let Ok(PluginPacket::Realtime(realtime)) = classify(packet, NOW) else {
+        let Ok(realtime) = classify(packet, NOW) else {
             panic!("packet must be delivered");
         };
         assert_eq!(realtime.delivery_id, "d-9");
-    }
-
-    #[test]
-    fn the_catalog_notice_is_not_a_realtime_packet() {
-        assert_eq!(
-            classify(catalog_packet(br#"{"version":"42"}"#), NOW),
-            Ok(PluginPacket::CatalogChanged {
-                version: "42".into()
-            })
-        );
-        assert_eq!(
-            classify(catalog_packet(br#"{"version":42}"#), NOW),
-            Err(Dropped::Malformed("catalog version"))
-        );
-        let mut other = catalog_packet(br#"{"version":"42"}"#);
-        other.packet_type = "something".into();
-        assert_eq!(
-            classify(other, NOW),
-            Err(Dropped::Malformed("catalog packet_type"))
-        );
     }
 }
 
@@ -236,7 +180,7 @@ mod dispatch_tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use flare_proto::common::CapabilityPacket;
+    use flare_proto::common::{CapabilityPacket, TenantNotice};
     use tokio::sync::RwLock;
 
     use super::super::Dispatcher;
@@ -245,17 +189,17 @@ mod dispatch_tests {
     };
     use crate::application::services::{EventDeduper, MessageDeduper};
     use crate::infrastructure::protocol::DownlinkPayload;
-    use crate::kernel::PluginCatalogNoticePort;
+    use crate::kernel::TenantNoticePort;
     use crate::kernel::event::{EventBus, PluginEvent, SdkEvent};
     use crate::shared::util::now_millis;
     use crate::spi::metrics::MetricsRecorder;
 
     #[derive(Default)]
-    struct Notices(Mutex<Vec<String>>);
+    struct Notices(Mutex<Vec<TenantNotice>>);
 
-    impl PluginCatalogNoticePort for Notices {
-        fn catalog_changed(&self, version: String) {
-            self.0.lock().unwrap().push(version);
+    impl TenantNoticePort for Notices {
+        fn notice(&self, notice: TenantNotice) {
+            self.0.lock().unwrap().push(notice);
         }
     }
 
@@ -275,7 +219,7 @@ mod dispatch_tests {
             ),
             MetricsRecorder::disabled(),
         )
-        .with_plugin_catalog_notices(Some(notices))
+        .with_tenant_notices(Some(notices))
     }
 
     fn realtime(payload: &[u8], expires_at_ms: u64) -> DownlinkPayload {
@@ -295,7 +239,7 @@ mod dispatch_tests {
     }
 
     #[tokio::test]
-    async fn capability_packets_become_plugin_events_and_catalog_notices() {
+    async fn capability_packets_become_plugin_events_and_tenant_notices_reach_the_port() {
         let bus = EventBus::new();
         let mut events = bus.subscribe();
         let notices = Arc::new(Notices::default());
@@ -311,15 +255,14 @@ mod dispatch_tests {
             .await
             .unwrap();
         dispatcher.dispatch(realtime(b"[1]", live)).await.unwrap();
+        let notice = TenantNotice {
+            topic: "flare.plugin.catalog".into(),
+            version: 9,
+            spread_ms: 3_000,
+            tenant_wide: false,
+        };
         dispatcher
-            .dispatch(DownlinkPayload::Capability(CapabilityPacket {
-                capability_id: super::PLUGIN_CATALOG_CAPABILITY_ID.into(),
-                packet_type: super::PLUGIN_CATALOG_CHANGED.into(),
-                version: "1".into(),
-                payload: br#"{"version":"9"}"#.to_vec(),
-                attributes: HashMap::from([("tenant_id".into(), "t1".into())]),
-                correlation_id: None,
-            }))
+            .dispatch(DownlinkPayload::TenantNotice(notice.clone()))
             .await
             .unwrap();
 
@@ -330,13 +273,13 @@ mod dispatch_tests {
                     delivered.push(realtime.payload["callId"].clone())
                 }
                 SdkEvent::Plugin(PluginEvent::CatalogChanged { .. }) => {
-                    panic!("the dispatcher hands catalog notices to the port, never to the bus")
+                    panic!("the dispatcher hands tenant notices to the port, never to the bus")
                 }
                 _ => {}
             }
         }
         assert_eq!(delivered, vec![serde_json::json!("c-1")]);
-        assert_eq!(*notices.0.lock().unwrap(), vec!["9".to_string()]);
+        assert_eq!(*notices.0.lock().unwrap(), vec![notice]);
     }
 
     /// The packet's expiry is the server's clock. A device clock minutes ahead

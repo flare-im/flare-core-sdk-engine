@@ -1,7 +1,8 @@
 //! Core SDK event to Tauri IPC payload conversion.
 //!
-//! The shared binding runtime owns canonical event payloads and `im://*`
-//! channels. Tauri only adapts the shared tuple into `Emitter::emit`.
+//! The shared binding runtime owns canonical event payloads and channels
+//! (`im://*`, `connection://status`, `access://*`). Tauri only adapts the shared
+//! tuple into `Emitter::emit`.
 
 use flare_im_core_sdk::event::SdkEvent;
 use flare_im_core_sdk::serde_json::Value;

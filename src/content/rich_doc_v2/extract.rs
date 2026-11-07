@@ -1,7 +1,6 @@
 //! 从 Rich Doc v2 JSON 派生 `plain_text` / `search_text` / `render_hints`（权威实现）。
 
 use serde_json::{Map, Value, json};
-use unicode_normalization::UnicodeNormalization;
 
 use super::RichDocV2Error;
 
@@ -182,10 +181,21 @@ fn inline_plain_into(n: &Value, out: &mut String) -> Result<(), RichDocV2Error> 
     Ok(())
 }
 
+/// NFKC。`unicode-normalization` 的表在 wasm 成品里占十来万字节，浏览器自带同样的能力。
+#[cfg(not(target_arch = "wasm32"))]
+fn nfkc(text: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    text.chars().nfkc().collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn nfkc(text: &str) -> String {
+    js_sys::JsString::from(text).normalize("NFKC").into()
+}
+
 /// NFKC + 小写 + 空白折叠（检索管道；与 proto 注释一致）。
 pub fn normalize_for_search(plain: &str) -> String {
-    let n: String = plain.chars().nfkc().collect();
-    let lower = n.to_lowercase();
+    let lower = nfkc(plain).to_lowercase();
     let mut out = String::with_capacity(lower.len());
     let mut prev_space = true;
     for ch in lower.chars() {
@@ -209,5 +219,20 @@ mod tests {
     #[test]
     fn search_collapses_space() {
         assert_eq!(normalize_for_search("  Hello   World\n\t"), "hello world");
+    }
+
+    #[test]
+    fn search_folds_compatibility_forms() {
+        // 全角字母和数字、表意空格、连字、带圈数字、单位符号都折成基本形式。
+        assert_eq!(normalize_for_search("ＡＢＣ\u{3000}１２３"), "abc 123");
+        assert_eq!(
+            normalize_for_search("\u{fb01}le \u{2460} \u{338f}"),
+            "file 1 kg"
+        );
+        // 组合字符合成，分解形式和预组合形式检索到同一个串。
+        assert_eq!(
+            normalize_for_search("cafe\u{301}"),
+            normalize_for_search("caf\u{e9}")
+        );
     }
 }

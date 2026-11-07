@@ -1,145 +1,28 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::session_watchers::recovered_connection_state;
-use super::{
-    HeartbeatAppState, IMClient, NetworkChangeEvent, SdkConfigOverlay, SdkState, reconnect_delay,
-    reconnect_delay_bounds_secs, should_skip_reconnect_for_disconnect_reason,
-};
+use super::{HeartbeatAppState, IMClient, NetworkChangeEvent, SdkConfigOverlay, SdkState};
 use crate::infrastructure::persistence::in_memory_empty_im_provider;
 use crate::infrastructure::transport::http::HttpRequestContext;
 use crate::shared::error::ErrorCode;
 use crate::shared::util::CoreTokenConfig;
 
-#[test]
-fn reconnect_delay_uses_capped_exponential_backoff_with_jitter_window() {
-    assert_eq!(reconnect_delay_bounds_secs(5, 1), (4, 6));
-    assert_eq!(reconnect_delay_bounds_secs(5, 2), (8, 12));
-    assert_eq!(reconnect_delay_bounds_secs(5, 3), (16, 24));
-    assert_eq!(reconnect_delay_bounds_secs(5, 4), (24, 30));
-    assert_eq!(reconnect_delay_bounds_secs(5, 10), (24, 30));
-
-    for attempt in 1..=10 {
-        let (min, max) = reconnect_delay_bounds_secs(5, attempt);
-        let actual = reconnect_delay(5, attempt);
-        assert!(
-            (Duration::from_secs(min)..=Duration::from_secs(max)).contains(&actual),
-            "attempt {attempt} delay {actual:?} outside {min}..={max}s"
-        );
-    }
-}
-
-/// 抖动按毫秒取值：同一窗口里的取值铺开，而不是只落在几个整秒上（以前 5 s 间隔的第一次重连只有
-/// 4、5、6 s 三个取值）。暂时性拒绝（SERVICE_UNAVAILABLE）、服务端重启后的重连都走这条退避。
-#[test]
-fn reconnect_jitter_is_spread_at_millisecond_granularity() {
-    let distinct: std::collections::HashSet<Duration> =
-        (0..200).map(|_| reconnect_delay(5, 1)).collect();
-    assert!(
-        distinct.len() > 50,
-        "only {} distinct delays in 200 draws",
-        distinct.len()
-    );
-    assert!(
-        distinct
-            .iter()
-            .all(|delay| (Duration::from_secs(4)..=Duration::from_secs(6)).contains(delay))
-    );
-}
-
-#[test]
-fn stale_reconnect_only_restores_a_stable_connected_engine_state() {
-    assert_eq!(
-        recovered_connection_state(SdkState::Ready, true),
-        Some(SdkState::Ready)
-    );
-    assert_eq!(
-        recovered_connection_state(SdkState::Connected, true),
-        Some(SdkState::Connected)
-    );
-    assert_eq!(
-        recovered_connection_state(SdkState::Reconnecting, true),
-        None,
-        "an in-flight reconnect must publish its own completion"
-    );
-    assert_eq!(
-        recovered_connection_state(SdkState::Ready, false),
-        None,
-        "an unavailable transport must never clear the reconnect notice"
-    );
-}
-
 #[tokio::test]
-async fn heartbeat_app_state_snapshot_updates_without_session() {
+async fn app_state_snapshot_updates_without_session() {
     let client = IMClient::new();
     assert!(client.is_app_foreground_snapshot());
 
     client
-        .set_heartbeat_app_state(HeartbeatAppState::Background)
+        .set_app_state(HeartbeatAppState::Background)
         .await
         .expect("background app state should be accepted before login");
     assert!(!client.is_app_foreground_snapshot());
 
     client
-        .set_heartbeat_app_state(HeartbeatAppState::Foreground)
+        .set_app_state(HeartbeatAppState::Foreground)
         .await
         .expect("foreground app state should be accepted before login");
     assert!(client.is_app_foreground_snapshot());
-}
-
-#[test]
-fn local_client_disconnect_reasons_do_not_schedule_reconnect() {
-    assert!(should_skip_reconnect_for_disconnect_reason(
-        "Client disconnected"
-    ));
-    assert!(should_skip_reconnect_for_disconnect_reason(
-        "Closed by client"
-    ));
-    assert!(should_skip_reconnect_for_disconnect_reason(
-        " transport: Client disconnected "
-    ));
-    assert!(should_skip_reconnect_for_disconnect_reason(
-        "websocket Closed by client"
-    ));
-}
-
-/// 租户不可用的断开不排重连：网关只会再拒一次，由 KickedOff 交给应用。
-#[test]
-fn tenant_unavailable_disconnect_does_not_schedule_reconnect() {
-    assert!(should_skip_reconnect_for_disconnect_reason(
-        "TENANT_UNAVAILABLE"
-    ));
-}
-
-/// 心跳判死是 flare-core 替我们断的，不是「我方主动断开」：必须重连，否则界面一直停在「连接已断开」。
-#[test]
-fn heartbeat_verdict_disconnects_schedule_reconnect() {
-    use flare_core::client::heartbeat::manager::{
-        HEARTBEAT_SEND_FAILED_REASON, HEARTBEAT_TIMEOUT_REASON,
-    };
-    assert!(!should_skip_reconnect_for_disconnect_reason(
-        HEARTBEAT_TIMEOUT_REASON
-    ));
-    assert!(!should_skip_reconnect_for_disconnect_reason(
-        HEARTBEAT_SEND_FAILED_REASON
-    ));
-}
-
-/// 连接以错误终止时 SocketHandler 报的断开：重连监视器要接手（flare-core 客户端不再自己重连）。
-#[test]
-fn transport_error_disconnects_schedule_reconnect() {
-    use crate::infrastructure::transport::socket::socket_handler::TRANSPORT_ERROR_REASON_PREFIX;
-    for error in [
-        "FlareError { code: ConnectionFailed, message: \"WebSocket protocol error: Encountered invalid opcode: 3\" }",
-        "FlareError { code: ProtocolError, message: \"QUIC connection closed by peer with a protocol error: PROTOCOL_VIOLATION\" }",
-        "connection lost: timed out",
-    ] {
-        let reason = format!("{TRANSPORT_ERROR_REASON_PREFIX}{error}");
-        assert!(
-            !should_skip_reconnect_for_disconnect_reason(&reason),
-            "{reason}"
-        );
-    }
 }
 
 #[test]
@@ -170,7 +53,7 @@ async fn uninit_clears_init_configuration() {
             Some("dev".to_string()),
             Some(SdkConfigOverlay {
                 data_url: Some(format!("file://{}", data_root.display())),
-                ws_url: Some("ws://localhost:60051".to_string()),
+                access: Some(development_access()),
                 ..SdkConfigOverlay::default()
             }),
         )
@@ -200,29 +83,21 @@ async fn session_active_sync_is_false_for_prepared_but_disconnected_user() {
 }
 
 #[tokio::test]
-async fn network_change_is_noop_without_session() {
+async fn network_change_without_session_only_updates_the_fingerprint() {
     let client = IMClient::new();
-    let reconnected = client
+    client
         .notify_network_change(NetworkChangeEvent {
             available: true,
             interface: Some("wifi".to_string()),
+            fingerprint_hint: Some("10.0.0".to_string()),
             ..Default::default()
         })
         .await
-        .expect("network change");
-    assert!(!reconnected);
-}
-
-#[test]
-fn network_change_reconnect_is_single_flight() {
-    let client = IMClient::new();
-
-    assert!(client.try_begin_network_reconnect());
-    assert!(!client.try_begin_network_reconnect());
-
-    client.finish_network_reconnect();
-    assert!(client.try_begin_network_reconnect());
-    client.finish_network_reconnect();
+        .expect("network change before init is accepted");
+    assert_eq!(
+        client.connection_status().await.phase,
+        crate::kernel::event::ConnectionPhase::Idle
+    );
 }
 
 #[test]
@@ -613,12 +488,12 @@ async fn host_managed_client(generation: u64, refresher: Arc<CountingRefresher>)
 }
 
 #[tokio::test]
-async fn a_rejected_reconnect_takes_a_fresh_token_from_the_host() {
+async fn a_rejected_connect_takes_a_fresh_token_from_the_host() {
     let refresher = counting_refresher(Some("fresh"));
     let client = host_managed_client(3, refresher.clone()).await;
 
     assert_eq!(
-        client.refresh_connect_token_via_host(3).await.as_deref(),
+        client.renew_connect_token(3, "expired").await.as_deref(),
         Some("fresh")
     );
     assert_eq!(
@@ -636,7 +511,7 @@ async fn the_same_token_handed_back_is_not_a_swap() {
     for unchanged in [Some("expired"), Some("  "), None] {
         let refresher = counting_refresher(unchanged);
         let client = host_managed_client(3, refresher).await;
-        assert_eq!(client.refresh_connect_token_via_host(3).await, None);
+        assert_eq!(client.renew_connect_token(3, "expired").await, None);
         assert_eq!(
             client.inner.read().await.connect_token.as_deref(),
             Some("expired")
@@ -649,7 +524,7 @@ async fn a_superseded_session_does_not_ask_the_host() {
     let refresher = counting_refresher(Some("fresh"));
     let client = host_managed_client(4, refresher.clone()).await;
 
-    assert_eq!(client.refresh_connect_token_via_host(3).await, None);
+    assert_eq!(client.renew_connect_token(3, "expired").await, None);
     assert_eq!(refresher.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(
         client.inner.read().await.connect_token.as_deref(),
@@ -661,15 +536,13 @@ async fn a_superseded_session_does_not_ask_the_host() {
 async fn sdk_managed_tokens_are_left_to_the_gateway_issuer() {
     let refresher = counting_refresher(Some("fresh"));
     let client = host_managed_client(3, refresher.clone()).await;
+    // SDK 托管：续期只走 Core API（这里没有接入运行时，换不到），宿主回调也不该被问到。
     client.inner.write().await.sdk_config = Some(SdkConfigOverlay {
-        auth: Some(crate::client::config::SdkAuthConfig {
-            token_endpoint: Some("http://gateway/api".to_string()),
-            refresh_lead_secs: None,
-        }),
+        auth: Some(crate::client::config::SdkAuthConfig::default()),
         ..Default::default()
     });
 
-    assert_eq!(client.refresh_connect_token_via_host(3).await, None);
+    assert_eq!(client.renew_connect_token(3, "expired").await, None);
     assert_eq!(refresher.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
@@ -732,7 +605,7 @@ async fn a_token_pushed_in_by_the_host_first_still_counts_as_a_swap() {
     *refresher.client.lock().unwrap() = Some(client.clone());
 
     assert_eq!(
-        client.refresh_connect_token_via_host(3).await.as_deref(),
+        client.renew_connect_token(3, "expired").await.as_deref(),
         Some("fresh")
     );
     assert_eq!(
@@ -741,28 +614,23 @@ async fn a_token_pushed_in_by_the_host_first_still_counts_as_a_swap() {
     );
 }
 
+/// 构建期配好的接入配置在登录重建会话时不丢；接入运行时（健康簿、熔断）跨会话共用同一个。
 #[tokio::test]
-async fn the_build_time_http_url_survives_the_login_rebuild() {
+async fn the_build_time_access_config_and_runtime_survive_the_login_rebuild() {
     use crate::client::config::SdkConfig;
     use crate::client::lifecycle::LoginDbKind;
-    let mut config = SdkConfig::new("wss://host.example/im-ws");
-    config.http_url = Some("https://host.example/api".to_string());
     let client = IMClient::builder()
-        .config(config)
+        .config(SdkConfig::with_access(development_access()))
         .stores(in_memory_empty_im_provider())
         .build()
         .unwrap();
-    let root = std::env::temp_dir().join(format!("flare-http-url-{}", std::process::id()));
-    client
-        .init(
-            None,
-            Some(SdkConfigOverlay {
-                data_url: Some(format!("file://{}", root.display())),
-                ..Default::default()
-            }),
-        )
+    let before = client
+        .inner
+        .read()
         .await
-        .unwrap();
+        .access
+        .clone()
+        .expect("access runtime");
     client
         .prepare(
             "alice",
@@ -770,125 +638,114 @@ async fn the_build_time_http_url_survives_the_login_rebuild() {
         )
         .await
         .unwrap();
-
-    let http_url = client
-        .inner
-        .read()
-        .await
-        .configured_config
-        .as_ref()
-        .and_then(|config| config.http_url.clone());
-    assert_eq!(http_url.as_deref(), Some("https://host.example/api"));
+    let g = client.inner.read().await;
+    assert_eq!(
+        g.configured_config
+            .as_ref()
+            .and_then(|config| config.access.clone()),
+        Some(development_access())
+    );
+    assert!(Arc::ptr_eq(&before, g.access.as_ref().unwrap()));
+    drop(g);
     client.logout().await.unwrap();
 }
 
 #[test]
 fn an_overlay_still_overrides_the_build_time_config() {
     use crate::client::config::SdkConfig;
-    let mut base = SdkConfig::new("wss://host.example/im-ws");
-    base.http_url = Some("https://host.example/api".to_string());
+    let mut base = SdkConfig::with_access(development_access());
     base.tenant_id = Some("t-base".to_string());
-
+    let other = flare_access::AccessConfig::development(flare_access::DevelopmentEndpoints {
+        ws_url: Some("ws://127.0.0.1:61051/ws".into()),
+        ..Default::default()
+    });
     let merged = crate::client::lifecycle::merge_sdk_config_onto(
         base,
-        "wss://other.example/im-ws",
         Some(&SdkConfigOverlay {
-            http_url: Some("https://other.example/api".to_string()),
+            access: Some(other.clone()),
             ..Default::default()
         }),
     );
-    assert_eq!(merged.ws_url.as_deref(), Some("wss://other.example/im-ws"));
-    assert_eq!(
-        merged.http_url.as_deref(),
-        Some("https://other.example/api")
-    );
+    assert_eq!(merged.access, Some(other));
     assert_eq!(merged.tenant_id.as_deref(), Some("t-base"));
 }
 
-/// 经 builder 配的重连间隔与次数要到 SDK 自己的重连循环，不只到 flare-core 客户端；
-/// `init()` 的覆盖项仍然优先，没覆盖的那一项照旧取 builder 的配置。
+/// 同一用户重新 prepare（含冷启动）不清空发件箱；换了用户才清空。
 #[tokio::test]
-async fn reconnect_backoff_comes_from_the_builder_config_unless_overridden() {
-    use crate::client::config::SdkConfig;
-    let mut config = SdkConfig::new("ws://127.0.0.1:9");
-    config.reconnect_interval_secs = Some(2);
-    config.max_reconnect_attempts = Some(4);
-    let client = IMClient::builder()
-        .config(config)
-        .stores(in_memory_empty_im_provider())
-        .build()
-        .expect("build client");
-    {
-        let mut inner = client.inner.write().await;
-        inner.current_user_id = Some("alice".to_string());
-        inner.connect_token = Some("token".to_string());
-    }
-    let generation = client.session_generation_snapshot();
-    let (_, _, interval_secs, max_attempts) = client
-        .reconnect_settings(generation)
-        .await
-        .expect("reconnect settings");
-    assert_eq!((interval_secs, max_attempts), (2, Some(4)));
-
-    client.inner.write().await.sdk_config = Some(SdkConfigOverlay {
-        reconnect_interval_secs: Some(1),
-        ..Default::default()
-    });
-    let (_, _, interval_secs, max_attempts) = client
-        .reconnect_settings(generation)
-        .await
-        .expect("reconnect settings");
-    assert_eq!((interval_secs, max_attempts), (1, Some(4)));
-}
-
-/// 登录路径（`prepare` 按快照重建会话）也带着 builder 的重连配置。
-#[tokio::test]
-async fn reconnect_backoff_survives_the_login_rebuild() {
-    use crate::client::config::SdkConfig;
+async fn the_same_user_keeps_the_outbox_across_prepare() {
     use crate::client::lifecycle::LoginDbKind;
-    let mut config = SdkConfig::new("ws://127.0.0.1:9");
-    config.reconnect_interval_secs = Some(3);
-    config.max_reconnect_attempts = Some(2);
+    use crate::domain::PendingSendVo;
     let client = IMClient::builder()
-        .config(config)
+        .config(crate::client::config::SdkConfig::with_access(
+            development_access(),
+        ))
         .stores(in_memory_empty_im_provider())
         .build()
-        .expect("build client");
+        .unwrap();
+    let stores = crate::infrastructure::persistence::memory_im::in_memory_im_provider();
+    let (reader, writer) = stores.pending_sends().expect("pending store");
+    let mut message = crate::model::IMMessage::new(flare_proto::common::Message::default());
+    message.client_msg_id = "m-fresh".into();
+    message.conversation_id = "c1".into();
+    message.sender_id = "alice".into();
+    let mut stale = message.clone();
+    stale.client_msg_id = "m-stale".into();
+    let now = crate::shared::util::now_millis();
+    writer
+        .push(PendingSendVo {
+            client_msg_id: "m-fresh".into(),
+            conversation_id: "c1".into(),
+            message,
+            enqueued_at_ms: now,
+        })
+        .await
+        .unwrap();
+    writer
+        .push(PendingSendVo {
+            client_msg_id: "m-stale".into(),
+            conversation_id: "c1".into(),
+            message: stale,
+            enqueued_at_ms: now - super::PENDING_RESUME_MAX_AGE_MS - 1_000,
+        })
+        .await
+        .unwrap();
     client
-        .prepare(
-            "alice",
-            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
-        )
+        .prepare("alice", LoginDbKind::IndexedDb(stores.clone()))
         .await
-        .expect("prepare");
-    client.inner.write().await.connect_token = Some("token".to_string());
-
-    let generation = client.session_generation_snapshot();
-    let (_, _, interval_secs, max_attempts) = client
-        .reconnect_settings(generation)
+        .unwrap();
+    client.logout().await.unwrap();
+    client
+        .prepare("alice", LoginDbKind::IndexedDb(stores.clone()))
         .await
-        .expect("reconnect settings");
-    assert_eq!((interval_secs, max_attempts), (3, Some(2)));
-    client.logout().await.expect("logout");
-}
-
-#[test]
-fn reconnect_backoff_defaults_and_floors() {
-    use super::session_watchers::reconnect_backoff_settings;
-    use crate::client::config::SdkConfig;
-    assert_eq!(reconnect_backoff_settings(None, None), (5, None));
-
-    let mut zeroed = SdkConfig::new("ws://127.0.0.1:9");
-    zeroed.reconnect_interval_secs = Some(0);
-    zeroed.max_reconnect_attempts = Some(0);
+        .unwrap();
+    let left: Vec<String> = reader
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.client_msg_id)
+        .collect();
     assert_eq!(
-        reconnect_backoff_settings(None, Some(&zeroed)),
-        (1, Some(1))
+        left,
+        vec!["m-fresh".to_owned()],
+        "同一用户：新的留着，超过 24 小时的判失败"
     );
 
-    let mut unset = SdkConfig::new("ws://127.0.0.1:9");
-    unset.reconnect_interval_secs = None;
-    assert_eq!(reconnect_backoff_settings(None, Some(&unset)), (5, None));
+    client.logout().await.unwrap();
+    client
+        .prepare("bob", LoginDbKind::IndexedDb(stores))
+        .await
+        .unwrap();
+    assert!(reader.list().await.unwrap().is_empty(), "换了用户：清空");
+    client.logout().await.unwrap();
+}
+
+fn development_access() -> flare_access::AccessConfig {
+    flare_access::AccessConfig::development(flare_access::DevelopmentEndpoints {
+        ws_url: Some("ws://127.0.0.1:9/ws".into()),
+        core_api_url: Some("http://127.0.0.1:9".into()),
+        ..Default::default()
+    })
 }
 
 /// 把当前线程的 tracing 输出收进内存，供断言「会话结束后没有再记重连成功」。
@@ -940,106 +797,8 @@ enum SessionEnd {
     DropClient,
 }
 
-/// 重连监视器在退避中时会话结束：监视器应立刻收手，退避到点后不再记「SDK reconnect
-/// succeeded」，也不再发起重连。此前它睡满退避，醒来后 `reconnect_current_engine` 因世代
-/// 已变直接返回 Ok，于是在已结束的会话上记一条重连成功。
-async fn reconnect_monitor_stops_when_the_session_ends(end: SessionEnd) {
-    use crate::client::config::SdkConfig;
-    use crate::kernel::event::{ConnectionEvent, SdkEvent, SdkEventKind};
-
-    let logs = CapturedLogs::default();
-    let _logs = logs.install();
-
-    // 两个地址都指向本机不监听的端口：本用例不会真去连，只要不碰外网。
-    let mut config = SdkConfig::new("ws://127.0.0.1:9");
-    config.http_url = Some("http://127.0.0.1:9".to_string());
-    config.reconnect_interval_secs = Some(1);
-    let client = IMClient::builder()
-        .config(config)
-        .stores(in_memory_empty_im_provider())
-        .build()
-        .expect("build client");
-    let bus = {
-        let mut inner = client.inner.write().await;
-        inner.current_user_id = Some("alice".to_string());
-        inner.connect_token = Some("token".to_string());
-        inner.engine.as_ref().expect("engine").bus().clone()
-    };
-    let generation = client.session_generation_snapshot();
-    let mut connection_events = bus.subscribe_filter(SdkEventKind::Connection);
-    client.spawn_reconnect_session_watcher(generation, bus.clone());
-
-    bus.publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
-        reason: "network lost".to_string(),
-    }));
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if let Ok(SdkEvent::Connection(ConnectionEvent::Reconnecting { attempt: 1 })) =
-                connection_events.recv().await
-            {
-                break;
-            }
-        }
-    })
-    .await
-    .expect("the monitor announces its first attempt and starts the backoff");
-
-    // 第一次退避是 1–2 s；在退避中结束会话。
-    match end {
-        SessionEnd::Logout => client.logout().await.expect("logout"),
-        SessionEnd::Disconnect => client.disconnect().await.expect("disconnect"),
-        SessionEnd::DropClient => drop(client),
-    }
-    let ended_at = std::time::Instant::now();
-    while !logs.text().contains("SDK reconnect monitor stopped") {
-        assert!(
-            ended_at.elapsed() < Duration::from_millis(500),
-            "{end:?}: the reconnect monitor must stop as soon as the session ends\n{}",
-            logs.text()
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    // 等过退避上限：不能再出现重连结果，也不能有第二次尝试。
-    tokio::time::sleep(Duration::from_millis(2_500)).await;
-    let text = logs.text();
-    assert!(
-        !text.contains("SDK reconnect succeeded"),
-        "{end:?}: a reconnect must not be reported after the session ended\n{text}"
-    );
-    assert!(
-        !text.contains("SDK reconnect failed"),
-        "{end:?}: no reconnect may run after the session ended\n{text}"
-    );
-    while let Ok(event) = connection_events.try_recv() {
-        assert!(
-            !matches!(
-                event,
-                SdkEvent::Connection(ConnectionEvent::Reconnecting { .. })
-            ),
-            "{end:?}: no further reconnect attempt after the session ended"
-        );
-    }
-}
-
-#[tokio::test]
-async fn reconnect_monitor_stops_on_logout() {
-    reconnect_monitor_stops_when_the_session_ends(SessionEnd::Logout).await;
-}
-
-#[tokio::test]
-async fn reconnect_monitor_stops_on_disconnect() {
-    reconnect_monitor_stops_when_the_session_ends(SessionEnd::Disconnect).await;
-}
-
-#[tokio::test]
-async fn reconnect_monitor_stops_when_the_client_is_destroyed() {
-    reconnect_monitor_stops_when_the_session_ends(SessionEnd::DropClient).await;
-}
-
-/// 会话结束（登出、断开、客户端销毁）时，状态快照、终局事件、令牌刷新三个监视器都立刻收手。
-/// 此前令牌刷新监视器要睡到下一次刷新（这里约 55 分钟后）才发现会话已结束，状态快照与终局
-/// 事件监视器要等到下一条连接事件。
+/// 会话结束（登出、断开、客户端销毁）时，状态快照与令牌刷新两个监视器都立刻收手。
+/// 此前令牌刷新监视器要睡到下一次刷新（这里约 55 分钟后）才发现会话已结束。
 async fn session_watchers_stop_when_the_session_ends(end: SessionEnd) {
     use crate::client::config::{SdkAuthConfig, SdkConfig};
     use crate::shared::util::generate_core_token;
@@ -1047,11 +806,9 @@ async fn session_watchers_stop_when_the_session_ends(end: SessionEnd) {
     let logs = CapturedLogs::default();
     let _logs = logs.install();
 
-    // 两个地址都指向本机不监听的端口：本用例不会真去连，只要不碰外网。
-    let mut config = SdkConfig::new("ws://127.0.0.1:9");
-    config.http_url = Some("http://127.0.0.1:9".to_string());
+    // 开发端点指向本机不监听的端口：本用例不会真去连，只要不碰外网。
     let client = IMClient::builder()
-        .config(config)
+        .config(SdkConfig::with_access(development_access()))
         .stores(in_memory_empty_im_provider())
         .build()
         .expect("build client");
@@ -1070,19 +827,15 @@ async fn session_watchers_stop_when_the_session_ends(end: SessionEnd) {
         inner.current_user_id = Some("alice".to_string());
         inner.connect_token = Some(token);
         inner.sdk_config = Some(SdkConfigOverlay {
-            auth: Some(SdkAuthConfig {
-                token_endpoint: Some("http://127.0.0.1:9".to_string()),
-                refresh_lead_secs: None,
-            }),
+            auth: Some(SdkAuthConfig::default()),
             ..SdkConfigOverlay::default()
         });
         inner.engine.as_ref().expect("engine").bus().clone()
     };
     let generation = client.session_generation_snapshot();
     client.spawn_state_snapshot_watcher(generation, bus.clone());
-    client.spawn_terminal_session_watcher(generation, bus.clone());
     client.spawn_token_refresh_watcher(generation);
-    // 让三个监视器都进入等待
+    // 让两个监视器都进入等待
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     match end {
@@ -1093,7 +846,6 @@ async fn session_watchers_stop_when_the_session_ends(end: SessionEnd) {
     let ended_at = std::time::Instant::now();
     for watcher in [
         "SDK state snapshot watcher stopped",
-        "SDK terminal session watcher stopped",
         "SDK token refresh watcher stopped",
     ] {
         while !logs.text().contains(watcher) {
@@ -1124,76 +876,105 @@ async fn session_watchers_stop_when_the_client_is_destroyed() {
     session_watchers_stop_when_the_session_ends(SessionEnd::DropClient).await;
 }
 
-/// 会话在重连开始前已结束：`reconnect_current_engine` 报明确的错误，而不是 Ok
-/// （此前调用方会把它当成重连成功）。
+/// 宿主注入的登录前全局存储：装上后 init 建的接入运行时用它；传 `None` 后再 init 还原平台默认。
 #[tokio::test]
-async fn reconnect_after_the_session_ended_is_an_error() {
-    use crate::client::config::SdkConfig;
+async fn init_uses_the_injected_access_store_until_it_is_cleared() {
+    let client = IMClient::new();
+    let data_root =
+        std::env::temp_dir().join(format!("flare-im-access-store-test-{}", std::process::id()));
+    let overlay = || SdkConfigOverlay {
+        data_url: Some(format!("file://{}", data_root.display())),
+        access: Some(development_access()),
+        ..SdkConfigOverlay::default()
+    };
+    let injected: Arc<dyn flare_access::AccessStore> =
+        Arc::new(flare_access::store::MemoryAccessStore::new());
+    let is_injected = |store: &Arc<dyn flare_access::AccessStore>| {
+        std::ptr::addr_eq(Arc::as_ptr(store), Arc::as_ptr(&injected))
+    };
 
-    let client = IMClient::builder()
-        .config(SdkConfig::new("ws://127.0.0.1:9"))
-        .stores(in_memory_empty_im_provider())
-        .build()
-        .expect("build client");
-    let stale_generation = client.session_generation_snapshot();
-    {
-        let mut inner = client.inner.write().await;
-        inner.session_generation = inner.session_generation.wrapping_add(1);
-        client.store_session_generation_snapshot(inner.session_generation);
-    }
-
-    let err = client
-        .reconnect_current_engine(stale_generation, "alice", "token")
+    client.set_access_store(Some(injected.clone())).await;
+    client.init(None, Some(overlay())).await.expect("init sdk");
+    let access = client
+        .inner
+        .read()
         .await
-        .expect_err("a reconnect for an ended session must not report success");
-    assert_eq!(err.code(), Some(ErrorCode::NotConnected), "{err}");
-    assert!(err.to_string().contains("session ended"), "{err}");
+        .access
+        .clone()
+        .expect("access runtime");
+    let kernel = access.kernel().await.expect("development directory");
+    assert!(
+        is_injected(kernel.store()),
+        "init must use the injected store"
+    );
+
+    client.set_access_store(None).await;
+    client
+        .init(None, Some(overlay()))
+        .await
+        .expect("init sdk again");
+    let access = client
+        .inner
+        .read()
+        .await
+        .access
+        .clone()
+        .expect("access runtime");
+    let kernel = access.kernel().await.expect("development directory");
+    assert!(
+        !is_injected(kernel.store()),
+        "None restores the platform default"
+    );
+
+    client.uninit().await.expect("uninit sdk");
+    let _ = tokio::fs::remove_dir_all(data_root).await;
 }
 
-/// 断开原因是服务端停机：重连监视器的第一次尝试只等 1–5 s 的随机一段，不按配置的 30 s 退避
-/// （按退避要 24–30 s）。地址指向本机不监听的端口，只看重连何时真正开始（重建传输的日志带
-/// `trigger=Reconnect`）。
+/// 注入的登录前全局存储跨会话保留：prepare（登录重建客户端）之后再 init，用的仍是注入的那份。
 #[tokio::test]
-async fn reconnect_monitor_pauses_briefly_after_a_server_shutdown() {
-    use crate::client::config::SdkConfig;
-    use crate::kernel::event::{ConnectionEvent, SdkEvent};
-
-    let logs = CapturedLogs::default();
-    let _logs = logs.install();
-
-    let mut config = SdkConfig::new("ws://127.0.0.1:9");
-    config.http_url = Some("http://127.0.0.1:9".to_string());
-    config.reconnect_interval_secs = Some(30);
-    let client = IMClient::builder()
-        .config(config)
-        .stores(in_memory_empty_im_provider())
-        .build()
-        .expect("build client");
-    let bus = {
-        let mut inner = client.inner.write().await;
-        inner.current_user_id = Some("alice".to_string());
-        inner.connect_token = Some("token".to_string());
-        inner.engine.as_ref().expect("engine").bus().clone()
+async fn the_injected_access_store_survives_the_login_rebuild() {
+    use crate::client::lifecycle::LoginDbKind;
+    let client = IMClient::new();
+    let data_root = std::env::temp_dir().join(format!(
+        "flare-im-access-store-rebuild-{}",
+        std::process::id()
+    ));
+    let overlay = || SdkConfigOverlay {
+        data_url: Some(format!("file://{}", data_root.display())),
+        access: Some(development_access()),
+        ..SdkConfigOverlay::default()
     };
-    let generation = client.session_generation_snapshot();
-    client.spawn_reconnect_session_watcher(generation, bus.clone());
+    let injected: Arc<dyn flare_access::AccessStore> =
+        Arc::new(flare_access::store::MemoryAccessStore::new());
 
-    let disconnected_at = std::time::Instant::now();
-    bus.publish(SdkEvent::Connection(ConnectionEvent::Disconnected {
-        reason: "SERVER_SHUTDOWN: server closed the connection".to_string(),
-    }));
-    while !logs.text().contains("trigger=Reconnect") {
-        assert!(
-            disconnected_at.elapsed() < Duration::from_secs(8),
-            "the first reconnect after a shutdown must not wait for the 30 s backoff\n{}",
-            logs.text()
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    client.set_access_store(Some(injected.clone())).await;
+    client.init(None, Some(overlay())).await.expect("init sdk");
+    client
+        .prepare(
+            "alice",
+            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+        )
+        .await
+        .expect("prepare");
+    client
+        .init(None, Some(overlay()))
+        .await
+        .expect("init after login");
+
+    let access = client
+        .inner
+        .read()
+        .await
+        .access
+        .clone()
+        .expect("access runtime");
+    let kernel = access.kernel().await.expect("development directory");
     assert!(
-        disconnected_at.elapsed() >= flare_core::common::shutdown::SERVER_SHUTDOWN_RECONNECT_MIN,
-        "the reconnect after a shutdown still pauses first"
+        std::ptr::addr_eq(Arc::as_ptr(kernel.store()), Arc::as_ptr(&injected)),
+        "init after the login rebuild must still use the injected store"
     );
-    assert!(logs.text().contains("reconnecting after a jittered pause"));
-    client.disconnect().await.expect("disconnect");
+
+    client.logout().await.expect("logout");
+    client.uninit().await.expect("uninit sdk");
+    let _ = tokio::fs::remove_dir_all(data_root).await;
 }

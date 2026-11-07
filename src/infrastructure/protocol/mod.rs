@@ -14,6 +14,7 @@
 //! | 下行 | Message (1) / Data (4) | MessagePush / Event / EventEnvelope / `DataPacket`（`sync_response` / `user_custom`） | 同上 |
 //! | 下行 | Ack (3) | Ack(Send) | ack.proto |
 
+pub(crate) mod ack_ledger;
 pub mod codec;
 pub mod downlink;
 pub use codec::{Codec, MAX_DOWNLINK_PAYLOAD_BYTES, ProtobufCodec};

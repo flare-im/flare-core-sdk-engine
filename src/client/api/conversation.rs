@@ -462,6 +462,19 @@ impl ConversationApi {
         Ok(())
     }
 
+    /// Clear conversation history for the current account across devices.
+    pub async fn clear_chat_history_for_self(&self, conversation_id: &str) -> Result<()> {
+        self.ensure_session_active().await?;
+        self.command_use_case
+            .clear_chat_history_for_self(conversation_id)
+            .await?;
+        self.bus
+            .publish(SdkEvent::Conversation(ConversationEvent::Synced {
+                conversation_ids: vec![conversation_id.to_string()],
+            }));
+        Ok(())
+    }
+
     fn publish_updated(&self, conversation_id: &str) {
         self.bus
             .publish(SdkEvent::Conversation(ConversationEvent::Updated {

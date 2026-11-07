@@ -27,12 +27,20 @@ pub struct FileInfoHttpResponse {
     pub cdn_url: Option<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct GetFileUrlHttpRequest {
     pub file_id: String,
     pub expires_in: i32,
     pub download: bool,
     pub response_headers: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub conversation_id: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub message_seq: i64,
+}
+
+fn is_zero(value: &i64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

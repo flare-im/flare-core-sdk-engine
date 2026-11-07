@@ -18,8 +18,8 @@ use crate::application::usecases::{
     MessageSendUseCase, MessageViewAssembler, sync_request::SyncRequestUseCase,
 };
 use crate::client::api::{
-    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PluginCatalogNotices,
-    PresenceApi, ViewApi,
+    CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi,
+    TenantNotices, ViewApi,
 };
 use crate::client::config::SdkConfig;
 use crate::client::im_client::{IMClient, IMClientInner};
@@ -99,41 +99,23 @@ impl IMClientExtensionComponents {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn derive_capability_url(config: &SdkConfig) -> String {
-    if let Ok(url) = std::env::var("FLARE_CAPABILITY_GRPC_URI")
-        .or_else(|_| std::env::var("FLARE_IM_CAPABILITY_GRPC_URI"))
-    {
-        let url = url.trim();
-        if !url.is_empty() {
-            return url.to_string();
-        }
-    }
-    if let Some(url) = config
-        .capability_url
+/// 能力服务的 gRPC 入口（仅原生、仅开发模式）：开发端点的 Core API 主机上的 50110 端口。
+///
+/// 生产链路上能力相关的调用都走 Core HTTP（随接入点路由）；这条 gRPC 只是本地联调用的管理面，
+/// 清单里没有它的入口，生产构建不给地址，调用会明确报配置错误。
+fn development_capability_grpc_url(config: &SdkConfig) -> String {
+    let Some(core_api) = config
+        .access
         .as_ref()
-        .filter(|u| !u.trim().is_empty())
-    {
-        return url.clone();
+        .and_then(|access| access.development_endpoints.as_ref())
+        .and_then(|endpoints| endpoints.core_api_url.as_deref())
+    else {
+        return String::new();
+    };
+    match flare_access::ParsedUrl::parse(core_api) {
+        Ok(parsed) => format!("{}://{}:50110", parsed.scheme(), parsed.host_str()),
+        Err(_) => String::new(),
     }
-    if let Some(http_url) = config.http_url.as_ref()
-        && let Ok(mut parsed) = url::Url::parse(http_url)
-    {
-        let _ = parsed.set_port(Some(50110));
-        parsed.set_path("");
-        parsed.set_query(None);
-        parsed.set_fragment(None);
-        return parsed.to_string().trim_end_matches('/').to_string();
-    }
-    "http://localhost:50110".to_string()
-}
-
-#[cfg(target_arch = "wasm32")]
-fn derive_capability_url(config: &SdkConfig) -> String {
-    config
-        .capability_url
-        .clone()
-        .unwrap_or_else(|| "http://localhost:50110".to_string())
 }
 
 /// IMClient 构建器
@@ -169,6 +151,10 @@ pub struct IMClientBuilder {
     content_codecs: Vec<Arc<dyn ContentCodec>>,
     extension_migrations: Vec<Arc<dyn ExtensionMigration>>,
     metrics_sink: Option<Arc<dyn MetricsSink>>,
+    /// 共享的接入运行时（`IMClient::init` 建、各次登录复用）；没有时按配置在内存里建一个。
+    access: Option<Arc<crate::runtime::link::AccessRuntime>>,
+    /// 链路状态机的初始网络可用性（登录重建引擎时沿用宿主此前报过的）。
+    network_available: bool,
     builder_errors: Vec<FlareError>,
 }
 
@@ -193,6 +179,8 @@ impl IMClientBuilder {
             content_codecs: Vec::new(),
             extension_migrations: Vec::new(),
             metrics_sink: None,
+            access: None,
+            network_available: true,
             builder_errors: Vec::new(),
         }
     }
@@ -221,6 +209,18 @@ impl IMClientBuilder {
     }
 
     /// 注入共享 HTTP 鉴权上下文（与 Social Gateway / 媒体 HTTP 共用 Bearer 与链路头）。
+    /// 使用已有的接入运行时（跨会话共用健康簿与熔断状态）。
+    pub fn access_runtime(mut self, access: Arc<crate::runtime::link::AccessRuntime>) -> Self {
+        self.access = Some(access);
+        self
+    }
+
+    /// 宿主此前报过的网络可用性：登录重建引擎时交给新的链路状态机。
+    pub(crate) fn initial_network_available(mut self, available: bool) -> Self {
+        self.network_available = available;
+        self
+    }
+
     pub fn http_request_context(mut self, context: Arc<HttpRequestContext>) -> Self {
         self.http_request_context = Some(context);
         self
@@ -381,8 +381,6 @@ impl IMClientBuilder {
     ///
     /// 该方法只完成组装，不会自动登录或建连。
     pub fn build(self) -> Result<IMClient> {
-        // self.config 后面会被 move 进 transport，先把 ws 地址取出来。
-        let configured_ws_url = self.config.ws_url.clone();
         let configured_config = self.config.clone();
         if let Some(err) = self.builder_errors.first().cloned() {
             return Err(err);
@@ -481,7 +479,8 @@ impl IMClientBuilder {
             notification_registry.clone(),
             message_deduper.clone(),
             bus.clone(),
-        );
+        )
+        .with_conversations(stores.conversations.clone());
         let init_msg_concurrency = resources.init_message_sync_concurrency as usize;
         let sync_handler: Arc<SyncProtocolAdapter> = Arc::new(SyncProtocolAdapter::new(
             sender.clone(),
@@ -496,6 +495,13 @@ impl IMClientBuilder {
         sync_handler.start_remote_cursor_flush_worker();
 
         let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new(String::new()));
+        let access = self.access.clone().unwrap_or_else(|| {
+            Arc::new(crate::runtime::link::AccessRuntime::for_platform(
+                self.config.access.clone(),
+                crate::runtime::link::AccessStoreSource::memory(),
+                self.config.core_tls_config(),
+            ))
+        });
         let engine = SdkEngine::new(SdkEngineConfig {
             stores,
             chain: chain.clone(),
@@ -515,6 +521,8 @@ impl IMClientBuilder {
             ack_max_retries: self.config.ack_max_retries,
             ack_max_in_flight: self.config.ack_max_in_flight,
             metrics: metrics.clone(),
+            access: access.clone(),
+            network_available: self.network_available,
         });
 
         // 注入应用层同步任务（构造时传入 SyncProtocolAdapter，execute 内自行调用，与用户扩展一致）
@@ -561,12 +569,7 @@ impl IMClientBuilder {
             store_ref.conversations.clone(),
             profile_reader.clone(),
         );
-        let media_base_url = self
-            .config
-            .http_url
-            .clone()
-            .unwrap_or_else(|| "http://localhost:50050".to_string());
-        let capability_base_url = derive_capability_url(&self.config);
+        let capability_grpc_url = development_capability_grpc_url(&self.config);
         let tenant_id = self
             .config
             .tenant_id
@@ -577,21 +580,21 @@ impl IMClientBuilder {
         let http_request_context = self
             .http_request_context
             .unwrap_or_else(|| Arc::new(HttpRequestContext::new()));
+        // Core HTTP（媒体、在线状态、能力）按服务路由：每次请求跟随 IM 当前接入点，失败按 §3.9 重试。
+        let core_router = crate::infrastructure::transport::http::router::HttpRouter::new(
+            access.clone(),
+            flare_access::ServiceClass::CoreApi,
+        );
         #[cfg(not(target_arch = "wasm32"))]
-        let media_http_client = HttpClient::with_context_and_tls(
-            media_base_url.clone(),
+        let media_http_client = HttpClient::routed(
+            core_router,
             http_request_context.clone(),
             self.config.core_tls_config(),
         )
         .with_core_bearer();
         #[cfg(target_arch = "wasm32")]
         let media_http_client =
-            HttpClient::with_context(media_base_url.clone(), http_request_context.clone())
-                .with_core_bearer()
-                .with_direct_url_rewrite(
-                    self.config.media_storage_proxy_prefix.clone(),
-                    self.config.media_storage_proxy_targets.clone(),
-                );
+            HttpClient::routed(core_router, http_request_context.clone()).with_core_bearer();
         // Presence talks to the same Core API gateway with the same trust and bearer.
         let presence_http_client = media_http_client.clone();
         let capability_http_client = media_http_client.clone();
@@ -646,7 +649,7 @@ impl IMClientBuilder {
         ));
         let capability_api = Arc::new(
             CapabilityApi::new(
-                capability_base_url,
+                capability_grpc_url,
                 current_user_id.clone(),
                 tenant_id.clone(),
                 http_request_context.clone(),
@@ -677,8 +680,9 @@ impl IMClientBuilder {
         // Forward records take a plugin card only when its contribution declares it forwardable.
         let message_build_api =
             Arc::new(message_build_api.with_plugin_cards(capability_api.clone()));
-        engine.set_plugin_catalog_notices(Arc::new(PluginCatalogNotices::new(
+        engine.set_tenant_notices(Arc::new(TenantNotices::new(
             capability_api.as_ref().clone(),
+            access.clone(),
             bus.clone(),
         )));
         for plugin in self.capability_plugins {
@@ -705,6 +709,7 @@ impl IMClientBuilder {
         );
         let conversation_view_assembler = Arc::new(
             ConversationViewAssembler::new(store_ref.conversations.clone(), profile_reader)
+                .with_message_reader(store_ref.messages.clone())
                 .with_current_user(current_user_id.clone()),
         );
 
@@ -724,10 +729,8 @@ impl IMClientBuilder {
         ));
 
         Ok(IMClient::from_inner(IMClientInner {
-            // 把构建期的 ws 地址留下来：登录时重建子客户端只看快照里的 overlay，
-            // 不留这一份的话父配置就在那一刻丢了（见字段上的说明）。
-            configured_ws_url: configured_ws_url.clone(),
             configured_config: Some(configured_config),
+            access: Some(access),
             engine: Some(engine),
             message_api: Some(
                 MessageApi::new(

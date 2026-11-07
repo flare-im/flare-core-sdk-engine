@@ -540,9 +540,12 @@ fn make_stores() -> StoreProvider {
     }
 }
 
-/// 创建 IMClient（不连接），用于纯本地测试
+/// 创建 IMClient（不连接），用于纯本地测试。接入走开发模式，端点取 `FLARE_TEST_SERVER_URL`。
 pub async fn create_test_client_no_connect() -> IMClient {
-    let config = SdkConfig::new(get_ws_url());
+    let config = SdkConfig::with_access(AccessConfig::development(DevelopmentEndpoints {
+        ws_url: Some(get_ws_url()),
+        ..Default::default()
+    }));
     IMClient::builder()
         .config(config)
         .stores(make_stores())
@@ -594,7 +597,7 @@ pub async fn establish_connection(client: &mut IMClient, user_id: &str) {
     let max_wait = tokio::time::Duration::from_secs(15);
     let start = tokio::time::Instant::now();
     loop {
-        if client.state() == SdkState::Ready {
+        if matches!(client.state(), SdkState::Ready | SdkState::Connected) {
             break;
         }
         if start.elapsed() > max_wait {

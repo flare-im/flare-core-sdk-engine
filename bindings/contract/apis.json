@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "apiContractVersion": "flare-im-api/v1",
+  "apiContractVersion": "flare-im-api/v2",
   "rules": [
     "Canonical API ids are singular dot-separated operation ids matching the Rust binding runtime route.",
     "C direct functions are preferred for hot lifecycle, media, and simple message paths; conversation APIs use the canonical contract invoke boundary.",
@@ -83,10 +83,22 @@
           "tauri": "sdk_update_access_token"
         },
         {
-          "id": "sdk.set_heartbeat_app_state",
-          "core": "IMClient::set_heartbeat_app_state",
+          "id": "sdk.set_connect_token_refresher",
+          "core": "IMClient::set_connect_token_refresher",
+          "c": "flare_sdk_set_connect_token_refresher",
+          "tauri": "sdk_set_connect_token_refresher"
+        },
+        {
+          "id": "sdk.complete_connect_token_refresh",
+          "core": "HostTokenBroker::complete",
+          "c": "flare_sdk_complete_connect_token_refresh",
+          "tauri": "sdk_complete_connect_token_refresh"
+        },
+        {
+          "id": "lifecycle.set_app_state",
+          "core": "IMClient::set_app_state",
           "c": "flare_sdk_invoke_json",
-          "tauri": null
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "sdk.set_heartbeat_nat_timeout",
@@ -104,7 +116,115 @@
           "id": "connection.notify_network_change",
           "core": "IMClient::notify_network_change",
           "c": "flare_sdk_invoke_json",
-          "tauri": null
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "connection.reconnect_now",
+          "core": "IMClient::reconnect_now",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "access.get_status",
+          "core": "IMClient::access_status",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "access.list_access_points",
+          "core": "IMClient::list_access_points",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "access.pin",
+          "core": "IMClient::pin_access_point",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "access.unpin",
+          "core": "IMClient::unpin_access_point",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "access.refresh",
+          "core": "IMClient::refresh_access",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "access.import_recovery",
+          "core": "IMClient::import_access_recovery",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "access.export_diagnostics",
+          "core": "IMClient::export_access_diagnostics",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "update.get_state",
+          "core": "IMClient::update_state",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "update.check",
+          "core": "IMClient::check_update",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "update.download",
+          "core": "IMClient::download_update",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "update.install",
+          "core": "IMClient::install_update",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "update.report_install",
+          "core": "IMClient::report_update_install",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "update.defer",
+          "core": "IMClient::defer_update",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "update.skip",
+          "core": "IMClient::skip_update",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "update.mark_prompted",
+          "core": "IMClient::mark_update_prompted",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "update.set_locale",
+          "core": "IMClient::set_update_locale",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "update.get_resources",
+          "core": "IMClient::update_resources",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "diagnostics.sdk_version",
@@ -149,10 +269,10 @@
           "tauri": "sdk_current_user_id"
         },
         {
-          "id": "connection.get_state",
-          "core": "IMClient::state",
-          "c": "flare_sdk_state",
-          "tauri": "sdk_engine_state"
+          "id": "connection.get_status",
+          "core": "IMClient::connection_status",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         },
         {
           "id": "connection.server_clock",
@@ -726,6 +846,12 @@
           "core": "ConversationApi::clear_local_chat_history",
           "c": "flare_sdk_invoke_json",
           "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "conversation.clear_chat_history_for_self",
+          "core": "ConversationApi::clear_chat_history_for_self",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         }
       ]
     },
@@ -764,7 +890,7 @@
         },
         {
           "id": "media.get_url",
-          "core": "MediaApi::get_file_url",
+          "core": "MediaApi::get_file_url_with_reference",
           "c": "flare_media_dispatch_json:get_url",
           "tauri": "sdk_media_dispatch_json"
         },
@@ -776,7 +902,7 @@
         },
         {
           "id": "media.resolve_access",
-          "core": "MediaApi::resolve_media_access",
+          "core": "MediaApi::resolve_media_access_opts_with_reference",
           "c": "flare_media_dispatch_json:resolve_access",
           "tauri": "sdk_media_dispatch_json"
         },

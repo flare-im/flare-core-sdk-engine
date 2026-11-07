@@ -1,0 +1,682 @@
+{
+  "bounds": [
+    {
+      "default": 300.0,
+      "max": 3000.0,
+      "min": 100.0,
+      "path": "raceStaggerMs"
+    },
+    {
+      "default": 8000.0,
+      "max": 30000.0,
+      "min": 2000.0,
+      "path": "connectTimeoutMs"
+    },
+    {
+      "default": 30.0,
+      "max": 300.0,
+      "min": 10.0,
+      "path": "heartbeat.intervalSec"
+    },
+    {
+      "default": 90.0,
+      "max": 900.0,
+      "min": 20.0,
+      "path": "heartbeat.timeoutSec"
+    },
+    {
+      "default": 120.0,
+      "max": 900.0,
+      "min": 30.0,
+      "path": "heartbeat.backgroundIntervalSec"
+    },
+    {
+      "default": 5000.0,
+      "max": 30000.0,
+      "min": 2000.0,
+      "path": "probeWakeTimeoutMs"
+    },
+    {
+      "default": 3.0,
+      "max": 20.0,
+      "min": 2.0,
+      "path": "breaker.failureThreshold"
+    },
+    {
+      "default": 0.5,
+      "max": 1.0,
+      "min": 0.2,
+      "path": "breaker.failureRatio"
+    },
+    {
+      "default": 30.0,
+      "max": 300.0,
+      "min": 5.0,
+      "path": "breaker.cooldownBaseSec"
+    },
+    {
+      "default": 600.0,
+      "max": 3600.0,
+      "min": 60.0,
+      "path": "breaker.cooldownMaxSec"
+    },
+    {
+      "default": 1000.0,
+      "max": 10000.0,
+      "min": 500.0,
+      "path": "backoff.baseMs"
+    },
+    {
+      "default": 60000.0,
+      "max": 600000.0,
+      "min": 5000.0,
+      "path": "backoff.capForegroundMs"
+    },
+    {
+      "default": 300000.0,
+      "max": 1800000.0,
+      "min": 30000.0,
+      "path": "backoff.capBackgroundMs"
+    },
+    {
+      "default": 30.0,
+      "max": 120.0,
+      "min": 0.0,
+      "path": "probe.budgetPerHour"
+    },
+    {
+      "default": 30.0,
+      "max": 1440.0,
+      "min": 5.0,
+      "path": "probe.backgroundIntervalMin"
+    },
+    {
+      "default": 300.0,
+      "max": 3600.0,
+      "min": 60.0,
+      "path": "failback.minHealthySpanSec"
+    },
+    {
+      "default": 0.2,
+      "max": 0.9,
+      "min": 0.05,
+      "path": "failback.minImprovementRatio"
+    },
+    {
+      "default": 600.0,
+      "max": 7200.0,
+      "min": 60.0,
+      "path": "failback.minIntervalSec"
+    },
+    {
+      "default": 24.0,
+      "max": 168.0,
+      "min": 1.0,
+      "path": "udpBlockedTtlHours"
+    },
+    {
+      "default": 24.0,
+      "max": 168.0,
+      "min": 1.0,
+      "path": "pinTtlHours"
+    }
+  ],
+  "cases": [
+    {
+      "expected": {
+        "backoff": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "breaker": {
+          "cooldownBaseSec": 30,
+          "cooldownMaxSec": 600,
+          "failureRatio": 0.5,
+          "failureThreshold": 3
+        },
+        "connectTimeoutMs": 8000,
+        "failback": {
+          "minHealthySpanSec": 300,
+          "minImprovementRatio": 0.2,
+          "minIntervalSec": 600
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 120,
+          "intervalSec": 30,
+          "timeoutSec": 90
+        },
+        "pinTtlHours": 24,
+        "probe": {
+          "backgroundIntervalMin": 30,
+          "budgetPerHour": 30
+        },
+        "probeWakeTimeoutMs": 5000,
+        "protocolOrder": [
+          "quic",
+          "ws"
+        ],
+        "raceStaggerMs": 300,
+        "udpBlockedTtlHours": 24
+      },
+      "input": {},
+      "name": "empty"
+    },
+    {
+      "expected": {
+        "backoff": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "breaker": {
+          "cooldownBaseSec": 30,
+          "cooldownMaxSec": 600,
+          "failureRatio": 0.5,
+          "failureThreshold": 3
+        },
+        "connectTimeoutMs": 8000,
+        "failback": {
+          "minHealthySpanSec": 300,
+          "minImprovementRatio": 0.2,
+          "minIntervalSec": 600
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 120,
+          "intervalSec": 30,
+          "timeoutSec": 90
+        },
+        "pinTtlHours": 24,
+        "probe": {
+          "backgroundIntervalMin": 30,
+          "budgetPerHour": 30
+        },
+        "probeWakeTimeoutMs": 5000,
+        "protocolOrder": [
+          "quic",
+          "ws"
+        ],
+        "raceStaggerMs": 300,
+        "udpBlockedTtlHours": 24
+      },
+      "input": null,
+      "name": "null"
+    },
+    {
+      "expected": {
+        "backoff": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "breaker": {
+          "cooldownBaseSec": 30,
+          "cooldownMaxSec": 600,
+          "failureRatio": 0.5,
+          "failureThreshold": 3
+        },
+        "connectTimeoutMs": 8000,
+        "failback": {
+          "minHealthySpanSec": 300,
+          "minImprovementRatio": 0.2,
+          "minIntervalSec": 600
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 120,
+          "intervalSec": 30,
+          "timeoutSec": 90
+        },
+        "pinTtlHours": 24,
+        "probe": {
+          "backgroundIntervalMin": 30,
+          "budgetPerHour": 30
+        },
+        "probeWakeTimeoutMs": 5000,
+        "protocolOrder": [
+          "quic",
+          "ws"
+        ],
+        "raceStaggerMs": 300,
+        "udpBlockedTtlHours": 24
+      },
+      "input": {
+        "breaker": {
+          "failureThreshold": 3
+        },
+        "raceStaggerMs": 300
+      },
+      "name": "design sample"
+    },
+    {
+      "expected": {
+        "backoff": {
+          "baseMs": 500,
+          "capBackgroundMs": 30000,
+          "capForegroundMs": 5000
+        },
+        "breaker": {
+          "cooldownBaseSec": 5,
+          "cooldownMaxSec": 60,
+          "failureRatio": 0.2,
+          "failureThreshold": 2
+        },
+        "connectTimeoutMs": 2000,
+        "failback": {
+          "minHealthySpanSec": 60,
+          "minImprovementRatio": 0.05,
+          "minIntervalSec": 60
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 30,
+          "intervalSec": 10,
+          "timeoutSec": 20
+        },
+        "pinTtlHours": 1,
+        "probe": {
+          "backgroundIntervalMin": 5,
+          "budgetPerHour": 0
+        },
+        "probeWakeTimeoutMs": 2000,
+        "protocolOrder": [
+          "quic",
+          "ws"
+        ],
+        "raceStaggerMs": 100,
+        "udpBlockedTtlHours": 1
+      },
+      "input": {
+        "backoff": {
+          "baseMs": 0,
+          "capBackgroundMs": 0,
+          "capForegroundMs": 0
+        },
+        "breaker": {
+          "cooldownBaseSec": 0,
+          "cooldownMaxSec": 0,
+          "failureRatio": 0,
+          "failureThreshold": 0
+        },
+        "connectTimeoutMs": 1,
+        "failback": {
+          "minHealthySpanSec": 0,
+          "minImprovementRatio": 0,
+          "minIntervalSec": 0
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 1,
+          "intervalSec": 1,
+          "timeoutSec": 1
+        },
+        "pinTtlHours": 0,
+        "probe": {
+          "backgroundIntervalMin": 0,
+          "budgetPerHour": -5
+        },
+        "probeWakeTimeoutMs": 0,
+        "raceStaggerMs": 0,
+        "udpBlockedTtlHours": 0
+      },
+      "name": "below minimums"
+    },
+    {
+      "expected": {
+        "backoff": {
+          "baseMs": 10000,
+          "capBackgroundMs": 1800000,
+          "capForegroundMs": 600000
+        },
+        "breaker": {
+          "cooldownBaseSec": 300,
+          "cooldownMaxSec": 3600,
+          "failureRatio": 1.0,
+          "failureThreshold": 20
+        },
+        "connectTimeoutMs": 30000,
+        "failback": {
+          "minHealthySpanSec": 3600,
+          "minImprovementRatio": 0.9,
+          "minIntervalSec": 7200
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 900,
+          "intervalSec": 300,
+          "timeoutSec": 900
+        },
+        "pinTtlHours": 168,
+        "probe": {
+          "backgroundIntervalMin": 1440,
+          "budgetPerHour": 120
+        },
+        "probeWakeTimeoutMs": 30000,
+        "protocolOrder": [
+          "quic",
+          "ws"
+        ],
+        "raceStaggerMs": 3000,
+        "udpBlockedTtlHours": 168
+      },
+      "input": {
+        "backoff": {
+          "baseMs": 1000000000.0,
+          "capBackgroundMs": 1000000000.0,
+          "capForegroundMs": 1000000000.0
+        },
+        "breaker": {
+          "cooldownBaseSec": 1000000000.0,
+          "cooldownMaxSec": 1000000000.0,
+          "failureRatio": 7,
+          "failureThreshold": 1000000000.0
+        },
+        "connectTimeoutMs": 1000000000.0,
+        "failback": {
+          "minHealthySpanSec": 1000000000.0,
+          "minImprovementRatio": 5,
+          "minIntervalSec": 1000000000.0
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 1000000000.0,
+          "intervalSec": 1000000000.0,
+          "timeoutSec": 1000000000.0
+        },
+        "pinTtlHours": 1000000000.0,
+        "probe": {
+          "backgroundIntervalMin": 1000000000.0,
+          "budgetPerHour": 100000
+        },
+        "probeWakeTimeoutMs": 1000000000.0,
+        "raceStaggerMs": 1000000000.0,
+        "udpBlockedTtlHours": 1000000000.0
+      },
+      "name": "above maximums"
+    },
+    {
+      "expected": {
+        "backoff": {
+          "baseMs": 10000,
+          "capBackgroundMs": 30000,
+          "capForegroundMs": 10000
+        },
+        "breaker": {
+          "cooldownBaseSec": 300,
+          "cooldownMaxSec": 300,
+          "failureRatio": 0.5,
+          "failureThreshold": 3
+        },
+        "connectTimeoutMs": 8000,
+        "failback": {
+          "minHealthySpanSec": 300,
+          "minImprovementRatio": 0.2,
+          "minIntervalSec": 600
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 200,
+          "intervalSec": 200,
+          "timeoutSec": 400
+        },
+        "pinTtlHours": 24,
+        "probe": {
+          "backgroundIntervalMin": 30,
+          "budgetPerHour": 30
+        },
+        "probeWakeTimeoutMs": 5000,
+        "protocolOrder": [
+          "quic",
+          "ws"
+        ],
+        "raceStaggerMs": 300,
+        "udpBlockedTtlHours": 24
+      },
+      "input": {
+        "backoff": {
+          "baseMs": 10000,
+          "capBackgroundMs": 30000,
+          "capForegroundMs": 5000
+        },
+        "breaker": {
+          "cooldownBaseSec": 300,
+          "cooldownMaxSec": 60
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 60,
+          "intervalSec": 200,
+          "timeoutSec": 30
+        }
+      },
+      "name": "cross-field repair"
+    },
+    {
+      "expected": {
+        "backoff": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "breaker": {
+          "cooldownBaseSec": 30,
+          "cooldownMaxSec": 600,
+          "failureRatio": 0.5,
+          "failureThreshold": 3
+        },
+        "connectTimeoutMs": 8000,
+        "failback": {
+          "minHealthySpanSec": 300,
+          "minImprovementRatio": 0.2,
+          "minIntervalSec": 600
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 120,
+          "intervalSec": 30,
+          "timeoutSec": 90
+        },
+        "pinTtlHours": 24,
+        "probe": {
+          "backgroundIntervalMin": 30,
+          "budgetPerHour": 30
+        },
+        "probeWakeTimeoutMs": 5000,
+        "protocolOrder": [
+          "quic",
+          "ws"
+        ],
+        "raceStaggerMs": 300,
+        "udpBlockedTtlHours": 24
+      },
+      "input": {
+        "breaker": {
+          "failureRatio": "half"
+        },
+        "connectTimeoutMs": null,
+        "heartbeat": [
+          1,
+          2
+        ],
+        "probe": true,
+        "protocolOrder": "quic",
+        "raceStaggerMs": "fast"
+      },
+      "name": "wrong types fall back to defaults"
+    },
+    {
+      "expected": {
+        "backoff": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "breaker": {
+          "cooldownBaseSec": 30,
+          "cooldownMaxSec": 600,
+          "failureRatio": 0.333,
+          "failureThreshold": 3
+        },
+        "connectTimeoutMs": 8000,
+        "failback": {
+          "minHealthySpanSec": 300,
+          "minImprovementRatio": 0.2,
+          "minIntervalSec": 600
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 120,
+          "intervalSec": 30,
+          "timeoutSec": 90
+        },
+        "pinTtlHours": 24,
+        "probe": {
+          "backgroundIntervalMin": 30,
+          "budgetPerHour": 30
+        },
+        "probeWakeTimeoutMs": 5000,
+        "protocolOrder": [
+          "quic",
+          "ws"
+        ],
+        "raceStaggerMs": 301,
+        "udpBlockedTtlHours": 24
+      },
+      "input": {
+        "breaker": {
+          "failureRatio": 0.333,
+          "failureThreshold": 2.5
+        },
+        "raceStaggerMs": 300.6
+      },
+      "name": "fractions round"
+    },
+    {
+      "expected": {
+        "backoff": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "breaker": {
+          "cooldownBaseSec": 30,
+          "cooldownMaxSec": 600,
+          "failureRatio": 0.5,
+          "failureThreshold": 3
+        },
+        "connectTimeoutMs": 8000,
+        "failback": {
+          "minHealthySpanSec": 300,
+          "minImprovementRatio": 0.2,
+          "minIntervalSec": 600
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 120,
+          "intervalSec": 30,
+          "timeoutSec": 90
+        },
+        "pinTtlHours": 24,
+        "probe": {
+          "backgroundIntervalMin": 30,
+          "budgetPerHour": 30
+        },
+        "probeWakeTimeoutMs": 5000,
+        "protocolOrder": [
+          "ws"
+        ],
+        "raceStaggerMs": 300,
+        "udpBlockedTtlHours": 24
+      },
+      "input": {
+        "protocolOrder": [
+          "ws"
+        ]
+      },
+      "name": "protocol order ws only"
+    },
+    {
+      "expected": {
+        "backoff": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "breaker": {
+          "cooldownBaseSec": 30,
+          "cooldownMaxSec": 600,
+          "failureRatio": 0.5,
+          "failureThreshold": 3
+        },
+        "connectTimeoutMs": 8000,
+        "failback": {
+          "minHealthySpanSec": 300,
+          "minImprovementRatio": 0.2,
+          "minIntervalSec": 600
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 120,
+          "intervalSec": 30,
+          "timeoutSec": 90
+        },
+        "pinTtlHours": 24,
+        "probe": {
+          "backgroundIntervalMin": 30,
+          "budgetPerHour": 30
+        },
+        "probeWakeTimeoutMs": 5000,
+        "protocolOrder": [
+          "ws",
+          "quic"
+        ],
+        "raceStaggerMs": 300,
+        "udpBlockedTtlHours": 24
+      },
+      "input": {
+        "protocolOrder": [
+          "tcp",
+          "ws",
+          "quic",
+          "ws"
+        ]
+      },
+      "name": "protocol order dedupes and drops unknown"
+    },
+    {
+      "expected": {
+        "backoff": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "breaker": {
+          "cooldownBaseSec": 30,
+          "cooldownMaxSec": 600,
+          "failureRatio": 0.5,
+          "failureThreshold": 3
+        },
+        "connectTimeoutMs": 8000,
+        "failback": {
+          "minHealthySpanSec": 300,
+          "minImprovementRatio": 0.2,
+          "minIntervalSec": 600
+        },
+        "heartbeat": {
+          "backgroundIntervalSec": 120,
+          "intervalSec": 30,
+          "timeoutSec": 90
+        },
+        "pinTtlHours": 24,
+        "probe": {
+          "backgroundIntervalMin": 30,
+          "budgetPerHour": 30
+        },
+        "probeWakeTimeoutMs": 5000,
+        "protocolOrder": [
+          "quic",
+          "ws"
+        ],
+        "raceStaggerMs": 300,
+        "udpBlockedTtlHours": 24
+      },
+      "input": {
+        "protocolOrder": [
+          "tcp",
+          3
+        ]
+      },
+      "name": "protocol order all unknown"
+    }
+  ],
+  "description": "clientPolicy resolution: missing or non-numeric fields take the default, numbers clamp to [min, max] and round half away from zero to integers where the field is integral. Cross-field rules: heartbeat.timeoutSec >= 2 x intervalSec (capped at its max), backgroundIntervalSec >= intervalSec, cooldownMaxSec >= cooldownBaseSec, capForegroundMs >= baseMs, capBackgroundMs >= capForegroundMs. protocolOrder keeps known values in order without duplicates, falling back to [quic, ws] when empty."
+}

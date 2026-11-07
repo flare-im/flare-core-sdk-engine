@@ -36,4 +36,7 @@ tokio = { version = "1", default-features = false, features = ["sync", "macros",
 
 [package.metadata.wasm-pack.profile.release]
 # -Oz + 必要特性开关：wasm-pack 内置 binaryen 对 5MB 产物可再缩 15-30%（网络+编译双收益）。
-wasm-opt = ["-Oz", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+# 单调用方内联上限：-Oz 默认不限大小，raw 略小，gzip 却大很多，用户下载的是 gzip。
+# 2026-11-06 同一份代码实测 raw / gzip：不设 4,977,796 / 1,913,323，60 是 4,988,322 / 1,780,196，
+# 40 是 5,005,508 / 1,763,935。
+wasm-opt = ["-Oz", "--one-caller-inline-max-function-size=40", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

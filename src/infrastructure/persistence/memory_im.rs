@@ -197,6 +197,35 @@ impl MessageReader for MemoryMessageStore {
         &self,
         query: &crate::model::MessageSearchQuery,
     ) -> Result<Vec<IMMessage>> {
+        self.search_with_history_floors(query, &HashMap::new())
+            .await
+    }
+}
+
+impl MemoryMessageStore {
+    /// Search with visibility enforced before applying the requested limit.
+    pub async fn search_visible(
+        &self,
+        query: &crate::model::MessageSearchQuery,
+        conversations: &dyn ConversationReader,
+    ) -> Result<Vec<IMMessage>> {
+        let floors = conversations
+            .list()
+            .await?
+            .into_iter()
+            .filter_map(|conversation| {
+                let floor = crate::domain::sync_visibility_floor(&conversation);
+                (floor > 0).then_some((conversation.conversation_id, floor))
+            })
+            .collect();
+        self.search_with_history_floors(query, &floors).await
+    }
+
+    async fn search_with_history_floors(
+        &self,
+        query: &crate::model::MessageSearchQuery,
+        floors: &HashMap<String, u64>,
+    ) -> Result<Vec<IMMessage>> {
         use super::search::{
             elem_search_text, message_type_values_for_search, search_text_for_content_bytes,
         };
@@ -217,6 +246,10 @@ impl MessageReader for MemoryMessageStore {
             .await
             .values()
             .filter(|m| {
+                let floor = floors.get(&m.conversation_id).copied().unwrap_or(0);
+                if !crate::domain::message_visible_after_clear(m, floor) {
+                    return false;
+                }
                 if !query.include_recalled && m.is_recalled {
                     return false;
                 }

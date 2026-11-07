@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     ".",
+    "access",
     "xtask",
     "storage/sqlite",
     "storage/indexeddb",
@@ -85,7 +86,7 @@ integration-tests = []
 # SQLite 持久化实现（Message/Conversation/PendingSend/UserProfile 仓储）
 storage-sqlite = ["dep:sqlx"]
 # 跨平台 SQLite 登录编排（依赖 storage/sqlite 连接池与 schema 注册）
-lifecycle-sqlite = ["storage-sqlite", "dep:flare-im-core-sdk-storage-sqlite"]
+lifecycle-sqlite = ["storage-sqlite", "dep:flare-im-core-sdk-storage-sqlite", "flare-access/sqlite"]
 # Native QUIC transport support. Browser/WASM remains WebSocket-only.
 quic = ["flare-core/quic"]
 # RichDoc v2 HTML 片段归一化；默认关闭以避免移动端无条件编译 HTML parser 重依赖。
@@ -99,6 +100,8 @@ link-preview = ["rich-doc-html"]
 [dependencies]
 flare-core = { workspace = true, default-features = false, features = ["client", "websocket", "compression-gzip", "encryption-aes-gcm"] }
 flare-proto = { workspace = true }
+# 客户端链路核心：接入清单、信任链、健康簿与选路（原生 SQLite 存储随 lifecycle-sqlite 打开）。
+flare-access = { version = "0.1.0", path = "access", default-features = false, features = ["client"] }
 chrono = { workspace = true }
 
 serde = { workspace = true }
@@ -123,7 +126,6 @@ hmac = "0.12"
 rand = "0.8"
 hex = "0.4"
 futures = "0.3"
-url = "2.5"
 uuid = { version = "1", features = ["v4", "js"] }
 
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"], optional = true }
@@ -131,12 +133,18 @@ base64 = { version = "0.22" }
 flare-im-core-sdk-storage-sqlite = { version = "1.1.0", path = "storage/sqlite", optional = true }
 # RichDoc v2：Markdown 归一化 + 检索串规范化（全目标可用）
 pulldown-cmark = "0.12"
-unicode-normalization = "0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# wasm 走浏览器的 `String.prototype.normalize`，共用路径的 URL 判定走 `flare_access::ParsedUrl`。
+# 这里的 `url` 只留给原生专属代码：`file:` 转路径，以及必须和 reqwest 同样解析的钉扎。
+unicode-normalization = "0.1"
+url = "2.5"
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+# 引导文档按 `Accept-Encoding: br, gzip` 拉取，体积上限要按解压后计，所以自己解压而不交给 reqwest。
+brotli-decompressor = "5"
+flate2 = "1"
 flare-grpc-proto = { workspace = true }
 tonic = { workspace = true }
 dirs = "5.0"
@@ -161,10 +169,16 @@ web-sys = { version = "0.3", features = [
     "Blob",
     "Headers",
     "Request",
+    "RequestCache",
+    "RequestCredentials",
+    "RequestRedirect",
+    "ReferrerPolicy",
     "RequestInit",
     "RequestMode",
     "Navigator",
     "Response",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
     "Window",
     "ProgressEvent",
     "XmlHttpRequest",
@@ -187,6 +201,10 @@ criterion = "0.5"
 [[bench]]
 name = "perf_baseline"
 harness = false
+
+[[example]]
+name = "access_lab_client"
+required-features = ["lifecycle-sqlite"]
 
 [[example]]
 name = "e2ee_demo"

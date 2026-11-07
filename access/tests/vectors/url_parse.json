@@ -1,0 +1,2288 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "fragment": null,
+        "host": "cdn.example.com",
+        "ip": null,
+        "path": "/access.json",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://cdn.example.com/access.json"
+      },
+      "input": {
+        "url": "https://cdn.example.com/access.json",
+        "differs": null
+      },
+      "name": "mirror"
+    },
+    {
+      "expected": {
+        "fragment": "frag",
+        "host": "cdn.example.com",
+        "ip": null,
+        "path": "/a/b",
+        "port": 8443,
+        "query": "x=1&y=2",
+        "queryPairs": [
+          [
+            "x",
+            "1"
+          ],
+          [
+            "y",
+            "2"
+          ]
+        ],
+        "scheme": "https",
+        "serialized": "https://cdn.example.com:8443/a/b?x=1&y=2#frag"
+      },
+      "input": {
+        "url": "https://cdn.example.com:8443/a/b?x=1&y=2#frag",
+        "differs": null
+      },
+      "name": "all parts"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "cdn.example.com",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://cdn.example.com/"
+      },
+      "input": {
+        "url": "https://cdn.example.com",
+        "differs": null
+      },
+      "name": "no path"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "cdn.example.com",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": "x=1",
+        "queryPairs": [
+          [
+            "x",
+            "1"
+          ]
+        ],
+        "scheme": "https",
+        "serialized": "https://cdn.example.com/?x=1"
+      },
+      "input": {
+        "url": "https://cdn.example.com?x=1",
+        "differs": null
+      },
+      "name": "query without path"
+    },
+    {
+      "expected": {
+        "fragment": "x",
+        "host": "cdn.example.com",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://cdn.example.com/#x"
+      },
+      "input": {
+        "url": "https://cdn.example.com#x",
+        "differs": null
+      },
+      "name": "fragment without path"
+    },
+    {
+      "expected": {
+        "fragment": "",
+        "host": "cdn.example.com",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": "",
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://cdn.example.com/?#"
+      },
+      "input": {
+        "url": "https://cdn.example.com/?#",
+        "differs": null
+      },
+      "name": "empty query and fragment"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "dns.google",
+        "ip": null,
+        "path": "/dns-query",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://dns.google/dns-query"
+      },
+      "input": {
+        "url": "https://dns.google/dns-query",
+        "differs": null
+      },
+      "name": "doh resolver"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "localhost",
+        "ip": null,
+        "path": "/",
+        "port": 8080,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "http",
+        "serialized": "http://localhost:8080/"
+      },
+      "input": {
+        "url": "http://localhost:8080/",
+        "differs": null
+      },
+      "name": "dev http"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "127.0.0.1",
+        "ip": "127.0.0.1",
+        "path": "/ws",
+        "port": 60051,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "ws",
+        "serialized": "ws://127.0.0.1:60051/ws"
+      },
+      "input": {
+        "url": "ws://127.0.0.1:60051/ws",
+        "differs": null
+      },
+      "name": "dev ws"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "im.example.com",
+        "ip": null,
+        "path": "/ws",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "wss",
+        "serialized": "wss://im.example.com/ws"
+      },
+      "input": {
+        "url": "wss://im.example.com/ws",
+        "differs": null
+      },
+      "name": "wss"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "im.example.com",
+        "ip": null,
+        "path": "",
+        "port": 60052,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "quic",
+        "serialized": "quic://im.example.com:60052"
+      },
+      "input": {
+        "url": "quic://im.example.com:60052",
+        "differs": null
+      },
+      "name": "quic"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "127.0.0.1",
+        "ip": null,
+        "path": "",
+        "port": 60052,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "quic",
+        "serialized": "quic://127.0.0.1:60052"
+      },
+      "input": {
+        "url": "quic://127.0.0.1:60052",
+        "differs": null
+      },
+      "name": "quic ipv4"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "v1",
+        "ip": null,
+        "path": "",
+        "port": null,
+        "query": "p=abc&k=root-1&s=sig",
+        "queryPairs": [
+          [
+            "p",
+            "abc"
+          ],
+          [
+            "k",
+            "root-1"
+          ],
+          [
+            "s",
+            "sig"
+          ]
+        ],
+        "scheme": "flare-recover",
+        "serialized": "flare-recover://v1?p=abc&k=root-1&s=sig"
+      },
+      "input": {
+        "url": "flare-recover://v1?p=abc&k=root-1&s=sig",
+        "differs": null
+      },
+      "name": "recovery link"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "v1",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": "p=abc",
+        "queryPairs": [
+          [
+            "p",
+            "abc"
+          ]
+        ],
+        "scheme": "flare-recover",
+        "serialized": "flare-recover://v1/?p=abc"
+      },
+      "input": {
+        "url": "flare-recover://v1/?p=abc",
+        "differs": null
+      },
+      "name": "recovery link with slash"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "flare_gateway",
+        "ip": null,
+        "path": "/",
+        "port": 8080,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "http",
+        "serialized": "http://flare_gateway:8080/"
+      },
+      "input": {
+        "url": "http://flare_gateway:8080/",
+        "differs": null
+      },
+      "name": "underscore host"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "gateway",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "http",
+        "serialized": "http://gateway/"
+      },
+      "input": {
+        "url": "http://gateway/",
+        "differs": null
+      },
+      "name": "single label host"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "example.com.",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://example.com./"
+      },
+      "input": {
+        "url": "https://example.com./",
+        "differs": null
+      },
+      "name": "trailing dot host"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "-a-.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://-a-.example/"
+      },
+      "input": {
+        "url": "https://-a-.example/",
+        "differs": null
+      },
+      "name": "edge hyphens"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "ab--cd.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://ab--cd.example/"
+      },
+      "input": {
+        "url": "https://ab--cd.example/",
+        "differs": null
+      },
+      "name": "double hyphen"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "//b//c",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example//b//c"
+      },
+      "input": {
+        "url": "https://a.example//b//c",
+        "differs": null
+      },
+      "name": "double slash in path"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "cdn.example.com",
+        "ip": null,
+        "path": "/Path",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://cdn.example.com/Path"
+      },
+      "input": {
+        "url": "HTTPS://CDN.EXAMPLE.COM/Path",
+        "differs": null
+      },
+      "name": "upper scheme and host"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "EXAMPLE.com",
+        "ip": null,
+        "path": "",
+        "port": 1,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "quic",
+        "serialized": "quic://EXAMPLE.com:1"
+      },
+      "input": {
+        "url": "QUIC://EXAMPLE.com:1",
+        "differs": null
+      },
+      "name": "non-special host keeps case"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "V1",
+        "ip": null,
+        "path": "",
+        "port": null,
+        "query": "p=a",
+        "queryPairs": [
+          [
+            "p",
+            "a"
+          ]
+        ],
+        "scheme": "flare-recover",
+        "serialized": "flare-recover://V1?p=a"
+      },
+      "input": {
+        "url": "flare-recover://V1?p=a",
+        "differs": null
+      },
+      "name": "recovery host keeps case"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/"
+      },
+      "input": {
+        "url": "https://a.example:443/",
+        "differs": null
+      },
+      "name": "https default port"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "http",
+        "serialized": "http://a.example/"
+      },
+      "input": {
+        "url": "http://a.example:80/",
+        "differs": null
+      },
+      "name": "http default port"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "ws",
+        "serialized": "ws://a.example/"
+      },
+      "input": {
+        "url": "ws://a.example:80/",
+        "differs": null
+      },
+      "name": "ws default port"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "wss",
+        "serialized": "wss://a.example/"
+      },
+      "input": {
+        "url": "wss://a.example:443/",
+        "differs": null
+      },
+      "name": "wss default port"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": 80,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example:80/"
+      },
+      "input": {
+        "url": "https://a.example:80/",
+        "differs": null
+      },
+      "name": "cross default port"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "",
+        "port": 443,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "quic",
+        "serialized": "quic://a.example:443"
+      },
+      "input": {
+        "url": "quic://a.example:443",
+        "differs": null
+      },
+      "name": "non-special keeps 443"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": 0,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example:0/"
+      },
+      "input": {
+        "url": "https://a.example:0/",
+        "differs": null
+      },
+      "name": "port zero"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": 65535,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example:65535/"
+      },
+      "input": {
+        "url": "https://a.example:65535/",
+        "differs": null
+      },
+      "name": "port max"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidPort"
+      },
+      "input": {
+        "url": "https://a.example:65536/",
+        "differs": null
+      },
+      "name": "port too large"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/"
+      },
+      "input": {
+        "url": "https://a.example:00443/",
+        "differs": null
+      },
+      "name": "port leading zeros"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidPort"
+      },
+      "input": {
+        "url": "https://a.example:+80/",
+        "differs": null
+      },
+      "name": "port plus sign"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidPort"
+      },
+      "input": {
+        "url": "https://a.example:80a/",
+        "differs": null
+      },
+      "name": "port letters"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidPort"
+      },
+      "input": {
+        "url": "https://a.example:80:80/",
+        "differs": null
+      },
+      "name": "port twice"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidPort"
+      },
+      "input": {
+        "url": "https://a.example:/",
+        "differs": "空端口多半是拼接错误"
+      },
+      "name": "port empty"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "203.0.113.10",
+        "ip": "203.0.113.10",
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://203.0.113.10/"
+      },
+      "input": {
+        "url": "https://203.0.113.10/",
+        "differs": null
+      },
+      "name": "ipv4"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "255.255.255.255",
+        "ip": "255.255.255.255",
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://255.255.255.255/"
+      },
+      "input": {
+        "url": "https://255.255.255.255/",
+        "differs": null
+      },
+      "name": "ipv4 max"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://1.2.3.256/",
+        "differs": null
+      },
+      "name": "ipv4 octet too large"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://127.1/",
+        "differs": "只收规范的四段十进制 IPv4"
+      },
+      "name": "ipv4 short"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://0x7f.0.0.1/",
+        "differs": "只收规范的四段十进制 IPv4"
+      },
+      "name": "ipv4 hex"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://0177.0.0.1/",
+        "differs": "只收规范的四段十进制 IPv4"
+      },
+      "name": "ipv4 octal"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://2130706433/",
+        "differs": "只收规范的四段十进制 IPv4"
+      },
+      "name": "ipv4 integer"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://017700000001/",
+        "differs": "只收规范的四段十进制 IPv4"
+      },
+      "name": "ipv4 octal integer"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://1.2.3.4./",
+        "differs": "只收规范的四段十进制 IPv4"
+      },
+      "name": "ipv4 trailing dot"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://foo.1/",
+        "differs": null
+      },
+      "name": "numeric last label"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://foo.0x1/",
+        "differs": null
+      },
+      "name": "hex last label"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "1.2.3.256",
+        "ip": null,
+        "path": "",
+        "port": 1,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "quic",
+        "serialized": "quic://1.2.3.256:1"
+      },
+      "input": {
+        "url": "quic://1.2.3.256:1",
+        "differs": null
+      },
+      "name": "non-special numeric host"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "[::1]",
+        "ip": "::1",
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://[::1]/"
+      },
+      "input": {
+        "url": "https://[::1]/",
+        "differs": null
+      },
+      "name": "ipv6 loopback"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "[::1]",
+        "ip": "::1",
+        "path": "/",
+        "port": 8443,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://[::1]:8443/"
+      },
+      "input": {
+        "url": "https://[::1]:8443/",
+        "differs": null
+      },
+      "name": "ipv6 port"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "[2001:db8::1]",
+        "ip": "2001:db8::1",
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://[2001:db8::1]/"
+      },
+      "input": {
+        "url": "https://[2001:DB8::1]/",
+        "differs": null
+      },
+      "name": "ipv6 upper"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "[1:2:3:4:5:6:7:8]",
+        "ip": "1:2:3:4:5:6:7:8",
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://[1:2:3:4:5:6:7:8]/"
+      },
+      "input": {
+        "url": "https://[1:2:3:4:5:6:7:8]/",
+        "differs": null
+      },
+      "name": "ipv6 full"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "[::ffff:102:304]",
+        "ip": "::ffff:1.2.3.4",
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://[::ffff:102:304]/"
+      },
+      "input": {
+        "url": "https://[::ffff:1.2.3.4]/",
+        "differs": null
+      },
+      "name": "ipv6 mapped"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "[::1]",
+        "ip": "::1",
+        "path": "",
+        "port": 9000,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "quic",
+        "serialized": "quic://[::1]:9000"
+      },
+      "input": {
+        "url": "quic://[::1]:9000",
+        "differs": null
+      },
+      "name": "ipv6 non-special"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://[::1/",
+        "differs": null
+      },
+      "name": "ipv6 unclosed"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://[::g]/",
+        "differs": null
+      },
+      "name": "ipv6 bad digit"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://[fe80::1%25en0]/",
+        "differs": null
+      },
+      "name": "ipv6 zone"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://[::1]x/",
+        "differs": null
+      },
+      "name": "ipv6 tail"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://[127.0.0.1]/",
+        "differs": null
+      },
+      "name": "ipv4 in brackets"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://",
+        "differs": null
+      },
+      "name": "scheme only"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://:443/",
+        "differs": null
+      },
+      "name": "empty host with port"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://?x",
+        "differs": null
+      },
+      "name": "empty host with query"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https:///a.example/",
+        "differs": "空主机：url 跳过多余的斜杠或留空，这里拒绝"
+      },
+      "name": "empty host with path"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "quic://",
+        "differs": "空主机：url 跳过多余的斜杠或留空，这里拒绝"
+      },
+      "name": "non-special empty host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "quic:///a",
+        "differs": "空主机：url 跳过多余的斜杠或留空，这里拒绝"
+      },
+      "name": "non-special empty host with path"
+    },
+    {
+      "expected": {
+        "rejected": "UserInfo"
+      },
+      "input": {
+        "url": "https://user:pass@a.example/",
+        "differs": "userinfo 没有正当用途，还能伪装主机"
+      },
+      "name": "user and password"
+    },
+    {
+      "expected": {
+        "rejected": "UserInfo"
+      },
+      "input": {
+        "url": "https://@a.example/",
+        "differs": "userinfo 没有正当用途，还能伪装主机"
+      },
+      "name": "empty userinfo"
+    },
+    {
+      "expected": {
+        "rejected": "UserInfo"
+      },
+      "input": {
+        "url": "https://good.example@evil.example/",
+        "differs": "userinfo 没有正当用途，还能伪装主机"
+      },
+      "name": "host as userinfo"
+    },
+    {
+      "expected": {
+        "rejected": "UserInfo"
+      },
+      "input": {
+        "url": "https://good.example:443@evil.example/",
+        "differs": "userinfo 没有正当用途，还能伪装主机"
+      },
+      "name": "port as userinfo"
+    },
+    {
+      "expected": {
+        "rejected": "UserInfo"
+      },
+      "input": {
+        "url": "https://evil.example%2f@good.example/",
+        "differs": "userinfo 没有正当用途，还能伪装主机"
+      },
+      "name": "encoded slash in userinfo"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/@b",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/@b"
+      },
+      "input": {
+        "url": "https://a.example/@b",
+        "differs": null
+      },
+      "name": "at sign in path"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "good.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": "@evil.example/",
+        "queryPairs": [
+          [
+            "@evil.example/",
+            ""
+          ]
+        ],
+        "scheme": "https",
+        "serialized": "https://good.example/?@evil.example/"
+      },
+      "input": {
+        "url": "https://good.example?@evil.example/",
+        "differs": null
+      },
+      "name": "at sign in query"
+    },
+    {
+      "expected": {
+        "fragment": "@evil.example/",
+        "host": "good.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://good.example/#@evil.example/"
+      },
+      "input": {
+        "url": "https://good.example#@evil.example/",
+        "differs": null
+      },
+      "name": "at sign in fragment"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a.example\\b",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "backslash path"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https:\\\\a.example\\",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "backslash authority"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://evil.example\\@good.example/",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "backslash before userinfo"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a.example/?a=\\b",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "backslash in query"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "quic://a\\b",
+        "differs": null
+      },
+      "name": "backslash in non-special host"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "quic://a/b\\c",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "backslash in non-special path"
+    },
+    {
+      "expected": {
+        "rejected": "MissingAuthority"
+      },
+      "input": {
+        "url": "https:a.example/",
+        "differs": "没有 // 权限段，调用点都要主机"
+      },
+      "name": "no slashes"
+    },
+    {
+      "expected": {
+        "rejected": "MissingAuthority"
+      },
+      "input": {
+        "url": "https:/a.example/",
+        "differs": "没有 // 权限段，调用点都要主机"
+      },
+      "name": "one slash"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https:////a.example/",
+        "differs": "空主机：url 跳过多余的斜杠或留空，这里拒绝"
+      },
+      "name": "four slashes"
+    },
+    {
+      "expected": {
+        "rejected": "MissingAuthority"
+      },
+      "input": {
+        "url": "quic:a",
+        "differs": "没有 // 权限段，调用点都要主机"
+      },
+      "name": "non-special no authority"
+    },
+    {
+      "expected": {
+        "rejected": "MissingAuthority"
+      },
+      "input": {
+        "url": "example.com:80",
+        "differs": "没有 // 权限段，调用点都要主机"
+      },
+      "name": "host and port read as scheme"
+    },
+    {
+      "expected": {
+        "rejected": "MissingAuthority"
+      },
+      "input": {
+        "url": "mailto:a@example.com",
+        "differs": "没有 // 权限段，调用点都要主机"
+      },
+      "name": "mailto"
+    },
+    {
+      "expected": {
+        "rejected": "MissingAuthority"
+      },
+      "input": {
+        "url": "data:text/plain,x",
+        "differs": "没有 // 权限段，调用点都要主机"
+      },
+      "name": "data"
+    },
+    {
+      "expected": {
+        "rejected": "MissingAuthority"
+      },
+      "input": {
+        "url": "javascript:alert(1)",
+        "differs": "没有 // 权限段，调用点都要主机"
+      },
+      "name": "javascript"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidScheme"
+      },
+      "input": {
+        "url": "//a.example/",
+        "differs": null
+      },
+      "name": "protocol relative"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidScheme"
+      },
+      "input": {
+        "url": "a.example",
+        "differs": null
+      },
+      "name": "bare host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidScheme"
+      },
+      "input": {
+        "url": "",
+        "differs": null
+      },
+      "name": "empty"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidScheme"
+      },
+      "input": {
+        "url": ":",
+        "differs": null
+      },
+      "name": "colon"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidScheme"
+      },
+      "input": {
+        "url": "1https://a.example/",
+        "differs": null
+      },
+      "name": "digit scheme"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "ht tp://a.example/",
+        "differs": null
+      },
+      "name": "space in scheme"
+    },
+    {
+      "expected": {
+        "rejected": "UnsupportedScheme"
+      },
+      "input": {
+        "url": "ftp://a.example/",
+        "differs": "file、ftp 不是这批调用点的协议"
+      },
+      "name": "ftp"
+    },
+    {
+      "expected": {
+        "rejected": "UnsupportedScheme"
+      },
+      "input": {
+        "url": "file:///etc/passwd",
+        "differs": "file、ftp 不是这批调用点的协议"
+      },
+      "name": "file"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": " https://a.example/",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "leading space"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a.example/\n",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "trailing newline"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a.ex\tample/",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "tab in host"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a.ex\nample/",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "newline in host"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a.example/a\nb",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "newline in path"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a.example/?a\rb",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "carriage return in query"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "ht\ttps://a.example/",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "tab in scheme"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a\u0000b.example/",
+        "differs": null
+      },
+      "name": "nul in host"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a.example/a\u0000b",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "nul in path"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a.example/ab",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "del in path"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a.example/a\u001fb",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "unit separator in path"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a.example/a b",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "space in path"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a.example/?a b",
+        "differs": "url 删掉或改写后放行，这里拒绝"
+      },
+      "name": "space in query"
+    },
+    {
+      "expected": {
+        "rejected": "ForbiddenCharacter"
+      },
+      "input": {
+        "url": "https://a b.example/",
+        "differs": null
+      },
+      "name": "space in host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://ex%61mple.com/",
+        "differs": "主机只收 [A-Za-z0-9._-]，不带 IDNA"
+      },
+      "name": "encoded letter in host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://a%2fb.example/",
+        "differs": null
+      },
+      "name": "encoded slash in host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://a%00b.example/",
+        "differs": null
+      },
+      "name": "encoded nul in host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "quic://a%41b",
+        "differs": "主机只收 [A-Za-z0-9._-]，不带 IDNA"
+      },
+      "name": "encoded percent in non-special host"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/a%2fb",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/a%2fb"
+      },
+      "input": {
+        "url": "https://a.example/a%2fb",
+        "differs": null
+      },
+      "name": "encoded slash in path"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/a%5cb",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/a%5cb"
+      },
+      "input": {
+        "url": "https://a.example/a%5cb",
+        "differs": null
+      },
+      "name": "encoded backslash in path"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/a%00b",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/a%00b"
+      },
+      "input": {
+        "url": "https://a.example/a%00b",
+        "differs": null
+      },
+      "name": "encoded nul in path"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/%zz",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/%zz"
+      },
+      "input": {
+        "url": "https://a.example/%zz",
+        "differs": null
+      },
+      "name": "bad escape in path"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/100%",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/100%"
+      },
+      "input": {
+        "url": "https://a.example/100%",
+        "differs": null
+      },
+      "name": "bare percent in path"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": "a=100%",
+        "queryPairs": [
+          [
+            "a",
+            "100%"
+          ]
+        ],
+        "scheme": "https",
+        "serialized": "https://a.example/?a=100%"
+      },
+      "input": {
+        "url": "https://a.example/?a=100%",
+        "differs": null
+      },
+      "name": "bare percent in query"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": "a=%E4%BD%A0+b&c=%2B&d",
+        "queryPairs": [
+          [
+            "a",
+            "你 b"
+          ],
+          [
+            "c",
+            "+"
+          ],
+          [
+            "d",
+            ""
+          ]
+        ],
+        "scheme": "https",
+        "serialized": "https://a.example/?a=%E4%BD%A0+b&c=%2B&d"
+      },
+      "input": {
+        "url": "https://a.example/?a=%E4%BD%A0+b&c=%2B&d",
+        "differs": null
+      },
+      "name": "escapes in query pairs"
+    },
+    {
+      "expected": {
+        "rejected": "DotSegment"
+      },
+      "input": {
+        "url": "https://a.example/a/../b",
+        "differs": "路径穿越：url 折叠后放行，这里直接拒绝"
+      },
+      "name": "parent segment"
+    },
+    {
+      "expected": {
+        "rejected": "DotSegment"
+      },
+      "input": {
+        "url": "https://a.example/a/./b",
+        "differs": "路径穿越：url 折叠后放行，这里直接拒绝"
+      },
+      "name": "current segment"
+    },
+    {
+      "expected": {
+        "rejected": "DotSegment"
+      },
+      "input": {
+        "url": "https://a.example/..",
+        "differs": "路径穿越：url 折叠后放行，这里直接拒绝"
+      },
+      "name": "parent at root"
+    },
+    {
+      "expected": {
+        "rejected": "DotSegment"
+      },
+      "input": {
+        "url": "https://a.example/a/..",
+        "differs": "路径穿越：url 折叠后放行，这里直接拒绝"
+      },
+      "name": "parent at end"
+    },
+    {
+      "expected": {
+        "rejected": "DotSegment"
+      },
+      "input": {
+        "url": "https://a.example/%2e%2e/etc/passwd",
+        "differs": "路径穿越：url 折叠后放行，这里直接拒绝"
+      },
+      "name": "encoded parent"
+    },
+    {
+      "expected": {
+        "rejected": "DotSegment"
+      },
+      "input": {
+        "url": "https://a.example/%2E%2E/b",
+        "differs": "路径穿越：url 折叠后放行，这里直接拒绝"
+      },
+      "name": "upper encoded parent"
+    },
+    {
+      "expected": {
+        "rejected": "DotSegment"
+      },
+      "input": {
+        "url": "https://a.example/.%2e/b",
+        "differs": "路径穿越：url 折叠后放行，这里直接拒绝"
+      },
+      "name": "half encoded parent"
+    },
+    {
+      "expected": {
+        "rejected": "DotSegment"
+      },
+      "input": {
+        "url": "https://a.example/%2e/b",
+        "differs": "路径穿越：url 折叠后放行，这里直接拒绝"
+      },
+      "name": "encoded current"
+    },
+    {
+      "expected": {
+        "rejected": "DotSegment"
+      },
+      "input": {
+        "url": "quic://a.example/a/../b",
+        "differs": "路径穿越：url 折叠后放行，这里直接拒绝"
+      },
+      "name": "non-special parent"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/a..b/...",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/a..b/..."
+      },
+      "input": {
+        "url": "https://a.example/a..b/...",
+        "differs": null
+      },
+      "name": "dots inside a segment"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": "x=../..",
+        "queryPairs": [
+          [
+            "x",
+            "../.."
+          ]
+        ],
+        "scheme": "https",
+        "serialized": "https://a.example/?x=../.."
+      },
+      "input": {
+        "url": "https://a.example/?x=../..",
+        "differs": null
+      },
+      "name": "dot-dot in query"
+    },
+    {
+      "expected": {
+        "fragment": "../..",
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/#../.."
+      },
+      "input": {
+        "url": "https://a.example/#../..",
+        "differs": null
+      },
+      "name": "dot-dot in fragment"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/%252e%252e/b",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/%252e%252e/b"
+      },
+      "input": {
+        "url": "https://a.example/%252e%252e/b",
+        "differs": null
+      },
+      "name": "double encoded parent"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/%2e%2e%2fb",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/%2e%2e%2fb"
+      },
+      "input": {
+        "url": "https://a.example/%2e%2e%2fb",
+        "differs": null
+      },
+      "name": "encoded slash after dots"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/%22%3C%3E%60%7B%7D|^[]'!$&()*+,;=:@~",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/%22%3C%3E%60%7B%7D|^[]'!$&()*+,;=:@~"
+      },
+      "input": {
+        "url": "https://a.example/\"<>`{}|^[]'!$&()*+,;=:@~",
+        "differs": null
+      },
+      "name": "path punctuation"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": "%22%3C%3E%27`{}|^[]",
+        "queryPairs": [
+          [
+            "\"<>'`{}|^[]",
+            ""
+          ]
+        ],
+        "scheme": "https",
+        "serialized": "https://a.example/?%22%3C%3E%27`{}|^[]"
+      },
+      "input": {
+        "url": "https://a.example/?\"<>'`{}|^[]",
+        "differs": null
+      },
+      "name": "special query punctuation"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": "%22%3C%3E'",
+        "queryPairs": [
+          [
+            "\"<>'",
+            ""
+          ]
+        ],
+        "scheme": "quic",
+        "serialized": "quic://a.example/?%22%3C%3E'"
+      },
+      "input": {
+        "url": "quic://a.example/?\"<>'",
+        "differs": null
+      },
+      "name": "non-special query punctuation"
+    },
+    {
+      "expected": {
+        "fragment": "%22%3C%3E%60'{}|^",
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/#%22%3C%3E%60'{}|^"
+      },
+      "input": {
+        "url": "https://a.example/#\"<>`'{}|^",
+        "differs": null
+      },
+      "name": "fragment punctuation"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": "a?b",
+        "queryPairs": [
+          [
+            "a?b",
+            ""
+          ]
+        ],
+        "scheme": "https",
+        "serialized": "https://a.example/?a?b"
+      },
+      "input": {
+        "url": "https://a.example/?a?b",
+        "differs": null
+      },
+      "name": "question mark in query"
+    },
+    {
+      "expected": {
+        "fragment": "a#b",
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/#a#b"
+      },
+      "input": {
+        "url": "https://a.example/#a#b",
+        "differs": null
+      },
+      "name": "hash in fragment"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/%E4%BD%A0%E5%A5%BD",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/%E4%BD%A0%E5%A5%BD"
+      },
+      "input": {
+        "url": "https://a.example/你好",
+        "differs": null
+      },
+      "name": "non-ascii path"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": "q=%E4%BD%A0%E5%A5%BD",
+        "queryPairs": [
+          [
+            "q",
+            "你好"
+          ]
+        ],
+        "scheme": "https",
+        "serialized": "https://a.example/?q=%E4%BD%A0%E5%A5%BD"
+      },
+      "input": {
+        "url": "https://a.example/?q=你好",
+        "differs": null
+      },
+      "name": "non-ascii query"
+    },
+    {
+      "expected": {
+        "fragment": "%E4%BD%A0%E5%A5%BD",
+        "host": "a.example",
+        "ip": null,
+        "path": "/",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/#%E4%BD%A0%E5%A5%BD"
+      },
+      "input": {
+        "url": "https://a.example/#你好",
+        "differs": null
+      },
+      "name": "non-ascii fragment"
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "a.example",
+        "ip": null,
+        "path": "/a%E3%80%80b",
+        "port": null,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "https",
+        "serialized": "https://a.example/a%E3%80%80b"
+      },
+      "input": {
+        "url": "https://a.example/a　b",
+        "differs": null
+      },
+      "name": "ideographic space in path"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://例子.cn/",
+        "differs": "主机只收 [A-Za-z0-9._-]，不带 IDNA"
+      },
+      "name": "non-ascii host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "quic://例子.cn:1",
+        "differs": "主机只收 [A-Za-z0-9._-]，不带 IDNA"
+      },
+      "name": "non-ascii non-special host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://ＥＸＡＭＰＬＥ.com/",
+        "differs": "主机只收 [A-Za-z0-9._-]，不带 IDNA"
+      },
+      "name": "full-width host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://a。example/",
+        "differs": "主机只收 [A-Za-z0-9._-]，不带 IDNA"
+      },
+      "name": "ideographic full stop"
+    },
+    {
+      "expected": {
+        "scheme": "https",
+        "host": "xn--fiqs8s.example",
+        "ip": null,
+        "port": null,
+        "path": "/",
+        "query": null,
+        "fragment": null,
+        "queryPairs": [],
+        "serialized": "https://xn--fiqs8s.example/"
+      },
+      "input": {
+        "url": "https://xn--fiqs8s.example/",
+        "differs": null
+      },
+      "name": "ace label"
+    },
+    {
+      "expected": {
+        "scheme": "https",
+        "host": "xn--fiqs8s.example",
+        "ip": null,
+        "port": null,
+        "path": "/",
+        "query": null,
+        "fragment": null,
+        "queryPairs": [],
+        "serialized": "https://xn--fiqs8s.example/"
+      },
+      "input": {
+        "url": "https://XN--fiqs8s.example/",
+        "differs": null
+      },
+      "name": "upper ace label"
+    },
+    {
+      "expected": {
+        "scheme": "https",
+        "host": "xn--a.example",
+        "ip": null,
+        "port": null,
+        "path": "/",
+        "query": null,
+        "fragment": null,
+        "queryPairs": [],
+        "serialized": "https://xn--a.example/"
+      },
+      "input": {
+        "url": "https://xn--a.example/",
+        "differs": "比 url 宽：xn-- 标签按普通 ASCII 处理，不校验 Punycode"
+      },
+      "name": "bad ace label"
+    },
+    {
+      "name": "ace prefix only",
+      "input": {
+        "url": "https://xn--.example/",
+        "differs": "比 url 宽：xn-- 标签按普通 ASCII 处理，不校验 Punycode"
+      },
+      "expected": {
+        "scheme": "https",
+        "host": "xn--.example",
+        "ip": null,
+        "port": null,
+        "path": "/",
+        "query": null,
+        "fragment": null,
+        "queryPairs": [],
+        "serialized": "https://xn--.example/"
+      }
+    },
+    {
+      "expected": {
+        "fragment": null,
+        "host": "xn--a.example",
+        "ip": null,
+        "path": "",
+        "port": 1,
+        "query": null,
+        "queryPairs": [],
+        "scheme": "quic",
+        "serialized": "quic://xn--a.example:1"
+      },
+      "input": {
+        "url": "quic://xn--a.example:1",
+        "differs": null
+      },
+      "name": "ace label in non-special host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://a!b.example/",
+        "differs": "主机只收 [A-Za-z0-9._-]，不带 IDNA"
+      },
+      "name": "exclamation in host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://a~b.example/",
+        "differs": "主机只收 [A-Za-z0-9._-]，不带 IDNA"
+      },
+      "name": "tilde in host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://a$b.example/",
+        "differs": "主机只收 [A-Za-z0-9._-]，不带 IDNA"
+      },
+      "name": "dollar in host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://a..b.example/",
+        "differs": "空标签不是可解析的主机名"
+      },
+      "name": "empty label"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://.a.example/",
+        "differs": "空标签不是可解析的主机名"
+      },
+      "name": "leading dot"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://./",
+        "differs": "空标签不是可解析的主机名"
+      },
+      "name": "only a dot"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://a<b.example/",
+        "differs": null
+      },
+      "name": "angle bracket in host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://a|b.example/",
+        "differs": null
+      },
+      "name": "pipe in host"
+    },
+    {
+      "expected": {
+        "rejected": "InvalidHost"
+      },
+      "input": {
+        "url": "https://a^b.example/",
+        "differs": null
+      },
+      "name": "caret in host"
+    }
+  ],
+  "description": "ParsedUrl 的判定与解析结果。input.differs 非空：与 url crate 判定不同，值是理由。除 xn-- 一类外都是 url 接受而 ParsedUrl 有意拒绝。"
+}

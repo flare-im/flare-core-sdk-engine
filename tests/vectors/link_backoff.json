@@ -1,0 +1,573 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "sleepsMs": [
+          1000,
+          1000,
+          1000
+        ]
+      },
+      "input": {
+        "baseMs": 1000,
+        "capMs": 60000,
+        "units": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "name": "low draws stay at base"
+    },
+    {
+      "expected": {
+        "sleepsMs": [
+          3000,
+          9000,
+          27000,
+          60000,
+          60000,
+          60000
+        ]
+      },
+      "input": {
+        "baseMs": 1000,
+        "capMs": 60000,
+        "units": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "name": "high draws triple up to the cap"
+    },
+    {
+      "expected": {
+        "sleepsMs": [
+          2000,
+          3500,
+          5750,
+          9125,
+          14188
+        ]
+      },
+      "input": {
+        "baseMs": 1000,
+        "capMs": 60000,
+        "units": [
+          0.5,
+          0.5,
+          0.5,
+          0.5,
+          0.5
+        ]
+      },
+      "name": "middle draws"
+    },
+    {
+      "expected": {
+        "sleepsMs": [
+          3000,
+          1000
+        ]
+      },
+      "input": {
+        "baseMs": 1000,
+        "capMs": 60000,
+        "units": [
+          1.5,
+          -0.5
+        ]
+      },
+      "name": "draws outside [0,1] clamp"
+    },
+    {
+      "expected": {
+        "sleepsMs": [
+          1000,
+          1000
+        ]
+      },
+      "input": {
+        "baseMs": 1000,
+        "capMs": 500,
+        "units": [
+          1.0,
+          1.0
+        ]
+      },
+      "name": "a cap below base is raised to base"
+    },
+    {
+      "expected": {
+        "sleepsMs": [
+          3000,
+          9000,
+          27000,
+          81000,
+          243000,
+          300000,
+          300000
+        ]
+      },
+      "input": {
+        "baseMs": 1000,
+        "capMs": 300000,
+        "units": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "name": "background cap"
+    },
+    {
+      "expected": {
+        "rounds": [
+          {
+            "atMs": 1793779230000,
+            "phase": "backoff",
+            "waitMs": 30000
+          }
+        ]
+      },
+      "input": {
+        "policy": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "rounds": [
+          {
+            "failedRounds": 1,
+            "foreground": true,
+            "jitterUnit": 0.0,
+            "nextHalfOpenAtMs": 1793779230000,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          }
+        ]
+      },
+      "name": "every access point open: wait for the earliest half-open"
+    },
+    {
+      "expected": {
+        "rounds": [
+          {
+            "atMs": 1793779203000,
+            "phase": "backoff",
+            "waitMs": 3000
+          }
+        ]
+      },
+      "input": {
+        "policy": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "rounds": [
+          {
+            "failedRounds": 1,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": 1793779200500,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          }
+        ]
+      },
+      "name": "a half-open sooner than the backoff does not shorten it"
+    },
+    {
+      "expected": {
+        "rounds": [
+          {
+            "atMs": 1793779215000,
+            "phase": "backoff",
+            "waitMs": 15000
+          }
+        ]
+      },
+      "input": {
+        "policy": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "rounds": [
+          {
+            "failedRounds": 1,
+            "foreground": true,
+            "jitterUnit": 0.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": [
+              10000,
+              20000
+            ],
+            "windowUnit": 0.5
+          }
+        ]
+      },
+      "name": "an overload window longer than the backoff wins"
+    },
+    {
+      "expected": {
+        "rounds": [
+          {
+            "atMs": 1793779203000,
+            "phase": "backoff",
+            "waitMs": 3000
+          }
+        ]
+      },
+      "input": {
+        "policy": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "rounds": [
+          {
+            "failedRounds": 1,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": [
+              500,
+              900
+            ],
+            "windowUnit": 1.0
+          }
+        ]
+      },
+      "name": "a backoff longer than the window wins"
+    },
+    {
+      "expected": {
+        "rounds": [
+          {
+            "atMs": 1793779203000,
+            "phase": "backoff",
+            "waitMs": 3000
+          },
+          {
+            "atMs": 1793779209000,
+            "phase": "recovering",
+            "waitMs": 9000
+          },
+          {
+            "atMs": 1793779227000,
+            "phase": "recovering",
+            "waitMs": 27000
+          },
+          {
+            "atMs": 1793779281000,
+            "phase": "recovering",
+            "waitMs": 81000
+          },
+          {
+            "atMs": 1793779443000,
+            "phase": "recovering",
+            "waitMs": 243000
+          },
+          {
+            "atMs": 1793779500000,
+            "phase": "recovering",
+            "waitMs": 300000
+          },
+          {
+            "atMs": 1793779500000,
+            "phase": "recovering",
+            "waitMs": 300000
+          }
+        ]
+      },
+      "input": {
+        "policy": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "rounds": [
+          {
+            "failedRounds": 1,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 2,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 3,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 4,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 5,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 6,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 7,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          }
+        ]
+      },
+      "name": "two exhausted rounds enter recovering with a five minute cap"
+    },
+    {
+      "expected": {
+        "rounds": [
+          {
+            "atMs": 1793779203000,
+            "phase": "backoff",
+            "waitMs": 3000
+          },
+          {
+            "atMs": 1793779209000,
+            "phase": "backoff",
+            "waitMs": 9000
+          },
+          {
+            "atMs": 1793779227000,
+            "phase": "backoff",
+            "waitMs": 27000
+          },
+          {
+            "atMs": 1793779260000,
+            "phase": "backoff",
+            "waitMs": 60000
+          },
+          {
+            "atMs": 1793779260000,
+            "phase": "backoff",
+            "waitMs": 60000
+          }
+        ]
+      },
+      "input": {
+        "policy": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "rounds": [
+          {
+            "failedRounds": 1,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 1,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 1,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 1,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 1,
+            "foreground": true,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          }
+        ]
+      },
+      "name": "the foreground cap is one minute"
+    },
+    {
+      "expected": {
+        "rounds": [
+          {
+            "atMs": 1793779203000,
+            "phase": "backoff",
+            "waitMs": 3000
+          },
+          {
+            "atMs": 1793779209000,
+            "phase": "backoff",
+            "waitMs": 9000
+          },
+          {
+            "atMs": 1793779227000,
+            "phase": "backoff",
+            "waitMs": 27000
+          },
+          {
+            "atMs": 1793779281000,
+            "phase": "backoff",
+            "waitMs": 81000
+          },
+          {
+            "atMs": 1793779443000,
+            "phase": "backoff",
+            "waitMs": 243000
+          },
+          {
+            "atMs": 1793779500000,
+            "phase": "backoff",
+            "waitMs": 300000
+          },
+          {
+            "atMs": 1793779500000,
+            "phase": "backoff",
+            "waitMs": 300000
+          }
+        ]
+      },
+      "input": {
+        "policy": {
+          "baseMs": 1000,
+          "capBackgroundMs": 300000,
+          "capForegroundMs": 60000
+        },
+        "rounds": [
+          {
+            "failedRounds": 1,
+            "foreground": false,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 1,
+            "foreground": false,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 1,
+            "foreground": false,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 1,
+            "foreground": false,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 1,
+            "foreground": false,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 1,
+            "foreground": false,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          },
+          {
+            "failedRounds": 1,
+            "foreground": false,
+            "jitterUnit": 1.0,
+            "nextHalfOpenAtMs": null,
+            "nowMs": 1793779200000,
+            "serverWindowMs": null,
+            "windowUnit": 0.0
+          }
+        ]
+      },
+      "name": "the background cap is five minutes"
+    }
+  ],
+  "description": "Decorrelated jitter: sleep = min(cap, between(base, max(prev, base) x 3, unit)) with between(lo, hi, u) = lo + round((hi - lo) x clamp(u, 0, 1)); prev starts at 0; cap is raised to base, base to 1 ms. input.units: one sleep per unit. input.rounds: successive rounds in which every candidate failed (plan_retry): cap = 60 s foreground / 300 s background, 300 s once failedRounds >= 2 (phase recovering, else backoff); a server window (overload / drain) raises the wait to between(min, max, windowUnit); the next round is never earlier than the earliest half-open moment (every access point breaker-open)."
+}

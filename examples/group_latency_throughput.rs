@@ -419,7 +419,10 @@ async fn login_client(
     let device_id = format!("{run}-{user_id}-device");
     let overlay = SdkConfigOverlay {
         data_url: Some(data_root.to_string_lossy().to_string()),
-        ws_url: Some(ws_url.to_string()),
+        access: Some(AccessConfig::development(DevelopmentEndpoints {
+            ws_url: Some(ws_url.to_string()),
+            ..Default::default()
+        })),
         tenant_id: Some(tenant_id.to_string()),
         device_id: Some(device_id.clone()),
         ack_max_in_flight: Some(ack_max_in_flight),
@@ -464,22 +467,21 @@ async fn login_client(
         }
     })?;
 
-    let connected_user_id = user_id.to_string();
-    let connected_tx = connection_tx.clone();
-    let connected_subscription = client.on_connected(move || {
-        let _ = connected_tx.send(ConnectionEventObserved {
-            user_id: connected_user_id.clone(),
-            kind: "connected",
-            reason: None,
-        });
-    })?;
-
-    let disconnected_user_id = user_id.to_string();
-    let disconnected_subscription = client.on_disconnected(move |reason| {
+    // 只记阶段变化：同一阶段里质量、RTT 的刷新也会发状态事件，逐条计数会淹没真正的断连。
+    let status_user_id = user_id.to_string();
+    let last_phase = std::sync::Mutex::new(None::<ConnectionPhase>);
+    let status_subscription = client.on_connection_status(move |status| {
+        let Ok(mut last) = last_phase.lock() else {
+            return;
+        };
+        if *last == Some(status.phase) {
+            return;
+        }
+        *last = Some(status.phase);
         let _ = connection_tx.send(ConnectionEventObserved {
-            user_id: disconnected_user_id.clone(),
-            kind: "disconnected",
-            reason: Some(reason.to_string()),
+            user_id: status_user_id.clone(),
+            kind: status.phase.as_str(),
+            reason: status.reason.clone(),
         });
     })?;
 
@@ -508,7 +510,7 @@ async fn login_client(
         _message_subscription: message_subscription,
         _send_ack_subscription: send_ack_subscription,
         _send_failed_subscription: send_failed_subscription,
-        _connection_subscriptions: vec![connected_subscription, disconnected_subscription],
+        _connection_subscriptions: vec![status_subscription],
     })
 }
 

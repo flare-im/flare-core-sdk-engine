@@ -152,9 +152,134 @@ pub fn refused_message_ids(error: &FlareError) -> Option<Vec<String>> {
         .then_some(ids)
 }
 
+/// Error param carrying how long the server asked to wait before retrying, in milliseconds
+/// (`OVERLOADED`: the IM gateway's `retry_after_ms`, an HTTP `Retry-After`). The binding runtime
+/// hands it over as the number `retryAfterMs` (`bindings/contract/errors.json`); attach it with
+/// [`retrying_after`], read it with [`retry_after_ms`].
+pub const RETRY_AFTER_MS: &str = "retryAfterMs";
+
+/// Longest wait an error passes on: a day. A server asking for more is clamped, so the value stays
+/// exact in a JavaScript number and a host never schedules something absurd.
+pub const MAX_RETRY_AFTER_MS: u64 = 24 * 60 * 60 * 1_000;
+
+/// `error` carrying the server's retry wait ([`RETRY_AFTER_MS`]), clamped to
+/// [`MAX_RETRY_AFTER_MS`]. Only a localized error carries params.
+pub fn retrying_after(error: FlareError, retry_after_ms: u64) -> FlareError {
+    match error {
+        FlareError::Localized {
+            code,
+            reason,
+            details,
+            params,
+            timestamp,
+        } => {
+            let mut params = params.unwrap_or_default();
+            params.insert(
+                RETRY_AFTER_MS.to_owned(),
+                retry_after_ms.min(MAX_RETRY_AFTER_MS).to_string(),
+            );
+            FlareError::Localized {
+                code,
+                reason,
+                details,
+                params: Some(params),
+                timestamp,
+            }
+        }
+        other => other,
+    }
+}
+
+/// The server's retry wait `error` carries ([`retrying_after`]); `None` when it carries none.
+pub fn retry_after_ms(error: &FlareError) -> Option<u64> {
+    let FlareError::Localized {
+        params: Some(params),
+        ..
+    } = error
+    else {
+        return None;
+    };
+    params
+        .get(RETRY_AFTER_MS)?
+        .parse::<u64>()
+        .ok()
+        .map(|ms| ms.min(MAX_RETRY_AFTER_MS))
+}
+
+/// 建连失败里链路自己会恢复的那些：链路状态机保留会话、按退避重试，所以 `login` / `connect` 遇到它们
+/// 照常成功，在不在线只由 `connection://status` 表达（waitingForNetwork / reconnecting）。
+///
+/// 没网、连不上（各类连接与网络错误，链路统一归为 `CONNECTION_FAILED`）、握手超时、服务端限流、服务暂不
+/// 可用（含接入清单、令牌暂时拿不到）。鉴权失败且续期没换到、需要升级、配置错误、被踢等终态错误不在内。
+/// 社交 SDK 判断「核心保留了会话」也用这一份。
+pub fn link_keeps_session(error: &FlareError) -> bool {
+    matches!(
+        error.code(),
+        Some(
+            ErrorCode::NetworkUnreachable
+                | ErrorCode::ConnectionFailed
+                | ErrorCode::ConnectionTimeout
+                | ErrorCode::ConnectionClosed
+                | ErrorCode::ConnectionRefused
+                | ErrorCode::NetworkError
+                | ErrorCode::NetworkTimeout
+                | ErrorCode::NetworkConnectionLost
+                | ErrorCode::Overloaded
+                | ErrorCode::ServiceUnavailable
+        )
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_failures_the_link_retries_keep_the_session() {
+        for code in [
+            ErrorCode::NetworkUnreachable,
+            ErrorCode::ConnectionFailed,
+            ErrorCode::ConnectionTimeout,
+            ErrorCode::ConnectionClosed,
+            ErrorCode::ConnectionRefused,
+            ErrorCode::NetworkError,
+            ErrorCode::NetworkTimeout,
+            ErrorCode::NetworkConnectionLost,
+            ErrorCode::Overloaded,
+            ErrorCode::ServiceUnavailable,
+        ] {
+            assert!(
+                link_keeps_session(&FlareError::localized(code, "x")),
+                "{code:?}"
+            );
+        }
+        for code in [
+            ErrorCode::AuthenticationFailed,
+            ErrorCode::TokenExpired,
+            ErrorCode::UpgradeRequired,
+            ErrorCode::PermissionDenied,
+            ErrorCode::ConfigurationError,
+            ErrorCode::NotConnected,
+        ] {
+            assert!(
+                !link_keeps_session(&FlareError::localized(code, "x")),
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_overload_carries_the_retry_wait_clamped_to_a_day() {
+        let overloaded = FlareError::localized(ErrorCode::Overloaded, "OVERLOADED");
+        assert_eq!(retry_after_ms(&overloaded), None);
+        let waiting = retrying_after(overloaded, 1_500);
+        assert_eq!(retry_after_ms(&waiting), Some(1_500));
+        assert_eq!(waiting.code(), Some(ErrorCode::Overloaded));
+        assert_eq!(
+            retry_after_ms(&retrying_after(waiting, u64::MAX)),
+            Some(MAX_RETRY_AFTER_MS)
+        );
+    }
 
     fn refusal() -> FlareError {
         FlareError::localized(ErrorCode::InvalidParameter, "sdk.example.refused")

@@ -19,6 +19,9 @@ const REMOVED_OPERATION_IDS: &[&str] = &[
     "sync.set_conversation_input_state",
     "search_advanced",
     "message.build",
+    // 链路状态只有 connection.get_status；前台/后台只经 lifecycle.set_app_state。
+    "connection.get_state",
+    "sdk.set_heartbeat_app_state",
 ];
 const REMOVED_JSON_KEYS: &[&str] = &["sourceUrl", "sdk_config", "ws_url", "quic_url", "http_url"];
 const CORE_TYPED_COVERAGE_MODULES: &[&str] = &[

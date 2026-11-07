@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use flare_core::common::{HeartbeatAppState, HeartbeatConfig};
+use flare_core::common::HeartbeatAppState;
 
 use crate::FlareError;
 use crate::client::builder::IMClientBuilder;
@@ -26,29 +26,25 @@ impl IMClient {
         self.inner.read().await.current_user_id.is_some()
     }
 
-    /// 运行期替换心跳策略。未连接时 no-op，便于平台生命周期回调早于 login 到达。
-    pub async fn update_heartbeat_config(&self, config: HeartbeatConfig) -> Result<()> {
-        let g = self.read_inner_async().await?;
-        if let Some(engine) = g.engine.as_ref() {
-            engine.update_heartbeat_config(config).await?;
-        }
-        Ok(())
-    }
-
-    /// 更新应用前后台状态。移动端进入后台时可拉长心跳，回到前台时恢复较短心跳。
-    pub async fn set_heartbeat_app_state(&self, state: HeartbeatAppState) -> Result<()> {
+    /// 应用前后台状态（`lifecycle.set_app_state`）。进入后台拉长心跳、同步降配、健康簿落盘；
+    /// 回到前台恢复心跳并立即验活当前连接，停在退避里的链路立即重试，同时做一次前台收敛。
+    pub async fn set_app_state(&self, state: HeartbeatAppState) -> Result<()> {
         self.store_heartbeat_app_state_snapshot(state);
         let g = self.read_inner_async().await?;
         if let Some(engine) = g.engine.as_ref() {
-            engine.set_heartbeat_app_state(state).await?;
+            engine.set_app_state(state).await?;
             // I9：同步收敛跟随前后台降配（后台批/页减半，让电让带宽）。
             engine
                 .sync_manager()
                 .attention()
                 .set_app_in_background(matches!(state, HeartbeatAppState::Background));
         }
+        drop(g);
         if matches!(state, HeartbeatAppState::Foreground) {
             self.reconcile_push_in_background();
+            if let Some(update) = self.update_runtime().await {
+                update.foregrounded();
+            }
             let client = self.clone();
             let generation = self.load_session_generation_snapshot();
             spawn_im_background(async move {
@@ -56,6 +52,8 @@ impl IMClient {
                     let _ = client.sync_foreground_convergence_silent().await;
                 }
             });
+        } else if let Some(update) = self.update_runtime().await {
+            update.backgrounded();
         }
         Ok(())
     }
@@ -78,61 +76,45 @@ impl IMClient {
         }
     }
 
-    /// 平台网络状态变化通知。网络恢复或 Wi-Fi/蜂窝切换时，SDK 会主动重建长连接，
-    /// 让 QUIC/WS 竞速和登录态恢复立即发生，而不是等待心跳超时。
+    /// 平台网络状态变化通知（`connection.notify_network_change`）。
+    ///
+    /// `interface` + `fingerprintHint` 决定网络指纹：健康记录按网络分开（同一接入点 Wi-Fi 下好、某运营商
+    /// 蜂窝下差是常态）。不可用时链路挂起、发件箱计时冻结；恢复时对仍在的连接立即验活（旧路径上的连接
+    /// 常被中间设备静默丢弃），并按新网络的健康记录决定是否换接入点。怎么恢复由链路状态机决定，
+    /// 这里只转告。
     #[tracing::instrument(skip(self, event), fields(available = event.available, interface = event.interface.as_deref().unwrap_or("unknown")))]
-    pub async fn notify_network_change(&self, event: NetworkChangeEvent) -> Result<bool> {
-        if !event.available {
-            tracing::info!(
-                interface = event.interface.as_deref().unwrap_or("unknown"),
-                reason = event.reason.as_deref().unwrap_or("network_unavailable"),
-                "network unavailable; wait for recovery before reconnect"
-            );
-            return Ok(false);
-        }
-
-        let generation = self.load_session_generation_snapshot();
-        let Some((user_id, token, _, _)) = self.reconnect_snapshot(generation, false).await else {
-            return Ok(false);
-        };
-        if !self.try_begin_network_reconnect() {
-            tracing::info!(
-                session_generation = generation,
-                interface = event.interface.as_deref().unwrap_or("unknown"),
-                reason = event.reason.as_deref().unwrap_or("network_change"),
-                "network change reconnect already in flight; coalescing event"
-            );
-            return Ok(false);
-        }
-        // 连接看起来还在（Ready 且传输仍报已连）时，下面的重连只做补同步。可网络切换后，旧路径上
-        // 的连接常被中间设备静默丢弃，本端收不到任何关闭信号，只靠周期心跳要等完整的心跳超时才
-        // 发现。所以先对它立即验活：验活窗口（8 s）内没有 PONG 就判死断开，交给现有的断开 →
-        // 重连路径；连接健康则什么也不变。
-        let probed = {
-            let g = self.inner.read().await;
-            match g.engine.as_ref() {
-                Some(engine) if g.session_generation == generation => {
-                    engine.probe_connection_if_ready().await
-                }
-                _ => false,
-            }
+    pub async fn notify_network_change(&self, event: NetworkChangeEvent) -> Result<()> {
+        // 记下完整输入：登录前的首报（平台之后对相同状态去重）要带进之后新建的运行时与链路。
+        self.inner.write().await.last_network = Some(event.clone());
+        let changed = match self.access_runtime().await {
+            Some(access) => access.set_network(
+                event.interface.as_deref(),
+                event.fingerprint_hint.as_deref(),
+            ),
+            None => false,
         };
         tracing::info!(
-            session_generation = generation,
             interface = event.interface.as_deref().unwrap_or("unknown"),
             expensive = event.expensive,
             metered = event.metered,
             reason = event.reason.as_deref().unwrap_or("network_change"),
-            probed,
-            "network change reported; proactively reconnecting SDK session"
+            fingerprint_changed = changed,
+            "network change reported"
         );
-        let reconnect_result = self
-            .reconnect_current_engine(generation, &user_id, &token)
-            .await;
-        self.finish_network_reconnect();
-        reconnect_result?;
-        self.reconcile_push_in_background();
-        Ok(true)
+        let link = {
+            let g = self.inner.read().await;
+            g.engine.as_ref().map(|engine| engine.link().clone())
+        };
+        if let Some(link) = link {
+            link.network_changed(event.available, changed).await;
+        }
+        if event.available {
+            self.reconcile_push_in_background();
+        }
+        if let Some(update) = self.update_runtime().await {
+            update.network_changed(event.available, event.is_metered());
+        }
+        Ok(())
     }
 
     /// 与 [`Self::state`] / 传输层 `Ready` 不同：未登录时引擎可能仍存在，此时本方法为 `false`。
@@ -328,9 +310,16 @@ impl IMClient {
                 g.data_root.clone(),
                 g.http_request_context.clone(),
                 g.extension_components.clone(),
-                g.configured_ws_url.clone(),
+                g.access.clone(),
                 g.connect_token_refresher.clone(),
                 g.configured_config.clone(),
+                // 上一个会话属于谁：决定发件箱是原样恢复（同一用户）还是清空（换了用户）。
+                g.current_user_id
+                    .clone()
+                    .or_else(|| g.last_session_user.clone()),
+                g.last_network.clone(),
+                // 宿主注入的登录前全局存储（wasm 的 IndexedDB）：属于宿主，跨会话保留，之后的 init 仍用它。
+                g.access_store.clone(),
             )
         };
         self.logout_for_login().await?;
@@ -382,19 +371,22 @@ impl IMClient {
         };
         #[cfg(not(feature = "lifecycle-sqlite"))]
         let LoginDbKind::IndexedDb(stores) = db;
-        // 优先级 overlay > 构建期配置 > 兜底，判据抽在 lifecycle::resolve_ws_url，
-        // 那里有完整来龙去脉与回归测试。
-        let ws_url = crate::client::lifecycle::resolve_ws_url(snap.1.as_ref(), snap.5.as_deref());
+        // 以构建期配置为底叠 overlay（只拿默认值作底会把宿主在构建期配好的项在登录那一刻顶掉）。
         let config = match snap.7 {
-            Some(base) => {
-                crate::client::lifecycle::merge_sdk_config_onto(base, &ws_url, snap.1.as_ref())
-            }
-            None => merge_sdk_config(&ws_url, snap.1.as_ref()),
+            Some(base) => crate::client::lifecycle::merge_sdk_config_onto(base, snap.1.as_ref()),
+            None => merge_sdk_config(snap.1.as_ref()),
         };
         let mut child_builder = IMClientBuilder::new().config(config).stores(stores);
         if let Some(ctx) = snap.3.clone() {
             child_builder = child_builder.http_request_context(ctx);
         }
+        // 接入运行时跨会话共用：健康簿、熔断、UDP 封锁记忆属于设备与网络，不属于某次登录。
+        if let Some(access) = snap.5.clone() {
+            child_builder = child_builder.access_runtime(access);
+        }
+        // 宿主此前报过的网络状态：新链路从它起步（离线时登录直接显示等网络）。
+        let network_available = snap.9.as_ref().is_none_or(|network| network.available);
+        child_builder = child_builder.initial_network_available(network_available);
         child_builder = snap.4.apply_to_builder(child_builder);
         let child = child_builder.build()?;
         let mut inner = child.into_inner()?;
@@ -406,7 +398,21 @@ impl IMClient {
         }
         // 宿主装的续期回调跨会话保留：它属于宿主，不属于某一次登录。
         inner.connect_token_refresher = snap.6;
+        inner.last_network = snap.9;
+        inner.access_store = snap.10;
         inner.current_user_id = Some(user_id.to_string());
+        inner.last_session_user = Some(user_id.to_string());
+        let previous_user = match snap.8 {
+            Some(previous) => Some(previous),
+            None => match inner.data_root.as_deref() {
+                Some(root) => read_last_session_user(root).await,
+                None => None,
+            },
+        };
+        // 没有任何记录（首次使用、浏览器里刷新）按同一用户处理：本库里的待发本来就属于这个用户。
+        let same_user = previous_user
+            .as_deref()
+            .is_none_or(|previous| previous == user_id);
         // 本地会话身份随 prepare 建立：bootstrap_startup_home / 视图等本地优先
         // 读路径在 connect 之前即可出图（热启动 T0）。
         if let Some(engine) = inner.engine.as_ref() {
@@ -425,7 +431,10 @@ impl IMClient {
         self.repair_local_conversation_identities_on_login(user_id)
             .await?;
         tokio::task::yield_now().await;
-        self.reset_pending_queue_on_login().await?;
+        self.prepare_outbox(same_user).await?;
+        if let Some(root) = self.data_root().await {
+            write_last_session_user(&root, user_id).await;
+        }
         self.notify_extension_login_best_effort(user_id).await;
         Ok(())
     }
@@ -477,78 +486,90 @@ impl IMClient {
     ) -> Result<()> {
         let generation = self.session_generation_snapshot();
         // token 三档来源：显式传入 > SDK 托管（向网关签发）> 环境变量（联调）。没有本地签发。
-        let mut issued_refresh_token: Option<String> = None;
+        // SDK 托管的签发不在这里做：交给链路在每次建连前取令牌时完成（`token_for_connect`）。
+        // 离线冷启动时签发必然失败，在这里签就会让 connect 直接报错、链路根本不起来。
         let token = match explicit_token.map(str::trim).filter(|t| !t.is_empty()) {
-            Some(token) => token.to_string(),
-            None => match self.gateway_token_provider().await {
-                Some(provider) => {
-                    let issued = provider.issue(user_id).await?;
-                    tracing::info!(
-                        user_id,
-                        expires_at = issued.expires_at,
-                        has_refresh = issued.refresh_token.is_some(),
-                        "access token issued by gateway"
-                    );
-                    // 长效刷新令牌：接入令牌过期后凭它换新，支撑 7x24 免重登。
-                    issued_refresh_token = issued.refresh_token.clone();
-                    issued.token
-                }
-                None => resolve_connect_token(user_id, None)?,
-            },
+            Some(token) => Some(token.to_string()),
+            None if Self::sdk_auth_from_inner(&*self.inner.read().await).is_some() => None,
+            None => Some(resolve_connect_token(user_id, None)?),
         };
-        let (engine, http_request_context) = {
+        // 会话的这一代从这里开始：链路状态机、令牌来源与监视器都认这一代。之后的线路切换、重连
+        // 都不再改变它（切换不是重登）。
+        let (link_generation, bus, link, user_store, http_request_context, tenant_id) = {
             let mut g = self.inner.write().await;
             if g.session_generation != generation {
                 return Err(Self::not_connected());
             }
-            (g.engine.take(), g.http_request_context.clone())
+            let Some(engine) = g.engine.as_ref() else {
+                return Err(FlareError::localized(
+                    ErrorCode::NotConnected,
+                    "no engine; use builder or login",
+                ));
+            };
+            let bus = engine.bus().clone();
+            let (link, user_store) = engine.link_start_parts();
+            // 没经 prepare/login、直接在构建器建好的引擎上 connect 时，引擎用的是构建器那份接入运行时，
+            // 而 init 另建了数据根下的一份：以链路实际用的为准，状态、诊断、固定接入点才落在同一份上。
+            if g.access
+                .as_ref()
+                .is_none_or(|access| !Arc::ptr_eq(access, link.access()))
+            {
+                if let Some(network) = g.last_network.as_ref() {
+                    link.access().set_network(
+                        network.interface.as_deref(),
+                        network.fingerprint_hint.as_deref(),
+                    );
+                }
+                g.access = Some(link.access().clone());
+            }
+            g.current_user_id = Some(user_id.to_string());
+            g.connect_token = token.clone();
+            g.refresh_token = None;
+            g.session_generation = g.session_generation.wrapping_add(1);
+            self.store_session_generation_snapshot(g.session_generation);
+            let link_generation = g.session_generation;
+            let tenant_id = Self::resolve_tenant_id(&g);
+            let apis = Self::connected_apis_from_inner(&g)?;
+            self.store_connected_apis_snapshot(apis);
+            (
+                link_generation,
+                bus,
+                link,
+                user_store,
+                g.http_request_context.clone(),
+                tenant_id,
+            )
         };
-        let mut e = engine.ok_or_else(|| {
-            FlareError::localized(ErrorCode::NotConnected, "no engine; use builder or login")
-        })?;
-        self.store_state_snapshot(SdkState::Connecting);
-        let connect_result = e.connect(user_id, &token).await;
-        let mut g = self.inner.write().await;
-        if g.session_generation != generation {
-            drop(g);
-            e.deactivate_local_session().await;
-            let _ = e.disconnect().await;
-            return Err(Self::not_connected());
-        }
-        self.store_state_snapshot(e.state());
-        let bus = e.bus().clone();
-        if let Err(error) = connect_result {
-            g.engine = Some(e);
-            return Err(error);
-        }
-        g.engine = Some(e);
-        g.current_user_id = Some(user_id.to_string());
-        g.connect_token = Some(token.clone());
-        g.refresh_token = issued_refresh_token.clone();
-        g.session_generation = g.session_generation.wrapping_add(1);
-        self.store_session_generation_snapshot(g.session_generation);
-        let current_generation = g.session_generation;
-        let tenant_id = Self::resolve_tenant_id(&g);
-        let apis = Self::connected_apis_from_inner(&g)?;
-        self.store_connected_apis_snapshot(apis);
-        drop(g);
         if let Some(context) = http_request_context.as_ref() {
             // Avoid reusing a stale Social Gateway token after a fresh IM login.
             // Media access resolution can use the IM token fallback until a new
             // gateway session is explicitly applied.
             context.clear_gateway_context().await;
-            context.set_auth_context(token.clone(), None).await;
+            // SDK 托管时令牌还没签发：先清空，签发后由令牌来源带上。
+            context
+                .set_auth_context(token.clone().unwrap_or_default(), None)
+                .await;
             // IM login 期间 Background 社交同步仍走共享 HTTP，须保留 user/tenant。
             context.ensure_identity(user_id, &tenant_id).await;
         }
+        if install_watcher {
+            self.spawn_update_state_watcher(link_generation);
+            self.spawn_state_snapshot_watcher(link_generation, bus);
+            self.spawn_token_refresh_watcher(link_generation);
+        }
+        *user_store.write().await = user_id.to_string();
+        self.store_state_snapshot(SdkState::Connecting);
+        let tokens = Arc::new(super::session_watchers::SessionTokens::new(
+            self,
+            link_generation,
+        ));
+        // 不持锁等待：建连最长要一个握手时限，期间登出、查询都不能被挡住。
+        link.start(user_id, tokens).await?;
+        if !self.is_generation_current(link_generation).await {
+            return Err(Self::not_connected());
+        }
         self.notify_extension_connect_best_effort(user_id).await;
         self.attach_push_session().await;
-        if install_watcher {
-            self.spawn_state_snapshot_watcher(current_generation, bus.clone());
-            self.spawn_terminal_session_watcher(current_generation, bus.clone());
-            self.spawn_reconnect_session_watcher(current_generation, bus);
-            self.spawn_token_refresh_watcher(current_generation);
-        }
         Ok(())
     }
 
@@ -587,3 +608,31 @@ impl IMClient {
         Ok(())
     }
 }
+
+/// 上一个会话的用户（原生端记在数据根下，冷启动也能判断「同一用户」）。
+#[cfg(not(target_arch = "wasm32"))]
+async fn read_last_session_user(data_root: &std::path::Path) -> Option<String> {
+    tokio::fs::read_to_string(data_root.join(LAST_SESSION_USER_FILE))
+        .await
+        .ok()
+        .map(|user| user.trim().to_owned())
+        .filter(|user| !user.is_empty())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_last_session_user(_data_root: &std::path::Path) -> Option<String> {
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn write_last_session_user(data_root: &std::path::Path, user_id: &str) {
+    if let Err(error) = tokio::fs::write(data_root.join(LAST_SESSION_USER_FILE), user_id).await {
+        tracing::debug!(%error, "recording the last session user failed");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn write_last_session_user(_data_root: &std::path::Path, _user_id: &str) {}
+
+#[cfg(not(target_arch = "wasm32"))]
+const LAST_SESSION_USER_FILE: &str = "last_session_user";

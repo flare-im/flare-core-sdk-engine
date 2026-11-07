@@ -1,11 +1,15 @@
 // Flutter runtime adapter over generated contracts.
 
+import 'dart:developer' as developer;
+
 import '../api/api.dart';
 import '../callback/callback.dart';
 import '../contract/bridge_contract.dart';
+import '../contract/contract.dart';
 import '../model/model.dart';
 import 'events/default_events_api.dart';
 import '../flare_core_sdk.dart';
+import '../lifecycle/platform_lifecycle.dart';
 import 'module/default_message_builder_api.dart';
 import 'codec/wire_codec.dart';
 
@@ -14,6 +18,9 @@ final class DefaultFlareImClient implements FlareImClient {
   DefaultFlareImClient(this._bridge)
       : events = DefaultEventsApi(_bridge),
         connection = _DefaultConnectionApi(_bridge),
+        access = _DefaultAccessApi(_bridge),
+        update = _DefaultUpdateApi(_bridge),
+        lifecycle = _DefaultLifecycleApi(_bridge),
         messageBuilder = DefaultMessageBuilderApi(_bridge),
         conversations = _DefaultConversationsApi(_bridge),
         messages = _DefaultMessagesApi(_bridge),
@@ -26,11 +33,19 @@ final class DefaultFlareImClient implements FlareImClient {
         diagnostics = _DefaultDiagnosticsApi(_bridge);
 
   final NativeBridge _bridge;
+  PlatformLifecycleSource? _platform;
+  PlatformLifecycle? _platformLifecycle;
 
   @override
   final DefaultEventsApi events;
   @override
   final ConnectionApi connection;
+  @override
+  final AccessApi access;
+  @override
+  final UpdateApi update;
+  @override
+  final LifecycleApi lifecycle;
   @override
   final MessageBuilderApi messageBuilder;
   @override
@@ -58,14 +73,42 @@ final class DefaultFlareImClient implements FlareImClient {
         NativeCallMap.sdkCreate, request);
   }
 
+  /// Initializes the core with [request].
+  ///
+  /// With a [platform] source (the Flutter plugin's, given by its factory; a
+  /// later `init` without one reuses it) the `app` keys the host left out are
+  /// filled from the platform, and once the core accepts the configuration a
+  /// [PlatformLifecycle] reports the device network and foreground state to
+  /// it. [installPlatformLifecycle] `false` keeps that off (tests only). A
+  /// second `init` replaces the installed lifecycle; a failed one installs
+  /// none.
   @override
-  Future<void> init(Map<String, Object?> request) async {
+  Future<void> init(
+    Map<String, Object?> request, {
+    bool installPlatformLifecycle = true,
+    PlatformLifecycleSource? platform,
+  }) async {
     events.emitLifecycle(const LifecycleEvent(
       name: LifecycleEventName.initializing,
       operation: 'sdk.init',
     ));
     try {
-      await _bridge.invoke<void>(NativeCallMap.sdkInit, request);
+      if (platform != null) _platform = platform;
+      final source = _platform;
+      final config = platformInitConfig(
+        request,
+        source == null ? null : await source.appInfo(),
+      );
+      await _bridge.invoke<void>(NativeCallMap.sdkInit, config);
+      await _uninstallPlatformLifecycle();
+      if (installPlatformLifecycle && source != null) {
+        _platformLifecycle = PlatformLifecycle(
+          source: source,
+          notifyNetworkChange: connection.notifyNetworkChange,
+          setAppState: lifecycle.setAppState,
+          onError: _platformLifecycleFailed,
+        )..install();
+      }
       events.emitLifecycle(const LifecycleEvent(
         name: LifecycleEventName.initialized,
         operation: 'sdk.init',
@@ -81,7 +124,26 @@ final class DefaultFlareImClient implements FlareImClient {
   }
 
   @override
-  Future<void> uninit() => _bridge.invoke<void>(NativeCallMap.sdkUninit);
+  Future<void> uninit() async {
+    await _uninstallPlatformLifecycle();
+    await _bridge.invoke<void>(NativeCallMap.sdkUninit);
+  }
+
+  Future<void> _uninstallPlatformLifecycle() async {
+    final installed = _platformLifecycle;
+    _platformLifecycle = null;
+    await installed?.dispose();
+  }
+
+  /// Reports are best effort; a rejected one is logged, never thrown.
+  static void _platformLifecycleFailed(Object error, StackTrace stackTrace) {
+    developer.log(
+      'platform lifecycle report failed',
+      name: 'flare_core',
+      error: error,
+      stackTrace: stackTrace,
+    );
+  }
 
   @override
   Future<void> login(Map<String, Object?> request) async {
@@ -119,10 +181,15 @@ final class DefaultFlareImClient implements FlareImClient {
   }
 
   @override
-  Future<void> setHeartbeatAppState(SetHeartbeatAppStateRequest request) {
-    return _bridge.invoke<void>(
-      NativeCallMap.sdkSetHeartbeatAppState,
-      setHeartbeatAppStateRequestToMap(request),
+  Future<void> setConnectTokenRefresher(ConnectTokenRefresher? refresher) async {
+    if (_bridge case final ConnectTokenRefresherBridge hook) {
+      await hook.setConnectTokenRefresher(refresher);
+      return;
+    }
+    throw const FlareSdkException(
+      code: SdkErrorCodes.capabilityUnavailable,
+      message: 'This bridge cannot call back for a connect token.',
+      operation: SdkOperations.sdkSetConnectTokenRefresher,
     );
   }
 
@@ -184,6 +251,7 @@ final class DefaultFlareImClient implements FlareImClient {
 
   @override
   Future<void> dispose() async {
+    await _uninstallPlatformLifecycle();
     await events.unsubscribeAll();
     await _bridge.invoke<void>(NativeCallMap.sdkDispose);
     events.emitLifecycle(const LifecycleEvent(
@@ -193,7 +261,10 @@ final class DefaultFlareImClient implements FlareImClient {
   }
 
   @override
-  Future<void> hardReset() => _bridge.invoke<void>(NativeCallMap.sdkHardReset);
+  Future<void> hardReset() async {
+    await _uninstallPlatformLifecycle();
+    await _bridge.invoke<void>(NativeCallMap.sdkHardReset);
+  }
 
   @override
   Future<Map<String, Object?>> currentUserId() {
@@ -216,9 +287,14 @@ final class _DefaultConnectionApi implements ConnectionApi {
   final NativeBridge _bridge;
 
   @override
-  Future<ConnectionState> getConnectionState() {
-    return _bridge.invoke<ConnectionState>(NativeCallMap.connectionGetState);
+  Future<ConnectionStatus> getStatus() async {
+    final raw = await _bridge.invoke<Object?>(NativeCallMap.connectionGetStatus);
+    return connectionStatusFromJson(raw);
   }
+
+  @override
+  Future<void> reconnectNow() =>
+      _bridge.invoke<void>(NativeCallMap.connectionReconnectNow);
 
   @override
   Future<void> disconnect() =>
@@ -233,14 +309,174 @@ final class _DefaultConnectionApi implements ConnectionApi {
   }
 
   @override
-  Future<NetworkChangeResponse> notifyNetworkChange(
-    NetworkChangeRequest request,
-  ) async {
-    final raw = await _bridge.invoke<Map<String, Object?>>(
+  Future<void> notifyNetworkChange(NetworkChangeRequest request) {
+    return _bridge.invoke<void>(
       NativeCallMap.connectionNotifyNetworkChange,
       networkChangeRequestToMap(request),
     );
-    return networkChangeResponseFromJson(raw);
+  }
+}
+
+final class _DefaultUpdateApi implements UpdateApi {
+  const _DefaultUpdateApi(this._bridge);
+
+  final NativeBridge _bridge;
+
+  @override
+  Future<UpdateStatus> getState(UpdateGetStateRequest request) async =>
+      updateStatusFromJson(
+        await _bridge.invoke<Object?>(
+          NativeCallMap.updateGetState,
+          updateGetStateRequestToMap(request),
+        ),
+      );
+
+  @override
+  Future<UpdateStatus> check(UpdateCheckRequest request) async =>
+      updateStatusFromJson(
+        await _bridge.invoke<Object?>(
+          NativeCallMap.updateCheck,
+          updateCheckRequestToMap(request),
+        ),
+      );
+
+  @override
+  Future<UpdateStatus> download(UpdateDownloadRequest request) async =>
+      updateStatusFromJson(
+        await _bridge.invoke<Object?>(
+          NativeCallMap.updateDownload,
+          updateDownloadRequestToMap(request),
+        ),
+      );
+
+  @override
+  Future<UpdateInstallPlan> install() async => updateInstallPlanFromJson(
+        await _bridge.invoke<Object?>(NativeCallMap.updateInstall),
+      );
+
+  @override
+  Future<UpdateStatus> reportInstall(
+    UpdateReportInstallRequest request,
+  ) async =>
+      updateStatusFromJson(
+        await _bridge.invoke<Object?>(
+          NativeCallMap.updateReportInstall,
+          updateReportInstallRequestToMap(request),
+        ),
+      );
+
+  @override
+  Future<UpdateStatus> defer() async => updateStatusFromJson(
+        await _bridge.invoke<Object?>(NativeCallMap.updateDefer),
+      );
+
+  @override
+  Future<UpdateStatus> skip(UpdateSkipRequest request) async =>
+      updateStatusFromJson(
+        await _bridge.invoke<Object?>(
+          NativeCallMap.updateSkip,
+          updateSkipRequestToMap(request),
+        ),
+      );
+
+  @override
+  Future<UpdateStatus> markPrompted(
+    UpdateMarkPromptedRequest request,
+  ) async =>
+      updateStatusFromJson(
+        await _bridge.invoke<Object?>(
+          NativeCallMap.updateMarkPrompted,
+          updateMarkPromptedRequestToMap(request),
+        ),
+      );
+
+  @override
+  Future<UpdateStatus> setLocale(UpdateSetLocaleRequest request) async =>
+      updateStatusFromJson(
+        await _bridge.invoke<Object?>(
+          NativeCallMap.updateSetLocale,
+          updateSetLocaleRequestToMap(request),
+        ),
+      );
+
+  @override
+  Future<UpdateResources> getResources(
+    UpdateGetResourcesRequest request,
+  ) async =>
+      updateResourcesFromJson(
+        await _bridge.invoke<Object?>(
+          NativeCallMap.updateGetResources,
+          updateGetResourcesRequestToMap(request),
+        ),
+      );
+}
+
+final class _DefaultAccessApi implements AccessApi {
+  const _DefaultAccessApi(this._bridge);
+
+  final NativeBridge _bridge;
+
+  @override
+  Future<AccessStatus> getStatus() async {
+    final raw = await _bridge.invoke<Object?>(NativeCallMap.accessGetStatus);
+    return accessStatusFromJson(raw);
+  }
+
+  @override
+  Future<List<AccessPointInfo>> listAccessPoints() async {
+    final raw =
+        await _bridge.invoke<Object?>(NativeCallMap.accessListAccessPoints);
+    return accessPointInfoListFromJson(raw);
+  }
+
+  @override
+  Future<AccessPin> pin(AccessPinRequest request) async {
+    final raw = await _bridge.invoke<Object?>(
+      NativeCallMap.accessPin,
+      accessPinRequestToMap(request),
+    );
+    return accessPinFromJson(raw);
+  }
+
+  @override
+  Future<void> unpin() => _bridge.invoke<void>(NativeCallMap.accessUnpin);
+
+  @override
+  Future<AccessRefreshReport> refresh() async {
+    final raw = await _bridge.invoke<Object?>(NativeCallMap.accessRefresh);
+    return accessRefreshReportFromJson(raw);
+  }
+
+  @override
+  Future<AccessRecoveryImport> importRecovery(
+    AccessImportRecoveryRequest request,
+  ) async {
+    final raw = await _bridge.invoke<Object?>(
+      NativeCallMap.accessImportRecovery,
+      accessImportRecoveryRequestToMap(request),
+    );
+    return accessRecoveryImportFromJson(raw);
+  }
+
+  @override
+  Future<Map<String, Object?>> exportDiagnostics() async {
+    final raw =
+        await _bridge.invoke<Object?>(NativeCallMap.accessExportDiagnostics);
+    return mapValue(raw);
+  }
+}
+
+final class _DefaultLifecycleApi implements LifecycleApi {
+  const _DefaultLifecycleApi(this._bridge);
+
+  final NativeBridge _bridge;
+
+  @override
+  Future<void> setAppState(SetAppStateRequest request) {
+    return _bridge.invoke<void>(
+      NativeCallMap.lifecycleSetAppState,
+      setAppStateRequestToMap(request),
+    );
   }
 }
 
@@ -437,6 +673,12 @@ final class _DefaultConversationsApi implements ConversationsApi {
   Future<void> clearLocalChatHistory(Map<String, Object?> request) {
     return _bridge.invoke<void>(
         NativeCallMap.conversationClearLocalChatHistory, request);
+  }
+
+  @override
+  Future<void> clearChatHistoryForSelf(Map<String, Object?> request) {
+    return _bridge.invoke<void>(
+        NativeCallMap.conversationClearChatHistoryForSelf, request);
   }
 }
 

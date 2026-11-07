@@ -1,0 +1,1963 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "fetch": [
+          "strings-main"
+        ],
+        "remove": [],
+        "selected": [
+          {
+            "id": "strings-main",
+            "packVersion": 5,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 5,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 1508,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            },
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20302,
+              "releaseId": "rel_full",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 3,
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_full"
+              },
+              "version": "2.20302"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "highest version across releases"
+    },
+    {
+      "expected": {
+        "fetch": [
+          "strings-main"
+        ],
+        "remove": [],
+        "selected": [
+          {
+            "id": "strings-main",
+            "packVersion": 3,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 5,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 1507,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            },
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20302,
+              "releaseId": "rel_full",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 3,
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_full"
+              },
+              "version": "2.20302"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "outside the rollout takes the full release"
+    },
+    {
+      "expected": {
+        "fetch": [
+          "strings-main"
+        ],
+        "remove": [],
+        "selected": [
+          {
+            "id": "strings-main",
+            "packVersion": 3,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 5,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": true,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            },
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20302,
+              "releaseId": "rel_full",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 3,
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_full"
+              },
+              "version": "2.20302"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "halted release does not count"
+    },
+    {
+      "expected": {
+        "fetch": [
+          "strings-main"
+        ],
+        "remove": [],
+        "selected": [
+          {
+            "id": "strings-main",
+            "packVersion": 3,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 20401,
+                  "packVersion": 5,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            },
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20302,
+              "releaseId": "rel_full",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 3,
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_full"
+              },
+              "version": "2.20302"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "minBuild above the build is skipped"
+    },
+    {
+      "expected": {
+        "fetch": [
+          "strings-main"
+        ],
+        "remove": [],
+        "selected": [
+          {
+            "id": "strings-main",
+            "packVersion": 5,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 20400,
+                  "packVersion": 5,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            },
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20302,
+              "releaseId": "rel_full",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 3,
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_full"
+              },
+              "version": "2.20302"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "minBuild at the build counts"
+    },
+    {
+      "expected": {
+        "fetch": [
+          "strings-main"
+        ],
+        "remove": [],
+        "selected": [
+          {
+            "id": "strings-main",
+            "packVersion": 3,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      },
+      "input": {
+        "distribution": "play",
+        "held": [],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 20000,
+                  "packVersion": 5,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            },
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20302,
+              "releaseId": "rel_full",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 3,
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_full"
+              },
+              "version": "2.20302"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "without a build only packs without minBuild"
+    },
+    {
+      "expected": {
+        "fetch": [
+          "b"
+        ],
+        "remove": [],
+        "selected": [
+          {
+            "id": "b",
+            "packVersion": 1,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "a",
+                  "kind": "hologram",
+                  "minBuild": 0,
+                  "packVersion": 1,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                },
+                {
+                  "id": "b",
+                  "kind": "tokens",
+                  "minBuild": 0,
+                  "packVersion": 1,
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "unknown kind is ignored"
+    },
+    {
+      "expected": {
+        "fetch": [
+          "strings-main"
+        ],
+        "remove": [],
+        "selected": [
+          {
+            "id": "strings-main",
+            "packVersion": 5,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 5,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            },
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20302,
+              "releaseId": "rel_full",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 5,
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_full"
+              },
+              "version": "2.20302"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "same version keeps the first in the manifest"
+    },
+    {
+      "expected": {
+        "fetch": [
+          "emoji-main",
+          "help-main",
+          "tokens-main"
+        ],
+        "remove": [],
+        "selected": [
+          {
+            "id": "emoji-main",
+            "packVersion": 1,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "id": "help-main",
+            "packVersion": 1,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "id": "tokens-main",
+            "packVersion": 1,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "tokens-main",
+                  "kind": "tokens",
+                  "minBuild": 0,
+                  "packVersion": 1,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                },
+                {
+                  "id": "emoji-main",
+                  "kind": "emoji",
+                  "minBuild": 0,
+                  "packVersion": 1,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                },
+                {
+                  "id": "help-main",
+                  "kind": "help",
+                  "minBuild": 0,
+                  "packVersion": 1,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "ids come out sorted"
+    },
+    {
+      "expected": {
+        "fetch": [],
+        "remove": [],
+        "selected": [
+          {
+            "id": "strings-main",
+            "packVersion": 5,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [
+          {
+            "id": "strings-main",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 5,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 1508,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            },
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20302,
+              "releaseId": "rel_full",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 3,
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_full"
+              },
+              "version": "2.20302"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "same hash stays"
+    },
+    {
+      "expected": {
+        "fetch": [
+          "strings-main"
+        ],
+        "remove": [],
+        "selected": [
+          {
+            "id": "strings-main",
+            "packVersion": 5,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [
+          {
+            "id": "strings-main",
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 5,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 1508,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            },
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20302,
+              "releaseId": "rel_full",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 3,
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_full"
+              },
+              "version": "2.20302"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "another hash is fetched"
+    },
+    {
+      "expected": {
+        "fetch": [
+          "strings-main"
+        ],
+        "remove": [],
+        "selected": [
+          {
+            "id": "strings-main",
+            "packVersion": 3,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [
+          {
+            "id": "strings-main",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 5,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": true,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            },
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20302,
+              "releaseId": "rel_full",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 3,
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_full"
+              },
+              "version": "2.20302"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "halted version falls back to a lower one"
+    },
+    {
+      "expected": {
+        "fetch": [
+          "strings-main"
+        ],
+        "remove": [],
+        "selected": [
+          {
+            "id": "strings-main",
+            "packVersion": 3,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [
+          {
+            "id": "strings-main",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20302,
+              "releaseId": "rel_full",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 3,
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_full"
+              },
+              "version": "2.20302"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "version dropped from the manifest falls back to a lower one"
+    },
+    {
+      "expected": {
+        "fetch": [],
+        "remove": [
+          "strings-main"
+        ],
+        "selected": []
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [
+          {
+            "id": "strings-main",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 0,
+                  "packVersion": 5,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": true,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "held id without a selection is removed"
+    },
+    {
+      "expected": {
+        "fetch": [],
+        "remove": [
+          "strings-main"
+        ],
+        "selected": []
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [
+          {
+            "id": "strings-main",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "resourcePacks": [
+                {
+                  "id": "strings-main",
+                  "kind": "strings",
+                  "minBuild": 20401,
+                  "packVersion": 5,
+                  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sizeBytes": 1024,
+                  "url": [
+                    "https://cdn.example.com/pack.json"
+                  ]
+                }
+              ],
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "minBuild no longer met removes the pack"
+    },
+    {
+      "expected": {
+        "fetch": [],
+        "remove": [
+          "a",
+          "b"
+        ],
+        "selected": []
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [
+          {
+            "id": "b",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "id": "a",
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "no packs in the manifest removes everything"
+    },
+    {
+      "expected": {
+        "fetch": [],
+        "remove": [],
+        "selected": []
+      },
+      "input": {
+        "currentBuild": 20400,
+        "distribution": "play",
+        "held": [],
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "manifest": {
+          "bootstrapId": "b7f3c9a1e2d4b6a8",
+          "channel": "stable",
+          "expiresAt": "2026-11-18T08:00:00Z",
+          "issuedAt": "2026-11-04T08:00:00Z",
+          "platform": "android",
+          "policy": {},
+          "releases": [
+            {
+              "artifacts": {
+                "direct": {
+                  "kind": "apk",
+                  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "signingCertSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                  "sizeBytes": 1024,
+                  "urls": [
+                    "https://dl.example.com/a.apk"
+                  ]
+                },
+                "play": {
+                  "kind": "store",
+                  "packageName": "com.acme.chat"
+                },
+                "tauri": {
+                  "kind": "tauri",
+                  "targets": {
+                    "darwin-aarch64": {
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "sizeBytes": 1024,
+                      "urls": [
+                        "https://dl.example.com/a.tar.gz"
+                      ]
+                    }
+                  }
+                }
+              },
+              "build": 20400,
+              "releaseId": "rel_new",
+              "rollout": {
+                "basisPoints": 10000,
+                "halted": false,
+                "salt": "rel_new"
+              },
+              "version": "2.20400"
+            }
+          ],
+          "schema": "flare.release.v1",
+          "serial": 88
+        }
+      },
+      "name": "nothing held and nothing offered"
+    }
+  ],
+  "description": "Resource pack selection and the plan that follows it. Walk the releases, skipping halted ones and those the bucket misses; skip packs of an unknown kind and packs whose minBuild is above the current build (without a current build, any pack with a minBuild); for each id keep the highest packVersion, the first in the manifest on a tie. selected is sorted by id. The selection is the only truth: a held pack with the same sha256 stays, a different sha256 is fetched whatever its version, a held id missing from the selection is removed. Rollback protection comes from the manifest signature and serial, not from packVersion."
+}

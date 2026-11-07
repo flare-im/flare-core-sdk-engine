@@ -1,0 +1,55 @@
+[package]
+name = "flare-access"
+version = "0.1.0"
+# 写全而不继承工作区：控制面和 flarectl 从别的仓按路径依赖，只检出这个目录就能编译。
+edition = "2024"
+rust-version = "1.94.0"
+authors = ["Flare Team"]
+license = "Apache-2.0"
+description = "Flare IM client link core: signed access manifests, two-level trust chain, endpoint directory, health book and access point selection."
+repository = "https://github.com/flare-im/flare-core-sdk-engine"
+
+[features]
+default = ["client", "sqlite"]
+# 客户端部分：端点目录、健康簿、选路、探活、本地存储与 AccessKernel。
+# 控制面（清单编排器、flarectl trust）只用 manifest 与 trust，以 default-features = false 依赖。
+client = ["dep:arc-swap", "dep:async-trait", "dep:futures-util", "dep:libc", "dep:rand", "dep:tokio"]
+# 原生 SQLite 版 AccessStore。
+sqlite = ["client", "dep:sqlx"]
+
+[dependencies]
+arc-swap = { version = "1.7", optional = true }
+async-trait = { version = "0.1", optional = true }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+ed25519-dalek = "2"
+futures-util = { version = "0.3", default-features = false, features = ["std"], optional = true }
+rand = { version = "0.8", features = ["small_rng"], optional = true }
+schemars = "1.2.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"], optional = true }
+# 制品下载的落盘；浏览器不下载安装包。
+tokio = { version = "1", default-features = false, features = ["fs", "io-util"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# 下载前查磁盘剩余空间（statvfs）。
+libc = { version = "0.2", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# rand 0.8 在浏览器里取熵需要 getrandom 的 js 后端；引擎其它依赖已经带着同一版本。
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "sync", "time"] }
+# 只做对照：`ParsedUrl` 的判定不能比它宽。
+url = "2.5"
+
+[[test]]
+name = "golden_vectors"
+required-features = ["client"]

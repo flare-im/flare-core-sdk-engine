@@ -6,7 +6,9 @@ use flare_proto::common::{
     TypingStatePacket,
 };
 
-use crate::kernel::{SdkState, SyncState};
+use crate::kernel::SyncState;
+
+use super::super::link_status::ConnectionStatus;
 use crate::model::IMMessage;
 
 use super::super::selector::{
@@ -19,11 +21,10 @@ use super::super::types::{
 use super::dispatch::{RecoverableRwLock, replay_after_dispatch_window};
 use super::{
     EventBus, EventReceiver, EventRoute, FilteredEventReceiver, FnAny, FnConnected,
-    FnConversationId, FnConversationIds, FnConversationUnreadCountChanged, FnDisconnected,
-    FnExtension, FnKickedOff, FnMessage, FnMessageBatch, FnNotification, FnReadReceipt, FnRecalled,
-    FnSendAck, FnSendFailed, FnServerError, FnStateChanged, FnSyncPhase, FnSyncProgress,
-    FnSyncStateChanged, FnTokenExpired, FnTyping, FnTypingAggregate, Subscription, same_arc,
-    same_event_route,
+    FnConnectionStatus, FnConversationId, FnConversationIds, FnConversationUnreadCountChanged,
+    FnExtension, FnMessage, FnMessageBatch, FnNotification, FnReadReceipt, FnRecalled, FnSendAck,
+    FnSendFailed, FnSyncPhase, FnSyncProgress, FnSyncStateChanged, FnTyping, FnTypingAggregate,
+    Subscription, same_arc, same_event_route,
 };
 
 impl EventBus {
@@ -61,81 +62,32 @@ impl EventBus {
     }
 
     // ---------- Connection ----------
-    /// 注册「连接成功」回调
-    pub fn on_connected<F>(&self, f: F) -> Subscription
+    /// 注册「连接状态」回调（`connection://status`）。注册时已有状态的，立即补收一次最近的状态。
+    pub fn on_connection_status<F>(&self, f: F) -> Subscription
     where
-        F: Fn() + Send + Sync + 'static,
+        F: Fn(ConnectionStatus) + Send + Sync + 'static,
     {
-        let f = Arc::new(f) as FnConnected;
+        let f = Arc::new(f) as FnConnectionStatus;
         let invoked = Arc::new(AtomicBool::new(false));
         let callback = {
             let f = f.clone();
             let invoked = invoked.clone();
-            Arc::new(move || {
+            Arc::new(move |status| {
                 invoked.store(true, Ordering::Release);
-                f();
-            }) as FnConnected
+                f(status);
+            }) as FnConnectionStatus
         };
-        let already_connected = matches!(
-            *self.last_connection_state.safe_read("event_bus"),
-            Some(SdkState::Connected | SdkState::Ready)
-        );
+        let last = self.last_connection_status.safe_read("event_bus").clone();
         let subscription = self.callback_subscription(
-            &self.on_connected,
+            &self.on_connection_status,
             &self.typed_callback_count,
             callback,
             same_arc,
         );
-        if already_connected {
+        if let Some(status) = last {
             replay_after_dispatch_window(move || {
                 if !invoked.load(Ordering::Acquire) {
-                    f();
-                }
-            });
-        }
-        subscription
-    }
-
-    /// 注册「断开连接」回调
-    pub fn on_disconnected<F>(&self, f: F) -> Subscription
-    where
-        F: Fn(&str) + Send + Sync + 'static,
-    {
-        let f: FnDisconnected = Arc::new(move |s| f(s.as_str()));
-        self.callback_subscription(
-            &self.on_disconnected,
-            &self.typed_callback_count,
-            f,
-            same_arc,
-        )
-    }
-
-    /// 注册「连接状态变更」回调
-    pub fn on_state_changed<F>(&self, f: F) -> Subscription
-    where
-        F: Fn(SdkState) + Send + Sync + 'static,
-    {
-        let f = Arc::new(f) as FnStateChanged;
-        let invoked = Arc::new(AtomicBool::new(false));
-        let callback = {
-            let f = f.clone();
-            let invoked = invoked.clone();
-            Arc::new(move |state| {
-                invoked.store(true, Ordering::Release);
-                f(state);
-            }) as FnStateChanged
-        };
-        let last = *self.last_connection_state.safe_read("event_bus");
-        let subscription = self.callback_subscription(
-            &self.on_state_changed,
-            &self.typed_callback_count,
-            callback,
-            same_arc,
-        );
-        if let Some(state) = last {
-            replay_after_dispatch_window(move || {
-                if !invoked.load(Ordering::Acquire) {
-                    f(state);
+                    f(status);
                 }
             });
         }
@@ -172,43 +124,6 @@ impl EventBus {
             });
         }
         subscription
-    }
-
-    /// 注册「服务端错误」回调
-    pub fn on_server_error<F>(&self, f: F) -> Subscription
-    where
-        F: Fn(i32, &str) + Send + Sync + 'static,
-    {
-        let f: FnServerError = Arc::new(move |code, msg| f(code, msg.as_str()));
-        self.callback_subscription(
-            &self.on_server_error,
-            &self.typed_callback_count,
-            f,
-            same_arc,
-        )
-    }
-
-    /// 注册「被踢下线」回调（账号在其他设备/地点登录，当前设备被踢）
-    pub fn on_kicked_off<F>(&self, f: F) -> Subscription
-    where
-        F: Fn(&str) + Send + Sync + 'static,
-    {
-        let f: FnKickedOff = Arc::new(move |r| f(r.as_str()));
-        self.callback_subscription(&self.on_kicked_off, &self.typed_callback_count, f, same_arc)
-    }
-
-    /// 注册「登录凭证过期」回调（需重新登录）
-    pub fn on_token_expired<F>(&self, f: F) -> Subscription
-    where
-        F: Fn(&str) + Send + Sync + 'static,
-    {
-        let f: FnTokenExpired = Arc::new(move |m| f(m.as_str()));
-        self.callback_subscription(
-            &self.on_token_expired,
-            &self.typed_callback_count,
-            f,
-            same_arc,
-        )
     }
 
     // ---------- Message ----------

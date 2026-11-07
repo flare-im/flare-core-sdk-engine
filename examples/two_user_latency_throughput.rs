@@ -142,7 +142,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let alice = IMClient::new();
     let bob = IMClient::new();
     let overlay = SdkConfigOverlay {
-        ws_url: Some(ws_url.clone()),
+        access: Some(AccessConfig::development(DevelopmentEndpoints {
+            ws_url: Some(ws_url.clone()),
+            ..Default::default()
+        })),
         tenant_id: Some(tenant_id.clone()),
         ack_max_in_flight: Some(ack_max_in_flight),
         ..Default::default()

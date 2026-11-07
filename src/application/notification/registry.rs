@@ -60,7 +60,7 @@ impl NotificationHandlerRegistry {
         let mut report = NotificationDispatchReport::default();
 
         for handler in handlers.iter() {
-            if !handler.matches(notification.notification_type) {
+            if !handler.matches_view(notification) {
                 continue;
             }
 
@@ -71,7 +71,7 @@ impl NotificationHandlerRegistry {
             }
         }
 
-        if report.matched == 0 {
+        if report.matched == 0 && !notification.is_system() {
             warn!(
                 notification_type = %notification.notification_type,
                 server_id = %notification.message.server_id,

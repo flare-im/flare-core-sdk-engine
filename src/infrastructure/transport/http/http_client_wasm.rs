@@ -19,6 +19,7 @@ use crate::shared::error::{FlareError, Result};
 /// 浏览器的 `fetch` 自己不超时：网络卡住（切网、弱网、半开的 TCP）时请求会一直挂着，等它的
 /// 调用方以及串行执行的 invoke 链都跟着卡死。原生端由 reqwest 的总时限兜住，这里补齐同一个时限。
 struct FetchDeadline {
+    controller: AbortController,
     window: Window,
     handle: i32,
     fired: Rc<Cell<bool>>,
@@ -33,6 +34,7 @@ impl FetchDeadline {
         let fired = Rc::new(Cell::new(false));
         let on_timeout = {
             let fired = fired.clone();
+            let controller = controller.clone();
             Closure::<dyn FnMut()>::new(move || {
                 fired.set(true);
                 controller.abort();
@@ -46,6 +48,7 @@ impl FetchDeadline {
             )
             .map_err(|e| FlareError::system(format!("http request timer failed: {e:?}")))?;
         Ok(Self {
+            controller,
             window: window.clone(),
             handle,
             fired,
@@ -56,6 +59,212 @@ impl FetchDeadline {
     fn fired(&self) -> bool {
         self.fired.get()
     }
+
+    fn abort(&self) {
+        self.controller.abort();
+    }
+}
+
+/// Private transfer path: no cookie/request context, redirect or response-body
+/// diagnostics. A dropped Rust caller aborts the browser request as well.
+pub async fn put_private_bytes(url: String, body: Vec<u8>, content_type: String) -> Result<()> {
+    use futures::FutureExt;
+    let (mut sender, receiver) = futures::channel::oneshot::channel();
+    wasm_bindgen_futures::spawn_local(async move {
+        let result=async {
+            let window=web_sys::window().ok_or_else(||FlareError::system("browser window unavailable"))?;
+            let headers=Headers::new().map_err(|_|FlareError::system("private upload headers unavailable"))?;
+            headers.set("Content-Type",&content_type).map_err(|_|FlareError::system("private upload content type invalid"))?;
+            let init=RequestInit::new();
+            init.set_method("PUT");init.set_mode(RequestMode::Cors);init.set_headers(&headers);
+            init.set_credentials(web_sys::RequestCredentials::Omit);
+            init.set_redirect(web_sys::RequestRedirect::Error);
+            init.set_cache(web_sys::RequestCache::NoStore);
+            init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
+            init.set_body(Uint8Array::from(body.as_slice()).as_ref());
+            let deadline=FetchDeadline::arm(&window,&init,HTTP_REQUEST_TIMEOUT)?;
+            let request=Request::new_with_str_and_init(&url,&init).map_err(|_|FlareError::system("private upload request invalid"))?;
+            let fetch=JsFuture::from(window.fetch_with_request(&request)).fuse();
+            let canceled=sender.cancellation().fuse();
+            futures::pin_mut!(fetch,canceled);
+            let response=futures::select_biased! {
+                _=canceled=> {deadline.abort();return Err(FlareError::system("private upload canceled"))},
+                response=fetch=>response,
+            };
+            let response=response.map_err(|_|FlareError::localized(if deadline.fired() {crate::shared::error::ErrorCode::OperationTimeout}else{crate::shared::error::ErrorCode::ServiceUnavailable},"private upload transport failed"))?;
+            let response:Response=response.dyn_into().map_err(|_|FlareError::system("private upload response invalid"))?;
+            if !response.ok() {return Err(FlareError::localized(crate::shared::error::ErrorCode::ServiceUnavailable,"private upload rejected"))}
+            Ok(())
+        }.await;
+        let _ = sender.send(result);
+    });
+    receiver
+        .await
+        .map_err(|_| FlareError::system("private upload task unavailable"))?
+}
+
+/// Keeps cancellation/timeout attached until the complete bounded body is read.
+/// Unlike ordinary JSON calls, a private read aborts even when its Rust caller
+/// drops the future or a response is refused before the body is consumed.
+struct PrivateDownloadGuard(FetchDeadline);
+
+impl Drop for PrivateDownloadGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+struct PrivateStreamReader {
+    reader: web_sys::ReadableStreamDefaultReader,
+    released: bool,
+}
+
+impl PrivateStreamReader {
+    fn release(&mut self) {
+        self.reader.release_lock();
+        self.released = true;
+    }
+}
+
+impl Drop for PrivateStreamReader {
+    fn drop(&mut self) {
+        if !self.released {
+            let reader = self.reader.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                // Consume a rejected cancellation promise too; neither a URL nor
+                // any private bytes enter a browser diagnostic from this path.
+                let _ = JsFuture::from(reader.cancel()).await;
+                reader.release_lock();
+            });
+        }
+    }
+}
+
+pub async fn get_private_bytes(
+    url: String,
+    explicit_headers: HashMap<String, String>,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, String)> {
+    use super::private_download as private;
+    use futures::FutureExt;
+    private::validate(&url, &explicit_headers, max_bytes)?;
+    let (mut sender, receiver) = futures::channel::oneshot::channel();
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = async {
+            let window = web_sys::window().ok_or_else(private::configuration)?;
+            let headers = Headers::new().map_err(|_| private::configuration())?;
+            for (key, value) in explicit_headers {
+                headers.set(&key, &value).map_err(|_| private::invalid())?;
+            }
+            headers
+                .set("Cache-Control", "no-store")
+                .map_err(|_| private::configuration())?;
+            headers
+                .set("Pragma", "no-cache")
+                .map_err(|_| private::configuration())?;
+            let init = RequestInit::new();
+            init.set_method("GET");
+            init.set_mode(RequestMode::Cors);
+            init.set_headers(&headers);
+            init.set_credentials(web_sys::RequestCredentials::Omit);
+            init.set_redirect(web_sys::RequestRedirect::Error);
+            init.set_cache(web_sys::RequestCache::NoStore);
+            init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
+            let deadline = PrivateDownloadGuard(
+                FetchDeadline::arm(&window, &init, HTTP_REQUEST_TIMEOUT)
+                    .map_err(|_| private::configuration())?,
+            );
+            let read = read_private_response(&window, &init, &url, max_bytes).fuse();
+            let canceled = sender.cancellation().fuse();
+            futures::pin_mut!(read, canceled);
+            let outcome = futures::select_biased! {
+                _ = canceled => Err(private::transport(false)),
+                outcome = read => outcome,
+            };
+            match outcome {
+                Err(_) if deadline.0.fired() => Err(private::transport(true)),
+                outcome => outcome,
+            }
+        }
+        .await;
+        let _ = sender.send(result);
+    });
+    receiver.await.map_err(|_| private::transport(false))?
+}
+
+async fn read_private_response(
+    window: &Window,
+    init: &RequestInit,
+    url: &str,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, String)> {
+    use super::private_download as private;
+    let request = Request::new_with_str_and_init(url, init).map_err(|_| private::invalid())?;
+    let response: Response = JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .map_err(|_| private::transport(false))?
+        .dyn_into()
+        .map_err(|_| private::response())?;
+    if !response.ok() {
+        return Err(private::rejected(response.status()));
+    }
+    let headers = response.headers();
+    if headers
+        .get("content-length")
+        .ok()
+        .flatten()
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|size| size > max_bytes as u64)
+    {
+        return Err(private::too_large());
+    }
+    let content_type = private::content_type(
+        &headers
+            .get("content-type")
+            .map_err(|_| private::response())?
+            .ok_or_else(private::response)?,
+    )?;
+    let stream = response.body().ok_or_else(private::response)?;
+    let mut reader = PrivateStreamReader {
+        reader: stream
+            .get_reader()
+            .dyn_into()
+            .map_err(|_| private::response())?,
+        released: false,
+    };
+    let mut bytes = Vec::new();
+    loop {
+        let item = JsFuture::from(reader.reader.read())
+            .await
+            .map_err(|_| private::transport(false))?;
+        let done = js_sys::Reflect::get(&item, &"done".into())
+            .map_err(|_| private::response())?
+            .as_bool()
+            .ok_or_else(private::response)?;
+        if done {
+            break;
+        }
+        let chunk: Uint8Array = js_sys::Reflect::get(&item, &"value".into())
+            .map_err(|_| private::response())?
+            .dyn_into()
+            .map_err(|_| private::response())?;
+        let length = chunk.length() as usize;
+        let size = bytes
+            .len()
+            .checked_add(length)
+            .ok_or_else(private::too_large)?;
+        if size > max_bytes {
+            return Err(private::too_large());
+        }
+        bytes
+            .try_reserve(length)
+            .map_err(|_| private::too_large())?;
+        let start = bytes.len();
+        bytes.resize(size, 0);
+        chunk.copy_to(&mut bytes[start..]);
+    }
+    reader.release();
+    Ok((bytes, content_type))
 }
 
 impl Drop for FetchDeadline {
@@ -197,6 +406,7 @@ async fn fetch_bytes_with_headers_local(
     let init = RequestInit::new();
     init.set_method(method);
     init.set_mode(RequestMode::Cors);
+    init.set_redirect(web_sys::RequestRedirect::Error);
     init.set_headers(&headers);
     if let Some(body) = body {
         let array = Uint8Array::from(body.as_slice());
@@ -220,18 +430,19 @@ async fn fetch_and_read(
 ) -> Result<(Vec<u8>, HashMap<String, String>)> {
     let request = Request::new_with_str_and_init(url, init)
         .map_err(|e| FlareError::system(format!("http request init failed: {e:?}")))?;
+    // Only an explicit return before fetch proves this request was not sent.
+    if !window.navigator().on_line() {
+        return Err(FlareError::localized(
+            crate::shared::error::ErrorCode::NetworkUnreachable,
+            format!("http fetch not dispatched while offline: {method} {url}"),
+        ));
+    }
     let resp_value = JsFuture::from(window.fetch_with_request(&request))
         .await
         .map_err(|e| {
-            // 浏览器报告离线时 fetch 根本没发出去：标成 NetworkUnreachable，调用方可以放心重发
-            // 一次性请求（刷新令牌）。在线时的失败分不清服务端是否已处理，仍按系统错误。
-            let reason = format!("http fetch failed: {method} {url}: {e:?}");
-            let offline = web_sys::window().is_some_and(|w| !w.navigator().on_line());
-            if offline {
-                FlareError::localized(crate::shared::error::ErrorCode::NetworkUnreachable, reason)
-            } else {
-                FlareError::system(reason)
-            }
+            // A rejected fetch (including redirects and a later offline event)
+            // cannot tell us whether the server already consumed the request.
+            FlareError::system(format!("http fetch failed: {method} {url}: {e:?}"))
         })?;
     let resp: Response = resp_value
         .dyn_into()
@@ -256,7 +467,18 @@ async fn fetch_and_read(
             body = %body,
             "http request failed"
         );
-        return Err(http_error_from_response_status(status, &body));
+        let mut error = http_error_from_response_status(status, &body);
+        // 过载时的等待（秒）：路由层据此原地等或把等待时间交给调用方。跨域时要 Edge 在
+        // Access-Control-Expose-Headers 里放出 Retry-After，否则读不到，按没给处理。
+        if let Some(retry_after) = resp.headers().get("retry-after").ok().flatten()
+            && let FlareError::Localized {
+                params: Some(params),
+                ..
+            } = &mut error
+        {
+            params.insert("retryAfter".to_owned(), retry_after);
+        }
+        return Err(error);
     }
     tracing::debug!(method = %method, url = %url, status, "http request ok");
     let response_headers = collect_response_headers(resp.headers())?;

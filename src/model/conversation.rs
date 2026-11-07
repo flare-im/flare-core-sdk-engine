@@ -504,6 +504,9 @@ pub struct Conversation {
     // ===============================
     pub is_pinned: bool,
     pub is_muted: bool,
+    /// Notification preference. None means the sync source did not supply it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_mention_only: Option<bool>,
     pub is_archived: bool,
 
     // ===============================
@@ -575,6 +578,7 @@ impl Default for Conversation {
             visible_after_seq: 0,
             is_pinned: false,
             is_muted: false,
+            is_mention_only: None,
             is_archived: false,
             version: 0,
             updated_at: 0,
@@ -650,6 +654,7 @@ impl Conversation {
             visible_after_conversation_seq: self.visible_after_seq,
             last_read_seq: self.last_read_seq,
             is_muted: self.is_muted,
+            is_mention_only: self.is_mention_only,
             is_pinned: self.is_pinned,
             is_archived: self.is_archived,
             updated_at: u64_to_proto_ms(self.updated_at),
@@ -811,6 +816,7 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
             last_sender_avatar_url: String::new(),
             is_pinned: s.is_pinned,
             is_muted: s.is_muted,
+            is_mention_only: s.is_mention_only,
             is_archived: s.is_archived,
             members_count: (s.member_count.max(0) as u32).max(member_preview.len() as u32),
             participant_version: s.participant_version,
@@ -828,6 +834,7 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
             ext: {
                 let mut ext = s.attributes.clone();
                 ext.insert("peer_read_seq".to_string(), peer_read_seq.to_string());
+                crate::domain::set_local_cleared_through_seq(&mut ext, visible_after_seq);
                 if s.user_settings_version > 0 {
                     ext.insert(
                         crate::model::EXT_USER_SETTINGS_VERSION.to_string(),

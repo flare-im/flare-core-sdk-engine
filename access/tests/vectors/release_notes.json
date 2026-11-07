@@ -1,0 +1,195 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "notes": [
+          "zh-Hant-TW"
+        ]
+      },
+      "input": {
+        "languages": [
+          "en",
+          "zh-Hant-TW"
+        ],
+        "locale": "zh-Hant-TW"
+      },
+      "name": "exact"
+    },
+    {
+      "expected": {
+        "notes": [
+          "zh-Hant"
+        ]
+      },
+      "input": {
+        "languages": [
+          "en",
+          "zh-Hant"
+        ],
+        "locale": "zh-Hant-TW"
+      },
+      "name": "drops the region"
+    },
+    {
+      "expected": {
+        "notes": [
+          "zh"
+        ]
+      },
+      "input": {
+        "languages": [
+          "en",
+          "zh"
+        ],
+        "locale": "zh-Hant-TW"
+      },
+      "name": "drops the script"
+    },
+    {
+      "expected": {
+        "notes": [
+          "en"
+        ]
+      },
+      "input": {
+        "languages": [
+          "en",
+          "ja"
+        ],
+        "locale": "zh-Hant-TW"
+      },
+      "name": "other language falls to en"
+    },
+    {
+      "expected": {
+        "notes": [
+          "zh-CN"
+        ]
+      },
+      "input": {
+        "languages": [
+          "en",
+          "zh-CN"
+        ],
+        "locale": "zh-Hans-CN"
+      },
+      "name": "same language under another tag"
+    },
+    {
+      "expected": {
+        "notes": [
+          "zh-CN"
+        ]
+      },
+      "input": {
+        "languages": [
+          "en",
+          "zh-CN"
+        ],
+        "locale": "zh-Hant-TW"
+      },
+      "name": "same language before en"
+    },
+    {
+      "expected": {
+        "notes": [
+          "zh-CN"
+        ]
+      },
+      "input": {
+        "languages": [
+          "en",
+          "zh-CN"
+        ],
+        "locale": "zh_CN"
+      },
+      "name": "underscore tag"
+    },
+    {
+      "expected": {
+        "notes": [
+          "zh-cn"
+        ]
+      },
+      "input": {
+        "languages": [
+          "en",
+          "zh-cn"
+        ],
+        "locale": "zh-CN"
+      },
+      "name": "case is ignored"
+    },
+    {
+      "expected": {
+        "notes": [
+          "en"
+        ]
+      },
+      "input": {
+        "languages": [
+          "en",
+          "ja"
+        ],
+        "locale": "en-GB"
+      },
+      "name": "regional english"
+    },
+    {
+      "expected": {
+        "notes": [
+          "en-US"
+        ]
+      },
+      "input": {
+        "languages": [
+          "en-US",
+          "ja"
+        ],
+        "locale": "en-GB"
+      },
+      "name": "regional english only"
+    },
+    {
+      "expected": {
+        "notes": [
+          "en"
+        ]
+      },
+      "input": {
+        "languages": [
+          "en",
+          "zh-CN"
+        ],
+        "locale": null
+      },
+      "name": "no locale"
+    },
+    {
+      "expected": {
+        "notes": [
+          "ja"
+        ]
+      },
+      "input": {
+        "languages": [
+          "ja",
+          "ko"
+        ],
+        "locale": "de"
+      },
+      "name": "nothing matches"
+    },
+    {
+      "expected": {
+        "notes": []
+      },
+      "input": {
+        "languages": [],
+        "locale": "en"
+      },
+      "name": "no notes"
+    }
+  ],
+  "description": "Release notes language. The locale is cut one subtag at a time (zh-Hant-TW, zh-Hant, zh); then any tag of the same primary language, in sorted order; then en; then the first tag in sorted order. Tags compare without regard to case, and _ reads as -. The input lists the tags a release has notes for; each tag's note is the tag itself."
+}

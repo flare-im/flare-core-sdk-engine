@@ -19,7 +19,7 @@ pub(crate) fn listener_interface_name(kind: &str) -> String {
 pub(crate) fn model_package_suffix(name: &str) -> &'static str {
     if matches!(
         name,
-        "ConversationType" | "MessageContentType" | "MessageSearchKind" | "SdkConnectionState"
+        "ConversationType" | "MessageContentType" | "MessageSearchKind"
     ) {
         "common.enums"
     } else if name == "SdkErrorPayload" {
@@ -64,8 +64,17 @@ pub(crate) fn model_package_suffix(name: &str) -> &'static str {
         "event"
     } else if name.starts_with("LifecycleEvent") {
         "event.lifecycle"
-    } else if name.starts_with("ConnectionEvent") {
+    } else if name.starts_with("ConnectionEvent") || name == "ConnectionSyncStateEvent" {
         "event.connection"
+    } else if matches!(
+        name,
+        "AccessEventName"
+            | "AccessSwitchedEvent"
+            | "AccessEndpoint"
+            | "AccessChangedEvent"
+            | "AccessChanges"
+    ) {
+        "event.access"
     } else if matches!(
         name,
         "MessageEventName"
@@ -222,8 +231,95 @@ pub(crate) fn swift_identifier(name: &str) -> String {
             | "private"
             | "fileprivate"
             | "open"
+            | "defer"
     ) {
         format!("`{name}`")
+    } else {
+        name.to_string()
+    }
+}
+
+/// Cangjie keywords and built-in type names that cannot name a member.
+const CANGJIE_RESERVED: &[&str] = &[
+    "abstract",
+    "as",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "do",
+    "else",
+    "enum",
+    "extend",
+    "false",
+    "finally",
+    "for",
+    "foreign",
+    "func",
+    "if",
+    "import",
+    "in",
+    "init",
+    "interface",
+    "is",
+    "let",
+    "macro",
+    "main",
+    "match",
+    "mut",
+    "open",
+    "operator",
+    "override",
+    "package",
+    "private",
+    "prop",
+    "protected",
+    "public",
+    "quote",
+    "redef",
+    "return",
+    "spawn",
+    "static",
+    "struct",
+    "super",
+    "synchronized",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "type",
+    "unsafe",
+    "var",
+    "where",
+    "while",
+    "Bool",
+    "Float16",
+    "Float32",
+    "Float64",
+    "Int8",
+    "Int16",
+    "Int32",
+    "Int64",
+    "IntNative",
+    "Nothing",
+    "Rune",
+    "This",
+    "UInt8",
+    "UInt16",
+    "UInt32",
+    "UInt64",
+    "UIntNative",
+    "Unit",
+    "VArray",
+];
+
+/// A model field's Cangjie member name: keywords become `<name>Value` (`interface` →
+/// `interfaceValue`); the wire key stays the spec's `wireName`.
+pub(crate) fn cangjie_field_name(name: &str) -> String {
+    if CANGJIE_RESERVED.contains(&name) {
+        format!("{name}Value")
     } else {
         name.to_string()
     }

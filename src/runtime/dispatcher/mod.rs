@@ -27,8 +27,7 @@ use crate::kernel::event::{
     ConversationEvent, EventBus, ExtensionEvent, MessageEvent, PluginEvent, SdkEvent,
 };
 use crate::kernel::{
-    PluginCatalogNoticePort, ReliableSendQueuePort, ServerClock, SessionSyncRunner,
-    SyncResponseHandler,
+    ReliableSendQueuePort, ServerClock, SessionSyncRunner, SyncResponseHandler, TenantNoticePort,
 };
 use crate::model::IMMessage;
 use crate::runtime::ReliableSendQueue;
@@ -108,8 +107,8 @@ pub struct Dispatcher {
     /// Receive-side typing presence (per-conversation typing users + TTL). Fed from inbound
     /// per-user Typing signals; the aggregated live set is re-emitted as TypingAggregate.
     typing_presence: Mutex<TypingPresence>,
-    /// Receives the tenant's plugin catalog-changed notices; without one they are ignored.
-    plugin_catalog_notices: Option<Arc<dyn PluginCatalogNoticePort>>,
+    /// Receives the tenant config notices; without one they are ignored.
+    tenant_notices: Option<Arc<dyn TenantNoticePort>>,
     /// The server clock estimate: downlink frames feed it, and deadlines the server issued are
     /// compared against it rather than against the device clock.
     server_clock: ServerClock,
@@ -159,18 +158,18 @@ impl Dispatcher {
             applied_event_seqs: AppliedEventSeqs::new(),
             persist_tx: OnceLock::new(),
             typing_presence: Mutex::new(TypingPresence::new()),
-            plugin_catalog_notices: None,
+            tenant_notices: None,
             server_clock: ServerClock::new(),
             metrics,
         }
     }
 
-    /// Hands the tenant's plugin catalog-changed notices to `notices`.
-    pub(crate) fn with_plugin_catalog_notices(
+    /// Hands the tenant config notices to `notices`.
+    pub(crate) fn with_tenant_notices(
         mut self,
-        notices: Option<Arc<dyn PluginCatalogNoticePort>>,
+        notices: Option<Arc<dyn TenantNoticePort>>,
     ) -> Self {
-        self.plugin_catalog_notices = notices;
+        self.tenant_notices = notices;
         self
     }
 

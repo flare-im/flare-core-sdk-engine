@@ -253,7 +253,6 @@ mod tests {
 
     use flare_proto::common::Message as ProtoMessage;
 
-    use crate::kernel::SdkState;
     use crate::kernel::event::{ConnectionEvent, EventBus};
 
     struct AppendTag(&'static str);
@@ -319,9 +318,9 @@ mod tests {
         let bus = EventBus::with_middleware(Arc::new(chain));
         let mut rx = bus.subscribe();
 
-        bus.publish(SdkEvent::Connection(ConnectionEvent::StateChanged {
-            state: SdkState::Connected,
-        }));
+        bus.publish(SdkEvent::Connection(ConnectionEvent::Status(
+            crate::kernel::event::ConnectionStatus::idle(false),
+        )));
 
         let received = tokio::time::timeout(std::time::Duration::from_millis(30), rx.recv()).await;
         assert!(received.is_err());

@@ -34,6 +34,7 @@ pub const CONVERSATION_DISPATCH_OPERATIONS: &[&str] = &[
     "mark_unread",
     "update_draft",
     "clear_local_chat_history",
+    "clear_chat_history_for_self",
 ];
 
 pub fn is_conversation_operation(operation: &str) -> bool {
@@ -149,6 +150,11 @@ pub async fn dispatch_conversation(
         "clear_local_chat_history" => {
             let conversation_id_s = json_string(&params, "conversationId")?;
             api.clear_local_chat_history(&conversation_id_s).await?;
+            Ok(BindingResponse::unit())
+        }
+        "clear_chat_history_for_self" => {
+            let conversation_id_s = json_string(&params, "conversationId")?;
+            api.clear_chat_history_for_self(&conversation_id_s).await?;
             Ok(BindingResponse::unit())
         }
         _ => Err(binding_operation_not_supported(operation)),

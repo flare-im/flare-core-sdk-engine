@@ -1263,6 +1263,17 @@
             ]
           ],
           "result": "unit"
+        },
+        {
+          "op": "clear_chat_history_for_self",
+          "method": "clear_chat_history_for_self",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ]
+          ],
+          "result": "unit"
         }
       ]
     },
@@ -1278,7 +1289,7 @@
       "operations": [
         {
           "op": "get_url",
-          "method": "get_file_url",
+          "method": "get_file_url_with_reference",
           "args": [
             [
               "file_id",
@@ -1288,6 +1299,10 @@
               "expires_in",
               "optional_i32_default",
               3600
+            ],
+            [
+              "reference",
+              "optional_media_reference"
             ]
           ],
           "result": "json"
@@ -1310,7 +1325,7 @@
         },
         {
           "op": "resolve_access",
-          "method": "resolve_media_access_opts",
+          "method": "resolve_media_access_opts_with_reference",
           "args": [
             [
               "file_id",
@@ -1324,6 +1339,10 @@
             [
               "auto_cache",
               "bool_default_false"
+            ],
+            [
+              "reference",
+              "optional_media_reference"
             ]
           ],
           "result": "json"

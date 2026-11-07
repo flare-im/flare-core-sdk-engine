@@ -1,7 +1,197 @@
 {
   "$defs": {
+    "AccessConfig": {
+      "description": "初始化配置中的 `access` 对象（§7.6）。",
+      "properties": {
+        "bootstrapId": {
+          "default": "",
+          "description": "本应用的引导 ID；开发模式可省略（取 `development`）。",
+          "type": "string"
+        },
+        "developmentEndpoints": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DevelopmentEndpoints"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "仅开发模式。"
+        },
+        "seed": {
+          "description": "构建期写入的已签名接入清单（DSSE 信封 JSON 原文）。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trustMode": {
+          "$ref": "#/$defs/TrustMode",
+          "default": "production"
+        },
+        "trustRoots": {
+          "default": [],
+          "description": "内置根公钥（构建期注入）。",
+          "items": {
+            "$ref": "#/$defs/TrustRootConfig"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "DevelopmentAccessPoint": {
+      "description": "开发模式的额外接入点：自带 ID 与一组完整 URL（字段含义同 [`DevelopmentEndpoints`]）。",
+      "properties": {
+        "coreApiUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "mediaUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "quicUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "socialApiUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wsUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "DevelopmentEndpoints": {
+      "description": "开发模式端点（完整 URL）。IM 至少给一个；REST 入口缺省时对应服务不可用。",
+      "properties": {
+        "accessPoints": {
+          "description": "可选：额外的接入点（本地双入口故障演练、集成测试）。上面几项是 ID 为 `development` 的主接入点，\n这里每一项是同一 Cell 里的另一个接入点，选路、熔断、切换与生产清单完全一样。",
+          "items": {
+            "$ref": "#/$defs/DevelopmentAccessPoint"
+          },
+          "type": "array"
+        },
+        "clientPolicy": {
+          "description": "可选：开发期的 `clientPolicy` 覆盖（结构同清单，照常按硬上下限夹紧），用来在演练里缩短退避、心跳等。"
+        },
+        "coreApiUrl": {
+          "description": "`http://` 或 `https://`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mediaUrl": {
+          "description": "可选：媒体入口；缺省时媒体服务不可用。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "quicUrl": {
+          "description": "`quic://host:port`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "socialApiUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wsUrl": {
+          "description": "`ws://` 或 `wss://`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "SdkAppConfig": {
+      "description": "宿主应用信息（`app`）：CONNECT 时上报，更新中心按它判断渠道与版本。\n\n只用宿主（或平台包代采）给的真实值；没给的字段不上报，服务端看到缺省即知「未知」，\n不能用一个假值冒充。",
+      "properties": {
+        "build": {
+          "description": "构建号：单调递增的整数，服务端做版本比较（强制升级、灰度）只看它。CONNECT 时以十进制字符串\n放进 `app_build`。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "buildId": {
+          "description": "Web 运行中的构建标识（如 `20261105-abc`）：Web 的 `build` 不单调可比，是否更新看它。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "channel": {
+          "description": "更新通道（如 `stable`、`beta`）：更新中心按它挑发布清单，不上报到 CONNECT。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "distribution": {
+          "description": "分发渠道：`appstore`、`play`、`appgallery`、`direct`、`web`、`tauri` 等，CONNECT 时作为\n`distribution` 上报。浏览器（wasm）未配置时取 `web`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "locale": {
+          "description": "界面语言（BCP-47，如 `zh-Hant-TW`）：更新说明按它选，回退链见 `flare_access::release::locale`。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "桌面目标（如 `darwin-aarch64`）：发布清单按它挑桌面制品。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "description": "版本名（如 `3.2.1`），CONNECT 时作为 `app_version` 上报，只用于展示。",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "SdkAuthConfig": {
-      "description": "SDK 配置\n\n```ignore\nlet config = SdkConfig::builder()\n    .endpoint(\"wss://im.example.com\")\n    .connect_timeout_secs(15)\n    .build();\n```\n接入 token 的来源（core-only 形态：SDK 托管，向网关签发/刷新）。\n\n客户端不再本地签发 token：`token_endpoint` 配了就是 SDK 托管——`login(user_id)` 不传 token 时\nSDK 去 `{token_endpoint}/api/v1/auth/tokens` 签发，到期前 `refresh_lead_secs` 秒用\n`/api/v1/auth/tokens/refresh` 换新并 `update_access_token`。没配则必须显式传 token\n（业务应用由宿主自己拿 token、自己刷新）。",
+      "description": "SDK 配置\n\n```ignore\nlet config = SdkConfig::builder()\n    .access(AccessConfig::development(DevelopmentEndpoints {\n        ws_url: Some(\"ws://127.0.0.1:60051/ws\".into()),\n        core_api_url: Some(\"http://127.0.0.1:60061\".into()),\n        ..Default::default()\n    }))\n    .build();\n```\nSDK 托管连接令牌（core-only 形态）：配了 `auth` 就是 SDK 托管——`login(user_id)` 不传 token 时，\n链路在每次建连前向 Core API 的签发接口签发（经 HttpRouter，换接入点与重试照 §3.9），到期前\n`refresh_lead_secs` 秒用 `{签发路径}/refresh` 换新并 `update_access_token`。没配则必须显式传 token\n（业务应用由宿主自己拿 token、自己刷新）。客户端永远不持有签名密钥。",
       "properties": {
         "refreshLeadSecs": {
           "description": "到期前多少秒刷新，默认 300。",
@@ -13,7 +203,7 @@
           ]
         },
         "tokenEndpoint": {
-          "description": "网关基址（不含 `/api/v1/auth/...`），如 `http://host/api`。缺省不托管。",
+          "description": "签发接口在 Core API 上的路径（以 `/` 开头的相对路径）；不给用 [`Self::DEFAULT_TOKEN_PATH`]。\n基址就是接入清单里接入点的 Core API 入口（开发模式即 `developmentEndpoints.coreApiUrl`），\n不接受绝对地址。",
           "type": [
             "string",
             "null"
@@ -37,27 +227,53 @@
         }
       ]
     },
-    "TransportKind": {
-      "description": "Wire transport kind for init overlay and protocol race ordering.",
-      "enum": [
-        "websocket",
-        "quic"
-      ],
-      "type": "string"
+    "TrustMode": {
+      "description": "信任模式。",
+      "oneOf": [
+        {
+          "const": "production",
+          "description": "只接受信任链验证通过的清单。",
+          "type": "string"
+        },
+        {
+          "const": "development",
+          "description": "允许用 `developmentEndpoints` 直接构造未签名清单（本地联调与 E2E）。",
+          "type": "string"
+        }
+      ]
     },
-    "TransportPolicy": {
-      "description": "Transport selection policy.\n\nBrowser/WASM must use WebSocket because QUIC/native protocol racing is not\navailable in the browser sandbox. Native targets can keep protocol racing.",
-      "enum": [
-        "auto",
-        "websocket_only",
-        "protocol_race"
+    "TrustRootConfig": {
+      "description": "初始化配置里的一条根公钥（构建期注入，与 `tlsCaCert` 同一机制）。",
+      "properties": {
+        "keyId": {
+          "type": "string"
+        },
+        "publicKey": {
+          "description": "base64url(32 字节 Ed25519 公钥)。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyId",
+        "publicKey"
       ],
-      "type": "string"
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "上层可选覆盖项（JSON 字段为 SDK canonical camelCase）。",
+  "description": "上层可选覆盖项（JSON 字段为 SDK canonical camelCase）。\n\n没有任何地址字段：连哪里只由 `access`（接入配置）决定，开发联调用\n`access.trustMode = \"development\"` + `access.developmentEndpoints`。",
   "properties": {
+    "access": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AccessConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "接入配置：信任根、构建期种子、信任模式；开发模式下的开发端点。"
+    },
     "ackMaxInFlight": {
       "format": "uint",
       "minimum": 0,
@@ -82,21 +298,16 @@
         "null"
       ]
     },
-    "appBuild": {
-      "description": "宿主应用构建号（`appBuild`，单调整数），服务端版本比较只用它。",
-      "format": "uint64",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
-    },
-    "appVersion": {
-      "description": "宿主应用版本名（`appVersion`，如 `3.2.1`），CONNECT 时作为 `app_version` 上报。",
-      "type": [
-        "string",
-        "null"
-      ]
+    "app": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SdkAppConfig"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "宿主应用信息：版本、构建号、分发渠道、更新通道。给了就整体替换构建期的值。"
     },
     "auth": {
       "anyOf": [
@@ -109,13 +320,8 @@
       ],
       "description": "接入 token 来源（见 [`SdkAuthConfig`]）。"
     },
-    "capabilityUrl": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "connectTimeoutSecs": {
+      "description": "单次握手（含 CONNECT_ACK）时限的本机覆盖（秒）；不设时用清单 `connectTimeoutMs`（默认 8 秒）。",
       "format": "uint64",
       "minimum": 0,
       "type": [
@@ -129,26 +335,8 @@
         "null"
       ]
     },
-    "defaultTransport": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/TransportKind"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "description": "非竞速模式下的默认传输（`websocket` / `quic`）。"
-    },
     "deviceId": {
       "description": "Stable client device id for multi-device delivery and sync cursors.",
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "distribution": {
-      "description": "分发渠道（`distribution`）：`appstore` / `play` / `appgallery` / `direct` / `web` / `tauri` 等。",
       "type": [
         "string",
         "null"
@@ -176,12 +364,6 @@
         "null"
       ]
     },
-    "httpUrl": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "initMessageSyncConcurrency": {
       "description": "Init/重连后会话消息补拉并发数（默认 4）。",
       "format": "uint32",
@@ -191,61 +373,8 @@
         "null"
       ]
     },
-    "maxReconnectAttempts": {
-      "format": "uint32",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
-    },
-    "mediaStorageProxyPrefix": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "mediaStorageProxyTargets": {
-      "items": {
-        "type": "string"
-      },
-      "type": [
-        "array",
-        "null"
-      ]
-    },
     "messageDedupeCapacity": {
       "format": "uint",
-      "minimum": 0,
-      "type": [
-        "integer",
-        "null"
-      ]
-    },
-    "onlineUrl": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "protocolRaceOrder": {
-      "description": "协议竞速优先级（从高到低），如 `[\"quic\", \"websocket\"]`。",
-      "items": {
-        "$ref": "#/$defs/TransportKind"
-      },
-      "type": [
-        "array",
-        "null"
-      ]
-    },
-    "quicUrl": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "reconnectIntervalSecs": {
-      "format": "uint64",
       "minimum": 0,
       "type": [
         "integer",
@@ -285,40 +414,7 @@
       ]
     },
     "tlsCaCertPath": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "tlsCertificateSha256Pins": {
-      "items": {
-        "type": "string"
-      },
-      "type": [
-        "array",
-        "null"
-      ]
-    },
-    "tlsSpkiSha256Pins": {
-      "items": {
-        "type": "string"
-      },
-      "type": [
-        "array",
-        "null"
-      ]
-    },
-    "transportPolicy": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/TransportPolicy"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "wsUrl": {
+      "description": "私有部署的信任根（全局）。证书钉扎按接入点来自接入清单，没有全局配置项。",
       "type": [
         "string",
         "null"

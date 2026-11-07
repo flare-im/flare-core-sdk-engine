@@ -300,7 +300,7 @@ impl ClientConfigContract {
                 "pub fn flare_client_init_example_json() -> String {\n",
                 "    flare_im_core_sdk_bindings_runtime::CLIENT_INIT_REQUEST_EXAMPLE_JSON.to_string()\n",
                 "}\n\n",
-                "/// Full client config contract (transport policy, race order, URLs).\n",
+                "/// Full client config contract (access, app, timeouts, TLS).\n",
                 "#[wasm_bindgen(js_name = flareClientConfigContractJson)]\n",
                 "pub fn flare_client_config_contract_json() -> String {\n",
                 "    flare_im_core_sdk_bindings_runtime::CLIENT_CONFIG_CONTRACT_JSON.to_string()\n",
@@ -332,7 +332,7 @@ impl ClientConfigContract {
             "{header}\n\
              //! C `flare_sdk_init` accepts UTF-8 JSON matching [flare_im_core_sdk::client::SdkConfigOverlay].\n\
              //! Optional wrapper: `{{ \"environment\": \"...\", \"sdkConfig\": {{ ... }} }}` via `flare_sdk_invoke_json(\"client.init\", ...)`.\n\n\
-             /// Example SdkConfigOverlay JSON (transport + protocol race).\n\
+             /// Example SdkConfigOverlay JSON (development access endpoints + app info).\n\
              pub const FLARE_SDK_CONFIG_EXAMPLE_JSON: &str = {example};\n",
             header = client_config_header(),
             example = rust_raw_string_literal(&example),
@@ -1117,6 +1117,13 @@ fn render_dispatch_arg_extract(arg: &DispatchArg, value_expr: &str) -> Result<(S
                 format!("{v}.as_deref()"),
             ))
         }
+        "optional_media_reference" => {
+            let v = format!("{name}_o");
+            Ok((
+                format!("let {v} = optional_media_reference({value_expr})?"),
+                format!("{v}.as_ref()"),
+            ))
+        }
         "optional_string" => {
             let v = format!("{name}_o");
             Ok((
@@ -1703,13 +1710,6 @@ fn render_c_typed_params_build(args: &[CTypedAbiArg], with_callback: bool) -> Ve
 
 fn render_c_typed_abi_export(entry: &CTypedAbiExport) -> Result<String> {
     match entry.kind.as_str() {
-        "sync_i32" => Ok(format!(
-            "\n#[unsafe(no_mangle)]\n\
-             pub extern \"C\" fn {symbol}(handle: FlareHandle) -> i32 {{\n\
-             \x20   abi::catch_ffi_i32(|| sdk_state_code(handle))\n\
-             }}\n",
-            symbol = entry.symbol
-        )),
         "invoke_unit" | "invoke_json" | "invoke_send_ack" => render_c_typed_async_invoke(entry),
         other => bail!("unsupported c_typed_abi export kind: {other}"),
     }
@@ -2037,10 +2037,52 @@ fn ensure_client_config_has_no_removed_aliases(doc: &Value) -> Result<()> {
         "\"http_url\"",
         "\"sourceUrl\"",
     ];
-    let offenders = removed
+    let mut offenders = removed
         .into_iter()
         .filter(|needle| content.contains(needle))
+        .map(str::to_string)
         .collect::<Vec<_>>();
+    // 地址、传输策略与重连参数已由 `access`（接入清单）接管；它们出现在 sdkConfig 示例或
+    // sdkConfigOverlay 说明里，就是在教宿主配一个 SDK 不再读取的字段。
+    // `wsUrl` 等名字在 `access.developmentEndpoints` 里仍合法，所以只查这两层的直接键与分组列表。
+    let removed_overlay_keys = [
+        "wsUrl",
+        "quicUrl",
+        "httpUrl",
+        "capabilityUrl",
+        "onlineUrl",
+        "mediaStorageProxyPrefix",
+        "mediaStorageProxyTargets",
+        "transportPolicy",
+        "defaultTransport",
+        "protocolRaceOrder",
+        "reconnectIntervalSecs",
+        "maxReconnectAttempts",
+        "appVersion",
+        "appBuild",
+        // 证书钉扎按接入点来自接入清单（`spkiPins`），没有全局配置项。
+        "tlsSpkiSha256Pins",
+        "tlsCertificateSha256Pins",
+    ];
+    for pointer in ["/initRequest/example/sdkConfig", "/sdkConfigOverlay"] {
+        let Some(Value::Object(map)) = doc.pointer(pointer) else {
+            continue;
+        };
+        for (key, value) in map {
+            if removed_overlay_keys.contains(&key.as_str()) {
+                offenders.push(format!("{pointer}/{key}"));
+            }
+            if let Value::Array(items) = value {
+                for item in items {
+                    if let Some(name) = item.as_str()
+                        && removed_overlay_keys.contains(&name)
+                    {
+                        offenders.push(format!("{pointer}/{key}[{name}]"));
+                    }
+                }
+            }
+        }
+    }
     if !offenders.is_empty() {
         bail!(
             "client_config.json contains removed compatibility keys: {}",
@@ -2991,12 +3033,15 @@ impl Contracts {
     }
 
     fn tauri_lifecycle_commands(&self) -> Vec<String> {
+        // 需要 AppHandle 或宿主状态的专用命令；令牌续期要向前端发事件并保存配对表。
         let keep = [
             "sdk_init",
             "sdk_login",
             "sdk_prepare",
             "sdk_connect",
             "sdk_logout",
+            "sdk_set_connect_token_refresher",
+            "sdk_complete_connect_token_refresh",
         ];
         let mut found = Vec::new();
         for method in self.apis.modules.iter().flat_map(|module| &module.methods) {
@@ -3086,32 +3131,8 @@ impl Contracts {
              use crate::dispatch_common::{{typed_invoke_json, typed_invoke_send_ack, typed_invoke_unit}};\n\
              use crate::executor::{{return_error, CallbackContext}};\n\
              use crate::helpers::{{c_str_to_string, parse_json, parse_upload_options}};\n\
-             use crate::registry::{{require_instance, retain_instance}};\n\
-             use crate::types::{{FlareBytesView, FlareHandle, FlareResultCallback}};\n\n\
-             #[repr(i32)]\n\
-             #[derive(Clone, Copy)]\n\
-             enum FlareSdkStateCode {{\n\
-             \x20   Disconnected = 0,\n\
-             \x20   Connecting = 1,\n\
-             \x20   Connected = 2,\n\
-             \x20   Ready = 3,\n\
-             \x20   Reconnecting = 4,\n\
-             }}\n\n\
-             fn map_sdk_state(s: flare_im_core_sdk::SdkState) -> i32 {{\n\
-             \x20   use flare_im_core_sdk::SdkState as S;\n\
-             \x20   match s {{\n\
-             \x20       S::Disconnected => FlareSdkStateCode::Disconnected as i32,\n\
-             \x20       S::Connecting => FlareSdkStateCode::Connecting as i32,\n\
-             \x20       S::Connected => FlareSdkStateCode::Connected as i32,\n\
-             \x20       S::Ready => FlareSdkStateCode::Ready as i32,\n\
-             \x20       S::Reconnecting => FlareSdkStateCode::Reconnecting as i32,\n\
-             \x20   }}\n\
-             }}\n\n\
-             fn sdk_state_code(handle: FlareHandle) -> i32 {{\n\
-             \x20   retain_instance(handle).map_or(FlareSdkStateCode::Disconnected as i32, |instance| {{\n\
-             \x20       map_sdk_state(instance.client.state())\n\
-             \x20   }})\n\
-             }}\n\
+             use crate::registry::require_instance;\n\
+             use crate::types::{{FlareBytesView, FlareHandle, FlareResultCallback}};\n\
              {exports}",
             header = c_typed_abi_header()
         ))
@@ -3267,7 +3288,7 @@ impl Contracts {
     fn render_runtime_event_registry(&self) -> String {
         let mut lines = vec![
             generated_events_header(),
-            "/// Stable C event code -> contract id -> Tauri `im://*` name.".to_string(),
+            "/// Stable C event code -> contract id -> Tauri event name (`im://*`, `connection://*`, `access://*`).".to_string(),
             "pub const EVENT_ROUTE_TABLE: &[(i32, &str, &str)] = &[".to_string(),
         ];
         for event in self
@@ -3372,7 +3393,7 @@ fn render_tauri_event_emit() -> String {
         "use flare_im_core_sdk::event::SdkEvent;\n",
         "use tauri::{AppHandle, Emitter};\n",
         "use crate::convert::sdk_event_to_tauri;\n",
-        "/// Forward a core [`SdkEvent`] using contract `im://*` names.\n",
+        "/// Forward a core [`SdkEvent`] using the contract event names.\n",
         "pub fn emit_sdk_event<R: tauri::Runtime>(app: &AppHandle<R>, ev: &SdkEvent) -> bool {\n",
         "    if let Some((name, payload)) = sdk_event_to_tauri(ev) {\n",
         "        return app.emit(&name, payload).is_ok();\n",
@@ -3534,10 +3555,13 @@ struct Event {
 }
 
 impl Event {
+    /// 事件名是 `scheme://name`：消息类在 `im://`，链路状态在 `connection://`，接入点在 `access://`。
     fn is_tauri_route(&self) -> bool {
-        self.tauri
-            .as_deref()
-            .is_some_and(|name| name.starts_with("im://"))
+        self.tauri.as_deref().is_some_and(|name| {
+            ["im://", "connection://", "access://"]
+                .iter()
+                .any(|scheme| name.starts_with(scheme))
+        })
     }
 }
 

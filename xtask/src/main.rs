@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::{env, fs, path::Path};
 
+mod access_seed;
 mod build;
 mod codegen;
 mod context;
@@ -30,10 +31,10 @@ use fs_util::{
 use spec_model::{CoreAbiRef, load_expanded_client_spec, sync_shared_contracts};
 use spec_query::{
     all_spec_enums, all_spec_models, arr, bool_field, child_arr, find_model, include_path,
-    include_paths, is_known_ts_model_type, is_list_type_name, list_inner_type_name,
-    listener_payloads, message_build_catalog_entries, message_builder_extra_methods,
-    message_builder_request_models, spec_enum_map, spec_enum_names, spec_model_names, str_field,
-    typescript_listener_groups,
+    include_paths, is_bridge_internal_method, is_connect_token_refresher_method,
+    is_known_ts_model_type, is_list_type_name, list_inner_type_name, listener_payloads,
+    message_build_catalog_entries, message_builder_extra_methods, message_builder_request_models,
+    spec_enum_map, spec_enum_names, spec_model_names, str_field, typescript_listener_groups,
 };
 use verify::{
     emit_errors, fail, verify_channel_capability_gate, verify_core_contract,
@@ -71,6 +72,7 @@ fn run() -> Result<()> {
         "channel-capability" | "verify-channel-capability" => verify_channel_capability_gate(&root),
         "media-processing" | "verify-media-processing" => verify_media_processing_gate(&root),
         "structure" | "verify-structure" => verify_structure(&root),
+        "access-seed" => access_seed::run(&rest),
         "schema" => core_codegen::run("schema"),
         "schema-check" => core_codegen::run("schema-check"),
         "plugin-verify" => plugin_codegen::run(&root, "verify"),
@@ -214,6 +216,7 @@ fn run() -> Result<()> {
 fn print_help() {
     eprintln!("Usage: cargo xtask <command>");
     eprintln!("Commands:");
+    eprintln!("  access-seed          Pull the latest signed access manifest into a build seed");
     eprintln!("  schema               Generate core Rust DTO JSON Schema artifacts");
     eprintln!("  schema-check         Fail if core Rust DTO JSON Schema artifacts drift");
     eprintln!("  plugin-verify        Verify plugin manifests and marketplace catalog");

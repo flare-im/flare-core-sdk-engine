@@ -2,9 +2,10 @@ package com.flare.im.bridge
 
 import com.flare.im.adapter.codec.wireDecodeResponse
 import com.flare.im.adapter.codec.wireEncodeRequest
+import com.flare.im.contract.ConnectTokenRefresher
 import com.flare.im.contract.NativeBridge
 import com.flare.im.contract.NativeCallDescriptor
-import com.flare.im.contract.SdkErrorCodes
+import com.flare.im.contract.NativeCallMap
 import com.flare.im.contract.SdkOperations
 import org.json.JSONArray
 import org.json.JSONObject
@@ -14,8 +15,59 @@ import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.coroutines.suspendCoroutine
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 internal typealias NativeEventSink = (Int, Map<String, Any?>) -> Unit
+
+/**
+ * Routes the core's connect token requests (`FlareTokenRefreshCallback`, called on an SDK thread
+ * through the JNI shim) to the refresher installed for that handle, and hands the answer back
+ * through `complete` (`flare_sdk_complete_connect_token_refresh`) within the core's 20 second wait.
+ */
+internal class ConnectTokenRefreshRouter(
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    private val timeoutMillis: Long = 20_000,
+) {
+    private class Entry(
+        val refresher: ConnectTokenRefresher,
+        val complete: (requestId: Long, token: String?) -> Unit,
+    )
+
+    private val entries = ConcurrentHashMap<Long, Entry>()
+
+    fun install(handle: Long, refresher: ConnectTokenRefresher, complete: (requestId: Long, token: String?) -> Unit) {
+        entries[handle] = Entry(refresher, complete)
+    }
+
+    fun remove(handle: Long) {
+        entries.remove(handle)
+    }
+
+    fun removeAll() {
+        entries.clear()
+    }
+
+    /** Returns at once: the refresher runs on a coroutine, off the SDK thread that asked. */
+    fun request(handle: Long, requestId: Long) {
+        // No refresher any more: the core's request was dropped with it.
+        val entry = entries[handle] ?: return
+        scope.launch {
+            val token = try {
+                withTimeoutOrNull(timeoutMillis) { entry.refresher() }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                null
+            }
+            entry.complete(requestId, token?.takeIf { it.isNotBlank() })
+        }
+    }
+}
 
 /**
  * Thin Kotlin bridge over the Flare Core C ABI via JNI.
@@ -51,6 +103,7 @@ class JniNativeBridge(
                 if (handle != 0L) {
                     eventSinks.remove(handle)
                 }
+                tokenRefreshRouter.removeAll()
                 nativeHardReset()
                 handle = 0
                 released = true
@@ -58,21 +111,6 @@ class JniNativeBridge(
             }
             "sdk.is_connected" -> nativeIsConnected(requireHandle())
             "sdk.session_active" -> nativeSessionActive(requireHandle())
-            "connection.get_state" -> nativeConnectionState(requireHandle()).let { stateCode ->
-                when (stateCode) {
-                    0 -> com.flare.im.api.ConnectionState.DISCONNECTED
-                    1 -> com.flare.im.api.ConnectionState.CONNECTING
-                    2 -> com.flare.im.api.ConnectionState.CONNECTED
-                    3 -> com.flare.im.api.ConnectionState.READY
-                    4 -> com.flare.im.api.ConnectionState.RECONNECTING
-                    else -> throw FlareSdkException(
-                        SdkErrorCodes.INVALIDPARAMETER,
-                        "invalid connection state code: $stateCode",
-                        operation = "connection.get_state",
-                        details = mapOf("field" to "stateCode"),
-                    )
-                }
-            }
             "diagnostics.sdk_version" -> mapOf("version" to nativeSdkVersion())
             "diagnostics.ffi_contract_version" -> mapOf("version" to nativeFfiContractVersion())
             "event.subscribe" -> mapOf("subscription" to nativeSubscribeEvents(requireHandle()))
@@ -90,6 +128,51 @@ class JniNativeBridge(
         @Suppress("UNCHECKED_CAST")
         return value as T
     }
+
+    /**
+     * Installs (or, with null, removes) the host's connect token refresher. The core calls back on
+     * an SDK thread; the refresher runs on a coroutine (IO) and its token goes back to the core.
+     * Throwing, an empty token and the 20 second deadline all answer "none".
+     */
+    override suspend fun setConnectTokenRefresher(refresher: ConnectTokenRefresher?) {
+        ensureContractVersion()
+        val handle = requireHandle()
+        if (refresher != null) {
+            tokenRefreshRouter.install(handle, refresher) { requestId, token ->
+                // FLARE_ERR_INVALID_PARAM: the core stopped waiting; nothing to retry.
+                nativeCompleteConnectTokenRefresh(handle, requestId, token)
+            }
+        } else {
+            tokenRefreshRouter.remove(handle)
+        }
+        try {
+            submitAsync(NativeCallMap.SDK_SET_CONNECT_TOKEN_REFRESHER) { contextId ->
+                nativeSetConnectTokenRefresher(handle, refresher != null, contextId)
+            }
+        } catch (error: Throwable) {
+            if (refresher != null) tokenRefreshRouter.remove(handle)
+            throw error
+        }
+    }
+
+    /** Submits a callback-style C call that is not routed by descriptor; `start` returns the submit code. */
+    private suspend fun submitAsync(descriptor: NativeCallDescriptor, start: (contextId: Long) -> Int): Any? =
+        suspendCoroutine { continuation ->
+            val contextId = nextContextId.getAndIncrement()
+            pending[contextId] = PendingCall(descriptor, continuation)
+            val submitCode = start(contextId)
+            if (submitCode != 0) {
+                pending.remove(contextId)
+                continuation.resumeWithException(
+                    FlareSdkException(
+                        code = "native_submit_failed",
+                        message = "Native C ABI submit failed for ${descriptor.operation} (submitCode=$submitCode).",
+                        operation = descriptor.operation,
+                        details = mapOf("submitCode" to submitCode.toString(), "cApi" to descriptor.cApi),
+                    ),
+                )
+            }
+        }
 
     private fun ensureContractVersion() {
         if (contractVersionChecked) {
@@ -118,6 +201,7 @@ class JniNativeBridge(
     private fun releaseHandle() {
         if (handle != 0L && !released) {
             eventSinks.remove(handle)
+            tokenRefreshRouter.remove(handle)
             nativeRelease(handle)
         }
         handle = 0
@@ -232,7 +316,6 @@ class JniNativeBridge(
     private external fun nativeCreate(): Long
     private external fun nativeRelease(handle: Long)
     private external fun nativeHardReset()
-    private external fun nativeConnectionState(handle: Long): Int
     private external fun nativeIsConnected(handle: Long): Boolean
     private external fun nativeSessionActive(handle: Long): Boolean
     private external fun nativeSdkVersion(): String
@@ -251,6 +334,8 @@ class JniNativeBridge(
     private external fun nativeSdkCurrentUserId(handle: Long, contextId: Long): Int
     private external fun nativeSdkDisconnect(handle: Long, contextId: Long): Int
     private external fun nativeSdkDataRoot(handle: Long, contextId: Long): Int
+    private external fun nativeSetConnectTokenRefresher(handle: Long, enabled: Boolean, contextId: Long): Int
+    private external fun nativeCompleteConnectTokenRefresh(handle: Long, requestId: Long, token: String?): Int
     private external fun nativeSubscribeEvents(handle: Long): Long
     private external fun nativeSubscribeEventsBatch(handle: Long): Long
     private external fun nativeUnsubscribeEvents(subscription: Long)
@@ -260,6 +345,13 @@ class JniNativeBridge(
         private val nextContextId = AtomicLong(1)
         private val pending = ConcurrentHashMap<Long, PendingCall>()
         private val eventSinks = ConcurrentHashMap<Long, NativeEventSink>()
+        private val tokenRefreshRouter = ConnectTokenRefreshRouter()
+
+        /** Called by the JNI shim on an SDK thread when the core needs a new connect token. */
+        @JvmStatic
+        fun requestConnectToken(handle: Long, requestId: Long) {
+            tokenRefreshRouter.request(handle, requestId)
+        }
 
         @JvmStatic
         fun completeResult(contextId: Long, errorCode: Int, errorMessage: String?, errorDetailsJson: String?, resultJson: String?) {
@@ -278,7 +370,7 @@ class JniNativeBridge(
             }
             val value = when (pendingCall.descriptor.responseEncoding) {
                 "unit" -> null
-                "json", "json-object" -> decodeJsonObject(resultJson)
+                "json", "json-object" -> decodeJsonValue(resultJson)
                 else -> decodeJsonObject(resultJson)
             }
             pendingCall.continuation.resume(value)
@@ -288,6 +380,15 @@ class JniNativeBridge(
         fun emitEvent(handle: Long, eventType: Int, eventJson: String?) {
             val sink = eventSinks[handle] ?: return
             sink(eventType, decodeJsonObject(eventJson))
+        }
+
+        /** 对象之外也有裸数组结果（`access.list_access_points`），按原样交给适配层解码。 */
+        private fun decodeJsonValue(json: String?): Any? {
+            val trimmed = json?.trimStart()
+            if (trimmed == null || !trimmed.startsWith("[")) {
+                return decodeJsonObject(json)
+            }
+            return wireDecodeResponse(jsonArrayToList(JSONArray(trimmed)))
         }
 
         private fun decodeJsonObject(json: String?): Map<String, Any?> {

@@ -340,7 +340,7 @@ impl SqliteConversationRepo {
                       END AS last_message_preview,
                       c.last_sender_nickname, c.last_sender_avatar_url,
                       c.unread_count, c.last_read_seq, c.max_seq, c.visible_after_seq,
-                      c.is_pinned, c.is_muted, c.is_archived, c.version, c.updated_at,
+                      c.is_pinned, c.is_muted, c.is_mention_only, c.is_archived, c.version, c.updated_at,
                       c.created_at, c.updated_at_ts, c.ext, c.draft,
                       c.mention_count, c.mention_me, c.badge, c.role, c.member_preview
                FROM conversations c
@@ -418,6 +418,7 @@ impl SqliteConversationRepo {
         let visible_after_seq: i64 = row.try_get("visible_after_seq").map_err(sqlx_err)?;
         let is_pinned: i32 = row.try_get("is_pinned").map_err(sqlx_err)?;
         let is_muted: i32 = row.try_get("is_muted").map_err(sqlx_err)?;
+        let is_mention_only: Option<i32> = row.try_get("is_mention_only").map_err(sqlx_err)?;
         let is_archived: i32 = row.try_get("is_archived").map_err(sqlx_err)?;
         let version: i64 = row.try_get("version").map_err(sqlx_err)?;
         let updated_at: i64 = row.try_get("updated_at").map_err(sqlx_err)?;
@@ -469,6 +470,7 @@ impl SqliteConversationRepo {
             visible_after_seq: visible_after_seq.max(0) as u64,
             is_pinned: is_pinned != 0,
             is_muted: is_muted != 0,
+            is_mention_only: is_mention_only.map(|value| value != 0),
             is_archived: is_archived != 0,
             version: version.max(0) as u64,
             updated_at: updated_at.max(0) as u64,
@@ -717,7 +719,7 @@ impl ConversationWriter for SqliteConversationRepo {
             let existing = sqlx::query(
                 r#"SELECT last_read_seq, max_seq, unread_count,
                           last_message_id, last_sender_id, last_message_at, last_message_preview,
-                          is_pinned, is_muted, is_archived, visible_after_seq, ext, draft,
+                          is_pinned, is_muted, is_mention_only, is_archived, visible_after_seq, ext, draft,
                           remark, channel_id, conversation_type, member_preview
                    FROM conversations
                    WHERE conversation_id = ?"#,
@@ -763,6 +765,11 @@ impl ConversationWriter for SqliteConversationRepo {
                     .unwrap_or(None);
                 let prev_is_pinned = row.try_get::<i32, _>("is_pinned").unwrap_or(0) != 0;
                 let prev_is_muted = row.try_get::<i32, _>("is_muted").unwrap_or(0) != 0;
+                let prev_mention_only = row
+                    .try_get::<Option<i32>, _>("is_mention_only")
+                    .map_err(sqlx_err)?
+                    .map(|value| value != 0);
+                merged.is_mention_only = merged.is_mention_only.or(prev_mention_only);
                 let prev_is_archived = row.try_get::<i32, _>("is_archived").unwrap_or(0) != 0;
                 let prev_draft = row.try_get::<Option<String>, _>("draft").unwrap_or(None);
                 let prev_ext_json = row.try_get::<Option<String>, _>("ext").unwrap_or(None);
@@ -770,6 +777,7 @@ impl ConversationWriter for SqliteConversationRepo {
                     .as_deref()
                     .and_then(|raw| serde_json::from_str(raw).ok())
                     .unwrap_or_default();
+                let prev_clear_floor = local_cleared_through_seq(&prev_ext);
                 let prev_settings_version = prev_ext
                     .get(crate::model::EXT_USER_SETTINGS_VERSION)
                     .and_then(|v| v.parse::<u64>().ok())
@@ -786,6 +794,7 @@ impl ConversationWriter for SqliteConversationRepo {
                 if prev_dirty && incoming_settings_version <= prev_settings_version {
                     merged.is_pinned = prev_is_pinned;
                     merged.is_muted = prev_is_muted;
+                    merged.is_mention_only = prev_mention_only;
                     merged.is_archived = prev_is_archived;
                     merged.draft = prev_draft;
                     merged.ext = prev_ext;
@@ -800,10 +809,14 @@ impl ConversationWriter for SqliteConversationRepo {
                 } else {
                     merged.is_pinned = prev_is_pinned;
                     merged.is_muted = prev_is_muted;
+                    merged.is_mention_only = prev_mention_only;
                     merged.is_archived = prev_is_archived;
                     merged.draft = prev_draft;
                     merged.ext = prev_ext;
                 }
+
+                let confirmed_floor = local_cleared_through_seq(&c.ext).max(prev_clear_floor);
+                set_local_cleared_through_seq(&mut merged.ext, confirmed_floor);
 
                 let prev_has_last_message = prev_last_message_id
                     .as_deref()
@@ -908,10 +921,10 @@ impl ConversationWriter for SqliteConversationRepo {
                    conversation_id, conversation_type, business_type, channel_id, members_count,
                    display_name, avatar_url, remark, description, last_message_id, last_sender_id,
                    last_message_at, last_message_preview, last_sender_nickname, last_sender_avatar_url,
-                   unread_count, last_read_seq, max_seq, visible_after_seq, is_pinned, is_muted, is_archived,
+                   unread_count, last_read_seq, max_seq, visible_after_seq, is_pinned, is_muted, is_mention_only, is_archived,
                    version, updated_at, created_at, updated_at_ts, ext, draft,
                    mention_count, mention_me, badge, role, member_preview)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
             )
             .bind(&merged.conversation_id)
             .bind(conversation_type_to_i32(&merged.conversation_type))
@@ -934,6 +947,7 @@ impl ConversationWriter for SqliteConversationRepo {
             .bind(merged.visible_after_seq as i64)
             .bind(if merged.is_pinned { 1i32 } else { 0 })
             .bind(if merged.is_muted { 1i32 } else { 0 })
+            .bind(merged.is_mention_only.map(i32::from))
             .bind(if merged.is_archived { 1i32 } else { 0 })
             .bind(merged.version as i64)
             .bind(merged.updated_at as i64)
@@ -1499,6 +1513,36 @@ mod tests {
             created_at: 1,
             ..Default::default()
         }
+    }
+
+    #[tokio::test]
+    async fn mention_only_survives_partial_summary_in_upgraded_database() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        super::super::schema::init_schema(&pool).await.unwrap();
+        sqlx::query("ALTER TABLE conversations DROP COLUMN is_mention_only")
+            .execute(&pool)
+            .await
+            .unwrap();
+        super::super::schema::init_schema(&pool).await.unwrap();
+        let repo = SqliteConversationRepo::new(pool);
+        assert!(repo.list().await.unwrap().is_empty());
+
+        let mut row = conversation("group", 1, "first");
+        row.is_mention_only = Some(true);
+        repo.save_one(&row).await.unwrap();
+        let mut incoming = conversation("group", 2, "next");
+        repo.save_one(&incoming).await.unwrap();
+        assert_eq!(
+            repo.get("group").await.unwrap().unwrap().is_mention_only,
+            Some(true)
+        );
+
+        incoming.is_mention_only = Some(false);
+        repo.save_one(&incoming).await.unwrap();
+        assert_eq!(
+            repo.get("group").await.unwrap().unwrap().is_mention_only,
+            Some(false)
+        );
     }
 
     #[tokio::test]

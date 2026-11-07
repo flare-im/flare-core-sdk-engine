@@ -1,5 +1,8 @@
 //! Explicit test endpoints/storage. Never redirect HOME or reuse the evaluator's SDK database.
+//!
+//! 端点经开发模式接入配置传入（`access.developmentEndpoints`），SDK 没有其他地址字段。
 use flare_im_core_sdk::client::lifecycle::SdkConfigOverlay;
+use flare_im_core_sdk::prelude::{AccessConfig, DevelopmentEndpoints};
 use std::{io, path::Path};
 
 pub fn overlay() -> io::Result<Option<SdkConfigOverlay>> {
@@ -40,10 +43,17 @@ fn from_values(
             }
         }
     }
+    let access = (ws.is_some() || http.is_some()).then(|| {
+        AccessConfig::development(DevelopmentEndpoints {
+            ws_url: ws.map(str::to_owned),
+            core_api_url: http.map(str::to_owned),
+            media_url: http.map(str::to_owned),
+            ..Default::default()
+        })
+    });
     Ok(Some(SdkConfigOverlay {
         data_url: root.map(str::to_owned),
-        ws_url: ws.map(str::to_owned),
-        http_url: http.map(str::to_owned),
+        access,
         ..Default::default()
     }))
 }
@@ -62,8 +72,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(configured.data_url.as_deref(), Some("/tmp/smoke-data"));
-        assert!(configured.ws_url.is_none());
-        assert!(configured.http_url.is_none());
+        assert!(configured.access.is_none());
         assert!(configured.tenant_id.is_none());
     }
 
@@ -76,7 +85,16 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(configured.ws_url.as_deref(), Some("ws://127.0.0.1:8080"));
+        let endpoints = configured
+            .access
+            .as_ref()
+            .and_then(|access| access.development_endpoints.as_ref())
+            .expect("development endpoints");
+        assert_eq!(endpoints.ws_url.as_deref(), Some("ws://127.0.0.1:8080"));
+        assert_eq!(
+            endpoints.core_api_url.as_deref(),
+            Some("http://127.0.0.1:50050")
+        );
         assert!(configured.data_url.is_none());
         for invalid in [
             "",

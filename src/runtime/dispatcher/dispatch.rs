@@ -79,7 +79,9 @@ impl Dispatcher {
                     let mut inbound = durable_messages;
                     inbound.extend(ephemeral_messages);
                     if !inbound.is_empty() {
-                        self.notification_pipeline.finish_batch(inbound).await;
+                        self.notification_pipeline
+                            .finish_batch(inbound, &current_user_id)
+                            .await;
                     }
                     // win#2：装载了 worker 则投递到有界串行后台 worker（满则在 send().await 背压，
                     // 只压上行读取——视图已先行投递）；未装载（测试 harness）则内联持久化，保持同步语义。
@@ -214,17 +216,12 @@ impl Dispatcher {
                 // The packet's expiry is the server's clock: compare it with the server time
                 // estimate, not the device clock.
                 match plugin_packets::classify(packet, self.server_clock().now_millis()) {
-                    Ok(plugin_packets::PluginPacket::Realtime(mut realtime)) => {
+                    Ok(mut realtime) => {
                         // Hosts compare the expiry with their own clock: hand it over on it.
                         realtime.expires_at_ms =
                             self.server_clock().to_local_millis(realtime.expires_at_ms);
                         self.bus
                             .publish(SdkEvent::Plugin(PluginEvent::Realtime(realtime)));
-                    }
-                    Ok(plugin_packets::PluginPacket::CatalogChanged { version }) => {
-                        if let Some(notices) = &self.plugin_catalog_notices {
-                            notices.catalog_changed(version);
-                        }
                     }
                     Err(reason) => {
                         tracing::debug!(
@@ -234,6 +231,16 @@ impl Dispatcher {
                             "plugin capability packet dropped"
                         );
                     }
+                }
+            }
+            DownlinkPayload::TenantNotice(notice) => {
+                self.metrics.counter_with_labels(
+                    "dispatcher.payload_total",
+                    &[MetricLabel::new("type", "tenant_notice")],
+                    1,
+                );
+                if let Some(notices) = &self.tenant_notices {
+                    notices.notice(notice);
                 }
             }
             DownlinkPayload::RealtimeControl(control) => {
@@ -353,7 +360,9 @@ impl Dispatcher {
             self.event_deduper.forget_keys(&dedupe_keys).await;
             return;
         }
-        self.notification_pipeline.finish_batch(messages).await;
+        self.notification_pipeline
+            .finish_batch(messages, current_user_id)
+            .await;
     }
 
     /// 回滚一次事件应用：去重键 + 已应用事件 seq 一并撤销，使事件可被后续同步重放。
@@ -420,7 +429,9 @@ impl Dispatcher {
                 }
                 self.repair_message_seq_after_persist(&messages).await;
             }
-            self.notification_pipeline.finish_batch(messages).await;
+            self.notification_pipeline
+                .finish_batch(messages, &current_user_id)
+                .await;
         }
         let conversation_id = Self::event_conversation_id(ev);
         if let Some(p) = &ev.payload {
@@ -992,6 +1003,20 @@ impl Dispatcher {
                     }));
                 }
                 EventPayload::Conversation(conversation) => {
+                    if conversation.history_cleared_through_seq.is_some()
+                        && let Some(sync) = self.session_sync.clone()
+                    {
+                        let user_id = self.current_user_id.read().await.clone();
+                        if !user_id.is_empty() {
+                            spawn_background(async move {
+                                if let Err(error) =
+                                    sync.request_history_visibility_sync(&user_id).await
+                                {
+                                    warn!(%error, "history visibility sync failed after clear hint");
+                                }
+                            });
+                        }
+                    }
                     if conversation.unread_count > 0 {
                         self.maybe_trigger_waterline_pull(
                             "conversation_update",

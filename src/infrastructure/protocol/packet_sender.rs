@@ -12,13 +12,14 @@ use flare_core::common::protocol::{
 };
 use flare_proto::common::data_packet::Payload as DataPacketPayload;
 use flare_proto::common::{
-    Ack, CustomData, DataPacket, Event, Message as ProtoMessage, RealtimeControlPacket, SyncRes,
+    Ack, CustomData, DataPacket, ErrorCode as ProtoErrorCode, Event, Message as ProtoMessage,
+    RealtimeControlPacket, SyncRes,
 };
 use prost::Message;
 use tokio::sync::Mutex;
 
 use crate::infrastructure::protocol::Codec;
-use crate::shared::error::{ErrorCode, FlareError, Result};
+use crate::shared::error::{ErrorCode, FlareError, Result, from_rpc_status};
 use crate::shared::util::{now_millis, timeout};
 
 const CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -53,14 +54,52 @@ pub struct PacketSender {
     client: Arc<Mutex<Option<FlareClient>>>,
     /// 串行化 `send_frame_and_wait`：`HybridClient` 按 message_id 匹配响应，不宜并发等待。
     rpc_wait: Arc<Mutex<()>>,
+    /// 最近发出的已读 / 送达回执：换了新连接后补发（见 [`super::ack_ledger`]）。
+    ack_ledger: Arc<std::sync::Mutex<super::ack_ledger::AckLedger>>,
+    /// 最近一次上行帧的时刻（Unix 毫秒）：恢复切回据此判断是否处于「60 秒内无发送与同步」的自然边界。
+    last_activity_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl PacketSender {
+    /// Original official ErrorDetail code for typed DATA failures whose SDK equivalent is
+    /// less specific (e.g. ALREADY_EXISTS/CONFLICT). This is metadata, not a parsed message.
+    pub(crate) const SYNC_REMOTE_ERROR_CODE_PARAM: &'static str = "sync.error_code";
+
     pub fn new(client: Arc<Mutex<Option<FlareClient>>>, _codec: Arc<dyn Codec>) -> Self {
         Self {
             client,
             rpc_wait: Arc::new(Mutex::new(())),
+            ack_ledger: Arc::default(),
+            last_activity_ms: Arc::default(),
         }
+    }
+
+    /// 最近一次上行帧的时刻（Unix 毫秒）；还没发过时为 0。
+    pub(crate) fn last_activity_ms(&self) -> u64 {
+        self.last_activity_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn note_activity(&self) {
+        self.last_activity_ms
+            .store(now_millis(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 新连接就绪后补发 `since_ms` 之后发过的已读 / 送达回执（每会话最大值）。返回补发条数；
+    /// 单条失败不影响其它（回执可重复，下一次阅读也会自愈）。
+    pub(crate) async fn replay_acks_since(&self, since_ms: u64) -> usize {
+        let due = self
+            .ack_ledger
+            .lock()
+            .map(|ledger| ledger.since(since_ms))
+            .unwrap_or_default();
+        let mut replayed = 0;
+        for ack in due {
+            if self.send_ack(&ack).await.is_ok() {
+                replayed += 1;
+            }
+        }
+        replayed
     }
 
     async fn client_snapshot(&self) -> Result<FlareClient> {
@@ -79,6 +118,7 @@ impl PacketSender {
         timeout_message: &'static str,
     ) -> Result<()> {
         let client = self.client_snapshot().await?;
+        self.note_activity();
         timeout(timeout_duration, client.send_frame(frame))
             .await
             .map_err(|_| FlareError::localized(ErrorCode::OperationTimeout, timeout_message))?
@@ -149,7 +189,11 @@ impl PacketSender {
         };
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
         self.send_frame_with_timeout(&frame, CONTROL_SEND_TIMEOUT, "ack send timeout")
-            .await
+            .await?;
+        if let Ok(mut ledger) = self.ack_ledger.lock() {
+            ledger.record(ack, now_millis());
+        }
+        Ok(())
     }
 
     /// 发送用户扩展（`DataPacket` + `user_custom`）。PayloadCommand.type=Data。
@@ -218,11 +262,16 @@ impl PacketSender {
         // 多会话同步会并发调用本方法；用 rpc_wait 排队，禁止 take 走 client（否则并行方得到「未连接」）。
         let _rpc = self.rpc_wait.lock().await;
         let client = self.client_snapshot().await?;
+        self.note_activity();
         let response = client
             .send_frame_and_wait(&frame, timeout)
             .await
             .map_err(|e| frame_send_error(e, ErrorCode::GeneralError))?;
-        decode_sync_response_frame(&response)
+        Self::decode_sync_response_frame(&response)
+    }
+
+    pub(crate) fn decode_sync_response_frame(frame: &Frame) -> Result<SyncRes> {
+        decode_sync_response_frame(frame)
     }
 
     /// 发送同步请求（仅发不等；遗留路径，新代码请用 [`Self::send_sync_and_wait`]）。
@@ -256,18 +305,165 @@ fn decode_sync_response_frame(frame: &Frame) -> Result<SyncRes> {
     })?;
     match packet.payload {
         Some(DataPacketPayload::SyncResponse(res)) => Ok(res),
-        Some(DataPacketPayload::UserCustom(data)) if data.r#type == "error" => Err(
-            FlareError::general_error(String::from_utf8_lossy(&data.payload).into_owned()),
-        ),
+        Some(DataPacketPayload::UserCustom(data)) if data.r#type == "error" => {
+            Err(decode_sync_error(&data))
+        }
         _ => Err(FlareError::general_error(
             "unexpected sync response payload".to_string(),
         )),
     }
 }
 
+fn decode_sync_error(data: &CustomData) -> FlareError {
+    let text = String::from_utf8_lossy(&data.payload).into_owned();
+    let code = data
+        .attributes
+        .get("error_code")
+        .filter(|raw| !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|raw| raw.parse::<i32>().ok())
+        .and_then(|code| ProtoErrorCode::try_from(code).ok())
+        .filter(|code| {
+            !matches!(
+                code,
+                ProtoErrorCode::Unspecified | ProtoErrorCode::Ok | ProtoErrorCode::Custom
+            )
+        });
+    let Some(code) = code else {
+        // Old servers have only Display text, and unknown custom business codes have no
+        // official SDK mapping. Neither permits guessing authorization from a substring.
+        return FlareError::general_error(text);
+    };
+    let mut error = from_rpc_status(code as i32, &text);
+    if let FlareError::Localized {
+        reason,
+        details,
+        params,
+        ..
+    } = &mut error
+    {
+        // Keep the readable legacy payload byte-for-byte (lossy UTF-8 as before), including
+        // CANCELLED, whose general mapper otherwise replaces the server's reason.
+        *reason = text;
+        *details = data
+            .attributes
+            .get("error_reason")
+            .filter(|value| !value.is_empty())
+            .cloned();
+        *params = Some(HashMap::from([(
+            PacketSender::SYNC_REMOTE_ERROR_CODE_PARAM.into(),
+            (code as i32).to_string(),
+        )]));
+    }
+    error
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn error_frame(error_code: Option<&str>, text: &str, reason: Option<&str>) -> Frame {
+        let mut attributes = HashMap::new();
+        if let Some(code) = error_code {
+            attributes.insert("error_code".into(), code.into());
+        }
+        if let Some(reason) = reason {
+            attributes.insert("error_reason".into(), reason.into());
+        }
+        let packet = DataPacket {
+            payload: Some(DataPacketPayload::UserCustom(CustomData {
+                r#type: "error".into(),
+                payload: text.as_bytes().to_vec(),
+                attributes,
+            })),
+        };
+        let command =
+            builder::data_message("owned-sync-test".into(), packet.encode_to_vec(), None, None);
+        builder::frame_with_payload_command(command, Reliability::AtLeastOnce)
+    }
+
+    #[test]
+    fn typed_sync_error_frames_preserve_official_codes_and_readable_payloads() {
+        for (wire, expected) in [
+            (
+                ProtoErrorCode::PermissionDenied,
+                ErrorCode::PermissionDenied,
+            ),
+            (
+                ProtoErrorCode::Unauthenticated,
+                ErrorCode::AuthenticationFailed,
+            ),
+            (ProtoErrorCode::InvalidArgument, ErrorCode::InvalidParameter),
+            (ProtoErrorCode::Timeout, ErrorCode::OperationTimeout),
+            (ProtoErrorCode::Unavailable, ErrorCode::ServiceUnavailable),
+            (ProtoErrorCode::AlreadyExists, ErrorCode::GeneralError),
+            (ProtoErrorCode::Conflict, ErrorCode::GeneralError),
+            (ProtoErrorCode::Cancelled, ErrorCode::GeneralError),
+        ] {
+            let code = (wire as i32).to_string();
+            let frame = error_frame(
+                Some(&code),
+                "original readable wire error",
+                Some("GROUP_ACCESS_DENIED"),
+            );
+            let error = PacketSender::decode_sync_response_frame(&frame).unwrap_err();
+            assert_eq!(error.code(), Some(expected), "{wire:?}");
+            assert_eq!(error.reason(), "original readable wire error");
+            let localized = error.as_localized().unwrap();
+            assert_eq!(localized.details.as_deref(), Some("GROUP_ACCESS_DENIED"));
+            assert_eq!(
+                localized
+                    .params
+                    .unwrap()
+                    .get(PacketSender::SYNC_REMOTE_ERROR_CODE_PARAM),
+                Some(&code)
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_malformed_or_unknown_sync_codes_cannot_be_guessed_as_permission_denied() {
+        for code in [
+            None,
+            Some(""),
+            Some("21junk"),
+            Some("PERMISSION_DENIED"),
+            Some("2004"),
+            Some("999"),
+            Some("2147483648"),
+            Some("-21"),
+            Some("+21"),
+            Some("0"),
+            Some("1"),
+            Some("1000"),
+        ] {
+            let text = "PERMISSION_DENIED: text is not a typed authorization proof";
+            let frame = error_frame(code, text, Some("PERMISSION_DENIED"));
+            let error = PacketSender::decode_sync_response_frame(&frame).unwrap_err();
+            assert_eq!(error.code(), Some(ErrorCode::GeneralError), "{code:?}");
+            assert_eq!(error.reason(), text);
+            assert!(error.as_localized().unwrap().params.is_none());
+        }
+    }
+
+    #[test]
+    fn normal_sync_responses_remain_typed_sync_responses() {
+        let packet = DataPacket {
+            payload: Some(DataPacketPayload::SyncResponse(SyncRes::default())),
+        };
+        let command = builder::data_message(
+            "owned-success-test".into(),
+            packet.encode_to_vec(),
+            None,
+            None,
+        );
+        let frame = builder::frame_with_payload_command(command, Reliability::AtLeastOnce);
+        assert!(
+            PacketSender::decode_sync_response_frame(&frame)
+                .unwrap()
+                .payload
+                .is_none()
+        );
+    }
 
     /// 断线时 flare-core 的发送返回 `NOT_CONNECTED`（SDK 关掉了发送前重连）：原样交给调用方，
     /// 不再改成 `CONNECTION_FAILED`（直发与同步请求都是）。

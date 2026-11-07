@@ -3,7 +3,7 @@
 use crate::convert::sdk_event_to_tauri;
 use flare_im_core_sdk::event::SdkEvent;
 use tauri::{AppHandle, Emitter};
-/// Forward a core [`SdkEvent`] using contract `im://*` names.
+/// Forward a core [`SdkEvent`] using the contract event names.
 pub fn emit_sdk_event<R: tauri::Runtime>(app: &AppHandle<R>, ev: &SdkEvent) -> bool {
     if let Some((name, payload)) = sdk_event_to_tauri(ev) {
         return app.emit(&name, payload).is_ok();

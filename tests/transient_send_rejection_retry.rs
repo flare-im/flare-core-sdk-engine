@@ -163,9 +163,17 @@ fn data_root(case: &str) -> PathBuf {
         .join(format!("{case}-{}", std::process::id()))
 }
 
+/// 开发模式接入：单个接入点，端点就是本机服务端。
+fn development_access(ws_url: &str) -> AccessConfig {
+    AccessConfig::development(DevelopmentEndpoints {
+        ws_url: Some(ws_url.to_string()),
+        ..Default::default()
+    })
+}
+
 /// 内存存储、已连上的客户端；`ack_max_retries` 是一条消息的总尝试次数。
 async fn connected_client(ws_url: &str, data_root: &Path, ack_max_retries: u32) -> IMClient {
-    let mut config = SdkConfig::new(ws_url);
+    let mut config = SdkConfig::with_access(development_access(ws_url));
     config.ack_max_retries = Some(ack_max_retries);
     let client = IMClient::builder()
         .config(config)
@@ -177,7 +185,7 @@ async fn connected_client(ws_url: &str, data_root: &Path, ack_max_retries: u32) 
             None,
             Some(SdkConfigOverlay {
                 data_url: Some(data_root.display().to_string()),
-                ws_url: Some(ws_url.to_string()),
+                access: Some(development_access(ws_url)),
                 ..Default::default()
             }),
         )

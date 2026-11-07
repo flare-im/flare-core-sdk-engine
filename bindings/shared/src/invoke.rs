@@ -529,16 +529,20 @@ mod tests {
         }
     }
 
+    /// 没有会话时状态是 `idle`，且每个字段都出现（宿主整体替换，不做合并）。
     #[tokio::test]
-    async fn direct_connection_state_returns_canonical_enum_string() {
+    async fn direct_connection_status_without_a_session_is_idle() {
         let session = DirectOnlySession::new();
 
-        let response = invoke_api_id_json(&session, "connection.get_state", "{}")
+        let response = invoke_api_id_json(&session, "connection.get_status", "{}")
             .await
-            .expect("connection state");
+            .expect("connection status");
         let value = binding_response_to_value(response);
 
-        assert_eq!(value, serde_json::json!("disconnected"));
+        assert_eq!(value["phase"], "idle");
+        assert_eq!(value["attempt"], 0);
+        assert!(value.get("accessPointId").is_some_and(Value::is_null));
+        assert!(value.get("nextRetryAt").is_some_and(Value::is_null));
     }
 
     /// Hosts read `{ offsetMs, estimated }`; without a session nothing is estimated yet, so the

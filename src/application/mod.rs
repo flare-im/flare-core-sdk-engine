@@ -25,7 +25,7 @@ pub use lifecycle::{
     ConversationLocalLifecycle, LocalConversationClearResult, LocalConversationVisibility,
 };
 pub use notification::{
-    InboundNotificationView, NotificationDispatchReport, NotificationHandleResult,
+    InboundDelivery, InboundNotificationView, NotificationDispatchReport, NotificationHandleResult,
     NotificationHandler, NotificationHandlerRegistry,
 };
 pub use projections::{

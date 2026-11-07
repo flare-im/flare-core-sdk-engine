@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::domain::{
     DEFAULT_MEDIA_CACHE_MAX_BYTES, MediaCacheAdmin, MediaCacheEntryVo, MediaCacheStatsVo,
@@ -37,6 +37,7 @@ pub struct SqliteMediaCacheRepo {
     /// 与 `flare_im_sdk.db` 同目录下的 `media_cache`（未自定义目录时生效）
     default_root: PathBuf,
     state: Arc<RwLock<MediaCacheState>>,
+    format_paths: Mutex<()>,
 }
 
 impl SqliteMediaCacheRepo {
@@ -68,6 +69,7 @@ impl SqliteMediaCacheRepo {
         Ok(Self {
             pool,
             default_root,
+            format_paths: Mutex::new(()),
             state: Arc::new(RwLock::new(MediaCacheState {
                 max_bytes,
                 root_override,
@@ -106,7 +108,34 @@ impl SqliteMediaCacheRepo {
         let hex = format!("{:x}", hasher.finalize());
         let dir = &hex[..2];
         let name = &hex[2..];
-        root.join(kind).join(dir).join(name)
+        let path = root.join(kind).join(dir).join(name);
+        match Self::playback_extension(mime_type) {
+            Some(extension) => path.with_extension(extension),
+            None => path,
+        }
+    }
+
+    // AVFoundation does not identify extensionless AVURLAssets even when the
+    // bytes are valid (e.g. PCM WAVE). Use a fixed MIME allowlist, never a
+    // sender-supplied filename or arbitrary path suffix.
+    fn playback_extension(mime_type: &str) -> Option<&'static str> {
+        match mime_type
+            .split(';')
+            .next()?
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "audio/wav" | "audio/x-wav" | "audio/wave" => Some("wav"),
+            "audio/mpeg" => Some("mp3"),
+            "audio/aac" => Some("aac"),
+            "audio/mp4" | "audio/x-m4a" => Some("m4a"),
+            "audio/ogg" => Some("ogg"),
+            "video/mp4" => Some("mp4"),
+            "video/quicktime" => Some("mov"),
+            "video/webm" => Some("webm"),
+            _ => None,
+        }
     }
 
     async fn trim_to_max_bytes(&self) -> Result<()> {
@@ -164,6 +193,7 @@ impl SqliteMediaCacheRepo {
 #[async_trait]
 impl MediaCacheStore for SqliteMediaCacheRepo {
     async fn get_cached(&self, file_id: &str) -> Result<Option<MediaCacheEntryVo>> {
+        let _format_guard = self.format_paths.lock().await;
         let fid = file_id.trim();
         if fid.is_empty() {
             return Ok(None);
@@ -181,13 +211,44 @@ impl MediaCacheStore for SqliteMediaCacheRepo {
             return Ok(None);
         };
 
-        let path: String = row.get("local_path");
+        let mut path: String = row.get("local_path");
         if tokio::fs::metadata(&path).await.is_err() {
             let _ = sqlx::query("DELETE FROM media_local_cache WHERE file_id = ?")
                 .bind(fid)
                 .execute(&self.pool)
                 .await;
             return Ok(None);
+        }
+
+        let mime_type: String = row.get("mime_type");
+        let cached = Path::new(&path);
+        if cached.extension().is_none()
+            && let Some(extension) = Self::playback_extension(&mime_type)
+        {
+            let playable = cached.with_extension(extension);
+            // This moves only a disposable SDK-owned cache blob. Source
+            // uploads, user downloads, message state and authorization stay
+            // untouched. An open POSIX descriptor remains valid.
+            tokio::fs::rename(cached, &playable)
+                .await
+                .map_err(|_| FlareError::system("media cache format path unavailable"))?;
+            let next = playable.to_string_lossy().to_string();
+            let updated = sqlx::query(
+                "UPDATE media_local_cache SET local_path = ? WHERE file_id = ? AND local_path = ?",
+            )
+            .bind(&next)
+            .bind(fid)
+            .bind(&path)
+            .execute(&self.pool)
+            .await;
+            if let Err(error) = updated {
+                let _ = tokio::fs::rename(&playable, cached).await;
+                return Err(FlareError::localized(
+                    ErrorCode::DatabaseError,
+                    error.to_string(),
+                ));
+            }
+            path = next;
         }
 
         // 淘汰按最近使用：命中时刷新时间，常看的图不会因为「写得早」被先删。
@@ -205,7 +266,7 @@ impl MediaCacheStore for SqliteMediaCacheRepo {
         Ok(Some(MediaCacheEntryVo {
             file_id: row.get("file_id"),
             local_path: path,
-            mime_type: row.get("mime_type"),
+            mime_type,
             size_bytes: row.get("size_bytes"),
             updated_at_ms,
         }))
@@ -418,5 +479,76 @@ impl MediaCacheAdmin for SqliteMediaCacheRepo {
 
     async fn clear_media_cache(&self) -> Result<()> {
         self.clear_all_entries().await
+    }
+}
+
+#[cfg(test)]
+mod playback_path_tests {
+    use super::*;
+
+    #[test]
+    fn playback_suffix_is_a_fixed_mime_mapping_not_a_filename() {
+        let root = Path::new("/cache");
+        for (mime, suffix) in [
+            ("audio/wav", "wav"),
+            ("Audio/MP4; codecs=mp4a", "m4a"),
+            ("video/mp4", "mp4"),
+        ] {
+            let path = SqliteMediaCacheRepo::blob_path(root, "../../sender-id", mime);
+            assert!(path.starts_with(root));
+            assert_eq!(path.extension().and_then(|s| s.to_str()), Some(suffix));
+        }
+        for mime in [
+            "audio/../../secret",
+            "application/octet-stream",
+            "image/png",
+        ] {
+            assert!(
+                SqliteMediaCacheRepo::blob_path(root, "id", mime)
+                    .extension()
+                    .is_none()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn playback_cache_path_keeps_bytes_and_concurrent_hits_consistent() {
+        let temp = std::env::temp_dir().join(format!(
+            "flare-media-playback-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        assert!(!temp.exists());
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        super::super::schema::init_schema(&pool).await.unwrap();
+        let repo = SqliteMediaCacheRepo::create(pool.clone(), temp.clone())
+            .await
+            .unwrap();
+        let original = repo
+            .put_bytes("voice", b"owned-cache-bytes", "audio/wav")
+            .await
+            .unwrap();
+        assert!(original.local_path.ends_with(".wav"));
+        // Exercise a previously cached blob too; no source upload is moved.
+        let raw_path = Path::new(&original.local_path).with_extension("");
+        tokio::fs::rename(&original.local_path, &raw_path)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE media_local_cache SET local_path = ? WHERE file_id = 'voice'")
+            .bind(raw_path.to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (a, b) = tokio::join!(repo.get_cached("voice"), repo.get_cached("voice"));
+        for hit in [a.unwrap().unwrap(), b.unwrap().unwrap()] {
+            assert_eq!(hit.local_path, original.local_path);
+            assert_eq!(
+                tokio::fs::read(hit.local_path).await.unwrap(),
+                b"owned-cache-bytes"
+            );
+        }
+        assert!(!raw_path.exists());
+        assert_eq!(repo.media_cache_stats().await.unwrap().entry_count, 1);
+        pool.close().await;
+        tokio::fs::remove_dir_all(temp).await.unwrap();
     }
 }

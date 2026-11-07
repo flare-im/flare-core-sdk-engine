@@ -6,6 +6,9 @@ import com.flare.im.adapter.codec.*
 import com.flare.im.adapter.module.*
 import com.flare.im.api.FlareImClient
 import com.flare.im.api.connection.ConnectionApi
+import com.flare.im.api.access.AccessApi
+import com.flare.im.api.update.UpdateApi
+import com.flare.im.api.lifecycle.LifecycleApi
 import com.flare.im.api.conversations.ConversationsApi
 import com.flare.im.api.messagebuilder.MessageBuilderApi
 import com.flare.im.api.messages.MessagesApi
@@ -17,8 +20,11 @@ import com.flare.im.api.capabilities.CapabilitiesApi
 import com.flare.im.api.views.ViewsApi
 import com.flare.im.api.events.EventsApi
 import com.flare.im.api.diagnostics.DiagnosticsApi
+import com.flare.im.contract.ConnectTokenRefresher
 import com.flare.im.contract.NativeBridge
 import com.flare.im.contract.NativeCallMap
+import com.flare.im.lifecycle.PlatformLifecycle
+import com.flare.im.lifecycle.PlatformLifecycleFactory
 import com.flare.im.model.catalog.*
 import com.flare.im.model.command.*
 import com.flare.im.model.command.message.*
@@ -28,6 +34,7 @@ import com.flare.im.model.common.error.*
 import com.flare.im.model.content.*
 import com.flare.im.model.entity.*
 import com.flare.im.model.event.*
+import com.flare.im.model.event.access.*
 import com.flare.im.model.event.connection.*
 import com.flare.im.model.event.conversation.*
 import com.flare.im.model.event.lifecycle.*
@@ -40,11 +47,21 @@ import com.flare.im.model.media.*
 import com.flare.im.model.query.*
 import com.flare.im.model.response.*
 
+/**
+ * [platformLifecycle] builds the [PlatformLifecycle] `init` installs (`PlatformLifecycle.system(context)`
+ * for the running app); without it network and foreground reporting is left to the caller.
+ */
 class DefaultFlareImClient(
     private val bridge: NativeBridge,
+    private val platformLifecycle: PlatformLifecycleFactory? = null,
 ) : FlareImClient {
+    private val platformLifecycleLock = Any()
+    private var installedLifecycle: PlatformLifecycle? = null
 
     override val connection: ConnectionApi = DefaultConnectionApi(bridge)
+    override val access: AccessApi = DefaultAccessApi(bridge)
+    override val update: UpdateApi = DefaultUpdateApi(bridge)
+    override val lifecycle: LifecycleApi = DefaultLifecycleApi(bridge)
     override val conversations: ConversationsApi = DefaultConversationsApi(bridge)
     override val messageBuilder: MessageBuilderApi = DefaultMessageBuilderApi(bridge)
     override val messages: MessagesApi = DefaultMessagesApi(bridge)
@@ -60,13 +77,19 @@ class DefaultFlareImClient(
     override suspend fun create(request: Map<String, Any?>): Map<String, Any?> {
         return invokeMap(bridge, NativeCallMap.SDK_CREATE, request)
     }
+    /**
+     * `installPlatformLifecycle` (top level of the request, default true) is read here and never
+     * sent to the core: `false` leaves network and foreground reporting to the caller (tests).
+     */
     override suspend fun init(request: Map<String, Any?>): Unit {
         (events as DefaultEventsApi).emitLifecycleEvent(
             LifecycleEventName.INITIALIZING,
             "sdk.init",
         )
+        val install = request["installPlatformLifecycle"] as? Boolean ?: true
         try {
-            invokeUnit(bridge, NativeCallMap.SDK_INIT, request)
+            invokeUnit(bridge, NativeCallMap.SDK_INIT, request - "installPlatformLifecycle")
+            replacePlatformLifecycle(install)
             (events as DefaultEventsApi).emitLifecycleEvent(
                 LifecycleEventName.INITIALIZED,
                 "sdk.init",
@@ -81,6 +104,7 @@ class DefaultFlareImClient(
         }
     }
     override suspend fun uninit(): Unit {
+        uninstallPlatformLifecycle()
         invokeUnit(bridge, NativeCallMap.SDK_UNINIT)
     }
     override suspend fun login(request: Map<String, Any?>): Unit {
@@ -111,8 +135,9 @@ class DefaultFlareImClient(
     override suspend fun updateAccessToken(request: Map<String, Any?>): Unit {
         invokeUnit(bridge, NativeCallMap.SDK_UPDATE_ACCESS_TOKEN, request)
     }
-    override suspend fun setHeartbeatAppState(request: SetHeartbeatAppStateRequest): Unit {
-        invokeUnit(bridge, NativeCallMap.SDK_SET_HEARTBEAT_APP_STATE, setHeartbeatAppStateRequestToMap(request))
+    /** Hands the refresher to the bridge, which answers the core's requests with it. */
+    override suspend fun setConnectTokenRefresher(refresher: ConnectTokenRefresher?): Unit {
+        bridge.setConnectTokenRefresher(refresher)
     }
     override suspend fun setHeartbeatNatTimeout(request: SetHeartbeatNatTimeoutRequest): Unit {
         invokeUnit(bridge, NativeCallMap.SDK_SET_HEARTBEAT_NAT_TIMEOUT, setHeartbeatNatTimeoutRequestToMap(request))
@@ -153,6 +178,7 @@ class DefaultFlareImClient(
         )
     }
     override suspend fun dispose(): Unit {
+        uninstallPlatformLifecycle()
         events.unsubscribeAll()
         invokeUnit(bridge, NativeCallMap.SDK_DISPOSE)
         (events as DefaultEventsApi).emitLifecycleEvent(
@@ -161,6 +187,7 @@ class DefaultFlareImClient(
         )
     }
     override suspend fun hardReset(): Unit {
+        uninstallPlatformLifecycle()
         invokeUnit(bridge, NativeCallMap.SDK_HARD_RESET)
     }
     override suspend fun currentUserId(): Map<String, Any?> {
@@ -171,5 +198,22 @@ class DefaultFlareImClient(
     }
     override suspend fun sessionActive(): Boolean {
         return invokeBool(bridge, NativeCallMap.SDK_SESSION_ACTIVE)
+    }
+
+    /** Installs the platform lifecycle (replacing a previous one) unless init turned it off. */
+    private fun replacePlatformLifecycle(install: Boolean) {
+        val next = if (install) platformLifecycle?.create(connection, lifecycle) else null
+        val previous = synchronized(platformLifecycleLock) {
+            installedLifecycle.also { installedLifecycle = next }
+        }
+        previous?.dispose()
+        next?.install()
+    }
+
+    private fun uninstallPlatformLifecycle() {
+        val previous = synchronized(platformLifecycleLock) {
+            installedLifecycle.also { installedLifecycle = null }
+        }
+        previous?.dispose()
     }
 }

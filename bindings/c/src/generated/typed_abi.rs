@@ -7,40 +7,8 @@ use crate::abi;
 use crate::dispatch_common::{typed_invoke_json, typed_invoke_send_ack, typed_invoke_unit};
 use crate::executor::{CallbackContext, return_error};
 use crate::helpers::{c_str_to_string, parse_json, parse_upload_options};
-use crate::registry::{require_instance, retain_instance};
+use crate::registry::require_instance;
 use crate::types::{FlareBytesView, FlareHandle, FlareResultCallback};
-
-#[repr(i32)]
-#[derive(Clone, Copy)]
-enum FlareSdkStateCode {
-    Disconnected = 0,
-    Connecting = 1,
-    Connected = 2,
-    Ready = 3,
-    Reconnecting = 4,
-}
-
-fn map_sdk_state(s: flare_im_core_sdk::SdkState) -> i32 {
-    use flare_im_core_sdk::SdkState as S;
-    match s {
-        S::Disconnected => FlareSdkStateCode::Disconnected as i32,
-        S::Connecting => FlareSdkStateCode::Connecting as i32,
-        S::Connected => FlareSdkStateCode::Connected as i32,
-        S::Ready => FlareSdkStateCode::Ready as i32,
-        S::Reconnecting => FlareSdkStateCode::Reconnecting as i32,
-    }
-}
-
-fn sdk_state_code(handle: FlareHandle) -> i32 {
-    retain_instance(handle).map_or(FlareSdkStateCode::Disconnected as i32, |instance| {
-        map_sdk_state(instance.client.state())
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn flare_sdk_state(handle: FlareHandle) -> i32 {
-    abi::catch_ffi_i32(|| sdk_state_code(handle))
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn flare_sdk_disconnect(

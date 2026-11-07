@@ -30,7 +30,6 @@ use crate::shared::error::{ErrorCode, Result};
 use crate::spi::metrics::{MetricsRecorder, MetricsSnapshot};
 use flare_core::common::HeartbeatAppState;
 use flare_proto::common::MessageStatus;
-use rand::Rng;
 use std::future::Future;
 
 use crate::shared::util::spawn_background;
@@ -42,10 +41,14 @@ const HEARTBEAT_APP_STATE_BACKGROUND: u8 = 1;
 mod async_accessors;
 mod extension_lifecycle;
 mod facades;
+mod link_api;
 mod push_api;
 mod session_lifecycle;
 mod session_watchers;
 mod sync_api;
+mod update_api;
+
+pub use link_api::PinnedAccessPoint;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +63,17 @@ pub struct NetworkChangeEvent {
     pub metered: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// 平台给的粗粒度网络标识（原生：Wi-Fi 网关 IP 前缀 / 蜂窝 MCC-MNC；Web：`navigator.connection.type`）。
+    /// 只在本地与 `interface` 一起哈希成网络指纹，健康记录按它分开；不上报，不要传 SSID。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint_hint: Option<String>,
+}
+
+impl NetworkChangeEvent {
+    /// 按流量计费，或系统认为这条路贵（蜂窝、个人热点）。
+    pub(crate) fn is_metered(&self) -> bool {
+        self.metered.unwrap_or(false) || self.expensive.unwrap_or(false)
+    }
 }
 
 /// 服务端时钟的估计（[`IMClient::server_clock`]）。
@@ -103,19 +117,18 @@ where
 pub(crate) struct IMClientInner {
     pub environment: Option<String>,
     pub sdk_config: Option<SdkConfigOverlay>,
-    /// 构建期传入的 WebSocket 地址（`IMClientBuilder::config` 里那个）。
-    ///
-    /// 登录时 `prepare` 会按快照重建一个子客户端，而快照只带 `sdk_config` 这个
-    /// **overlay**——构建期的基础配置不在其中。少了这个字段，父客户端配好的
-    /// ws 地址在登录那一刻就丢了，`default_ws_url` 兜底到 `ws://localhost:60051`。
-    ///
-    /// 后果只在**非本机部署**上显形：本机开发时那个兜底地址恰好是对的，
-    /// 所以配置传递断了也看不出来。线上实测过一次——web 客户端业务接口全通，
-    /// 唯独 IM 长连接去连访问者自己的电脑。
-    pub configured_ws_url: Option<String>,
     /// 构建期传入的完整配置。登录重建会话时以它为底叠 overlay，而不是以默认值为底——
-    /// 否则除 ws 地址外，宿主配好的 HTTP 地址等都会在登录那一刻被默认值顶掉。
+    /// 否则宿主在构建期配好的接入配置等会在登录那一刻被默认值顶掉。
     pub configured_config: Option<crate::client::config::SdkConfig>,
+    /// 接入运行时（目录、健康簿、选路）。跨会话共用：属于设备与网络，不属于某次登录。
+    pub access: Option<Arc<crate::runtime::link::AccessRuntime>>,
+    /// 宿主注入的登录前全局存储（[`IMClient::set_access_store`]）；没有时 init 用平台默认。
+    pub access_store: Option<InjectedAccessStore>,
+    /// 宿主最后一次报的网络状态（`notify_network_change` 的完整输入）。平台常在登录之前首报、之后对
+    /// 相同状态去重不再重报：之后新建的接入运行时与链路状态机都从它起步。没报过为 `None`（视为可用）。
+    pub last_network: Option<NetworkChangeEvent>,
+    /// 上一个准备过的会话用户：同一用户重新 prepare 时恢复发件箱，换了用户才清空。
+    pub last_session_user: Option<String>,
     pub data_root: Option<PathBuf>,
     pub current_user_id: Option<String>,
     pub connect_token: Option<String>,
@@ -140,6 +153,19 @@ pub(crate) struct IMClientInner {
     pub session_generation: u64,
     pub metrics: MetricsRecorder,
 }
+
+/// 宿主注入的登录前全局存储。
+///
+/// 浏览器宿主的存储握着 JS 对象，不是 `Send`；wasm32-unknown-unknown 只有页面线程，值不可能离开它，
+/// 所以与 [`crate::runtime::link::AccessRuntime`] 同样只在 wasm 上声明 `Send + Sync`，
+/// 让 [`IMClientInner`] 的线程约束在两端保持一致。
+#[derive(Clone)]
+pub(crate) struct InjectedAccessStore(pub(crate) Arc<dyn flare_access::AccessStore>);
+
+#[cfg(target_arch = "wasm32")]
+unsafe impl Send for InjectedAccessStore {}
+#[cfg(target_arch = "wasm32")]
+unsafe impl Sync for InjectedAccessStore {}
 
 /// 会话结束信号：会话世代每变一次（登出、断开、重新登录、终止会话）唤醒所有在等的会话监视器；
 /// 最后一个 [`IMClient`] 句柄释放（客户端销毁）时也唤醒一次。
@@ -202,7 +228,6 @@ pub struct IMClient {
     state_snapshot: Arc<AtomicU8>,
     session_generation_snapshot: Arc<AtomicU64>,
     heartbeat_app_state_snapshot: Arc<AtomicU8>,
-    network_reconnect_in_flight: Arc<AtomicBool>,
     startup_convergence_in_flight: Arc<AtomicBool>,
     session_end: Arc<SessionEndSignal>,
     push_lifecycle: Arc<crate::client::push_lifecycle::PushLifecycle>,
@@ -215,7 +240,6 @@ pub(crate) struct WeakIMClient {
     state_snapshot: Weak<AtomicU8>,
     session_generation_snapshot: Weak<AtomicU64>,
     heartbeat_app_state_snapshot: Weak<AtomicU8>,
-    network_reconnect_in_flight: Weak<AtomicBool>,
     startup_convergence_in_flight: Weak<AtomicBool>,
     session_end: Weak<SessionEndSignal>,
     push_lifecycle: Weak<crate::client::push_lifecycle::PushLifecycle>,
@@ -229,7 +253,6 @@ impl WeakIMClient {
             state_snapshot: self.state_snapshot.upgrade()?,
             session_generation_snapshot: self.session_generation_snapshot.upgrade()?,
             heartbeat_app_state_snapshot: self.heartbeat_app_state_snapshot.upgrade()?,
-            network_reconnect_in_flight: self.network_reconnect_in_flight.upgrade()?,
             startup_convergence_in_flight: self.startup_convergence_in_flight.upgrade()?,
             session_end: self.session_end.upgrade()?,
             push_lifecycle: self.push_lifecycle.upgrade()?,
@@ -250,7 +273,6 @@ impl IMClient {
             state_snapshot: Arc::new(AtomicU8::new(SdkState::Disconnected.as_u8())),
             session_generation_snapshot: Arc::new(AtomicU64::new(0)),
             heartbeat_app_state_snapshot: Arc::new(AtomicU8::new(HEARTBEAT_APP_STATE_FOREGROUND)),
-            network_reconnect_in_flight: Arc::new(AtomicBool::new(false)),
             startup_convergence_in_flight: Arc::new(AtomicBool::new(false)),
             session_end: Arc::new(SessionEndSignal::new()),
             push_lifecycle: Arc::new(crate::client::push_lifecycle::PushLifecycle::default()),
@@ -275,7 +297,6 @@ impl IMClient {
             state_snapshot: Arc::new(AtomicU8::new(state.as_u8())),
             session_generation_snapshot: Arc::new(AtomicU64::new(generation)),
             heartbeat_app_state_snapshot: Arc::new(AtomicU8::new(HEARTBEAT_APP_STATE_FOREGROUND)),
-            network_reconnect_in_flight: Arc::new(AtomicBool::new(false)),
             startup_convergence_in_flight: Arc::new(AtomicBool::new(false)),
             session_end: Arc::new(SessionEndSignal::new()),
             push_lifecycle: Arc::new(crate::client::push_lifecycle::PushLifecycle::default()),
@@ -289,7 +310,6 @@ impl IMClient {
             state_snapshot: Arc::downgrade(&self.state_snapshot),
             session_generation_snapshot: Arc::downgrade(&self.session_generation_snapshot),
             heartbeat_app_state_snapshot: Arc::downgrade(&self.heartbeat_app_state_snapshot),
-            network_reconnect_in_flight: Arc::downgrade(&self.network_reconnect_in_flight),
             startup_convergence_in_flight: Arc::downgrade(&self.startup_convergence_in_flight),
             session_end: Arc::downgrade(&self.session_end),
             push_lifecycle: Arc::downgrade(&self.push_lifecycle),
@@ -350,17 +370,6 @@ impl IMClient {
 
     fn load_session_generation_snapshot(&self) -> u64 {
         self.session_generation_snapshot.load(Ordering::Acquire)
-    }
-
-    fn try_begin_network_reconnect(&self) -> bool {
-        !self
-            .network_reconnect_in_flight
-            .swap(true, Ordering::AcqRel)
-    }
-
-    fn finish_network_reconnect(&self) {
-        self.network_reconnect_in_flight
-            .store(false, Ordering::Release);
     }
 
     fn store_heartbeat_app_state_snapshot(&self, state: HeartbeatAppState) {
@@ -487,20 +496,11 @@ impl IMClient {
         Ok(apis)
     }
 
-    pub(super) async fn publish_session_event_if_generation(
-        &self,
-        generation: u64,
-        event: SdkEvent,
-    ) -> bool {
-        let g = self.inner.read().await;
-        if g.session_generation != generation {
-            return false;
-        }
-        let Some(engine) = g.engine.as_ref() else {
-            return false;
-        };
-        engine.bus().publish(event);
-        true
+    /// 装上登录前全局存储（接入清单 LKG、密钥状态、健康簿），下一次 [`Self::init`] 起生效。
+    ///
+    /// 浏览器宿主用它接 IndexedDB；`None` 还原平台默认（原生在数据根下开 SQLite，wasm 在内存里）。
+    pub async fn set_access_store(&self, store: Option<Arc<dyn flare_access::AccessStore>>) {
+        self.inner.write().await.access_store = store.map(InjectedAccessStore);
     }
 
     /// 初始化运行环境与 SDK 配置快照。
@@ -530,6 +530,55 @@ impl IMClient {
                 format!("sdk data root create_dir_all failed: {}", e),
             )
         })?;
+        // 接入配置：init 的覆盖项优先，其次构建期配置。装配（读 LKG、验签、加载健康簿）在后台开始，
+        // 不占调用线程；第一次建连时若还没完成再等它。
+        let access_config = sdk_config
+            .as_ref()
+            .and_then(|cfg| cfg.access.clone())
+            .or_else(|| {
+                g.configured_config
+                    .as_ref()
+                    .and_then(|cfg| cfg.access.clone())
+            });
+        let merged = crate::client::lifecycle::merge_sdk_config_onto(
+            g.configured_config.clone().unwrap_or_default(),
+            sdk_config.as_ref(),
+        );
+        // SDK 托管令牌只走 Core API：签发路径写成绝对地址等在这里就报配置错误，不等到登录。
+        if let Some(auth) = merged.auth.as_ref() {
+            auth.token_path()?;
+        }
+        // 探活用部署的信任根（私有 CA）；接入点的钉扎在探活时按接入点叠加。
+        let trust = merged.core_tls_config();
+        let store = match g.access_store.clone() {
+            Some(InjectedAccessStore(store)) => {
+                crate::runtime::link::AccessStoreSource::Ready(store)
+            }
+            None => {
+                crate::runtime::link::AccessStoreSource::platform_default(Some(data_root.clone()))
+            }
+        };
+        let access = Arc::new(crate::runtime::link::AccessRuntime::for_platform(
+            access_config,
+            store,
+            trust,
+        ));
+        if let Some(network) = g.last_network.as_ref() {
+            access.set_network(
+                network.interface.as_deref(),
+                network.fingerprint_hint.as_deref(),
+            );
+        }
+        access.warm_up();
+        let previous_update = g.access.as_ref().and_then(|previous| previous.update());
+        access.install_update(
+            crate::runtime::update::UpdateOptions::new(&merged, data_root.join("update"), &access),
+            previous_update,
+        );
+        if let (Some(update), Some(network)) = (access.update(), g.last_network.as_ref()) {
+            update.network_changed(network.available, network.is_metered());
+        }
+        g.access = Some(access);
         g.data_root = Some(data_root);
         g.sdk_config = sdk_config;
         drop(g);
@@ -634,6 +683,31 @@ impl IMClient {
             offset_ms: estimate.unwrap_or(0),
             estimated: estimate.is_some(),
         }
+    }
+
+    /// prepare 时处理发件箱。
+    ///
+    /// - 同一用户（包括进程被杀后的冷启动）：原样恢复，链路上线后按原 `client_msg_id` 继续发送——
+    ///   与「切换线路」语义一致；只有创建时间早于 [`PENDING_RESUME_MAX_AGE_MS`] 的标为失败、等用户手动重发，
+    ///   避免几天前的消息突然被发出。
+    /// - 换了用户：清空，全部标为失败并通知界面。
+    async fn prepare_outbox(&self, same_user: bool) -> Result<()> {
+        if !same_user {
+            return self.reset_pending_queue_on_login().await;
+        }
+        let Some(queue) = self.with_engine_async(|e| e.reliable_queue()).await? else {
+            return Ok(());
+        };
+        let expired = queue
+            .expire_stale_pending(PENDING_RESUME_MAX_AGE_MS)
+            .await?;
+        if !expired.is_empty() {
+            tracing::info!(
+                expired = expired.len(),
+                "pending sends older than the resume window were marked failed"
+            );
+        }
+        Ok(())
     }
 
     /// 登录专属队列重置：清空历史 pending，并将对应本地消息收敛为 failed。
@@ -811,43 +885,8 @@ impl IMClient {
 
 const PENDING_DROPPED_ON_LOGIN_RESET: &str = "pending queue dropped during login session reset";
 
-fn should_skip_reconnect_for_disconnect_reason(reason: &str) -> bool {
-    let lower = reason.trim().to_lowercase();
-    lower.contains("client disconnected")
-        || lower.contains("closed by client")
-        || lower.contains("reconnect attempts exhausted")
-        || lower.contains("kick")
-        || lower.contains("设备冲突")
-        || lower.contains("device_conflict")
-        || lower.contains("token_expired")
-        || lower.contains("token expired")
-        || lower.contains("401")
-        || lower.contains("credential expired")
-        // 租户不可用：重连只会被网关再拒一次，由 KickedOff 交给应用
-        || lower.contains("tenant_unavailable")
-        // 结束会话的踢线（设备冲突、租户不可用）：由 KickedOff 交给应用，不重连
-        || flare_core::common::kick::ends_session(reason)
-}
-
-/// 第 `attempt` 次重连前的退避：在 [`reconnect_delay_bounds_secs`] 给出的窗口里按毫秒均匀取值。
-///
-/// 以前按整秒取值，5 s 间隔的第一次重连只会落在 4、5、6 s 三个点上：服务端重启后同一批断开的
-/// 客户端被分成三拨同时涌上来，抖动形同虚设。
-fn reconnect_delay(base_interval_secs: u64, attempt: u32) -> std::time::Duration {
-    let (min, max) = reconnect_delay_bounds_secs(base_interval_secs, attempt);
-    let (min_ms, max_ms) = (min.saturating_mul(1_000), max.saturating_mul(1_000));
-    std::time::Duration::from_millis(rand::thread_rng().gen_range(min_ms..=max_ms))
-}
-
-fn reconnect_delay_bounds_secs(base_interval_secs: u64, attempt: u32) -> (u64, u64) {
-    let shift = attempt.saturating_sub(1).min(4);
-    let nominal = base_interval_secs
-        .saturating_mul(1_u64 << shift)
-        .clamp(1, 30);
-    let min = nominal.saturating_mul(80).div_ceil(100).max(1);
-    let max = nominal.saturating_mul(120).div_ceil(100).clamp(min, 30);
-    (min, max)
-}
+/// 同一用户重新 prepare 时，待发消息最多保留这么久；更早的标为失败、由用户决定是否重发。
+pub(crate) const PENDING_RESUME_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1000;
 
 impl Default for IMClient {
     fn default() -> Self {

@@ -144,8 +144,8 @@ mod tests {
     fn maps_sync_contract_ids_to_direct_routes() {
         let op = normalize_operation("sync.messages", json!({ "conversationId": "c1" }));
         assert_eq!(op.name, "sync.messages");
-        let op = normalize_operation("connection.get_state", Value::Null);
-        assert_eq!(op.name, "connection.get_state");
+        let op = normalize_operation("connection.get_status", Value::Null);
+        assert_eq!(op.name, "connection.get_status");
     }
 
     #[test]

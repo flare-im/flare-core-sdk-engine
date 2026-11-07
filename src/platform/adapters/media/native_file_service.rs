@@ -203,19 +203,8 @@ impl MediaService {
     }
 
     pub async fn get_file_url(&self, file_id: &str, expires_in: i32) -> Result<MediaAccessUrl> {
-        let req = GetFileUrlHttpRequest {
-            file_id: file_id.to_string(),
-            expires_in,
-            download: false,
-            response_headers: HashMap::new(),
-        };
-        let body: HttpApiResponse<GetFileUrlHttpResponse> =
-            self.http.post("/api/v1/medias/file-url", &req).await?;
-        let data = unwrap_api_response(body, "get file url")?;
-        Ok(MediaAccessUrl {
-            url: data.url,
-            cdn_url: data.cdn_url,
-        })
+        self.get_access_url(file_id, expires_in, false, None, None)
+            .await
     }
 
     /// 向网关申请短时直链，`download: true` 时服务端可返回 `Content-Disposition: attachment` 等（附件下载场景）。
@@ -223,6 +212,29 @@ impl MediaService {
         &self,
         file_id: &str,
         expires_in: i32,
+    ) -> Result<MediaAccessUrl> {
+        self.get_message_download_url(file_id, expires_in, None, None)
+            .await
+    }
+
+    async fn get_message_download_url(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        conversation_id: Option<&str>,
+        message_seq: Option<i64>,
+    ) -> Result<MediaAccessUrl> {
+        self.get_access_url(file_id, expires_in, true, conversation_id, message_seq)
+            .await
+    }
+
+    async fn get_access_url(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        download: bool,
+        conversation_id: Option<&str>,
+        message_seq: Option<i64>,
     ) -> Result<MediaAccessUrl> {
         let fid = file_id.trim();
         if fid.is_empty() {
@@ -234,8 +246,10 @@ impl MediaService {
         let req = GetFileUrlHttpRequest {
             file_id: fid.to_string(),
             expires_in,
-            download: true,
+            download,
             response_headers: HashMap::new(),
+            conversation_id: conversation_id.unwrap_or_default().to_owned(),
+            message_seq: message_seq.unwrap_or_default(),
         };
         let body: HttpApiResponse<GetFileUrlHttpResponse> =
             self.http.post("/api/v1/medias/file-url", &req).await?;
@@ -1226,6 +1240,22 @@ impl MediaServicePort for MediaService {
         MediaService::get_file_url(self, file_id, expires_in).await
     }
 
+    async fn get_file_url_with_reference(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        reference: Option<&crate::platform::ports::media::MessageMediaReference>,
+    ) -> Result<MediaAccessUrl> {
+        self.get_access_url(
+            file_id,
+            expires_in,
+            false,
+            reference.map(|r| r.conversation_id()),
+            reference.map(|r| r.message_seq()),
+        )
+        .await
+    }
+
     async fn get_temp_url_for_file_download(
         &self,
         file_id: &str,
@@ -1318,6 +1348,58 @@ impl MediaServicePort for MediaService {
         auto_cache: bool,
     ) -> Result<MediaResolvedAccess> {
         MediaService::resolve_media_access_opts(self, file_id, expires_in, auto_cache).await
+    }
+
+    async fn resolve_media_access_opts_with_reference(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        auto_cache: bool,
+        reference: Option<&crate::platform::ports::media::MessageMediaReference>,
+    ) -> Result<MediaResolvedAccess> {
+        let Some(reference) = reference else {
+            return MediaService::resolve_media_access_opts(self, file_id, expires_in, auto_cache)
+                .await;
+        };
+        // Authorize the exact visible attachment before using a file-id cache hit.
+        let remote = MediaServicePort::get_file_url_with_reference(
+            self,
+            file_id,
+            expires_in,
+            Some(reference),
+        )
+        .await?;
+        if let Some(cache) = &self.media_cache_store {
+            if let Some(hit) = cache.get_cached(file_id).await? {
+                return Ok(MediaResolvedAccess {
+                    source: "local".into(),
+                    local_path: Some(hit.local_path),
+                    remote: None,
+                });
+            }
+            if auto_cache {
+                // Use the SDK's configured TLS client, not the UI's system trust.
+                let entry = fill_cache_from_url(
+                    &self.http,
+                    cache,
+                    file_id,
+                    pick_download_url(&remote),
+                    AUTO_CACHE_MAX_ENTRY_BYTES,
+                    media_mime_of,
+                )
+                .await?;
+                return Ok(MediaResolvedAccess {
+                    source: "local".into(),
+                    local_path: Some(entry.local_path),
+                    remote: None,
+                });
+            }
+        }
+        Ok(MediaResolvedAccess {
+            source: "remote".into(),
+            local_path: None,
+            remote: Some(remote),
+        })
     }
 }
 
@@ -1574,6 +1656,8 @@ impl MediaService {
             source_path,
             source_http_url,
             remote_file_id,
+            message_conversation_id,
+            message_seq,
             expires_in,
             on_progress,
         } = request;
@@ -1582,6 +1666,20 @@ impl MediaService {
         let source_path = non_empty(source_path);
         let source_http_url = non_empty(source_http_url);
         let remote_file_id = non_empty(remote_file_id);
+        if message_conversation_id.is_some() || message_seq.is_some() {
+            let valid = matches!((&message_conversation_id, message_seq), (Some(conversation), Some(seq))
+                if !conversation.is_empty() && conversation.len() <= 128 && conversation.trim() == conversation && (1..i64::MAX).contains(&seq));
+            if !valid
+                || remote_file_id.is_none()
+                || source_path.is_some()
+                || source_http_url.is_some()
+            {
+                return Err(FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    "invalid message-bound file download reference",
+                ));
+            }
+        }
         if source_path.is_none() && source_http_url.is_none() && remote_file_id.is_none() {
             return Err(FlareError::localized(
                 ErrorCode::InvalidParameter,
@@ -1653,7 +1751,14 @@ impl MediaService {
                 let url = match (&source_http_url, &remote_file_id) {
                     (Some(u), _) => u.clone(),
                     (None, Some(fid)) => {
-                        let access = self.get_temp_url_for_file_download(fid, expires_in).await?;
+                        let access = self
+                            .get_message_download_url(
+                                fid,
+                                expires_in,
+                                message_conversation_id.as_deref(),
+                                message_seq,
+                            )
+                            .await?;
                         let u = pick_download_url(&access).to_string();
                         if u.is_empty() {
                             return Err(FlareError::localized(
@@ -2309,6 +2414,11 @@ mod download_and_cache_tests {
                         if path.starts_with("/api/v1/medias/file-url") {
                             let req: serde_json::Value = serde_json::from_slice(&body).unwrap();
                             let fid = req["file_id"].as_str().unwrap_or_default();
+                            if fid == "ok-message-reference" || fid == "ok-message-preview" {
+                                assert_eq!(req["conversation_id"], "chat-1");
+                                assert_eq!(req["message_seq"], 7);
+                                assert_eq!(req["download"], fid == "ok-message-reference");
+                            }
                             let json = serde_json::json!({
                                 "code": 0,
                                 "data": { "url": format!("{base}/blob/{fid}") }
@@ -2422,9 +2532,73 @@ mod download_and_cache_tests {
             source_path: None,
             source_http_url: None,
             remote_file_id: Some(file_id.to_string()),
+            message_conversation_id: None,
+            message_seq: None,
             expires_in: 600,
             on_progress: None,
         }
+    }
+
+    #[tokio::test]
+    async fn message_media_preview_forwards_reference_without_attachment_disposition() {
+        let f = fixture().await;
+        let reference =
+            crate::platform::ports::media::MessageMediaReference::new("chat-1".into(), 7).unwrap();
+        let url = MediaServicePort::get_file_url_with_reference(
+            &f.service,
+            "ok-message-preview",
+            600,
+            Some(&reference),
+        )
+        .await
+        .unwrap();
+        assert!(!url.url.is_empty());
+        assert_eq!(f.hits.load(Ordering::SeqCst), 0);
+        f.cache_admin.clear_media_cache().await.unwrap();
+        let resolved = MediaServicePort::resolve_media_access_opts_with_reference(
+            &f.service,
+            "ok-message-preview",
+            600,
+            true,
+            Some(&reference),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tokio::fs::read(resolved.local_path.unwrap()).await.unwrap(),
+            PNG
+        );
+        assert_eq!(f.hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn message_bound_download_forwards_the_exact_reference_and_rejects_partial_hints() {
+        let f = fixture().await;
+        let mut valid = request("ok-message-reference", "attachment.txt");
+        valid.message_conversation_id = Some("chat-1".into());
+        valid.message_seq = Some(7);
+        let saved = f
+            .service
+            .download_to_user_directory(valid.clone())
+            .await
+            .expect("scoped download");
+        assert_eq!(tokio::fs::read(&saved.path).await.unwrap(), PNG);
+        assert_eq!(f.hits.load(Ordering::SeqCst), 1);
+        for mode in 0..4 {
+            let mut bad = valid.clone();
+            match mode {
+                0 => bad.message_seq = None,
+                1 => bad.message_seq = Some(0),
+                2 => bad.message_conversation_id = Some(" chat-1".into()),
+                _ => bad.source_http_url = Some("https://other.test/file".into()),
+            }
+            assert!(f.service.download_to_user_directory(bad).await.is_err());
+        }
+        assert_eq!(
+            f.hits.load(Ordering::SeqCst),
+            1,
+            "invalid hints must fail before HTTP/cache writes"
+        );
     }
 
     fn leftovers(dir: &Path) -> Vec<String> {

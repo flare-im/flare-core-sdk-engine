@@ -19,14 +19,14 @@ pub(crate) mod session_guard;
 mod view;
 
 pub use crate::extension::capability::ui::PluginComposerAction;
-pub(crate) use capability::PluginCatalogNotices;
+pub(crate) use capability::TenantNotices;
 pub use capability::{
     CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, UserCapabilityGrantDto,
 };
 pub use conversation::ConversationApi;
 pub use media::{
-    FileDownloadProgress, FileDownloadProgressCallback, MediaApi, UploadPhase, UploadProgress,
-    UploadProgressCallback,
+    FileDownloadProgress, FileDownloadProgressCallback, MediaApi, MessageMediaReference,
+    UploadPhase, UploadProgress, UploadProgressCallback,
 };
 pub use message::{EditRichDocRequest, MessageApi};
 pub use message_build::{

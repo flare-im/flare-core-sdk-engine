@@ -103,14 +103,12 @@ impl ConversationCommandUseCase {
         );
         // 单聊:把会话连同**双方**参与者一次性交服务端建立(幂等),确保对端成为可投递参与者。
         // 否则服务端会话只含先动作的一方,首发方的消息读扩散时跳过对端 → 单聊单向不达(对端收不到)。
-        // best-effort,成功后打 single_server_established 标记避免重复 RPC;失败回退"首条消息携带成员"兜底建会话。
+        // Explicit opening is also a request to restore this user's hidden single
+        // conversation. A cached establishment flag cannot represent current
+        // server visibility after deleting/blocking/re-adding a friend.
+        // Failure still falls back to first-message roster establishment.
         if *conversation_type == ConversationType::Single {
-            let already = conversation
-                .ext
-                .get("single_server_established")
-                .map(|v| v == "1")
-                .unwrap_or(false);
-            if !already && let Some(sync) = &self.settings_sync {
+            if let Some(sync) = &self.settings_sync {
                 let mut members = vec![user_id.clone(), source_id.trim().to_string()];
                 members.retain(|m| !m.is_empty());
                 members.sort();
@@ -369,6 +367,34 @@ impl ConversationCommandUseCase {
             conversation_id,
             ConversationUserSettingsPatch {
                 draft: Some(draft.unwrap_or("").to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Clear the acknowledged timeline through the current snapshot on all of this user's devices.
+    pub async fn clear_chat_history_for_self(&self, conversation_id: &str) -> Result<()> {
+        self.current_user_id().await?;
+        let sync = self.settings_sync.as_ref().ok_or_else(|| {
+            FlareError::localized(
+                ErrorCode::NotConnected,
+                "history clear requires a server connection",
+            )
+        })?;
+        let conversation = self
+            .store
+            .get(conversation_id)
+            .await?
+            .ok_or_else(|| FlareError::general_error("conversation not found"))?;
+        let cutoff = conversation
+            .max_seq
+            .max(self.store.get_local_max_seq(conversation_id).await?);
+        sync.push_conversation_user_settings(
+            conversation_id,
+            0,
+            ConversationUserSettingsPatch {
+                clear_history_through_seq: Some(cutoff),
                 ..Default::default()
             },
         )

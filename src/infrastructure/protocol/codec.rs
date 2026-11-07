@@ -46,6 +46,9 @@ impl Codec for ProtobufCodec {
                 Some(DataPacketPayload::RealtimeControl(control)) => {
                     return Ok(DownlinkPayload::RealtimeControl(control));
                 }
+                Some(DataPacketPayload::TenantNotice(notice)) => {
+                    return Ok(DownlinkPayload::TenantNotice(notice));
+                }
                 _ => {}
             }
         }
@@ -133,6 +136,9 @@ fn decode_data_payload(payload: &[u8]) -> Result<DownlinkPayload> {
             }
             Some(DataPacketPayload::RealtimeControl(control)) => {
                 return Ok(DownlinkPayload::RealtimeControl(control));
+            }
+            Some(DataPacketPayload::TenantNotice(notice)) => {
+                return Ok(DownlinkPayload::TenantNotice(notice));
             }
             _ => {}
         }

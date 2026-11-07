@@ -2,11 +2,6 @@
   "schemaVersion": 1,
   "exports": [
     {
-      "symbol": "flare_sdk_state",
-      "kind": "sync_i32",
-      "body": "map_sdk_state(instance.client.state())"
-    },
-    {
       "symbol": "flare_sdk_disconnect",
       "api_id": "connection.disconnect",
       "kind": "invoke_unit",

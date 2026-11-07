@@ -19,7 +19,6 @@ public final class FlareNativeBindings: @unchecked Sendable {
     public private(set) var sdkCreate: SyncCreateFn!
     public private(set) var sdkRelease: SyncReleaseFn!
     public private(set) var sdkHardReset: SyncHardResetFn!
-    public private(set) var sdkState: SyncStateFn!
     public private(set) var sdkIsConnected: SyncBoolFn!
     public private(set) var sdkSessionActive: SyncBoolFn!
     public private(set) var sdkVersion: SyncStringFn!
@@ -37,6 +36,8 @@ public final class FlareNativeBindings: @unchecked Sendable {
     public private(set) var sdkPrepare: Async2StringFn!
     public private(set) var sdkConnect: Async2StringFn!
     public private(set) var sdkUpdateAccessToken: Async2StringFn!
+    public private(set) var sdkSetConnectTokenRefresher: SetConnectTokenRefresherFn!
+    public private(set) var sdkCompleteConnectTokenRefresh: CompleteConnectTokenRefreshFn!
     public private(set) var sdkLogout: Async0Fn!
     public private(set) var sdkCurrentUserId: Async0Fn!
     public private(set) var sdkDataRoot: Async0Fn!
@@ -69,7 +70,6 @@ public final class FlareNativeBindings: @unchecked Sendable {
         sdkCreate = load("flare_sdk_create")
         sdkRelease = load("flare_sdk_release")
         sdkHardReset = load("flare_sdk_hard_reset")
-        sdkState = load("flare_sdk_state")
         sdkIsConnected = load("flare_sdk_is_connected")
         sdkSessionActive = load("flare_sdk_session_active")
         sdkVersion = load("flare_sdk_version")
@@ -85,6 +85,8 @@ public final class FlareNativeBindings: @unchecked Sendable {
         sdkPrepare = load("flare_sdk_prepare")
         sdkConnect = load("flare_sdk_connect")
         sdkUpdateAccessToken = load("flare_sdk_update_access_token")
+        sdkSetConnectTokenRefresher = load("flare_sdk_set_connect_token_refresher")
+        sdkCompleteConnectTokenRefresh = load("flare_sdk_complete_connect_token_refresh")
         sdkLogout = load("flare_sdk_logout")
         sdkCurrentUserId = load("flare_sdk_current_user_id")
         sdkDataRoot = load("flare_sdk_data_root")
@@ -125,7 +127,6 @@ public final class FlareNativeBindings: @unchecked Sendable {
 public typealias SyncCreateFn = @convention(c) () -> FlareHandle
 public typealias SyncReleaseFn = @convention(c) (FlareHandle) -> Void
 public typealias SyncHardResetFn = @convention(c) () -> Void
-public typealias SyncStateFn = @convention(c) (FlareHandle) -> Int32
 public typealias SyncBoolFn = @convention(c) (FlareHandle) -> Bool
 public typealias SyncStringFn = @convention(c) () -> FlareString
 public typealias SyncStringFreeFn = @convention(c) (FlareString) -> Void
@@ -146,5 +147,11 @@ public typealias AsyncOptionalStringFn = @convention(c) (FlareHandle, UnsafePoin
 public typealias AsyncDispatchFn = @convention(c) (FlareHandle, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?, FlareResultCallback) -> Int32
 public typealias AsyncUploadBytesFn = @convention(c) (FlareHandle, FlareBytesView, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?, FlareResultCallback) -> Int32
 public typealias AsyncLoginFn = @convention(c) (FlareHandle, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?, FlareResultCallback) -> Int32
+/// `FlareTokenRefreshCallback`: the core asks the host for a new connect token (`request_id`).
+public typealias TokenRefreshCallbackFn = @convention(c) (UnsafeMutableRawPointer?, UInt64) -> Void
+/// `flare_sdk_set_connect_token_refresher`; a nil callback removes the refresher.
+public typealias SetConnectTokenRefresherFn = @convention(c) (FlareHandle, UnsafeMutableRawPointer?, TokenRefreshCallbackFn?, UnsafeMutableRawPointer?, FlareResultCallback) -> Int32
+/// `flare_sdk_complete_connect_token_refresh`; a nil token means none was obtained.
+public typealias CompleteConnectTokenRefreshFn = @convention(c) (FlareHandle, UInt64, UnsafePointer<CChar>?) -> Int32
 public typealias EventSubscribeFn = @convention(c) (FlareHandle, UnsafeMutableRawPointer?, FlareEventCallback) -> FlareSubscriptionHandle
 public typealias EventSubscribeBatchFn = @convention(c) (FlareHandle, UnsafeMutableRawPointer?, FlareEventBatchCallback) -> FlareSubscriptionHandle

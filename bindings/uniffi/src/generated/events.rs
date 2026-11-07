@@ -3,14 +3,11 @@
 
 /// Contract event id <-> stable C ABI code.
 pub const EVENT_CODE_TABLE: &[(&str, i32)] = &[
-    ("connection.connected", 1001),
-    ("connection.disconnected", 1002),
-    ("connection.reconnecting", 1003),
-    ("connection.state_changed", 1004),
+    ("connection.status", 1010),
     ("connection.sync_state_changed", 1005),
-    ("connection.server_error", 1006),
-    ("connection.kicked_off", 1007),
-    ("connection.token_expired", 1008),
+    ("access.switched", 1011),
+    ("access.changed", 1012),
+    ("update.state", 1013),
     ("message.received", 2001),
     ("message.received_batch", 2002),
     ("message.send_ack", 2003),
@@ -39,6 +36,7 @@ pub const EVENT_CODE_TABLE: &[(&str, i32)] = &[
     ("conversation.unread_count_changed", 3004),
     ("conversation.deleted", 3005),
     ("notification.received", 3501),
+    ("notification.message_sound", 3502),
     ("sync.started", 4001),
     ("sync.finished", 4002),
     ("sync.failed", 4003),

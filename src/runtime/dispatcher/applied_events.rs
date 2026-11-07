@@ -90,6 +90,10 @@ impl AppliedEventSeqs {
         above: u64,
         upto: u64,
     ) -> Vec<u64> {
+        // A delayed server watermark can trail the cursor already applied locally.
+        if upto <= above {
+            return Vec::new();
+        }
         let map = self.inner.lock().await;
         map.get(conversation_id.trim())
             .map(|entry| {
@@ -139,6 +143,8 @@ mod tests {
             registry.record("c1", seq).await;
         }
         assert_eq!(registry.seqs_in_range("c1", 3, 6).await, vec![4, 6]);
+        assert!(registry.seqs_in_range("c1", 6, 3).await.is_empty());
+        assert!(registry.seqs_in_range("c1", 6, 6).await.is_empty());
         assert_eq!(
             registry.seqs_in_range("c1", 0, u64::MAX).await,
             vec![3, 4, 6, 9]

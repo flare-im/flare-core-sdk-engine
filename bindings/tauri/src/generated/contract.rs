@@ -4,15 +4,15 @@
 #![allow(dead_code)]
 
 pub const PLATFORM_BINDING: &str = "tauri";
-pub const BINDING_CONTRACT_VERSION: &str = "flare-im-ffi/v1";
+pub const BINDING_CONTRACT_VERSION: &str = "flare-im-ffi/v2";
 
 pub const TAURI_COMMANDS: &[&str] = &[
     "sdk_batch_get_user_presence",
     "sdk_cancel_user_file_download",
+    "sdk_complete_connect_token_refresh",
     "sdk_connect",
     "sdk_current_user_id",
     "sdk_download_file_to_downloads",
-    "sdk_engine_state",
     "sdk_get_user_presence",
     "sdk_init",
     "sdk_invoke_json",
@@ -32,6 +32,7 @@ pub const TAURI_COMMANDS: &[&str] = &[
     "sdk_rich_doc_v2_normalize_from_doc_json",
     "sdk_rich_doc_v2_normalize_from_html",
     "sdk_rich_doc_v2_normalize_from_markdown",
+    "sdk_set_connect_token_refresher",
     "sdk_subscribe_user_presence",
     "sdk_sync_conversation",
     "sdk_sync_messages",
@@ -39,14 +40,11 @@ pub const TAURI_COMMANDS: &[&str] = &[
 ];
 
 pub const EVENT_CODES: &[(&str, i32)] = &[
-    ("connection.connected", 1001),
-    ("connection.disconnected", 1002),
-    ("connection.reconnecting", 1003),
-    ("connection.state_changed", 1004),
+    ("connection.status", 1010),
     ("connection.sync_state_changed", 1005),
-    ("connection.server_error", 1006),
-    ("connection.kicked_off", 1007),
-    ("connection.token_expired", 1008),
+    ("access.switched", 1011),
+    ("access.changed", 1012),
+    ("update.state", 1013),
     ("message.received", 2001),
     ("message.received_batch", 2002),
     ("message.send_ack", 2003),
@@ -75,6 +73,7 @@ pub const EVENT_CODES: &[(&str, i32)] = &[
     ("conversation.unread_count_changed", 3004),
     ("conversation.deleted", 3005),
     ("notification.received", 3501),
+    ("notification.message_sound", 3502),
     ("sync.started", 4001),
     ("sync.finished", 4002),
     ("sync.failed", 4003),
@@ -102,4 +101,7 @@ pub const ERROR_CODES: &[(&str, i32)] = &[
     ("FLARE_ERR_JSON_PARSE", 9),
     ("FLARE_ERR_NULL_POINTER", 10),
     ("FLARE_ERR_FFI_PANIC", 11),
+    ("FLARE_ERR_OVERLOADED", 12),
+    ("FLARE_ERR_UPGRADE_REQUIRED", 13),
+    ("FLARE_ERR_NETWORK_UNCERTAIN", 14),
 ];

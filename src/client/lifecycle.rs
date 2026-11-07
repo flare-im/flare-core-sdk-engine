@@ -8,7 +8,8 @@ pub use crate::shared::util::paths::{
     resolve_sdk_data_root, resolve_user_db_path, sanitize_user_id_for_dir,
 };
 
-use crate::client::{SdkConfig, SdkResourceProfile, TransportKind, TransportPolicy};
+use crate::client::config::SdkAppConfig;
+use crate::client::{SdkConfig, SdkResourceProfile};
 #[cfg(feature = "lifecycle-sqlite")]
 use crate::platform::ports::storage::SecureKeyStore;
 use crate::shared::error::Result;
@@ -17,34 +18,22 @@ use crate::shared::error::{ErrorCode, FlareError};
 use std::sync::Arc;
 
 /// 上层可选覆盖项（JSON 字段为 SDK canonical camelCase）。
+///
+/// 没有任何地址字段：连哪里只由 `access`（接入配置）决定，开发联调用
+/// `access.trustMode = "development"` + `access.developmentEndpoints`。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SdkConfigOverlay {
     pub data_url: Option<String>,
-    pub ws_url: Option<String>,
-    pub quic_url: Option<String>,
-    pub http_url: Option<String>,
-    pub media_storage_proxy_prefix: Option<String>,
-    pub media_storage_proxy_targets: Option<Vec<String>>,
-    pub capability_url: Option<String>,
-    pub online_url: Option<String>,
+    /// 接入配置：信任根、构建期种子、信任模式；开发模式下的开发端点。
+    pub access: Option<flare_access::AccessConfig>,
+    /// 宿主应用信息：版本、构建号、分发渠道、更新通道。给了就整体替换构建期的值。
+    pub app: Option<SdkAppConfig>,
     pub tenant_id: Option<String>,
     /// Stable client device id for multi-device delivery and sync cursors.
     pub device_id: Option<String>,
-    /// 宿主应用版本名（`appVersion`，如 `3.2.1`），CONNECT 时作为 `app_version` 上报。
-    pub app_version: Option<String>,
-    /// 宿主应用构建号（`appBuild`，单调整数），服务端版本比较只用它。
-    pub app_build: Option<u64>,
-    /// 分发渠道（`distribution`）：`appstore` / `play` / `appgallery` / `direct` / `web` / `tauri` 等。
-    pub distribution: Option<String>,
+    /// 单次握手（含 CONNECT_ACK）时限的本机覆盖（秒）；不设时用清单 `connectTimeoutMs`（默认 8 秒）。
     pub connect_timeout_secs: Option<u64>,
-    pub reconnect_interval_secs: Option<u64>,
-    pub max_reconnect_attempts: Option<u32>,
-    pub transport_policy: Option<TransportPolicy>,
-    /// 非竞速模式下的默认传输（`websocket` / `quic`）。
-    pub default_transport: Option<TransportKind>,
-    /// 协议竞速优先级（从高到低），如 `["quic", "websocket"]`。
-    pub protocol_race_order: Option<Vec<TransportKind>>,
     /// 运行资源预算 profile（`desktop` / `mobile`）。
     pub resource_profile: Option<SdkResourceProfile>,
     pub sync_batch_size: Option<u32>,
@@ -56,9 +45,8 @@ pub struct SdkConfigOverlay {
     pub ack_timeout_secs: Option<u64>,
     pub ack_max_retries: Option<u32>,
     pub ack_max_in_flight: Option<usize>,
+    /// 私有部署的信任根（全局）。证书钉扎按接入点来自接入清单，没有全局配置项。
     pub tls_ca_cert_path: Option<String>,
-    pub tls_spki_sha256_pins: Option<Vec<String>>,
-    pub tls_certificate_sha256_pins: Option<Vec<String>>,
     /// 内联信任 CA（PEM 或 base64 DER），见 [`crate::client::config::SdkConfig::tls_ca_cert`]。
     pub tls_ca_cert: Option<String>,
     pub enable_metrics: Option<bool>,
@@ -66,166 +54,74 @@ pub struct SdkConfigOverlay {
     pub auth: Option<crate::client::config::SdkAuthConfig>,
 }
 
-/// 解析默认 WebSocket 地址。
-///
-/// 优先级：
-/// 1. `overlay.wsUrl`
-/// 2. 环境变量 `FLARE_IM_SERVER_URL`
-/// 3. 内置默认 `ws://localhost:60051`
-pub fn default_ws_url(overlay: Option<&SdkConfigOverlay>) -> String {
-    let from_overlay = overlay.and_then(|c| c.ws_url.as_deref()).map(String::from);
-    let from_env = std::env::var("FLARE_IM_SERVER_URL").ok();
-    let url = from_overlay
-        .clone()
-        .or_else(|| from_env.clone())
-        .unwrap_or_else(|| "ws://localhost:60051".to_string());
-    // 生效地址必须可见：连不上时第一个要确认的就是"到底连的哪里"，
-    // 而这条链路有三档来源（overlay / 环境变量 / 内置默认），靠猜代价很高。
-    tracing::info!(
-        ws_url = %url,
-        from_overlay = from_overlay.is_some(),
-        from_env = from_env.is_some(),
-        "IM WebSocket 地址已确定"
-    );
-    url
-}
-
-/// 解析登录时子客户端要用的 WebSocket 地址。
-///
-/// 优先级：**overlay > 构建期配置 > 兜底默认值**。
-///
-/// 中间那一档是 2026-08-26 补的。此前登录时 `prepare` 只看 overlay，
-/// 父客户端 `IMClientBuilder::config` 里配好的 ws 地址在重建子客户端那一刻被丢掉，
-/// 直接落到 `ws://localhost:60051`。
-///
-/// 这个缺陷**只在非本机部署上显形**：本机开发时兜底地址恰好是对的，所以配置传递
-/// 断了也看不出来。线上实测撞到过——web 客户端业务接口全通、页面正常，
-/// 唯独 IM 长连接去连访问者自己的电脑，控制台一句 `ERR_CONNECTION_REFUSED`。
-pub fn resolve_ws_url(overlay: Option<&SdkConfigOverlay>, configured: Option<&str>) -> String {
-    overlay
-        .and_then(|c| c.ws_url.clone())
-        .or_else(|| configured.map(String::from))
-        .unwrap_or_else(|| default_ws_url(overlay))
-}
-
-/// 将上层 overlay 合并进基础 [`SdkConfig`]。
-///
-/// 仅覆盖 `Some(...)` 字段，未提供的字段保持默认值。
-pub fn merge_sdk_config(ws_url: &str, overlay: Option<&SdkConfigOverlay>) -> SdkConfig {
-    merge_sdk_config_onto(SdkConfig::new(ws_url), ws_url, overlay)
+/// 将上层 overlay 合并进默认 [`SdkConfig`]。仅覆盖 `Some(...)` 字段。
+pub fn merge_sdk_config(overlay: Option<&SdkConfigOverlay>) -> SdkConfig {
+    merge_sdk_config_onto(SdkConfig::default(), overlay)
 }
 
 /// 把 overlay 叠到**已有的**配置上（登录重建会话时用构建期配置作底）。
 ///
-/// 只拿默认值作底的后果实测过：宿主在构建期配好的 IM HTTP 地址（媒体、在线状态）在登录
-/// 那一刻被 `SdkConfig::new` 的默认值 `http://localhost:50050` 顶掉——部署后浏览器把
-/// 图片上传、在线状态请求发到访问者自己的电脑，被直接拦下。
+/// 只拿默认值作底的后果实测过：宿主在构建期配好的项在登录那一刻被默认值顶掉。
 pub fn merge_sdk_config_onto(
     mut config: SdkConfig,
-    ws_url: &str,
     overlay: Option<&SdkConfigOverlay>,
 ) -> SdkConfig {
-    config.ws_url = Some(ws_url.to_string());
-    if let Some(o) = overlay {
-        if let Some(u) = &o.ws_url {
-            config.ws_url = Some(u.clone());
-        }
-        if o.quic_url.is_some() {
-            config.quic_url = o.quic_url.clone();
-        }
-        if o.http_url.is_some() {
-            config.http_url = o.http_url.clone();
-        }
-        if o.media_storage_proxy_prefix.is_some() {
-            config.media_storage_proxy_prefix = o.media_storage_proxy_prefix.clone();
-        }
-        if let Some(targets) = &o.media_storage_proxy_targets {
-            config.media_storage_proxy_targets = targets.clone();
-        }
-        if o.capability_url.is_some() {
-            config.capability_url = o.capability_url.clone();
-        }
-        if o.online_url.is_some() {
-            config.online_url = o.online_url.clone();
-        }
-        if o.tenant_id.is_some() {
-            config.tenant_id = o.tenant_id.clone();
-        }
-        if o.device_id.is_some() {
-            config.device_id = o.device_id.clone();
-        }
-        if o.app_version.is_some() {
-            config.app_version = o.app_version.clone();
-        }
-        if o.app_build.is_some() {
-            config.app_build = o.app_build;
-        }
-        if o.distribution.is_some() {
-            config.distribution = o.distribution.clone();
-        }
-        if o.connect_timeout_secs.is_some() {
-            config.connect_timeout_secs = o.connect_timeout_secs;
-        }
-        if o.reconnect_interval_secs.is_some() {
-            config.reconnect_interval_secs = o.reconnect_interval_secs;
-        }
-        if o.max_reconnect_attempts.is_some() {
-            config.max_reconnect_attempts = o.max_reconnect_attempts;
-        }
-        if let Some(policy) = o.transport_policy {
-            config.transport_policy = policy;
-        }
-        if o.default_transport.is_some() {
-            config.default_transport = o.default_transport;
-        }
-        if o.protocol_race_order.is_some() {
-            config.protocol_race_order = o.protocol_race_order.clone();
-        }
-        if let Some(profile) = o.resource_profile {
-            config.resource_profile = profile;
-        }
-        if o.sync_batch_size.is_some() {
-            config.sync_batch_size = o.sync_batch_size;
-        }
-        if o.init_message_sync_concurrency.is_some() {
-            config.init_message_sync_concurrency = o.init_message_sync_concurrency;
-        }
-        if o.event_bus_capacity.is_some() {
-            config.event_bus_capacity = o.event_bus_capacity;
-        }
-        if o.event_dedupe_capacity.is_some() {
-            config.event_dedupe_capacity = o.event_dedupe_capacity;
-        }
-        if o.message_dedupe_capacity.is_some() {
-            config.message_dedupe_capacity = o.message_dedupe_capacity;
-        }
-        if o.ack_timeout_secs.is_some() {
-            config.ack_timeout_secs = o.ack_timeout_secs;
-        }
-        if let Some(auth) = &o.auth {
-            config.auth = auth.clone();
-        }
-        if o.ack_max_retries.is_some() {
-            config.ack_max_retries = o.ack_max_retries;
-        }
-        if o.ack_max_in_flight.is_some() {
-            config.ack_max_in_flight = o.ack_max_in_flight;
-        }
-        if o.tls_ca_cert_path.is_some() {
-            config.tls_ca_cert_path = o.tls_ca_cert_path.clone();
-        }
-        if let Some(pins) = &o.tls_spki_sha256_pins {
-            config.tls_spki_sha256_pins = pins.clone();
-        }
-        if let Some(pins) = &o.tls_certificate_sha256_pins {
-            config.tls_certificate_sha256_pins = pins.clone();
-        }
-        if o.tls_ca_cert.is_some() {
-            config.tls_ca_cert = o.tls_ca_cert.clone();
-        }
-        if let Some(b) = o.enable_metrics {
-            config.enable_metrics = b;
-        }
+    let Some(o) = overlay else {
+        return config;
+    };
+    if o.access.is_some() {
+        config.access = o.access.clone();
+    }
+    if let Some(app) = &o.app {
+        config.app = app.clone();
+    }
+    if o.tenant_id.is_some() {
+        config.tenant_id = o.tenant_id.clone();
+    }
+    if o.device_id.is_some() {
+        config.device_id = o.device_id.clone();
+    }
+    if o.connect_timeout_secs.is_some() {
+        config.connect_timeout_secs = o.connect_timeout_secs;
+    }
+    if let Some(profile) = o.resource_profile {
+        config.resource_profile = profile;
+    }
+    if o.sync_batch_size.is_some() {
+        config.sync_batch_size = o.sync_batch_size;
+    }
+    if o.init_message_sync_concurrency.is_some() {
+        config.init_message_sync_concurrency = o.init_message_sync_concurrency;
+    }
+    if o.event_bus_capacity.is_some() {
+        config.event_bus_capacity = o.event_bus_capacity;
+    }
+    if o.event_dedupe_capacity.is_some() {
+        config.event_dedupe_capacity = o.event_dedupe_capacity;
+    }
+    if o.message_dedupe_capacity.is_some() {
+        config.message_dedupe_capacity = o.message_dedupe_capacity;
+    }
+    if o.ack_timeout_secs.is_some() {
+        config.ack_timeout_secs = o.ack_timeout_secs;
+    }
+    if o.auth.is_some() {
+        config.auth = o.auth.clone();
+    }
+    if o.ack_max_retries.is_some() {
+        config.ack_max_retries = o.ack_max_retries;
+    }
+    if o.ack_max_in_flight.is_some() {
+        config.ack_max_in_flight = o.ack_max_in_flight;
+    }
+    if o.tls_ca_cert_path.is_some() {
+        config.tls_ca_cert_path = o.tls_ca_cert_path.clone();
+    }
+    if o.tls_ca_cert.is_some() {
+        config.tls_ca_cert = o.tls_ca_cert.clone();
+    }
+    if let Some(b) = o.enable_metrics {
+        config.enable_metrics = b;
     }
     config
 }
@@ -257,11 +153,11 @@ pub fn resolve_connect_token(user_id: &str, explicit_token: Option<&str>) -> Res
         }
     }
     let _ = user_id;
-    // 不再有本地签发回退：token 要么显式传入，要么由 SDK 按 `auth.token_endpoint` 向网关签发，
-    // 要么应用自己拿。客户端本地签发意味着签名密钥进客户端。
+    // 不再有本地签发回退：token 要么显式传入，要么配 `auth` 由 SDK 向 Core API 签发，要么应用自己拿。
+    // 客户端本地签发意味着签名密钥进客户端。
     Err(FlareError::localized(
         ErrorCode::ConfigurationError,
-        "connect token required: pass an explicit token, or set sdk_config.auth.token_endpoint so the SDK issues one from the gateway",
+        "connect token required: pass an explicit token, or set sdk_config.auth so the SDK issues one from the Core API",
     ))
 }
 
@@ -307,151 +203,88 @@ impl LoginDbKind {
 
 #[cfg(test)]
 mod tests {
-
-    /// ws 地址的优先级必须是 overlay > 构建期配置 > 兜底默认值。
-    ///
-    /// 中间那一档曾经不存在，导致 `IMClientBuilder::config` 配好的地址在登录时被丢掉。
-    /// 本机开发发现不了——兜底的 `ws://localhost:60051` 在本机恰好是对的。
-    #[test]
-    fn ws_url_priority_overlay_then_configured_then_default() {
-        let overlay = SdkConfigOverlay {
-            ws_url: Some("wss://from-overlay/im".into()),
-            ..Default::default()
-        };
-
-        // overlay 最高
-        assert_eq!(
-            resolve_ws_url(Some(&overlay), Some("wss://from-builder/im")),
-            "wss://from-overlay/im"
-        );
-
-        // 没有 overlay 时用构建期配置 —— 这一档就是修复的核心
-        assert_eq!(
-            resolve_ws_url(None, Some("wss://from-builder/im")),
-            "wss://from-builder/im",
-            "构建期配置必须能传到登录时重建的子客户端，否则远程部署连不上 IM"
-        );
-
-        // overlay 存在但没给 ws_url，同样该回落到构建期配置
-        let empty_overlay = SdkConfigOverlay::default();
-        assert_eq!(
-            resolve_ws_url(Some(&empty_overlay), Some("wss://from-builder/im")),
-            "wss://from-builder/im"
-        );
-    }
-
-    /// 两者都没有时才用兜底 —— 保持本机开发的既有行为不变。
-    #[test]
-    fn ws_url_falls_back_to_default_when_nothing_configured() {
-        // 环境变量可能被别的测试设过，这里只断言「非空且是个 ws 地址」
-        let got = resolve_ws_url(None, None);
-        assert!(
-            got.starts_with("ws://") || got.starts_with("wss://"),
-            "兜底值必须仍是可用的 ws 地址，实际：{got}"
-        );
-    }
     use super::*;
+    use flare_access::{AccessConfig, DevelopmentEndpoints, TrustMode};
 
-    /// 应用版本三项走 camelCase JSON（各端 init 都这么传），overlay 显式给的值覆盖构建期配置，
-    /// 没给的项保留构建期配置，两边都没有就保持为空——绝不回退成假版本号。
+    /// 应用信息走 camelCase 的 `app` 对象（各端 init 都这么传）；给了就整体替换构建期的值，
+    /// 没给保留构建期的，两边都没有就保持为空——绝不回退成假版本号。
     #[test]
-    fn app_version_overlay_merges_onto_configured_config() {
+    fn app_overlay_merges_onto_configured_config() {
         let overlay: SdkConfigOverlay = serde_json::from_value(serde_json::json!({
-            "appVersion": "3.2.1",
-            "appBuild": 30201,
-            "distribution": "appstore"
+            "app": { "version": "3.2.1", "build": 30201, "distribution": "appstore", "channel": "stable" }
         }))
-        .expect("camelCase app version fields");
-        assert_eq!(overlay.app_version.as_deref(), Some("3.2.1"));
-        assert_eq!(overlay.app_build, Some(30201));
-        assert_eq!(overlay.distribution.as_deref(), Some("appstore"));
+        .expect("camelCase app object");
+        let app = overlay.app.clone().unwrap();
+        assert_eq!(app.version.as_deref(), Some("3.2.1"));
+        assert_eq!(app.build, Some(30201));
+        assert_eq!(app.distribution.as_deref(), Some("appstore"));
+        assert_eq!(app.channel.as_deref(), Some("stable"));
 
         let configured = SdkConfig::builder()
-            .app_version("3.0.0")
-            .app_build(30000)
-            .distribution("direct")
+            .app(SdkAppConfig {
+                version: Some("3.0.0".into()),
+                build: Some(30000),
+                distribution: Some("direct".into()),
+                channel: None,
+                ..Default::default()
+            })
             .build();
-        let merged = merge_sdk_config_onto(configured.clone(), "ws://h/ws", Some(&overlay));
-        assert_eq!(merged.app_version.as_deref(), Some("3.2.1"));
-        assert_eq!(merged.app_build, Some(30201));
-        assert_eq!(merged.distribution.as_deref(), Some("appstore"));
-
-        let partial = SdkConfigOverlay {
-            app_build: Some(30202),
-            ..Default::default()
-        };
-        let merged = merge_sdk_config_onto(configured, "ws://h/ws", Some(&partial));
-        assert_eq!(merged.app_version.as_deref(), Some("3.0.0"));
-        assert_eq!(merged.app_build, Some(30202));
-        assert_eq!(merged.distribution.as_deref(), Some("direct"));
-
-        let unset = merge_sdk_config("ws://h/ws", Some(&SdkConfigOverlay::default()));
-        assert_eq!(unset.app_version, None);
-        assert_eq!(unset.app_build, None);
-        assert_eq!(unset.distribution, None);
+        let merged = merge_sdk_config_onto(configured.clone(), Some(&overlay));
+        assert_eq!(merged.app, app);
+        let merged = merge_sdk_config_onto(configured.clone(), Some(&SdkConfigOverlay::default()));
+        assert_eq!(merged.app, configured.app);
+        assert_eq!(merge_sdk_config(None).app, SdkAppConfig::default());
     }
 
+    /// 开发模式的接入配置原样带过去；旧的单地址字段与全局钉扎不再被认（一条路径）。
     #[test]
-    fn sdk_config_overlay_uses_canonical_camel_case_json() {
+    fn access_overlay_is_the_only_way_to_say_where_to_connect() {
         let overlay: SdkConfigOverlay = serde_json::from_value(serde_json::json!({
-            "wsUrl": "ws://localhost:60051",
-            "quicUrl": "quic://localhost:60052",
-            "transportPolicy": "protocol_race",
-            "defaultTransport": "websocket",
-            "protocolRaceOrder": ["quic", "websocket"],
-            "connectTimeoutSecs": 30,
-            "tlsCaCertPath": "/tmp/flare-ca.crt",
-            "tlsSpkiSha256Pins": ["spki-sha256/current", "spki-sha256/next"],
-            "tlsCertificateSha256Pins": ["sha256/legacy"],
-            "enableMetrics": true
+            "access": {
+                "trustMode": "development",
+                "developmentEndpoints": {
+                    "wsUrl": "ws://127.0.0.1:60051/ws",
+                    "coreApiUrl": "http://127.0.0.1:60061"
+                }
+            },
+            "connectTimeoutSecs": 8,
+            "tlsSpkiSha256Pins": ["spki-sha256/current"]
         }))
         .expect("camelCase overlay");
-
-        assert_eq!(overlay.ws_url.as_deref(), Some("ws://localhost:60051"));
-        assert_eq!(overlay.quic_url.as_deref(), Some("quic://localhost:60052"));
+        let access = overlay.access.clone().unwrap();
+        assert_eq!(access.trust_mode, TrustMode::Development);
         assert_eq!(
-            overlay.transport_policy,
-            Some(TransportPolicy::ProtocolRace)
+            access.development_endpoints,
+            Some(DevelopmentEndpoints {
+                ws_url: Some("ws://127.0.0.1:60051/ws".into()),
+                core_api_url: Some("http://127.0.0.1:60061".into()),
+                ..Default::default()
+            })
         );
-        assert_eq!(overlay.default_transport, Some(TransportKind::WebSocket));
-        assert_eq!(
-            overlay.protocol_race_order,
-            Some(vec![TransportKind::Quic, TransportKind::WebSocket])
-        );
-        assert_eq!(overlay.connect_timeout_secs, Some(30));
-        assert_eq!(
-            overlay.tls_ca_cert_path.as_deref(),
-            Some("/tmp/flare-ca.crt")
-        );
-        assert_eq!(
-            overlay.tls_spki_sha256_pins,
-            Some(vec![
-                "spki-sha256/current".to_string(),
-                "spki-sha256/next".to_string()
-            ])
-        );
-        assert_eq!(
-            overlay.tls_certificate_sha256_pins,
-            Some(vec!["sha256/legacy".to_string()])
-        );
-        assert_eq!(overlay.enable_metrics, Some(true));
-
-        let merged = merge_sdk_config("ws://fallback", Some(&overlay));
-        assert_eq!(
-            merged.tls_ca_cert_path.as_deref(),
-            Some("/tmp/flare-ca.crt")
-        );
+        let merged = merge_sdk_config(Some(&overlay));
+        assert_eq!(merged.access, Some(access));
+        assert_eq!(merged.connect_timeout_secs, Some(8));
 
         let json = serde_json::to_value(&overlay).expect("serialize overlay");
-        assert!(json.get("wsUrl").is_some());
-        assert!(json.get("ws_url").is_none());
-        assert!(json.get("transportPolicy").is_some());
-        assert!(json.get("transport_policy").is_none());
-        assert!(json.get("tlsCaCertPath").is_some());
-        assert!(json.get("tls_ca_cert_path").is_none());
-        assert!(json.get("tlsSpkiSha256Pins").is_some());
-        assert!(json.get("tls_spki_sha256_pins").is_none());
-        assert!(json.get("tlsCertificateSha256Pins").is_some());
+        assert!(json.get("access").is_some());
+        for removed in [
+            "wsUrl",
+            "httpUrl",
+            "quicUrl",
+            "transportPolicy",
+            "reconnectIntervalSecs",
+            "tlsSpkiSha256Pins",
+            "tlsCertificateSha256Pins",
+        ] {
+            assert!(json.get(removed).is_none(), "{removed} must be gone");
+        }
+        assert!(
+            serde_json::from_value::<SdkConfigOverlay>(serde_json::json!({ "wsUrl": "ws://x" }))
+                .is_ok_and(|overlay| overlay.access.is_none()),
+            "unknown legacy keys are ignored, never mapped"
+        );
+        let production = AccessConfig::production("b7f3c9a1e2d4b6a8", vec![], None);
+        assert_eq!(production.trust_mode, TrustMode::Production);
     }
 }
 
@@ -459,31 +292,48 @@ mod tests {
 mod auth_overlay_tests {
     use super::*;
 
-    /// 五端只传 JSON overlay；`auth.tokenEndpoint` 必须按 camelCase 进来并落到 SdkConfig.auth。
+    /// 五端只传 JSON overlay：`auth` 在就是 SDK 托管，按 camelCase 进来并落到 SdkConfig.auth；
+    /// `tokenEndpoint` 是 Core API 上的签发路径，不给用标准路径，绝对地址是配置错误。
     #[test]
     fn auth_overlay_round_trips_and_merges() {
-        let overlay: SdkConfigOverlay = serde_json::from_str(
-            r#"{"wsUrl":"ws://h/ws","auth":{"tokenEndpoint":"http://h/api","refreshLeadSecs":120}}"#,
-        )
-        .unwrap();
+        let overlay: SdkConfigOverlay =
+            serde_json::from_str(r#"{"auth":{"refreshLeadSecs":120}}"#).unwrap();
         let auth = overlay.auth.as_ref().unwrap();
-        assert!(auth.sdk_managed());
         assert_eq!(auth.refresh_lead().as_secs(), 120);
-        let merged = merge_sdk_config("ws://x", Some(&overlay));
-        assert_eq!(merged.auth.token_endpoint.as_deref(), Some("http://h/api"));
+        assert_eq!(auth.token_path().unwrap(), "/api/v1/auth/tokens");
+        let merged = merge_sdk_config(Some(&overlay));
+        assert_eq!(merged.auth.as_ref(), Some(auth));
 
-        let none: SdkConfigOverlay = serde_json::from_str(r#"{"wsUrl":"ws://h/ws"}"#).unwrap();
+        let custom: SdkConfigOverlay =
+            serde_json::from_str(r#"{"auth":{"tokenEndpoint":"/auth/v2/tokens/"}}"#).unwrap();
+        assert_eq!(
+            custom.auth.unwrap().token_path().unwrap(),
+            "/auth/v2/tokens"
+        );
+        for absolute in ["http://h/api", "//h/api", "api/v1/auth/tokens"] {
+            let auth = crate::client::config::SdkAuthConfig {
+                token_endpoint: Some(absolute.into()),
+                ..Default::default()
+            };
+            assert_eq!(
+                auth.token_path().unwrap_err().code(),
+                Some(ErrorCode::ConfigurationError),
+                "{absolute}"
+            );
+        }
+
+        let none: SdkConfigOverlay = serde_json::from_str(r#"{}"#).unwrap();
         assert!(none.auth.is_none());
-        assert!(!merge_sdk_config("ws://x", Some(&none)).auth.sdk_managed());
+        assert!(merge_sdk_config(Some(&none)).auth.is_none());
     }
 
     /// 设备只来自宿主：overlay 没给就一直不给，登录重建（以构建期配置作底再叠 overlay）也
     /// 不会凭空多出一台设备；给了就原样带过去，构建期的值也不被没有设备的 overlay 抹掉。
     #[test]
     fn a_device_comes_only_from_the_host() {
-        let none: SdkConfigOverlay = serde_json::from_str(r#"{"wsUrl":"ws://h/ws"}"#).unwrap();
-        let first = merge_sdk_config("ws://x", Some(&none));
-        let rebuilt = merge_sdk_config_onto(first.clone(), "ws://x", Some(&none));
+        let none: SdkConfigOverlay = serde_json::from_str(r#"{}"#).unwrap();
+        let first = merge_sdk_config(Some(&none));
+        let rebuilt = merge_sdk_config_onto(first.clone(), Some(&none));
         assert_eq!(first.device_id, None);
         assert_eq!(rebuilt.device_id, None);
         assert_eq!(
@@ -492,17 +342,14 @@ mod auth_overlay_tests {
             "one process without a device of the host's is one device"
         );
 
-        let named: SdkConfigOverlay =
-            serde_json::from_str(r#"{"wsUrl":"ws://h/ws","deviceId":"device-a"}"#).unwrap();
+        let named: SdkConfigOverlay = serde_json::from_str(r#"{"deviceId":"device-a"}"#).unwrap();
         assert_eq!(
-            merge_sdk_config("ws://x", Some(&named))
-                .device_id
-                .as_deref(),
+            merge_sdk_config(Some(&named)).device_id.as_deref(),
             Some("device-a")
         );
         let built = SdkConfig::builder().device_id("device-b").build();
         assert_eq!(
-            merge_sdk_config_onto(built, "ws://x", Some(&none))
+            merge_sdk_config_onto(built, Some(&none))
                 .device_id
                 .as_deref(),
             Some("device-b")
@@ -519,6 +366,6 @@ mod auth_overlay_tests {
         }
         let err = resolve_connect_token("u", None).unwrap_err();
         assert_eq!(err.code(), Some(ErrorCode::ConfigurationError));
-        assert!(err.to_string().contains("auth.token_endpoint"), "{err}");
+        assert!(err.to_string().contains("sdk_config.auth"), "{err}");
     }
 }

@@ -12,64 +12,24 @@ use flare_proto::common::{
 
 use crate::application::notification::NotificationHandler;
 use crate::client::IMClient;
-use crate::kernel::SdkState;
 use crate::kernel::SyncState;
 use crate::kernel::event::{
-    CustomEventSelector, EventFilter, FilteredEventReceiver, PluginRealtime, SdkEventKind,
-    SdkEventType, SharedEvent, Subscription, SyncPhase,
+    ConnectionStatus, CustomEventSelector, EventFilter, FilteredEventReceiver, PluginRealtime,
+    SdkEventKind, SdkEventType, SharedEvent, Subscription, SyncPhase,
 };
 use crate::model::IMMessage;
 use crate::shared::error::Result;
 
 impl IMClient {
-    // ========== 连接 / 会话状态机（[`SdkState`]）==========
+    // ========== 连接 ==========
 
-    /// 与服务端 WebSocket（或等价链路）**建连成功**后触发；可做 UI 切到「已连接」。
-    pub fn on_connected<F>(&self, f: F) -> Result<Subscription>
+    /// 连接状态（`connection://status`）：阶段、线路、质量、重试倒计时、需要用户动作的原因。
+    /// 注册时已有状态的立即补收一次。这是唯一的连接事件：被踢、令牌不可续都以 `actionRequired` 出现。
+    pub fn on_connection_status<F>(&self, f: F) -> Result<Subscription>
     where
-        F: Fn() + Send + Sync + 'static,
+        F: Fn(ConnectionStatus) + Send + Sync + 'static,
     {
-        self.with_engine(|e| e.bus().on_connected(f))
-    }
-
-    /// **断线**时触发；参数为断开原因说明字符串（如服务端关闭、网络错误文案）。
-    pub fn on_disconnected<F>(&self, f: F) -> Result<Subscription>
-    where
-        F: Fn(&str) + Send + Sync + 'static,
-    {
-        self.with_engine(|e| e.bus().on_disconnected(f))
-    }
-
-    /// SDK 顶层状态变化（如 Disconnected → Connecting → Ready）；用于驱动全局连接指示、禁用发送按钮等。
-    pub fn on_state_changed<F>(&self, f: F) -> Result<Subscription>
-    where
-        F: Fn(SdkState) + Send + Sync + 'static,
-    {
-        self.with_engine(|e| e.bus().on_state_changed(f))
-    }
-
-    /// 服务端返回的业务/信令错误（`code` + `message`）；非单纯网络断开，可提示用户或打点。
-    pub fn on_server_error<F>(&self, f: F) -> Result<Subscription>
-    where
-        F: Fn(i32, &str) + Send + Sync + 'static,
-    {
-        self.with_engine(|e| e.bus().on_server_error(f))
-    }
-
-    /// **被踢下线**（其他端登录、后台策略等）；参数多为服务端附带说明，应引导重新登录。
-    pub fn on_kicked_off<F>(&self, f: F) -> Result<Subscription>
-    where
-        F: Fn(&str) + Send + Sync + 'static,
-    {
-        self.with_engine(|e| e.bus().on_kicked_off(f))
-    }
-
-    /// **Token 过期或即将不可用**；应刷新 JWT 后重连或调 [`super::IMClient::connect`]。
-    pub fn on_token_expired<F>(&self, f: F) -> Result<Subscription>
-    where
-        F: Fn(&str) + Send + Sync + 'static,
-    {
-        self.with_engine(|e| e.bus().on_token_expired(f))
+        self.with_engine(|e| e.bus().on_connection_status(f))
     }
 
     // ========== 同步引擎（会话列表 / 消息游标等任务）==========

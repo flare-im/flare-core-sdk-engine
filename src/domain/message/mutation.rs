@@ -51,23 +51,40 @@ impl MessageMutationPlan {
 pub struct MessageMutationService;
 
 impl MessageMutationService {
-    pub fn plan_recall(&self, target: &ResolvedMessage) -> MessageMutationPlan {
-        MessageMutationPlan {
+    pub fn plan_recall(
+        &self,
+        actor: &MessageActor,
+        target: &ResolvedMessage,
+    ) -> Result<MessageMutationPlan> {
+        if target.sender_id() != actor.user_id {
+            return Err(FlareError::localized(
+                ErrorCode::PermissionDenied,
+                "sdk.message.recall.not_allowed",
+            ));
+        }
+        Ok(MessageMutationPlan {
             transport_action: MessageTransportAction::Recall {
                 conversation_id: target.conversation_id().to_string(),
                 server_msg_id: target.server_id().to_string(),
             },
             local_update: MessageLocalUpdate::None,
-        }
+        })
     }
 
     pub fn plan_edit(
         &self,
+        actor: &MessageActor,
         conversation_id: &str,
         target: &ResolvedMessage,
         new_content: Vec<u8>,
-    ) -> MessageMutationPlan {
-        MessageMutationPlan {
+    ) -> Result<MessageMutationPlan> {
+        if target.sender_id() != actor.user_id {
+            return Err(FlareError::localized(
+                ErrorCode::PermissionDenied,
+                "sdk.message.edit.not_allowed",
+            ));
+        }
+        Ok(MessageMutationPlan {
             transport_action: MessageTransportAction::Edit {
                 conversation_id: conversation_id.to_string(),
                 server_msg_id: target.server_id().to_string(),
@@ -79,7 +96,7 @@ impl MessageMutationService {
                 message_id: target.server_id().to_string(),
                 new_content,
             },
-        }
+        })
     }
 
     pub fn plan_delete_for_self(
@@ -256,7 +273,10 @@ mod tests {
         let service = MessageMutationService;
         let new_content = vec![1, 2, 3];
 
-        let plan = service.plan_edit("c1", &resolved_message("u1"), new_content.clone());
+        let actor = MessageActor::require("u1".to_string()).unwrap();
+        let plan = service
+            .plan_edit(&actor, "c1", &resolved_message("u1"), new_content.clone())
+            .unwrap();
 
         match plan.transport_action {
             MessageTransportAction::Edit {

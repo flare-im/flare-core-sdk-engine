@@ -268,7 +268,12 @@ pub(crate) fn composer_actions(
                     contribution_id: c.id.clone(),
                     title: c.schema.localized_title(locale).to_owned(),
                     icon: c.icon.clone().filter(|icon| is_ui_icon_name(icon)),
-                    order: c.order,
+                    order: plugin
+                        .configuration
+                        .get("composerOrder")
+                        .and_then(Value::as_i64)
+                        .and_then(|order| i32::try_from(order).ok())
+                        .map_or(c.order, |order| order.saturating_add(c.order)),
                     audience: c.audience.clone().filter(|a| *a != UiAudience::default()),
                     availability: c.availability.clone(),
                 })

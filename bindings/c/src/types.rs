@@ -64,6 +64,14 @@ pub type FlareEventBatchCallback =
 /// 进度回调
 pub type FlareProgressCallback = extern "C" fn(context: *mut c_void, current: u64, total: u64);
 
+/// 连接令牌续期请求回调：核心需要新的连接令牌时调用，运行在 SDK 后台线程上。宿主应立即返回，
+/// 换到令牌后用 `flare_sdk_complete_connect_token_refresh(handle, request_id, token)` 交回
+/// （换不到时 `token` 传空指针）。20 秒内未交回按「没换到」处理。
+///
+/// 可为空（`NULL` 表示卸下回调），所以别名本身就是 `Option`：cbindgen 把它生成为普通的函数指针
+/// typedef，宿主按 `FlareTokenRefreshCallback` 传参；写成 `Option<别名>` 会生成一个不完整的结构体。
+pub type FlareTokenRefreshCallback = Option<extern "C" fn(context: *mut c_void, request_id: u64)>;
+
 impl Default for FlareString {
     fn default() -> Self {
         Self {

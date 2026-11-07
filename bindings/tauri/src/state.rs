@@ -3,13 +3,13 @@
 //! 热路径优先读 `session` 缓存；未安装或代际变化时回退 `IMClient::connected_apis()` 并自动刷新，
 //! 避免 `sdk_login` 返回前同步事件触发 IPC 时报「未登录或会话未就绪」。
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use flare_im_core_sdk::Result;
 use flare_im_core_sdk::client::api::{
     CapabilityApi, ConversationApi, MediaApi, MessageApi, MessageBuildApi, PresenceApi,
 };
-use flare_im_core_sdk::client::{ConnectedApis, IMClient, SdkConfigOverlay};
+use flare_im_core_sdk::client::{ConnectedApis, HostTokenBroker, IMClient, SdkConfigOverlay};
 use flare_im_core_sdk::prelude::StoreProvider;
 use flare_im_core_sdk_bindings_runtime::{InvokeSession, SessionSlot, SessionTaskSlot};
 
@@ -18,6 +18,8 @@ pub struct SdkState {
     client: IMClient,
     session: SessionSlot,
     event_bridge: SessionTaskSlot,
+    /// 前端装了连接令牌续期回调时的配对表（见 `sdk_set_connect_token_refresher`）。
+    token_broker: Mutex<Option<HostTokenBroker>>,
 }
 
 impl SdkState {
@@ -26,7 +28,18 @@ impl SdkState {
             client: IMClient::new(),
             session: SessionSlot::default(),
             event_bridge: SessionTaskSlot::default(),
+            token_broker: Mutex::new(None),
         }
+    }
+
+    pub fn set_token_broker(&self, broker: Option<HostTokenBroker>) {
+        if let Ok(mut slot) = self.token_broker.lock() {
+            *slot = broker;
+        }
+    }
+
+    pub fn token_broker(&self) -> Option<HostTokenBroker> {
+        self.token_broker.lock().ok().and_then(|slot| slot.clone())
     }
 
     /// O(1)：`IMClient` 为 `Arc` 浅拷贝。

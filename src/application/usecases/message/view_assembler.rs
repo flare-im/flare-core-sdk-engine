@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use crate::application::projections::names::NameRequest;
 use crate::domain::{
-    ConversationStore, MessageStore, UserReader, member_nicknames_apply, real_name,
+    ConversationStore, MessageStore, UserReader, member_nicknames_apply,
+    message_visible_after_clear, real_name, sync_visibility_floor,
 };
 use crate::model::conversation::ConversationType;
 use crate::model::{Conversation, IMMessage, MessageSearchQuery};
@@ -46,11 +47,7 @@ impl MessageViewAssembler {
     }
 
     pub async fn get(&self, message_id: &str) -> Result<Option<IMMessage>> {
-        let msg = match self.store.get_by_client_msg_id(message_id).await? {
-            Some(message) => Some(message),
-            None => self.store.get(message_id).await?,
-        };
-        let Some(mut view) = msg else {
+        let Some(mut view) = self.get_visible_message(message_id).await? else {
             return Ok(None);
         };
         self.hydrate_reactions_for_messages(std::slice::from_mut(&mut view))
@@ -61,15 +58,67 @@ impl MessageViewAssembler {
     }
 
     pub async fn get_raw(&self, message_id: &str) -> Result<Option<IMMessage>> {
-        let mut msg = match self.store.get_by_client_msg_id(message_id).await? {
-            Some(message) => Some(message),
-            None => self.store.get(message_id).await?,
-        };
+        let mut msg = self.get_visible_message(message_id).await?;
         if let Some(view) = msg.as_mut() {
             self.hydrate_reactions_for_messages(std::slice::from_mut(view))
                 .await?;
         }
         Ok(msg)
+    }
+
+    async fn get_visible_message(&self, message_id: &str) -> Result<Option<IMMessage>> {
+        let message = match self.store.get_by_client_msg_id(message_id).await? {
+            Some(message) => Some(message),
+            None => self.store.get(message_id).await?,
+        };
+        let Some(message) = message else {
+            return Ok(None);
+        };
+        let floor = self
+            .history_visibility_floor(&message.conversation_id)
+            .await?;
+        Ok(message_visible_after_clear(&message, floor).then_some(message))
+    }
+
+    async fn history_visibility_floor(&self, conversation_id: &str) -> Result<u64> {
+        let Some(store) = self.conversations.as_ref() else {
+            return Ok(0);
+        };
+        Ok(store
+            .get(conversation_id)
+            .await?
+            .as_ref()
+            .map_or(0, sync_visibility_floor))
+    }
+
+    async fn retain_visible_messages(&self, views: &mut Vec<IMMessage>) -> Result<()> {
+        let Some(store) = self.conversations.as_ref() else {
+            return Ok(());
+        };
+        let mut ids: Vec<_> = views
+            .iter()
+            .filter(|message| message.conversation_seq > 0)
+            .map(|message| message.conversation_id.clone())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let floors: HashMap<_, _> = store
+            .get_many(&ids)
+            .await?
+            .into_iter()
+            .map(|conversation| {
+                let floor = sync_visibility_floor(&conversation);
+                (conversation.conversation_id, floor)
+            })
+            .collect();
+        views.retain(|message| {
+            let floor = floors.get(&message.conversation_id).copied().unwrap_or(0);
+            message_visible_after_clear(message, floor)
+        });
+        Ok(())
     }
 
     pub async fn list(
@@ -82,6 +131,8 @@ impl MessageViewAssembler {
             .store
             .get_by_conversation(conversation_id, before_seq, limit)
             .await?;
+        let floor = self.history_visibility_floor(conversation_id).await?;
+        views.retain(|message| message_visible_after_clear(message, floor));
         self.hydrate_messages_for_view(&mut views).await?;
         Ok(views)
     }
@@ -93,9 +144,10 @@ impl MessageViewAssembler {
         after_seq: u64,
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
+        let floor = self.history_visibility_floor(conversation_id).await?;
         let mut views = self
             .store
-            .get_by_conversation_after(conversation_id, after_seq, limit)
+            .get_by_conversation_after(conversation_id, after_seq.max(floor), limit)
             .await?;
         self.hydrate_messages_for_view(&mut views).await?;
         Ok(views)
@@ -115,6 +167,7 @@ impl MessageViewAssembler {
         if !server_ids.is_empty() {
             views.extend(self.store.get_by_message_ids(server_ids).await?);
         }
+        self.retain_visible_messages(&mut views).await?;
         self.hydrate_messages_for_view(&mut views).await?;
         Ok(views)
     }
@@ -216,6 +269,7 @@ impl MessageViewAssembler {
 
     pub async fn search_by_query(&self, query: &MessageSearchQuery) -> Result<Vec<IMMessage>> {
         let mut views = self.store.search_by_query(query).await?;
+        self.retain_visible_messages(&mut views).await?;
         self.hydrate_messages_for_view(&mut views).await?;
         Ok(views)
     }
@@ -304,6 +358,37 @@ mod tests {
         let assembler =
             MessageViewAssembler::new(store, cache).with_member_names(conversations.clone());
         (assembler, conversations)
+    }
+
+    #[tokio::test]
+    async fn authoritative_history_floor_hides_cached_reads_without_hiding_pending_messages() {
+        let old = message("s1", "2A_g", ConversationType::Group, "u2");
+        let new = message("s2", "2A_g", ConversationType::Group, "u2");
+        let mut pending = message("pending", "2A_g", ConversationType::Group, "u1");
+        pending.conversation_seq = 0;
+        let (assembler, conversations) = assembler(&[old, new, pending], &[]).await;
+        conversations
+            .save_one(&crate::model::Conversation {
+                conversation_id: "2A_g".into(),
+                conversation_type: ConversationType::Group,
+                visible_after_seq: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert!(assembler.get("s1").await.unwrap().is_none());
+        assert!(assembler.get_raw("s1").await.unwrap().is_none());
+        let listed = assembler.list("2A_g", 0, 10).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().any(|row| row.conversation_seq == 0));
+        let newer = assembler.list_after("2A_g", 0, 1).await.unwrap();
+        assert_eq!(newer[0].conversation_seq, 2);
+        let search = assembler
+            .search_by_query(&Default::default())
+            .await
+            .unwrap();
+        assert!(search.iter().all(|row| row.conversation_seq != 1));
     }
 
     /// 身份缓存里有这个人但没有名字时，不把 id 写进旧字段盖掉发送时快照。

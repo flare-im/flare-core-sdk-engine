@@ -2,7 +2,7 @@
 
 use flare_proto::common::{
     CapabilityPacket, CustomData, Event, EventEnvelope, MessagePush, RealtimeControlPacket,
-    SendAck, SyncRes,
+    SendAck, SyncRes, TenantNotice,
 };
 
 /// 服务端下行包载荷（与 proto 类型一一对应）
@@ -23,6 +23,8 @@ pub enum DownlinkPayload {
     Capability(CapabilityPacket),
     /// 实时控制包（typing/presence/custom），不占用 conversation_seq
     RealtimeControl(RealtimeControlPacket),
+    /// 租户配置变更通知（data.proto TenantNotice），不占用 conversation_seq
+    TenantNotice(TenantNotice),
     /// 单会话同步响应（sync.proto SyncRes）
     SyncResp(SyncRes),
 }

@@ -18,6 +18,15 @@ use super::progress::SyncProgressReporter;
 /// 单会话消息同步与已读上报（由 application sync protocol adapter 实现，供 IMClient 使用）。
 /// 会话列表全量同步由同步引擎内部触发，不通过本 trait 暴露。
 pub trait SessionSyncRunner: Send + Sync {
+    /// Refresh authoritative conversation visibility after a server history-clear hint.
+    fn request_history_visibility_sync(
+        &self,
+        _user_id: &str,
+    ) -> Pin<Box<dyn std::future::Future<Output = crate::shared::error::Result<()>> + Send + '_>>
+    {
+        Box::pin(async { Ok(()) })
+    }
+
     fn request_message_sync(
         &self,
         conversation_id: &str,

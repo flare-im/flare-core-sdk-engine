@@ -4,21 +4,27 @@
 //! C `flare_sdk_init` accepts UTF-8 JSON matching [flare_im_core_sdk::client::SdkConfigOverlay].
 //! Optional wrapper: `{ "environment": "...", "sdkConfig": { ... } }` via `flare_sdk_invoke_json("client.init", ...)`.
 
-/// Example SdkConfigOverlay JSON (transport + protocol race).
+/// Example SdkConfigOverlay JSON (development access endpoints + app info).
 pub const FLARE_SDK_CONFIG_EXAMPLE_JSON: &str = r#"{
-  "auth": {
-    "tokenEndpoint": "http://localhost:50050"
+  "access": {
+    "developmentEndpoints": {
+      "coreApiUrl": "http://localhost:50050",
+      "mediaUrl": "http://localhost:50050",
+      "quicUrl": "quic://localhost:60052",
+      "socialApiUrl": "http://localhost:9300",
+      "wsUrl": "ws://localhost:60051"
+    },
+    "trustMode": "development"
   },
-  "connectTimeoutSecs": 30,
-  "defaultTransport": "websocket",
-  "httpUrl": "http://localhost:50050",
-  "protocolRaceOrder": [
-    "quic",
-    "websocket"
-  ],
-  "quicUrl": "quic://localhost:60052",
-  "reconnectIntervalSecs": 5,
-  "tlsCaCertPath": "certs/server.crt",
-  "transportPolicy": "protocol_race",
-  "wsUrl": "ws://localhost:60051"
+  "app": {
+    "build": 30201,
+    "channel": "stable",
+    "distribution": "direct",
+    "version": "3.2.1"
+  },
+  "auth": {
+    "tokenEndpoint": "/api/v1/auth/tokens"
+  },
+  "connectTimeoutSecs": 8,
+  "tlsCaCertPath": "certs/server.crt"
 }"#;

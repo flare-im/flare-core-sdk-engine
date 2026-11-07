@@ -169,7 +169,7 @@ impl Fixture {
                 user: user.into(),
                 app: "app".into(),
                 device: "device".into(),
-                http: HttpClient::new(&self.base),
+                http: routed_http(&self.base),
                 token: jwt(user),
                 root: self.root.clone(),
                 server_clock,
@@ -180,6 +180,31 @@ impl Fixture {
         Ok(())
     }
 }
+/// 开发模式下 Core API 指向替身服务的接入配置。
+fn development_access(base: &str) -> flare_access::AccessConfig {
+    flare_access::AccessConfig::development(flare_access::DevelopmentEndpoints {
+        ws_url: Some("ws://127.0.0.1:9/ws".into()),
+        core_api_url: Some(base.into()),
+        ..Default::default()
+    })
+}
+
+/// 与 SDK 一样按接入点路由的 Core HTTP 客户端（推送日志按部署标识归档，替身与 SDK 必须一致）。
+fn routed_http(base: &str) -> HttpClient {
+    let access = std::sync::Arc::new(crate::runtime::link::AccessRuntime::new(
+        Some(development_access(base)),
+        crate::runtime::link::AccessStoreSource::memory(),
+    ));
+    HttpClient::routed(
+        crate::infrastructure::transport::http::router::HttpRouter::new(
+            access,
+            flare_access::ServiceClass::CoreApi,
+        ),
+        std::sync::Arc::new(crate::infrastructure::transport::http::HttpRequestContext::new()),
+        flare_core::common::TlsConfig::none(),
+    )
+}
+
 fn jwt(user: &str) -> String {
     format!(
         "e30.{}.test",
@@ -226,7 +251,7 @@ async fn unknown_put_readback_rotation_and_prelogin_restart_recovery() {
     f.model.lock().unwrap().offline = false;
     let restarted = PushLifecycle::default();
     restarted
-        .configure(HttpClient::new(&f.base), f.root.clone(), "device")
+        .configure(routed_http(&f.base), f.root.clone(), "device")
         .await
         .unwrap();
     assert_eq!(restarted.reconcile().await.pending_revocations, 0);
@@ -329,7 +354,7 @@ async fn storage_lease_endpoint_fence_and_stale_session_fail_closed() {
             user: "alice".into(),
             app: "app".into(),
             device: "device".into(),
-            http: HttpClient::new(&f.base),
+            http: routed_http(&f.base),
             token: jwt("alice"),
             root: f.root.clone(),
             server_clock: crate::kernel::ServerClock::new(),
@@ -408,7 +433,7 @@ async fn normal_init_recovers_pending_revoke_before_login() {
             None,
             Some(crate::client::lifecycle::SdkConfigOverlay {
                 data_url: Some(f.root.to_str().unwrap().into()),
-                http_url: Some(f.base.clone()),
+                access: Some(development_access(&f.base)),
                 device_id: Some("device".into()),
                 ..Default::default()
             }),
@@ -445,7 +470,7 @@ async fn public_reconcile_reopens_journal_after_old_instance_releases_lease() {
             None,
             Some(crate::client::lifecycle::SdkConfigOverlay {
                 data_url: Some(f.root.to_str().unwrap().into()),
-                http_url: Some(f.base.clone()),
+                access: Some(development_access(&f.base)),
                 device_id: Some("device".into()),
                 ..Default::default()
             }),
@@ -501,7 +526,7 @@ async fn a_client_without_the_hosts_device_opens_no_push_journal() {
             None,
             Some(crate::client::lifecycle::SdkConfigOverlay {
                 data_url: Some(f.root.to_str().unwrap().into()),
-                http_url: Some(f.base.clone()),
+                access: Some(development_access(&f.base)),
                 ..Default::default()
             }),
         )

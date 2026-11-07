@@ -13,59 +13,123 @@
       }
     },
     "example": {
-      "environment": "production",
+      "environment": "development",
       "sdkConfig": {
-        "wsUrl": "ws://localhost:60051",
-        "quicUrl": "quic://localhost:60052",
-        "httpUrl": "http://localhost:50050",
-        "transportPolicy": "protocol_race",
-        "defaultTransport": "websocket",
-        "protocolRaceOrder": [
-          "quic",
-          "websocket"
-        ],
+        "access": {
+          "trustMode": "development",
+          "developmentEndpoints": {
+            "wsUrl": "ws://localhost:60051",
+            "quicUrl": "quic://localhost:60052",
+            "coreApiUrl": "http://localhost:50050",
+            "socialApiUrl": "http://localhost:9300",
+            "mediaUrl": "http://localhost:50050"
+          }
+        },
+        "app": {
+          "version": "3.2.1",
+          "build": 30201,
+          "distribution": "direct",
+          "channel": "stable"
+        },
         "tlsCaCertPath": "certs/server.crt",
-        "connectTimeoutSecs": 30,
-        "reconnectIntervalSecs": 5,
+        "connectTimeoutSecs": 8,
         "auth": {
-          "tokenEndpoint": "http://localhost:50050"
+          "tokenEndpoint": "/api/v1/auth/tokens"
         }
       }
     }
   },
   "sdkConfigOverlay": {
-    "transportPolicy": {
-      "type": "enum",
-      "values": [
-        "auto",
-        "websocket_only",
-        "protocol_race"
-      ],
-      "wasmEffective": "websocket_only"
+    "access": {
+      "type": "AccessConfig",
+      "optional": false,
+      "fields": {
+        "bootstrapId": {
+          "type": "string",
+          "optional": true,
+          "description": "本应用的引导 ID；开发模式可省略（取 development）。"
+        },
+        "trustRoots": {
+          "type": "array",
+          "items": "{ keyId, publicKey }",
+          "optional": true,
+          "description": "构建期注入的根公钥（base64url Ed25519），只用来验证接入清单的签名链。"
+        },
+        "seed": {
+          "type": "string",
+          "optional": true,
+          "description": "构建期写入的已签名接入清单（DSSE 信封 JSON 原文）。"
+        },
+        "trustMode": {
+          "type": "enum",
+          "values": [
+            "production",
+            "development"
+          ],
+          "optional": true,
+          "description": "production（默认）只接受验签通过的清单；development 允许用 developmentEndpoints 直接构造未签名清单，状态事件带 developmentMode。"
+        },
+        "developmentEndpoints": {
+          "type": "object",
+          "optional": true,
+          "fields": [
+            "wsUrl",
+            "quicUrl",
+            "coreApiUrl",
+            "socialApiUrl",
+            "mediaUrl",
+            "accessPoints",
+            "clientPolicy"
+          ],
+          "description": "仅 development：主接入点（ID development）的完整 URL；accessPoints 追加同一 Cell 的其他接入点（{ id, wsUrl?, quicUrl?, coreApiUrl?, socialApiUrl?, mediaUrl? }），clientPolicy 覆盖清单策略（照常夹紧）。"
+        }
+      },
+      "description": "连哪里只由它决定：IM 与 REST（coreApi / socialApi / media）都按所选接入点路由，SDK 没有其他地址字段。"
     },
-    "defaultTransport": {
-      "type": "enum",
-      "values": [
-        "websocket",
-        "quic"
-      ],
-      "description": "非竞速时的首选传输；未设置时以 WebSocket 为主入口。"
-    },
-    "protocolRaceOrder": {
-      "type": "array",
-      "items": [
-        "websocket",
-        "quic"
-      ],
-      "description": "协议竞速优先级（前项优先）。需同时提供 wsUrl 与 quicUrl，且 transportPolicy 为 auto 或 protocol_race。"
+    "app": {
+      "type": "object",
+      "optional": true,
+      "fields": {
+        "version": {
+          "type": "string",
+          "optional": true,
+          "description": "宿主应用版本名（如 3.2.1），CONNECT 时作为 app_version 上报（另带引擎版本 sdk_version）。未配置不上报，SDK 不编造版本。平台包能零依赖采集的（Android、Apple、HarmonyOS ArkTS、Tauri）会自动补齐，宿主显式传入的值优先。"
+        },
+        "build": {
+          "type": "u64",
+          "optional": true,
+          "description": "宿主应用构建号：单调递增的整数，服务端版本比较只用它。CONNECT 时以十进制字符串作为 app_build 上报。"
+        },
+        "distribution": {
+          "type": "string",
+          "optional": true,
+          "description": "分发渠道：appstore、play、appgallery、direct、web、tauri 等，CONNECT 时作为 distribution 上报。wasm 未配置时取 web，Tauri 绑定未配置时取 tauri。"
+        },
+        "channel": {
+          "type": "string",
+          "optional": true,
+          "description": "更新通道（如 stable、beta），更新中心按它挑发布清单；不上报到 CONNECT。"
+        },
+        "buildId": {
+          "type": "string",
+          "optional": true,
+          "description": "Web 运行中的构建标识（如 20261105-abc）。Web 的 build 不单调可比，是否更新看它。"
+        },
+        "target": {
+          "type": "string",
+          "optional": true,
+          "description": "桌面目标（如 darwin-aarch64），发布清单按它挑桌面制品。"
+        },
+        "locale": {
+          "type": "string",
+          "optional": true,
+          "description": "界面语言（BCP-47，如 zh-Hant-TW），更新说明按它选，回退链 zh-Hant-TW → zh-Hant → zh → en。"
+        }
+      },
+      "description": "给了就整体替换构建期的值。"
     },
     "urls": [
-      "dataUrl",
-      "wsUrl",
-      "quicUrl",
-      "httpUrl",
-      "capabilityUrl",
-      "onlineUrl"
+      "dataUrl"
     ],
     "tenant": [
       "tenantId"
@@ -73,42 +137,23 @@
     "device": [
       "deviceId"
     ],
-    "app": [
-      "appVersion",
-      "appBuild",
-      "distribution"
-    ],
-    "appVersion": {
-      "type": "string",
-      "optional": true,
-      "description": "宿主应用版本名（如 3.2.1），CONNECT 时作为 app_version 上报（另带引擎版本 sdk_version）。未配置不上报，SDK 不编造版本。平台包能零依赖采集的（Android、Apple、HarmonyOS ArkTS、Tauri）会自动补齐，宿主显式传入的值优先。"
-    },
-    "appBuild": {
-      "type": "u64",
-      "optional": true,
-      "description": "宿主应用构建号：单调递增的整数，服务端版本比较只用它。CONNECT 时以十进制字符串作为 app_build 上报。"
-    },
-    "distribution": {
-      "type": "string",
-      "optional": true,
-      "description": "分发渠道：appstore、play、appgallery、direct、web、tauri 等，CONNECT 时作为 distribution 上报。wasm 未配置时取 web，Tauri 绑定未配置时取 tauri。"
-    },
     "timeouts": [
       "connectTimeoutSecs",
-      "reconnectIntervalSecs",
-      "maxReconnectAttempts",
       "ackTimeoutSecs",
       "ackMaxRetries"
     ],
+    "connectTimeoutSecs": {
+      "type": "u64",
+      "optional": true,
+      "description": "单次握手（含 CONNECT_ACK）时限的本机覆盖，夹紧到 2..30 秒；不设时用清单 clientPolicy.connectTimeoutMs（默认 8 秒）。重连节奏只由 SDK 的退避与清单策略决定，不可配置。"
+    },
     "sync": [
       "syncBatchSize",
       "initMessageSyncConcurrency"
     ],
     "tls": [
       "tlsCaCertPath",
-      "tlsCaCert",
-      "tlsSpkiSha256Pins",
-      "tlsCertificateSha256Pins"
+      "tlsCaCert"
     ],
     "flags": [
       "enableMetrics"
@@ -125,7 +170,7 @@
           "optional": true
         }
       },
-      "description": "接入 token 来源。tokenEndpoint 配了即 SDK 托管：login 不传 token 时向 {tokenEndpoint}/api/v1/auth/tokens 签发，到期前 refreshLeadSecs（默认 300）秒用 /api/v1/auth/tokens/refresh 换新。没配则必须显式传 token（flare-social / 自建业务由应用拿 token、自己刷新）。客户端永远不持有签名密钥。"
+      "description": "SDK 托管连接令牌：配了 auth（可为空对象）即 SDK 托管，login 不传 token 时由链路在每次建连前向接入清单的 Core API 签发（经 HttpRouter，开发模式即 developmentEndpoints.coreApiUrl；离线时不签发，联网后先签发再握手），到期前 refreshLeadSecs（默认 300）秒用「签发路径 + /refresh」换新。tokenEndpoint 是 Core API 上签发接口的相对路径（以 / 开头），不给用 /api/v1/auth/tokens；绝对地址是配置错误。没配 auth 则必须显式传 token（flare-social / 自建业务由应用拿 token、自己刷新）。客户端永远不持有签名密钥。"
     },
     "tlsCaCert": {
       "type": "string",

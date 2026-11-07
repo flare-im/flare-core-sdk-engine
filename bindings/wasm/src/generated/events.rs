@@ -3,14 +3,11 @@
 
 /// Canonical contract event ids (parity with L3 SDK).
 pub const CONTRACT_EVENT_IDS: &[&str] = &[
-    "connection.connected",
-    "connection.disconnected",
-    "connection.reconnecting",
-    "connection.state_changed",
+    "connection.status",
     "connection.sync_state_changed",
-    "connection.server_error",
-    "connection.kicked_off",
-    "connection.token_expired",
+    "access.switched",
+    "access.changed",
+    "update.state",
     "message.received",
     "message.received_batch",
     "message.send_ack",
@@ -39,6 +36,7 @@ pub const CONTRACT_EVENT_IDS: &[&str] = &[
     "conversation.unread_count_changed",
     "conversation.deleted",
     "notification.received",
+    "notification.message_sound",
     "sync.started",
     "sync.finished",
     "sync.failed",
@@ -55,14 +53,10 @@ pub const CONTRACT_EVENT_IDS: &[&str] = &[
 
 /// `(contract_event_id, web_event_name)` when a web adapter maps `im://*` names.
 pub const WEB_EVENT_ROUTES: &[(&str, &str)] = &[
-    ("connection.connected", "im://connected"),
-    ("connection.disconnected", "im://disconnected"),
-    ("connection.reconnecting", "im://reconnecting"),
-    ("connection.state_changed", "im://state"),
+    ("connection.status", "connection://status"),
     ("connection.sync_state_changed", "im://sync_state_changed"),
-    ("connection.server_error", "im://server_error"),
-    ("connection.kicked_off", "im://kicked_off"),
-    ("connection.token_expired", "im://token_expired"),
+    ("access.switched", "access://switched"),
+    ("access.changed", "access://changed"),
     ("message.received", "im://message"),
     ("message.received_batch", "im://message_batch"),
     ("message.send_ack", "im://send_ack"),
@@ -106,6 +100,7 @@ pub const WEB_EVENT_ROUTES: &[(&str, &str)] = &[
     ),
     ("conversation.deleted", "im://conversation_deleted"),
     ("notification.received", "im://notification"),
+    ("notification.message_sound", "im://message_sound"),
     ("sync.started", "im://sync_started"),
     ("sync.finished", "im://sync_finished"),
     ("sync.failed", "im://sync_failed"),

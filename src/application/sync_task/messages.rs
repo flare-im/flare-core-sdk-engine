@@ -20,6 +20,9 @@ pub struct MessagesSyncTask {
 }
 const DEFAULT_SYNC_CONCURRENCY: usize = 4;
 const MULTI_CONVERSATION_BATCH_MULTIPLIER: usize = 16;
+// ExecuteSync accepts at most 100 conversation IDs per MultiConversation request.
+// Concurrency is a local scheduling budget, never permission to exceed that wire bound.
+const MAX_MULTI_CONVERSATION_BATCH_SIZE: usize = 100;
 
 impl MessagesSyncTask {
     pub fn new(handler: Arc<SyncProtocolAdapter>, attention: AttentionRegistry) -> Self {
@@ -44,10 +47,11 @@ impl MessagesSyncTask {
 }
 
 fn multi_conversation_batch_size(max_sync_concurrency: usize) -> usize {
-    // 入参来自已 normalize 的字段（构造期 max(1)），此处只需乘出批大小。
+    // Keep default/mobile budgets, but high custom budgets must not generate rejected
+    // batches. Saturation handles usize::MAX without overflow before enforcing the cap.
     max_sync_concurrency
         .saturating_mul(MULTI_CONVERSATION_BATCH_MULTIPLIER)
-        .max(1)
+        .clamp(1, MAX_MULTI_CONVERSATION_BATCH_SIZE)
 }
 
 /// I9 自适应预算：后台/锁屏时批大小与每会话页大小减半（让电/让带宽），前台全速。
@@ -238,7 +242,10 @@ impl SyncTask for MessagesSyncTask {
 
 #[cfg(test)]
 mod tests {
-    use super::{MessagesSyncTask, next_batch_plan};
+    use super::{
+        DEFAULT_SYNC_CONCURRENCY, MAX_MULTI_CONVERSATION_BATCH_SIZE, MessagesSyncTask,
+        adaptive_sync_budget, multi_conversation_batch_size, next_batch_plan,
+    };
     use crate::kernel::AttentionState;
 
     #[test]
@@ -252,9 +259,57 @@ mod tests {
     }
 
     #[test]
+    fn multi_conversation_batch_preserves_default_and_mobile_budgets() {
+        assert_eq!(multi_conversation_batch_size(DEFAULT_SYNC_CONCURRENCY), 64);
+        assert_eq!(multi_conversation_batch_size(2), 32);
+        assert_eq!(
+            multi_conversation_batch_size(MessagesSyncTask::normalize_max_sync_concurrency(0)),
+            16,
+        );
+    }
+
+    #[test]
+    fn multi_conversation_batch_caps_custom_and_overflow_budgets() {
+        assert_eq!(multi_conversation_batch_size(6), 96);
+        for concurrency in [7, 8, 100, usize::MAX / 16, usize::MAX] {
+            assert_eq!(
+                multi_conversation_batch_size(concurrency),
+                MAX_MULTI_CONVERSATION_BATCH_SIZE,
+                "custom concurrency {concurrency} must obey the server request cap",
+            );
+        }
+    }
+
+    #[test]
+    fn capped_batch_planner_drains_every_target_without_exceeding_the_wire_budget() {
+        let targets: Vec<String> = (0..237).map(|index| format!("owned-{index}")).collect();
+        for in_background in [false, true] {
+            let mut remaining = targets.clone();
+            let (effective_batch_size, _) = adaptive_sync_budget(
+                in_background,
+                multi_conversation_batch_size(usize::MAX),
+                100,
+            );
+            assert_eq!(effective_batch_size, if in_background { 50 } else { 100 });
+            let attention = AttentionState::default();
+            let mut drained = Vec::new();
+            while !remaining.is_empty() {
+                let batch = next_batch_plan(&mut remaining, &attention, effective_batch_size);
+                assert!(!batch.is_empty());
+                assert!(batch.len() <= effective_batch_size);
+                assert!(batch.len() <= MAX_MULTI_CONVERSATION_BATCH_SIZE);
+                drained.extend(batch);
+            }
+            assert_eq!(
+                drained, targets,
+                "no target can be lost or duplicated by clamping"
+            );
+        }
+    }
+
+    #[test]
     fn background_budget_halves_batch_and_page() {
         // I9：后台降配（批/页减半、下限 1）；前台全速。
-        use super::adaptive_sync_budget;
         assert_eq!(adaptive_sync_budget(false, 64, 100), (64, 100));
         assert_eq!(adaptive_sync_budget(true, 64, 100), (32, 50));
         assert_eq!(adaptive_sync_budget(true, 1, 1), (1, 1));

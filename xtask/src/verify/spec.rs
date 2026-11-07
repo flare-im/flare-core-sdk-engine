@@ -85,7 +85,6 @@ pub(crate) fn verify_spec(root: &Path) -> Result<()> {
         "Unit",
         "DisposeRequest",
         "BooleanResponse",
-        "ConnectionStateResponse",
         "JsonValue",
         // Plugin command and plugin UI results: the shared protocol owns their shape.
         "JsonObject",
@@ -212,7 +211,13 @@ pub(crate) fn verify_spec(root: &Path) -> Result<()> {
             }
             for attr in ["request", "response"] {
                 let type_name = str_field(method, attr);
+                // A bare JSON array of one model (e.g. `access.list_access_points`) is `<Model>List`.
+                let listed_model = attr == "response"
+                    && type_name
+                        .strip_suffix("List")
+                        .is_some_and(|inner| known_model_types.contains(inner));
                 if !known_model_types.contains(type_name)
+                    && !listed_model
                     && !builtin_method_types.contains(type_name)
                     && !type_name.ends_with("Request")
                     && !type_name.ends_with("Response")

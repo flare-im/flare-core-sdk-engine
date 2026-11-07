@@ -16,6 +16,38 @@ use crate::model::{
 };
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
+/// A stored message attachment read; authorization remains with the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageMediaReference {
+    conversation_id: String,
+    message_seq: i64,
+}
+
+impl MessageMediaReference {
+    pub fn new(conversation_id: String, message_seq: i64) -> Result<Self> {
+        if conversation_id.trim().is_empty()
+            || conversation_id != conversation_id.trim()
+            || conversation_id.len() > 128
+            || message_seq <= 0
+        {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "invalid message media reference",
+            ));
+        }
+        Ok(Self {
+            conversation_id,
+            message_seq,
+        })
+    }
+    pub fn conversation_id(&self) -> &str {
+        &self.conversation_id
+    }
+    pub fn message_seq(&self) -> i64 {
+        self.message_seq
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MediaMetadata {
     pub file_name: String,
@@ -278,6 +310,18 @@ pub trait MediaServicePort: Send + Sync {
         Err(unsupported_media_operation("get_file_url"))
     }
 
+    async fn get_file_url_with_reference(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        reference: Option<&MessageMediaReference>,
+    ) -> Result<MediaAccessUrl> {
+        if reference.is_some() {
+            return Err(unsupported_media_operation("message media read"));
+        }
+        self.get_file_url(file_id, expires_in).await
+    }
+
     async fn get_temp_url_for_file_download(
         &self,
         _file_id: &str,
@@ -304,6 +348,28 @@ pub trait MediaServicePort: Send + Sync {
         _auto_cache: bool,
     ) -> Result<MediaResolvedAccess> {
         self.resolve_media_access(file_id, expires_in).await
+    }
+
+    async fn resolve_media_access_opts_with_reference(
+        &self,
+        file_id: &str,
+        expires_in: i32,
+        auto_cache: bool,
+        reference: Option<&MessageMediaReference>,
+    ) -> Result<MediaResolvedAccess> {
+        if reference.is_none() {
+            return self
+                .resolve_media_access_opts(file_id, expires_in, auto_cache)
+                .await;
+        }
+        Ok(MediaResolvedAccess {
+            source: "remote".into(),
+            local_path: None,
+            remote: Some(
+                self.get_file_url_with_reference(file_id, expires_in, reference)
+                    .await?,
+            ),
+        })
     }
 
     async fn resolve_for_display(&self, file_id: &str, expires_in: i32) -> Result<RenderableMedia> {

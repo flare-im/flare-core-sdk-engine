@@ -980,6 +980,50 @@ fn composer_contribution(
     serde_json::from_value(raw).unwrap()
 }
 #[tokio::test]
+async fn composer_entries_share_query_but_evaluate_their_own_availability_path() {
+    use flare_plugin_protocol::manifest::ClientPlatform;
+    let f = Fixture::new().await;
+    {
+        let mut catalog = f.catalog.lock().unwrap();
+        catalog.plugins[0]
+            .operations
+            .insert("example.poll.available".into());
+        for (id, path) in [("audio", "/audioEnabled"), ("video", "/videoEnabled")] {
+            catalog.plugins[0]
+                .extensions
+                .contributions
+                .push(composer_contribution(
+                    id,
+                    id,
+                    json!({"availability": {"operation": "example.poll.available", "path": path}}),
+                ));
+        }
+    }
+    for (audio, video) in [(false, true), (true, false), (false, false), (true, true)] {
+        *f.availability.lock().unwrap() = json!({"audioEnabled": audio, "videoEnabled": video});
+        f.api.invalidate_plugin_catalog().await.unwrap();
+        for _ in 0..2 {
+            let actions = f
+                .api
+                .composer_actions(ClientPlatform::Ios, "")
+                .await
+                .unwrap();
+            assert_eq!(actions.iter().any(|a| a.contribution_id == "audio"), audio);
+            assert_eq!(actions.iter().any(|a| a.contribution_id == "video"), video);
+        }
+    }
+    assert_eq!(
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c["capabilityId"] == "example.poll.available")
+            .count(),
+        4
+    );
+}
+
+#[tokio::test]
 async fn composer_entries_with_availability_are_listed_only_when_their_plugin_admits_them() {
     use flare_plugin_protocol::manifest::ClientPlatform;
     let f = Fixture::new().await;
@@ -1273,4 +1317,57 @@ async fn catalog_validity_is_judged_on_the_server_clock() {
             "an expired host catalog, device clock ahead by {ahead_ms} ms"
         );
     }
+}
+
+#[tokio::test]
+async fn composer_priority_comes_from_current_client_visible_plugin_configuration() {
+    use flare_plugin_protocol::manifest::ClientPlatform;
+    let f = Fixture::new().await;
+    {
+        let mut catalog = f.catalog.lock().unwrap();
+        let plugin = &mut catalog.plugins[0];
+        plugin.extensions.contributions = vec![composer_contribution(
+            "example.poll.create",
+            "Poll",
+            json!({"order": 0}),
+        )];
+        plugin
+            .configuration
+            .insert("composerOrder".into(), json!(500));
+        let mut earlier = plugin.clone();
+        earlier.plugin_id = "example.other".into();
+        earlier.configuration.clear();
+        earlier.extensions.contributions = vec![composer_contribution(
+            "example.other.open",
+            "Other",
+            json!({"order": 200}),
+        )];
+        catalog.plugins.push(earlier);
+    }
+    let actions = f
+        .api
+        .composer_actions(ClientPlatform::Web, "en-US")
+        .await
+        .unwrap();
+    assert_eq!(actions[0].contribution_id, "example.other.open");
+    assert_eq!(actions[1].order, 500);
+    f.catalog.lock().unwrap().plugins[0]
+        .configuration
+        .insert("composerOrder".into(), json!(-100));
+    let reordered = f
+        .api
+        .composer_actions(ClientPlatform::Web, "en-US")
+        .await
+        .unwrap();
+    assert_eq!(reordered[0].contribution_id, "example.poll.create");
+    assert_eq!(reordered[0].order, -100);
+    f.catalog.lock().unwrap().plugins[0]
+        .configuration
+        .insert("composerOrder".into(), json!("invalid"));
+    let fallback = f
+        .api
+        .composer_actions(ClientPlatform::Web, "en-US")
+        .await
+        .unwrap();
+    assert_eq!(fallback[0].order, 0);
 }

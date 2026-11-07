@@ -6,7 +6,9 @@
 
 mod dispatcher;
 mod engine;
+pub(crate) mod link;
 mod reliable_queue;
+pub(crate) mod update;
 
 pub use crate::kernel::SdkState;
 pub use dispatcher::Dispatcher;

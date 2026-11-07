@@ -1,12 +1,12 @@
 use flare_im_core_sdk::serde_json::{Value, json};
-use flare_im_core_sdk::{ErrorCode, FlareError, refused_message_ids};
+use flare_im_core_sdk::{ErrorCode, FlareError, refused_message_ids, retry_after_ms};
 
 pub fn binding_invalid_parameter(message: impl Into<String>) -> FlareError {
     FlareError::localized(ErrorCode::InvalidParameter, message.into())
 }
 
 /// The structured error every binding hands its host next to the human message
-/// (`bindings/contract/errors.json`): `{code, reason, retryable, httpStatus?,
+/// (`bindings/contract/errors.json`): `{code, reason, retryable, retryAfterMs?, httpStatus?,
 /// remoteCode?, machineReason?, refusedMessageIds?}`. `code` is the core `ErrorCode`
 /// wire name, `INTERNAL_ERROR` for errors without one (system, IO); `reason` is the
 /// localized key or the reason text, for people. Of the error's params only these
@@ -14,13 +14,16 @@ pub fn binding_invalid_parameter(message: impl Into<String>) -> FlareError {
 /// - `httpStatus`: the HTTP status Core answered, 100..=599;
 /// - `remoteCode`: Core's numeric error code;
 /// - `machineReason`: Core's or the plugin's code (`PLUGIN_DISABLED`, `CALL_FULL`);
+/// - `retryAfterMs`: for `OVERLOADED` only, how long the server asked to wait before
+///   retrying, in milliseconds, at most a day ([`retry_after_ms`]); absent when the server
+///   gave no wait;
 /// - `refusedMessageIds`: the messages the operation refused, a list of 1 to 500
 ///   ids of 1 to 128 bytes of ASCII letters, digits, `.`, `_`, `:` or `-`
 ///   ([`refused_message_ids`]); a list that breaks any of this does not travel.
 ///
 /// `remoteCode` and `machineReason` only travel with a valid `httpStatus`:
-/// without the status they do not say who answered. `refusedMessageIds` is the
-/// SDK's own finding and needs none.
+/// without the status they do not say who answered. `refusedMessageIds` and
+/// `retryAfterMs` need none: an IM gateway's overload has no HTTP status.
 pub fn sdk_error_details(err: &FlareError) -> Value {
     let (code, params) = match err {
         FlareError::Localized { code, params, .. } => (code.as_str(), params.as_ref()),
@@ -33,6 +36,11 @@ pub fn sdk_error_details(err: &FlareError) -> Value {
     });
     if let Some(ids) = refused_message_ids(err) {
         details["refusedMessageIds"] = json!(ids);
+    }
+    if err.code() == Some(ErrorCode::Overloaded)
+        && let Some(wait) = retry_after_ms(err)
+    {
+        details["retryAfterMs"] = json!(wait);
     }
     let param = |name: &str| params.and_then(|params| params.get(name));
     let Some(status) = param("httpStatus")

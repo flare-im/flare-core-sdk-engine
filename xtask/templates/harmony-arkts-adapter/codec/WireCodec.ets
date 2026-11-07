@@ -1,5 +1,19 @@
 // GENERATED. Do not edit by hand.
 import {
+  AccessChangedEvent,
+  AccessChanges,
+  AccessConnectAck,
+  AccessEndpoint,
+  AccessPin,
+  AccessPinRequest,
+  AccessPointInfo,
+  AccessStatus,
+  AccessSwitchedEvent,
+  CompleteConnectTokenRefreshRequest,
+  ConnectionPhase,
+  ConnectionQuality,
+  ConnectionStatus,
+  ConnectionSyncStateEvent,
   PluginUiEvaluationRequest,
   PluginCommandRequest,
   CloseViewRequest,
@@ -26,13 +40,15 @@ import {
   NameEntity,
   NameSource,
   NetworkChangeRequest,
-  NetworkChangeResponse,
   OpenConversationListViewRequest,
   OpenTimelineViewRequest,
   ReactionEntry,
+  RuntimeHealthResponse,
   SendMessageRequest,
   SendMessageResponse,
   ServerClockResponse,
+  SetAppStateRequest,
+  SetConnectTokenRefresherRequest,
   SyncConversationSummariesResponse,
   UpdateConversationDraftRequest,
   TimelineViewPageResponse,
@@ -43,7 +59,9 @@ import {
   ViewOpenResponse,
   ViewSnapshot,
   ViewUpdate,
-} from '../model';
+} from '../../model';
+import { FlareSdkException } from '../../bridge/FlareSdkException';
+import { SdkErrorCodes } from '../../contract/SdkContract';
 
 export function pluginUiEvaluationRequestToMap(request: PluginUiEvaluationRequest): Record<string, Object> {
   return { payload: request.payload };
@@ -77,6 +95,32 @@ export function networkChangeRequestToMap(request: NetworkChangeRequest): Record
     ...(request.expensive !== undefined ? { expensive: request.expensive } : {}),
     ...(request.metered !== undefined ? { metered: request.metered } : {}),
     ...(request.reason !== undefined ? { reason: request.reason } : {}),
+    ...(request.fingerprintHint !== undefined ? { fingerprintHint: request.fingerprintHint } : {}),
+  };
+}
+
+export function setAppStateRequestToMap(request: SetAppStateRequest): Record<string, Object> {
+  return {
+    appState: request.appState,
+  };
+}
+
+export function accessPinRequestToMap(request: AccessPinRequest): Record<string, Object> {
+  return {
+    accessPointId: request.accessPointId,
+  };
+}
+
+export function setConnectTokenRefresherRequestToMap(request: SetConnectTokenRefresherRequest): Record<string, Object> {
+  return {
+    enabled: request.enabled,
+  };
+}
+
+export function completeConnectTokenRefreshRequestToMap(request: CompleteConnectTokenRefreshRequest): Record<string, Object> {
+  return {
+    requestId: request.requestId,
+    ...(request.token !== undefined ? { token: request.token } : {}),
   };
 }
 
@@ -89,26 +133,19 @@ export function updateConversationDraftRequestToMap(request: UpdateConversationD
 
 
 
-const HEARTBEAT_APP_STATE_WIRE_ORDER: HeartbeatAppState[] = [HeartbeatAppState.Foreground, HeartbeatAppState.Background];
 const CONVERSATION_TYPE_WIRE_VALUES: ConversationType[] = [ConversationType.Unspecified, ConversationType.Single, ConversationType.Group, ConversationType.Ai, ConversationType.System, ConversationType.Customer, ConversationType.Temp, ConversationType.Channel, ConversationType.Broadcast];
 const MESSAGE_CONTENT_TYPE_WIRE_VALUES: MessageContentType[] = [MessageContentType.Text, MessageContentType.Image, MessageContentType.Video, MessageContentType.Audio, MessageContentType.File, MessageContentType.Location, MessageContentType.Card, MessageContentType.Sticker, MessageContentType.Emoji, MessageContentType.Quote, MessageContentType.LinkCard, MessageContentType.Forward, MessageContentType.Thread, MessageContentType.MiniProgram, MessageContentType.RichText, MessageContentType.ImageGroup, MessageContentType.System, MessageContentType.Notification, MessageContentType.Vote, MessageContentType.Task, MessageContentType.Schedule, MessageContentType.Announcement, MessageContentType.Custom, MessageContentType.Placeholder];
 const MESSAGE_SEARCH_KIND_WIRE_ORDER: MessageSearchKind[] = [MessageSearchKind.Message, MessageSearchKind.Text, MessageSearchKind.Media, MessageSearchKind.Image, MessageSearchKind.Video, MessageSearchKind.Audio, MessageSearchKind.File];
-const SDK_EVENT_KIND_WIRE_ORDER: SdkEventKind[] = [SdkEventKind.Lifecycle, SdkEventKind.Connection, SdkEventKind.Message, SdkEventKind.Notification, SdkEventKind.Conversation, SdkEventKind.Sync, SdkEventKind.Extension, SdkEventKind.ExtensionEvent, SdkEventKind.Presence, SdkEventKind.Media, SdkEventKind.Plugin];
+const SDK_EVENT_KIND_WIRE_ORDER: SdkEventKind[] = [SdkEventKind.Lifecycle, SdkEventKind.Connection, SdkEventKind.Access, SdkEventKind.Message, SdkEventKind.Notification, SdkEventKind.Conversation, SdkEventKind.Sync, SdkEventKind.Extension, SdkEventKind.ExtensionEvent, SdkEventKind.Presence, SdkEventKind.Media, SdkEventKind.Plugin, SdkEventKind.View];
 const LIFECYCLE_EVENT_NAME_WIRE_ORDER: LifecycleEventName[] = [LifecycleEventName.Initializing, LifecycleEventName.Initialized, LifecycleEventName.InitFailed, LifecycleEventName.LoginSucceeded, LifecycleEventName.LoginFailed, LifecycleEventName.LoggedOut, LifecycleEventName.Disposed];
-const SDK_CONNECTION_STATE_WIRE_ORDER: SdkConnectionState[] = [SdkConnectionState.Disconnected, SdkConnectionState.Connecting, SdkConnectionState.Connected, SdkConnectionState.Ready, SdkConnectionState.Reconnecting];
-const CONNECTION_EVENT_NAME_WIRE_ORDER: ConnectionEventName[] = [ConnectionEventName.Connecting, ConnectionEventName.Connected, ConnectionEventName.Ready, ConnectionEventName.Disconnected, ConnectionEventName.Reconnecting, ConnectionEventName.ReconnectFailed, ConnectionEventName.StateChanged, ConnectionEventName.SyncStateChanged, ConnectionEventName.ServerError, ConnectionEventName.KickedOff, ConnectionEventName.TokenExpired];
+const CONNECTION_PHASE_WIRE_VALUES: ConnectionPhase[] = [ConnectionPhase.Idle, ConnectionPhase.Connecting, ConnectionPhase.Syncing, ConnectionPhase.Online, ConnectionPhase.Switching, ConnectionPhase.Reconnecting, ConnectionPhase.WaitingForNetwork, ConnectionPhase.ServiceUnavailable, ConnectionPhase.ActionRequired];
+const CONNECTION_QUALITY_WIRE_VALUES: ConnectionQuality[] = [ConnectionQuality.Good, ConnectionQuality.Poor];
 const MESSAGE_EVENT_NAME_WIRE_ORDER: MessageEventName[] = [MessageEventName.Received, MessageEventName.ReceivedBatch, MessageEventName.SendAck, MessageEventName.SendFailed, MessageEventName.Recalled, MessageEventName.Typing, MessageEventName.Edited, MessageEventName.ReactionChanged, MessageEventName.Deleted, MessageEventName.ReadReceipt, MessageEventName.BurnScheduled, MessageEventName.Burned, MessageEventName.HardDeleted, MessageEventName.Pinned, MessageEventName.Unpinned, MessageEventName.Marked, MessageEventName.Unmarked, MessageEventName.RetentionScheduled, MessageEventName.RetentionExpired, MessageEventName.RetentionPurged, MessageEventName.PresenceChanged, MessageEventName.Custom, MessageEventName.PluginStateChanged, MessageEventName.ReadSummariesChanged];
 const CONVERSATION_EVENT_NAME_WIRE_ORDER: ConversationEventName[] = [ConversationEventName.Synced, ConversationEventName.Created, ConversationEventName.Updated, ConversationEventName.UnreadCountChanged, ConversationEventName.Deleted];
 const SYNC_EVENT_NAME_WIRE_ORDER: SyncEventName[] = [SyncEventName.StateChanged, SyncEventName.Started, SyncEventName.Finished, SyncEventName.Failed, SyncEventName.Progress, SyncEventName.TaskCompleted, SyncEventName.ResyncNeeded];
 const PROGRESS_EVENT_NAME_WIRE_ORDER: ProgressEventName[] = [ProgressEventName.SyncProgress, ProgressEventName.UploadProgress, ProgressEventName.DownloadProgress];
 
 
-
-export function setHeartbeatAppStateRequestToMap(request: SetHeartbeatAppStateRequest): Record<string, Object> {
-  return {
-  appState: enumWireIndex(HEARTBEAT_APP_STATE_WIRE_ORDER, request.appState),
-  };
-}
 
 export function setHeartbeatNatTimeoutRequestToMap(request: SetHeartbeatNatTimeoutRequest): Record<string, Object> {
   return {
@@ -793,16 +830,6 @@ export function lifecycleEventToMap(request: LifecycleEvent): Record<string, Obj
   };
 }
 
-export function connectionEventToMap(request: ConnectionEvent): Record<string, Object> {
-  return {
-  name: enumWireIndex(CONNECTION_EVENT_NAME_WIRE_ORDER, request.name),
-  state: enumWireIndex(SDK_CONNECTION_STATE_WIRE_ORDER, request.state),
-  ...(request.reason !== undefined ? { reason: request.reason } : {}),
-  ...(request.attempt !== undefined ? { attempt: request.attempt } : {}),
-  ...(request.error !== undefined ? { error: sdkErrorPayloadToMap(request.error) } : {}),
-  };
-}
-
 export function messageReceivedEventToMap(request: MessageReceivedEvent): Record<string, Object> {
   return {
   message: messageToMap(request.message),
@@ -1007,10 +1034,191 @@ export function serverClockResponseFromJson(value: Object | undefined): ServerCl
   };
 }
 
-export function networkChangeResponseFromJson(value: Object | undefined): NetworkChangeResponse {
+export function runtimeHealthResponseFromJson(value: Object | undefined): RuntimeHealthResponse {
   const json = recordValue(value);
   return {
-    reconnected: field(json, 'reconnected') === true,
+    metricsEnabled: field(json, 'metricsEnabled') === true,
+    state: stringValue(field(json, 'state')),
+    stateCode: intValue(field(json, 'stateCode')),
+    sessionGeneration: intValue(field(json, 'sessionGeneration')),
+    rawSubscriberDroppedTotal: intValue(field(json, 'rawSubscriberDroppedTotal')),
+    metricsJson: stringValue(field(json, 'metricsJson')),
+  };
+}
+
+/** A string field; absent, null or not a string reads as undefined. */
+function optionalStringField(json: Record<string, Object>, key: string): string | undefined {
+  const value = field(json, key);
+  return typeof value === 'string' ? value as string : undefined;
+}
+
+/** A number field; absent, null or not a finite number reads as undefined. */
+function optionalNumberField(json: Record<string, Object>, key: string): number | undefined {
+  const value = field(json, key);
+  return typeof value === 'number' && Number.isFinite(value as number) ? value as number : undefined;
+}
+
+/** The phase is what every host shows; an unknown or missing phase breaks the status contract and throws. */
+function connectionPhaseFromJson(value: Object | undefined): ConnectionPhase {
+  const phase = CONNECTION_PHASE_WIRE_VALUES.find((candidate) => candidate === value);
+  if (phase === undefined) {
+    throw new FlareSdkException(
+      SdkErrorCodes.invalidParameter,
+      `ConnectionStatus.phase must be a connection phase, got ${value === undefined || value === null ? 'nothing' : stringValue(value)}`,
+      'wire.decode',
+      { field: 'ConnectionStatus.phase', expected: 'ConnectionPhase' },
+    );
+  }
+  return phase;
+}
+
+/**
+ * Payload of `connection://status` and the value of `connection.getStatus`. Every field is on the wire and null
+ * without a value; null reads as absent. An unknown quality reads as absent.
+ */
+export function connectionStatusFromJson(value: Object | undefined): ConnectionStatus {
+  const json = recordValue(value);
+  const quality = CONNECTION_QUALITY_WIRE_VALUES.find((candidate) => candidate === field(json, 'quality'));
+  const accessPointId = optionalStringField(json, 'accessPointId');
+  const cellId = optionalStringField(json, 'cellId');
+  const regionId = optionalStringField(json, 'regionId');
+  const protocol = optionalStringField(json, 'protocol');
+  const rttMs = optionalNumberField(json, 'rttMs');
+  const nextRetryAt = optionalNumberField(json, 'nextRetryAt');
+  const reason = optionalStringField(json, 'reason');
+  return {
+    phase: connectionPhaseFromJson(field(json, 'phase')),
+    ...(quality !== undefined ? { quality } : {}),
+    ...(accessPointId !== undefined ? { accessPointId } : {}),
+    ...(cellId !== undefined ? { cellId } : {}),
+    ...(regionId !== undefined ? { regionId } : {}),
+    ...(protocol !== undefined ? { protocol } : {}),
+    ...(rttMs !== undefined ? { rttMs } : {}),
+    attempt: intValue(field(json, 'attempt')),
+    ...(nextRetryAt !== undefined ? { nextRetryAt } : {}),
+    ...(reason !== undefined ? { reason } : {}),
+    developmentMode: field(json, 'developmentMode') === true,
+  };
+}
+
+/** Payload of the coarse sync state hint (`connection.sync_state_changed`); it never fails to decode. */
+export function connectionSyncStateEventFromJson(value: Object | undefined): ConnectionSyncStateEvent {
+  const json = recordValue(value);
+  return {
+    state: stringValue(field(json, 'state')),
+  };
+}
+
+export function accessPinFromJson(value: Object | undefined): AccessPin {
+  const json = recordValue(value);
+  return {
+    accessPointId: stringValue(field(json, 'accessPointId')),
+    expiresAtMs: intValue(field(json, 'expiresAtMs')),
+  };
+}
+
+export function accessStatusFromJson(value: Object | undefined): AccessStatus {
+  const json = recordValue(value);
+  const source = optionalStringField(json, 'source');
+  const expiresAtMs = optionalNumberField(json, 'expiresAtMs');
+  const regionId = optionalStringField(json, 'regionId');
+  const cellId = optionalStringField(json, 'cellId');
+  const keystateSerial = optionalNumberField(json, 'keystateSerial');
+  const accessPointId = optionalStringField(json, 'accessPointId');
+  const protocol = optionalStringField(json, 'protocol');
+  const pinned = field(json, 'pinned');
+  const connectAck = field(json, 'connectAck');
+  return {
+    loaded: field(json, 'loaded') === true,
+    serial: intValue(field(json, 'serial')),
+    ...(source !== undefined ? { source } : {}),
+    stale: field(json, 'stale') === true,
+    developmentMode: field(json, 'developmentMode') === true,
+    ...(expiresAtMs !== undefined ? { expiresAtMs } : {}),
+    ...(regionId !== undefined ? { regionId } : {}),
+    ...(cellId !== undefined ? { cellId } : {}),
+    ...(keystateSerial !== undefined ? { keystateSerial } : {}),
+    ...(accessPointId !== undefined ? { accessPointId } : {}),
+    ...(protocol !== undefined ? { protocol } : {}),
+    ...(pinned !== undefined && pinned !== null ? { pinned: accessPinFromJson(pinned) } : {}),
+    ...(connectAck !== undefined && connectAck !== null ? { connectAck: accessConnectAckFromJson(connectAck) } : {}),
+  };
+}
+
+/** CONNECT_ACK diagnostics of the current connection (`AccessStatus.connectAck`); only shown. */
+export function accessConnectAckFromJson(value: Object | undefined): AccessConnectAck {
+  const json = recordValue(value);
+  const gatewayId = optionalStringField(json, 'gatewayId');
+  const accessPointId = optionalStringField(json, 'accessPointId');
+  const accessSerial = optionalNumberField(json, 'accessSerial');
+  const heartbeatIntervalHintSec = optionalNumberField(json, 'heartbeatIntervalHintSec');
+  return {
+    ...(gatewayId !== undefined ? { gatewayId } : {}),
+    ...(accessPointId !== undefined ? { accessPointId } : {}),
+    ...(accessSerial !== undefined ? { accessSerial } : {}),
+    ...(heartbeatIntervalHintSec !== undefined ? { heartbeatIntervalHintSec } : {}),
+    accessPointMismatch: field(json, 'accessPointMismatch') === true,
+  };
+}
+
+export function accessPointInfoFromJson(value: Object | undefined): AccessPointInfo {
+  const json = recordValue(value);
+  const rttMs = optionalNumberField(json, 'rttMs');
+  const protocolWinner = optionalStringField(json, 'protocolWinner');
+  return {
+    accessPointId: stringValue(field(json, 'accessPointId')),
+    regionId: stringValue(field(json, 'regionId')),
+    host: stringValue(field(json, 'host')),
+    status: stringValue(field(json, 'status')),
+    ...(rttMs !== undefined ? { rttMs } : {}),
+    breaker: stringValue(field(json, 'breaker')),
+    ...(protocolWinner !== undefined ? { protocolWinner } : {}),
+    pinned: field(json, 'pinned') === true,
+    current: field(json, 'current') === true,
+  };
+}
+
+/** `access.listAccessPoints` answers with a bare JSON array. */
+export function accessPointInfoListFromJson(value: Object | undefined): Array<AccessPointInfo> {
+  return listOfMaps(value).map((item) => accessPointInfoFromJson(item));
+}
+
+export function accessEndpointFromJson(value: Object | undefined): AccessEndpoint {
+  const json = recordValue(value);
+  return {
+    ap: stringValue(field(json, 'ap')),
+    protocol: stringValue(field(json, 'protocol')),
+  };
+}
+
+/** Payload of `access://switched`. */
+export function accessSwitchedEventFromJson(value: Object | undefined): AccessSwitchedEvent {
+  const json = recordValue(value);
+  return {
+    from: accessEndpointFromJson(field(json, 'from')),
+    to: accessEndpointFromJson(field(json, 'to')),
+    reason: stringValue(field(json, 'reason')),
+  };
+}
+
+export function accessChangesFromJson(value: Object | undefined): AccessChanges {
+  const json = recordValue(value);
+  return {
+    accessPointsAdded: stringList(field(json, 'accessPointsAdded')),
+    accessPointsRemoved: stringList(field(json, 'accessPointsRemoved')),
+    policyChanged: field(json, 'policyChanged') === true,
+  };
+}
+
+/** Payload of `access://changed`. */
+export function accessChangedEventFromJson(value: Object | undefined): AccessChangedEvent {
+  const json = recordValue(value);
+  return {
+    serial: intValue(field(json, 'serial')),
+    source: stringValue(field(json, 'source')),
+    stale: field(json, 'stale') === true,
+    developmentMode: field(json, 'developmentMode') === true,
+    changes: accessChangesFromJson(field(json, 'changes')),
   };
 }
 

@@ -202,22 +202,24 @@ impl PushLifecycle {
         if cfg!(target_arch = "wasm32") {
             return Ok(());
         }
-        let endpoint =
-            url::Url::parse(http.base_url()).map_err(|_| failure(ErrorCode::ConfigurationError))?;
-        let local = endpoint.host_str().is_some_and(|host| {
-            host == "localhost"
+        // 路由客户端的入口来自验签后的接入清单（开发模式来自本机配置），不再逐个校验地址；
+        // 固定入口（测试替身）仍只接受 https 或本机 http。
+        if !http.is_routed() {
+            // 带 userinfo 的地址在解析时就被拒绝。
+            let endpoint = flare_access::ParsedUrl::parse(http.base_url())
+                .map_err(|_| failure(ErrorCode::ConfigurationError))?;
+            let host = endpoint.host_str();
+            let local = host == "localhost"
                 || host.ends_with(".localhost")
                 || host
                     .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        });
-        if !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-            || !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && local)
-        {
-            return Err(failure(ErrorCode::ConfigurationError));
+                    .is_ok_and(|ip| ip.is_loopback());
+            if endpoint.query().is_some()
+                || endpoint.fragment().is_some()
+                || !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && local)
+            {
+                return Err(failure(ErrorCode::ConfigurationError));
+            }
         }
         if device.is_empty()
             || device.len() > 128
@@ -227,7 +229,7 @@ impl PushLifecycle {
         }
         let root = root
             .join("push-lifecycle")
-            .join(digest(&format!("{}\0{device}", http.base_url())));
+            .join(digest(&format!("{}\0{device}", http.endpoint_identity())));
         let mut s = self.lock();
         if s.journal
             .as_ref()
@@ -384,7 +386,7 @@ impl PushLifecycle {
         let Some(transport) = transport else {
             return Ok(());
         };
-        let endpoint = digest(transport.base_url());
+        let endpoint = digest(&transport.endpoint_identity());
         for intent in entries {
             if intent.endpoint != endpoint {
                 return Err(failure(ErrorCode::ConfigurationError));

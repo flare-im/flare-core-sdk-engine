@@ -13,6 +13,7 @@ use flare_proto::common::{
 use crate::model::IMMessage;
 use tokio::sync::mpsc;
 
+use super::link_status::ConnectionStatus;
 use super::name_change::{NameChange, NameChangeListeners, NameChangeReceiver};
 use super::selector::EventFilter;
 use super::types::{
@@ -20,7 +21,7 @@ use super::types::{
     SyncPhase,
 };
 use crate::extension::middleware::MiddlewareChain;
-use crate::kernel::{SdkState, SyncState};
+use crate::kernel::SyncState;
 use crate::spi::metrics::MetricsRecorder;
 use tracing::warn;
 
@@ -67,12 +68,8 @@ fn same_event_route(left: &EventRoute, right: &EventRoute) -> bool {
 
 // 回调存储：Arc 便于 clone 后传入 spawn_blocking，不阻塞分发循环
 type FnConnected = Arc<dyn Fn() + Send + Sync>;
-type FnDisconnected = Arc<dyn Fn(String) + Send + Sync>;
-type FnStateChanged = Arc<dyn Fn(SdkState) + Send + Sync>;
+type FnConnectionStatus = Arc<dyn Fn(ConnectionStatus) + Send + Sync>;
 type FnSyncStateChanged = Arc<dyn Fn(SyncState) + Send + Sync>;
-type FnServerError = Arc<dyn Fn(i32, String) + Send + Sync>;
-type FnKickedOff = Arc<dyn Fn(String) + Send + Sync>;
-type FnTokenExpired = Arc<dyn Fn(String) + Send + Sync>;
 type FnMessage = Arc<dyn Fn(IMMessage) + Send + Sync>;
 type FnMessageBatch = Arc<dyn Fn(Vec<IMMessage>) + Send + Sync>;
 type FnSendAck = Arc<dyn Fn(SendAck) + Send + Sync>;
@@ -123,17 +120,13 @@ pub struct EventBus {
     any_callback_count: Arc<AtomicUsize>,
     /// 正在补发回调丢弃通知（重入保护，见 `report_pending_callback_drops`）。
     reporting_callback_drops: Arc<std::sync::atomic::AtomicBool>,
-    last_connection_state: Arc<RwLock<Option<SdkState>>>,
+    /// 最近一次连接状态：后注册的回调立即补收一次，不必等下一次变化。
+    last_connection_status: Arc<RwLock<Option<ConnectionStatus>>>,
     last_sync_state: Arc<RwLock<Option<SyncState>>>,
     last_sync_finished: Arc<RwLock<Option<SyncPhase>>>,
     // Connection（std::sync::RwLock 支持同步注册，回调在专用分发线程中执行）
-    on_connected: Arc<RwLock<Vec<FnConnected>>>,
-    on_disconnected: Arc<RwLock<Vec<FnDisconnected>>>,
-    on_state_changed: Arc<RwLock<Vec<FnStateChanged>>>,
+    on_connection_status: Arc<RwLock<Vec<FnConnectionStatus>>>,
     on_sync_state_changed: Arc<RwLock<Vec<FnSyncStateChanged>>>,
-    on_server_error: Arc<RwLock<Vec<FnServerError>>>,
-    on_kicked_off: Arc<RwLock<Vec<FnKickedOff>>>,
-    on_token_expired: Arc<RwLock<Vec<FnTokenExpired>>>,
     // Message
     on_message: Arc<RwLock<Vec<FnMessage>>>,
     on_message_batch: Arc<RwLock<Vec<FnMessageBatch>>>,
@@ -200,17 +193,12 @@ impl EventBus {
         let route_callback_count = Arc::new(AtomicUsize::new(0));
         let any_callback_count = Arc::new(AtomicUsize::new(0));
         let reporting_callback_drops = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let last_connection_state = Arc::new(RwLock::new(None));
+        let last_connection_status = Arc::new(RwLock::new(None));
         let last_sync_state = Arc::new(RwLock::new(None));
         let last_sync_finished = Arc::new(RwLock::new(None));
 
-        let on_connected = Arc::new(RwLock::new(Vec::<FnConnected>::new()));
-        let on_disconnected = Arc::new(RwLock::new(Vec::new()));
-        let on_state_changed = Arc::new(RwLock::new(Vec::new()));
+        let on_connection_status = Arc::new(RwLock::new(Vec::<FnConnectionStatus>::new()));
         let on_sync_state_changed = Arc::new(RwLock::new(Vec::new()));
-        let on_server_error = Arc::new(RwLock::new(Vec::new()));
-        let on_kicked_off = Arc::new(RwLock::new(Vec::new()));
-        let on_token_expired = Arc::new(RwLock::new(Vec::new()));
         let on_message = Arc::new(RwLock::new(Vec::new()));
         let on_message_batch = Arc::new(RwLock::new(Vec::new()));
         let on_send_ack = Arc::new(RwLock::new(Vec::new()));
@@ -243,16 +231,11 @@ impl EventBus {
             route_callback_count,
             any_callback_count,
             reporting_callback_drops,
-            last_connection_state,
+            last_connection_status,
             last_sync_state,
             last_sync_finished,
-            on_connected,
-            on_disconnected,
-            on_state_changed,
+            on_connection_status,
             on_sync_state_changed,
-            on_server_error,
-            on_kicked_off,
-            on_token_expired,
             on_message,
             on_message_batch,
             on_send_ack,
@@ -385,21 +368,11 @@ impl EventBus {
         let mut dispatched = 0;
         match ev {
             SdkEvent::Connection(ce) => match ce {
-                ConnectionEvent::Connected => {
-                    dispatched += dispatch_callbacks(&self.on_connected, |f| f());
-                }
-                ConnectionEvent::Disconnected { reason } => {
+                ConnectionEvent::Status(status) => {
                     dispatched += dispatch_callbacks_with(
-                        &self.on_disconnected,
-                        || reason.clone(),
-                        |f, reason| f(reason.clone()),
-                    );
-                }
-                ConnectionEvent::StateChanged { state } => {
-                    dispatched += dispatch_callbacks_with(
-                        &self.on_state_changed,
-                        || *state,
-                        |f, state| f(*state),
+                        &self.on_connection_status,
+                        || status.clone(),
+                        |f, status| f(status.clone()),
                     );
                 }
                 ConnectionEvent::SyncStateChanged { state } => {
@@ -408,28 +381,10 @@ impl EventBus {
                         f(s);
                     });
                 }
-                ConnectionEvent::ServerError { code, message } => {
-                    dispatched += dispatch_callbacks_with(
-                        &self.on_server_error,
-                        || (*code, message.clone()),
-                        |f, (code, message)| f(*code, message.clone()),
-                    );
-                }
-                ConnectionEvent::KickedOff { reason } => {
-                    dispatched += dispatch_callbacks_with(
-                        &self.on_kicked_off,
-                        || reason.clone(),
-                        |f, reason| f(reason.clone()),
-                    );
-                }
-                ConnectionEvent::TokenExpired { message } => {
-                    dispatched += dispatch_callbacks_with(
-                        &self.on_token_expired,
-                        || message.clone(),
-                        |f, message| f(message.clone()),
-                    );
-                }
-                ConnectionEvent::Reconnecting { .. } => {}
+                // 线路切换、目录装载与更新状态只给 raw 订阅者（绑定层事件），没有类型化回调。
+                ConnectionEvent::AccessSwitched(_)
+                | ConnectionEvent::AccessChanged(_)
+                | ConnectionEvent::UpdateState(_) => {}
             },
             SdkEvent::Message(me) => match me {
                 MessageEvent::Received { message } => {
@@ -536,6 +491,7 @@ impl EventBus {
                     |f, message| f(message.clone()),
                 );
             }
+            SdkEvent::Notification(NotificationEvent::MessageSound { .. }) => {}
             SdkEvent::Conversation(ce) => match ce {
                 ConversationEvent::Synced { conversation_ids } => {
                     dispatched += dispatch_callbacks_with(
@@ -691,14 +647,8 @@ impl EventBus {
             return PublishOutcome::DroppedByMiddleware;
         }
         match &event {
-            SdkEvent::Connection(ConnectionEvent::StateChanged { state }) => {
-                *self.last_connection_state.safe_write("event_bus") = Some(*state);
-            }
-            SdkEvent::Connection(ConnectionEvent::Connected) => {
-                *self.last_connection_state.safe_write("event_bus") = Some(SdkState::Connected);
-            }
-            SdkEvent::Connection(ConnectionEvent::Disconnected { .. }) => {
-                *self.last_connection_state.safe_write("event_bus") = Some(SdkState::Disconnected);
+            SdkEvent::Connection(ConnectionEvent::Status(status)) => {
+                *self.last_connection_status.safe_write("event_bus") = Some(status.clone());
             }
             SdkEvent::Sync(SyncNotify::StateChanged { state, .. }) => {
                 *self.last_sync_state.safe_write("event_bus") = Some(*state);

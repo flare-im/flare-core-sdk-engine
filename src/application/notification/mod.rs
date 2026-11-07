@@ -7,6 +7,6 @@ mod types;
 pub use inbound::{NotificationInboundPipeline, partition_notification_durability};
 pub use registry::NotificationHandlerRegistry;
 pub use types::{
-    InboundNotificationView, NotificationDispatchReport, NotificationHandleResult,
+    InboundDelivery, InboundNotificationView, NotificationDispatchReport, NotificationHandleResult,
     NotificationHandler,
 };

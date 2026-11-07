@@ -1430,6 +1430,10 @@ impl ViewApi {
             };
             let current = &registration.window;
             fresh.anchor_key = current.anchor_key.clone();
+            let floor = fresh
+                .conversation
+                .as_ref()
+                .map_or(0, crate::domain::sync_visibility_floor);
             if let Some((from, to)) = reread_range {
                 if current.attached_to_latest != fresh.attached_to_latest {
                     // 重读期间窗口换了方向（回到最新）：这份重读已经过时。
@@ -1440,11 +1444,11 @@ impl ViewApi {
                     .iter()
                     .filter(|message| {
                         let seq = message.conversation_seq;
-                        seq > 0 && (seq < from || to.is_some_and(|to| seq > to))
+                        seq > floor && seq > 0 && (seq < from || to.is_some_and(|to| seq > to))
                     })
                     .cloned()
                     .collect::<Vec<_>>();
-                if current.oldest_seq().is_some_and(|oldest| oldest < from) {
+                if outside.iter().any(|row| row.conversation_seq < from) {
                     fresh.has_older = current.has_older;
                 }
                 if !outside.is_empty() {

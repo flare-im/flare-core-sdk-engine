@@ -7,7 +7,15 @@ use async_trait::async_trait;
 use crate::content::message_elem::Elem;
 use crate::model::IMMessage;
 
-/// 从 [`IMMessage`] 投影的 Notification 视图（无业务语义）。
+/// Delivery intent is explicit: batching alone cannot distinguish live catch-up from history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InboundDelivery {
+    Live,
+    CatchUp,
+    HistoryReplay,
+}
+
+/// 从 [`IMMessage`] 投影的业务处理视图（无业务语义）。
 #[derive(Debug, Clone)]
 pub struct InboundNotificationView<'a> {
     pub message: &'a IMMessage,
@@ -21,18 +29,31 @@ pub struct InboundNotificationView<'a> {
 
 impl<'a> InboundNotificationView<'a> {
     pub fn from_message(message: &'a IMMessage) -> Option<Self> {
-        let Some(Elem::Notification(n)) = message.content.as_ref() else {
-            return None;
-        };
-        Some(Self {
-            message,
-            notification_type: n.notification_type.trim(),
-            data: &n.data,
-            persistent: n.persistent,
-            show_in_list: n.show_in_list,
-            show_badge: n.show_badge,
-            play_sound: n.play_sound,
-        })
+        match message.content.as_ref()? {
+            Elem::Notification(n) => Some(Self {
+                message,
+                notification_type: n.notification_type.trim(),
+                data: &n.data,
+                persistent: n.persistent,
+                show_in_list: n.show_in_list,
+                show_badge: n.show_badge,
+                play_sound: n.play_sound,
+            }),
+            Elem::System(system) => Some(Self {
+                message,
+                notification_type: system.event_kind.trim(),
+                data: &system.data,
+                persistent: true,
+                show_in_list: true,
+                show_badge: false,
+                play_sound: false,
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn is_system(&self) -> bool {
+        matches!(self.message.content.as_ref(), Some(Elem::System(_)))
     }
 }
 
@@ -53,6 +74,12 @@ pub struct NotificationDispatchReport {
 #[async_trait]
 pub trait NotificationHandler: Send + Sync {
     fn matches(&self, notification_type: &str) -> bool;
+
+    /// Business extensions may project their canonical type from typed carrier metadata.
+    /// The Core SDK does not interpret any product-specific metadata key.
+    fn matches_view(&self, notification: &InboundNotificationView<'_>) -> bool {
+        self.matches(notification.notification_type)
+    }
 
     async fn handle(&self, notification: &InboundNotificationView<'_>) -> NotificationHandleResult;
 }

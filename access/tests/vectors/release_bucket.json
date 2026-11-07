@@ -1,0 +1,121 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "bucket": 5129
+      },
+      "input": {
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "salt": "rel_01JC8W"
+      },
+      "name": "uuid id, design salt"
+    },
+    {
+      "expected": {
+        "bucket": 2840
+      },
+      "input": {
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "salt": "rel_01JB2Q"
+      },
+      "name": "same id, next release"
+    },
+    {
+      "expected": {
+        "bucket": 665
+      },
+      "input": {
+        "installId": "00000000-0000-4000-8000-000000000000",
+        "salt": "rel_01JC8W"
+      },
+      "name": "another id"
+    },
+    {
+      "expected": {
+        "bucket": 6860
+      },
+      "input": {
+        "installId": "ffffffff-ffff-4fff-bfff-ffffffffffff",
+        "salt": "rel_01JC8W"
+      },
+      "name": "all f id"
+    },
+    {
+      "expected": {
+        "bucket": 222
+      },
+      "input": {
+        "installId": "a",
+        "salt": "b"
+      },
+      "name": "short id"
+    },
+    {
+      "expected": {
+        "bucket": 3408
+      },
+      "input": {
+        "installId": "8f14e45f-ceea-467f-a8d2-6f1c2c1e7a11",
+        "salt": "灰度-2.4.0"
+      },
+      "name": "non-ascii salt"
+    },
+    {
+      "expected": {
+        "bucket": 8856
+      },
+      "input": {
+        "installId": "a:b",
+        "salt": "c"
+      },
+      "name": "salt with colon"
+    },
+    {
+      "expected": {
+        "bucket": 8856
+      },
+      "input": {
+        "installId": "a",
+        "salt": "b:c"
+      },
+      "name": "id with colon moved"
+    },
+    {
+      "expected": {
+        "hits": 112
+      },
+      "input": {
+        "basisPoints": 100,
+        "count": 10000,
+        "prefix": "install-",
+        "salt": "rel_01JC8W"
+      },
+      "name": "one percent share"
+    },
+    {
+      "expected": {
+        "hits": 506
+      },
+      "input": {
+        "basisPoints": 500,
+        "count": 10000,
+        "prefix": "install-",
+        "salt": "rel_01JC8W"
+      },
+      "name": "five percent share"
+    },
+    {
+      "expected": {
+        "hits": 4971
+      },
+      "input": {
+        "basisPoints": 5000,
+        "count": 10000,
+        "prefix": "install-",
+        "salt": "rel_01JC8W"
+      },
+      "name": "half share"
+    }
+  ],
+  "description": "Rollout bucket: u32 big-endian of the first 4 bytes of SHA-256(installId ':' salt), modulo 10000. The strings are hashed as UTF-8. A release is offered when bucket < rollout.basisPoints. A case with count asks how many of the ids prefix0 .. prefix(count-1) fall below basisPoints."
+}
