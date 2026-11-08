@@ -33,7 +33,7 @@ pub(crate) mod testkit {
     //! 单元测试用的确定性密钥与签名清单。
     use ed25519_dalek::SigningKey;
 
-    use super::sign::{Signer, issue_key_cert, sign_access_manifest, sign_release_manifest};
+    use super::sign::{Signer, issue_key_cert, sign_access_manifest};
     use super::*;
 
     pub const ROOT_ID: &str = "root-a";
@@ -98,10 +98,11 @@ pub(crate) mod testkit {
         )
     }
 
-    /// 用默认证书签一份发布清单载荷。
+    /// 用默认证书签一份发布清单载荷。只有客户端部分的测试在用。
+    #[cfg(feature = "client")]
     pub fn signed_release(payload: &serde_json::Value) -> Vec<u8> {
         let online = online_key();
-        sign_release_manifest(
+        super::sign::sign_release_manifest(
             &serde_json::to_vec(payload).unwrap(),
             &Signer {
                 key_id: ONLINE_ID,
@@ -259,7 +260,8 @@ mod tests {
     #[test]
     fn key_cert_validate_stops_what_should_not_be_signed() {
         assert_eq!(cert().validate(), Ok(()));
-        let cases: [(&str, fn(&mut KeyCert)); 8] = [
+        type Mutate = fn(&mut KeyCert);
+        let cases: [(&str, Mutate); 8] = [
             ("keyid", |c| c.key_id = "ok/1".into()),
             ("publicKey", |c| c.public_key = "AQ".into()),
             ("usages", |c| c.usages = vec![]),
