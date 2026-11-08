@@ -24,6 +24,7 @@ FLARE_ACCESS_PROBE_HTTPS_PORT, the test client through AccessLab (examples/acces
   python3 scripts/access_stack.py status
   python3 scripts/access_stack.py ctl stop|start|restart|kill <process>
   python3 scripts/access_stack.py mirror stop|start <a|b|c>   # the mirror's container and TLS front
+  python3 scripts/access_stack.py ap stop|start all|<ap-id>...  # an access point's Edge and gateway
   python3 scripts/access_stack.py down [--destroy]
 
 Secrets stay in ~/.flare-access-lab (mode 0700); nothing secret reaches the repository or the logs.
@@ -157,7 +158,17 @@ MIRRORS = {
 }
 CELL_S3_PORT = ls.port(43904)
 CELL_BUCKET = "flare-bootstrap"
+# The third-domain DoH pointer. The resolver and the rescue mirror it points to during an incident
+# are served by access_acceptance.py itself, only while a case needs them; the platform audits the
+# record against this resolver and every manifest lists it as the last source.
+DOH_ZONE = f"boot.{HOST_SUFFIX}"
+DOH_HOST = f"doh.{HOST_SUFFIX}"
+DOH_PORT = ls.port(43630)
+DOH_RESOLVER = f"https://{DOH_HOST}:{DOH_PORT}/dns-query"
+RESCUE_MIRROR_HOST = f"cfg-rescue.sim-rescue.{HOST_SUFFIX}"
+RESCUE_MIRROR_PORT = ls.port(43631)
 EXTRA_PORTS = sorted({PLATFORM_API, PLATFORM_WORKER, PLATFORM_PROBER, SOCIAL_CONTROL, CAPABILITY, CELL_S3_PORT, SNI_PORT,
+                      DOH_PORT, RESCUE_MIRROR_PORT,
                       *(g[0] + 1 for g in ls.GATEWAYS.values()),
                       *(p for g in ls.GATEWAYS.values() for p in g[:3]),
                       *(m.s3_port for m in MIRRORS.values()), *(m.tls_port for m in MIRRORS.values()),
@@ -496,6 +507,7 @@ def platform_env(lab, role):
         "FLARE_ACCESS_ENVIRONMENT": "production", "FLARE_ACCESS_CREDENTIAL_ENCRYPTION_KEY": lab.access_cipher,
         "FLARE_ACCESS_TRUST_ROOTS": roots, "FLARE_ACCESS_EXTRA_CA_FILE": str(ca_file()),
         "FLARE_ACCESS_PROBE_REGION": REGION, "FLARE_ACCESS_PROBE_HTTPS_PORT": str(SNI_PORT),
+        "FLARE_ACCESS_DOH_ZONE": DOH_ZONE, "FLARE_ACCESS_DOH_RESOLVERS": DOH_RESOLVER,
         "RUST_LOG": "info,sqlx=warn,async_nats=warn",
     }
     if role == "api":
@@ -647,10 +659,14 @@ def command_ctl(args):
             ls.start_service(state, lab.core, name)
             ls.wait_service(state, name, timeout=120)
         else:
-            file = ls.path("nginx", name, "nginx.conf")
-            ls.require(file.exists(), f"unknown process {name}")
-            directory = file.parent
-            ls.spawn(state, name, [nginx_binary(), "-c", str(file), "-p", str(directory), "-g", "daemon off;"], {})
+            nginx_start(state, name)
+
+
+def nginx_start(state, name):
+    """An nginx process again from the configuration `up` rendered for it."""
+    file = ls.path("nginx", name, "nginx.conf")
+    ls.require(file.exists(), f"unknown process {name}")
+    ls.spawn(state, name, [nginx_binary(), "-c", str(file), "-p", str(file.parent), "-g", "daemon off;"], {})
 
 
 def mirror_stop(state, site):
@@ -661,8 +677,35 @@ def mirror_stop(state, site):
 def mirror_start(state, site):
     ls.run([ls.RUNNER, "start", f"{ls.PREFIX}-{site.container}"])
     ls.wait_for(lambda: ls.http("GET", f"{site.s3_endpoint}/health/ready")[0] == 200, 60, f"RustFS {site.key}")
-    file = ls.path("nginx", site.front, "nginx.conf")
-    ls.spawn(state, site.front, [nginx_binary(), "-c", str(file), "-p", str(file.parent), "-g", "daemon off;"], {})
+    nginx_start(state, site.front)
+
+
+def access_point_stop(state, ap_id):
+    """The access point goes away as a whole: its Edge first, so nothing is proxied to a gateway
+    that is shutting down, then its gateway."""
+    site = SITES[ap_id]
+    ls.signal_process(state, site.edge, signal.SIGTERM, wait=10)
+    ls.signal_process(state, site.gateway, signal.SIGTERM, wait=30)
+
+
+def access_point_start(state, ap_id):
+    """A node that comes up: its gateway, then the Edge in front of it."""
+    site = SITES[ap_id]
+    if not ls.live(state, site.gateway):
+        ls.start_service(state, Lab().core, site.gateway)
+        ls.wait_service(state, site.gateway, timeout=120)
+    if not ls.live(state, site.edge):
+        nginx_start(state, site.edge)
+    ls.wait_for(lambda: ls.port_open(site.tls_port), 20, f"Edge of {ap_id}")
+
+
+def command_ap(args):
+    state = ls.load_state()
+    ids = sorted(SITES) if args.ids == ["all"] else args.ids
+    unknown = [ap_id for ap_id in ids if ap_id not in SITES]
+    ls.require(not unknown, f"unknown access points {unknown}; known: {sorted(SITES)}")
+    for ap_id in ids:
+        (access_point_stop if args.action == "stop" else access_point_start)(state, ap_id)
 
 
 def command_mirror(args):
@@ -701,6 +744,10 @@ def main():
     mirror.add_argument("action", choices=["stop", "start"])
     mirror.add_argument("key", choices=sorted(MIRRORS))
     mirror.set_defaults(func=command_mirror)
+    access_points = sub.add_parser("ap", help="stop or start access points (Edge and gateway)")
+    access_points.add_argument("action", choices=["stop", "start"])
+    access_points.add_argument("ids", nargs="+", metavar="all|ap-id")
+    access_points.set_defaults(func=command_ap)
     down = sub.add_parser("down")
     down.add_argument("--destroy", action="store_true")
     down.set_defaults(func=command_down)
