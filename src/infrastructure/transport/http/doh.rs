@@ -109,11 +109,20 @@ pub(crate) mod tests {
     #[async_trait::async_trait]
     impl DohLookup for ScriptedLookup {
         fn covers(&self, _host: &str) -> bool {
-            self.refused
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-                    left.checked_sub(1)
-                })
-                .is_err()
+            // 先拒绝前 `refused` 次，之后才覆盖（MSRV 低于 `try_update`，手写 CAS 循环）。
+            let mut left = self.refused.load(Ordering::SeqCst);
+            loop {
+                let Some(next) = left.checked_sub(1) else {
+                    return true;
+                };
+                match self
+                    .refused
+                    .compare_exchange(left, next, Ordering::SeqCst, Ordering::SeqCst)
+                {
+                    Ok(_) => return false,
+                    Err(actual) => left = actual,
+                }
+            }
         }
 
         async fn lookup(&self, _host: &str) -> Option<DohAnswer> {

@@ -682,7 +682,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = source.accept().await.unwrap();
             let mut request = [0; 4096];
-            socket.read(&mut request).await.unwrap();
+            let _ = socket.read(&mut request).await.unwrap();
             socket
                 .write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 8\r\n\r\na",

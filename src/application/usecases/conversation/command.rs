@@ -107,39 +107,39 @@ impl ConversationCommandUseCase {
         // conversation. A cached establishment flag cannot represent current
         // server visibility after deleting/blocking/re-adding a friend.
         // Failure still falls back to first-message roster establishment.
-        if *conversation_type == ConversationType::Single {
-            if let Some(sync) = &self.settings_sync {
-                let mut members = vec![user_id.clone(), source_id.trim().to_string()];
-                members.retain(|m| !m.is_empty());
-                members.sort();
-                members.dedup();
-                if members.len() == 2 {
-                    match sync
-                        .ensure_conversation(
-                            &conversation.conversation_id,
-                            ConversationType::Single.to_proto_int(),
-                            ConversationType::Single.as_str(),
-                            &conversation.channel_id,
-                            members,
-                        )
-                        .await
-                    {
-                        Ok(true) => {
-                            conversation
-                                .ext
-                                .insert("single_server_established".to_string(), "1".to_string());
-                            needs_persist = true;
-                        }
-                        Ok(false) => tracing::warn!(
-                            conversation_id = %conversation.conversation_id,
-                            "single ensure_conversation returned not-ok; falling back to message-roster establishment"
-                        ),
-                        Err(error) => tracing::warn!(
-                            conversation_id = %conversation.conversation_id,
-                            %error,
-                            "single ensure_conversation rpc failed; falling back to message-roster establishment"
-                        ),
+        if *conversation_type == ConversationType::Single
+            && let Some(sync) = &self.settings_sync
+        {
+            let mut members = vec![user_id.clone(), source_id.trim().to_string()];
+            members.retain(|m| !m.is_empty());
+            members.sort();
+            members.dedup();
+            if members.len() == 2 {
+                match sync
+                    .ensure_conversation(
+                        &conversation.conversation_id,
+                        ConversationType::Single.to_proto_int(),
+                        ConversationType::Single.as_str(),
+                        &conversation.channel_id,
+                        members,
+                    )
+                    .await
+                {
+                    Ok(true) => {
+                        conversation
+                            .ext
+                            .insert("single_server_established".to_string(), "1".to_string());
+                        needs_persist = true;
                     }
+                    Ok(false) => tracing::warn!(
+                        conversation_id = %conversation.conversation_id,
+                        "single ensure_conversation returned not-ok; falling back to message-roster establishment"
+                    ),
+                    Err(error) => tracing::warn!(
+                        conversation_id = %conversation.conversation_id,
+                        %error,
+                        "single ensure_conversation rpc failed; falling back to message-roster establishment"
+                    ),
                 }
             }
         }
