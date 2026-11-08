@@ -1229,7 +1229,7 @@ def command_lint(_args):
 # publisher. Nothing here signs or writes a release manifest by hand. A lab initialized before the
 # release schema existed has to be re-initialized: `access_stack.py down --destroy`, then `up`
 # (flare-platform refuses the old platform database, access_stack.SCHEMA_REMEDY), then `seed`.
-RELEASE_APP = {"version": "1.0.0", "build": 100, "distribution": "direct", "channel": "stable",
+RELEASE_APP = {"version": "1.0.0", "build": 100, "distribution": "tauri", "channel": "stable",
                "target": "darwin-aarch64", "locale": "zh-CN"}
 TAURI_TARGET = "darwin-aarch64"
 SOCIAL_API = f"http://127.0.0.1:{ls.SOCIAL_API}/api/v1"
@@ -1348,12 +1348,127 @@ def lab_apk(certificate=None, size=1 << 20):
             + struct.pack("<I", directory_offset + len(block)) + data[eocd + 20:])
 
 
+MINISIGN_UNTRUSTED_KEY = "untrusted comment: minisign public key: "
+MINISIGN_UNTRUSTED_SIGNATURE = "untrusted comment: signature from tauri secret key\n"
+
+
+def minisign_public_key(key_id, public_key):
+    r"""The registered value of a minisign Ed25519 key, as `tauri signer generate` prints it and
+    `tauri.conf.json` carries it: the base64 of the minisign file text, whose second line is the
+    base64 of `Ed` + the 8-byte key id + the 32-byte public key.
+
+    >>> value = minisign_public_key(bytes(range(8)), bytes(32))
+    >>> minisign_key_parts(value) == (bytes(range(8)), bytes(32))
+    True
+    >>> minisign_key_parts(base64.b64decode(value).decode().splitlines()[1]) == (bytes(range(8)), bytes(32))
+    True
+    >>> minisign_key_parts(base64.b64encode(b"\0" * 42).decode()) is None
+    True
+    """
+    assert len(key_id) == 8 and len(public_key) == 32
+    line = base64.b64encode(b"Ed" + key_id + public_key).decode()
+    # minisign prints the id as the little-endian u64 it is.
+    text = f"{MINISIGN_UNTRUSTED_KEY}{int.from_bytes(key_id, 'little'):016X}\n{line}\n"
+    return base64.b64encode(text.encode()).decode()
+
+
+def minisign_key_parts(value):
+    """(key id, public key) of a registered minisign key, read the way the platform's
+    `valid_minisign_key` / `minisign::PublicKey::parse` read it: 40..=512 base64 characters, either
+    the base64 of the file text (second line) or that line alone, decoding to 42 bytes starting
+    `Ed`. `None` when the platform would refuse it. (The platform also checks that the 32 bytes are
+    a valid Ed25519 point; a key from `openssl genpkey` always is.)"""
+    if not 40 <= len(value) <= 512 or not re.fullmatch(r"[A-Za-z0-9+/=]+", value):
+        return None
+    try:
+        text = base64.b64decode(value, validate=True).decode()
+        line = text.splitlines()[1].strip() if text.startswith("untrusted comment:") else value.strip()
+        raw = base64.b64decode(line, validate=True)
+    except (ValueError, IndexError, UnicodeDecodeError):
+        try:
+            raw = base64.b64decode(value.strip(), validate=True)
+        except ValueError:
+            return None
+    if len(raw) != 42 or raw[:2] != b"Ed":
+        return None
+    return raw[2:10], raw[10:]
+
+
+def minisign_signature(sign, key_id, data, file_name, timestamp):
+    r"""A Tauri `.sig` value for `data`: what `tauri signer sign` writes, base64 of the minisign
+    signature file. Tauri signs prehashed (algorithm `ED`): the file signature is Ed25519 over the
+    BLAKE2b-512 of the bytes; the global signature, which the platform checks against the
+    registered key, is Ed25519 over the file signature followed by the trusted comment. `sign` is
+    Ed25519 over a message.
+
+    >>> parts = minisign_signature_parts(minisign_signature(lambda m: bytes(64), b"k" * 8, b"x", "a.tar.gz", 7))
+    >>> parts["algorithm"], parts["key_id"], parts["trusted"]
+    (b'ED', b'kkkkkkkk', 'timestamp:7\tfile:a.tar.gz')
+    """
+    file_signature = sign(hashlib.blake2b(data, digest_size=64).digest())
+    trusted = f"timestamp:{timestamp}\tfile:{file_name}"
+    global_signature = sign(file_signature + trusted.encode())
+    text = (MINISIGN_UNTRUSTED_SIGNATURE + base64.b64encode(b"ED" + key_id + file_signature).decode() + "\n"
+            + "trusted comment: " + trusted + "\n" + base64.b64encode(global_signature).decode() + "\n")
+    return base64.b64encode(text.encode()).decode()
+
+
+def minisign_signature_parts(value):
+    """The fields of a `.sig` value the platform's `minisign::PublicKey::signed` reads."""
+    lines = base64.b64decode(value).decode().splitlines()
+    raw = base64.b64decode(lines[1])
+    assert len(raw) == 74 and lines[2].startswith("trusted comment: ")
+    return {"algorithm": raw[:2], "key_id": raw[2:10], "file_signature": raw[10:],
+            "trusted": lines[2][len("trusted comment: "):], "global": base64.b64decode(lines[3])}
+
+
+class LabMinisign:
+    """The lab's Tauri updater key: an Ed25519 key from OpenSSL kept in the lab's private secrets
+    (the same key on every run, so the registered client application stays valid), with a key id
+    derived from the public key."""
+
+    def __init__(self):
+        self.key = ls.Key("access-lab-minisign")
+        der = self.key._out("-pubout", "-outform", "DER")
+        self.public_key = der[-32:]
+        self.key_id = hashlib.blake2b(self.public_key, digest_size=8).digest()
+
+    def sign(self, message):
+        # Ed25519 in OpenSSL signs a whole file, not a stream.
+        scratch = ls.path("secrets", f"minisign-message-{uuid.uuid4().hex}")
+        ls.write_private(scratch, message)
+        try:
+            signed = subprocess.run([ls.openssl(), "pkeyutl", "-sign", "-rawin", "-inkey", str(self.key.file),
+                                     "-in", str(scratch)], check=True, capture_output=True).stdout
+        finally:
+            scratch.unlink(missing_ok=True)
+        ls.require(len(signed) == 64, "openssl Ed25519 signature")
+        return signed
+
+    def public_value(self):
+        value = minisign_public_key(self.key_id, self.public_key)
+        ls.require(minisign_key_parts(value) == (self.key_id, self.public_key), "lab minisign key format")
+        return value
+
+    def signature(self, data, file_name):
+        return minisign_signature(self.sign, self.key_id, data, file_name, int(time.time()))
+
+
+_LAB_MINISIGN = []
+
+
+def lab_minisign():
+    if not _LAB_MINISIGN:
+        _LAB_MINISIGN.append(LabMinisign())
+    return _LAB_MINISIGN[0]
+
+
 def lab_minisign_key():
-    return base64.b64encode(hashlib.sha256(b"flare access lab minisign").digest() * 2).decode()
+    return lab_minisign().public_value()
 
 
-def lab_updater_signature():
-    return base64.b64encode(b"untrusted comment: flare access lab signature\n" + secrets.token_bytes(48)).decode()
+def lab_updater_signature(data, file_name):
+    return lab_minisign().signature(data, file_name)
 
 
 def artifact_credentials(admin, lab, facts):
@@ -1412,13 +1527,17 @@ class Releases:
         if not set(certs) <= set(found["signingCertSha256"]):
             patch["signingCertSha256"] = sorted(set(certs) | set(found["signingCertSha256"]))
         if not all(found["distributions"].get(k) == v for k, v in distributions.items()):
-            patch["distributions"] = {**found["distributions"], **distributions}
+            # A desktop shell keeps only the distribution named after it (a lab registered before
+            # that rule had `direct`).
+            kept = {k: v for k, v in found["distributions"].items() if v["kind"] not in ("tauri", "electron")}
+            patch["distributions"] = {**kept, **distributions}
         if len(patch) == 1:
             return found
         return self.author.ok("PATCH", f"{self.base}/client-apps/{found['id']}", patch)
 
     def tauri_app(self):
-        return self.client_app("tauri", {"direct": {"kind": "tauri"}}, channels=("stable", "canary"),
+        # A desktop shell's one distribution is named after the shell.
+        return self.client_app("tauri", {"tauri": {"kind": "tauri"}}, channels=("stable", "canary"),
                                minisign=lab_minisign_key())
 
     # -- releases
@@ -1426,7 +1545,7 @@ class Releases:
         return max([COUNT_BUILD_FLOOR, *(r["build"] for r in self.releases(platform, channel))]) + 10
 
     def draft(self, platform, channel, build, *, packs=(), stages=None):
-        body = {"platform": platform, "channel": channel, "version": f"2.{build}", "build": build,
+        body = {"platform": platform, "channel": channel, "version": f"2.{build}.0", "build": build,
                 "notes": {"zh-CN": [f"第 {build} 版实验台说明"], "en": [f"Lab notes for {build}"]},
                 "resourcePacks": list(packs)}
         if stages:
@@ -1519,10 +1638,11 @@ class Releases:
     def package(self, release, *, size=1 << 20, name=None):
         """A tauri package for the release's one distribution, replicated everywhere."""
         blob = secrets.token_bytes(size)
-        upload = self.upload(release, "direct", blob, name or f"app-{release['build']}.tar.gz",
-                             target=TAURI_TARGET, signature=lab_updater_signature())
+        name = name or f"app-{release['build']}.tar.gz"
+        upload = self.upload(release, "tauri", blob, name, target=TAURI_TARGET,
+                             signature=lab_updater_signature(blob, name))
         ls.require(upload["status"] == "verified", f"package not verified: {upload.get('failure')}")
-        urls = self.wait_replicas(release["id"], "direct", len(st.MIRRORS))
+        urls = self.wait_replicas(release["id"], "tauri", len(st.MIRRORS))
         return {"sha256": hashlib.sha256(blob).hexdigest(), "size": len(blob), "urls": urls, "upload": upload}
 
     # -- policy
@@ -1638,7 +1758,7 @@ def command_release(_args):
     document_live, payload_live = wait_release(app, "tauri", "stable", lambda p: (
         entry_of(p, build) is not None and not entry_of(p, build)["rollout"]["halted"]))
     steps["manifest"] = {"serial": payload_live["serial"], "builds": [r["build"] for r in payload_live["releases"]],
-                         "artifact": entry_of(payload_live, build)["artifacts"]["direct"]["kind"]}
+                         "artifact": entry_of(payload_live, build)["artifacts"]["tauri"]["kind"]}
 
     def client(**extra):
         return Client(client_name, app, seed=seed, no_login=True, tick=60, app_info=app_info, **extra).start()
