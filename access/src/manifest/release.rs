@@ -442,11 +442,63 @@ pub fn is_valid_path_segment(value: &str) -> bool {
             .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-'))
 }
 
+/// CONNECT 设备平台 → 发布清单平台段（Core 门禁、Social 门禁、引擎查更新共用这一处）。
+///
+/// 设备平台是 CONNECT 词汇（`web`、`h5`、`pc`、`ios`、`android`、`harmonyos`），桌面也接受
+/// `desktop`、`windows`、`macos`、`linux`。桌面分两种外壳：`distribution` 为 `electron` 时是
+/// `electron`，其余都是 `tauri`。没有发布清单的平台（鸿蒙等）返回 `None`，不设版本门禁。
+pub fn release_platform(device_platform: &str, distribution: Option<&str>) -> Option<&'static str> {
+    let platform = device_platform.trim().to_ascii_lowercase();
+    match platform.as_str() {
+        "web" | "h5" | "mobile_web" => Some("web"),
+        "android" => Some("android"),
+        "ios" => Some("ios"),
+        "pc" | "desktop" | "windows" | "macos" | "linux" => Some(
+            if distribution.is_some_and(|value| value.trim().eq_ignore_ascii_case("electron")) {
+                "electron"
+            } else {
+                "tauri"
+            },
+        ),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn device_platforms_map_to_release_platform_segments() {
+        for (device, distribution, expected) in [
+            ("web", None, Some("web")),
+            ("h5", None, Some("web")),
+            ("android", Some("play"), Some("android")),
+            ("ios", Some("appstore"), Some("ios")),
+            ("IOS", None, Some("ios")),
+            ("pc", None, Some("tauri")),
+            ("pc", Some("tauri"), Some("tauri")),
+            ("pc", Some("electron"), Some("electron")),
+            ("desktop", Some("Electron"), Some("electron")),
+            ("windows", Some("direct"), Some("tauri")),
+            ("macos", Some("electron"), Some("electron")),
+            ("linux", None, Some("tauri")),
+            ("harmonyos", Some("appgallery"), None),
+            ("", None, None),
+            ("other", None, None),
+        ] {
+            assert_eq!(
+                release_platform(device, distribution),
+                expected,
+                "{device} / {distribution:?}"
+            );
+        }
+        for segment in ["web", "android", "ios", "tauri", "electron"] {
+            assert!(is_valid_path_segment(segment));
+        }
+    }
 
     /// 设计文档的示例发布清单（载荷）。
     fn sample() -> serde_json::Value {

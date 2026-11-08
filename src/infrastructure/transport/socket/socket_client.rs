@@ -25,14 +25,23 @@ fn native_device_platform(target_os: &str) -> DevicePlatform {
     }
 }
 
+/// 这台设备在 CONNECT 里报的平台；服务端按它（加上 `distribution`）映射发布清单平台段。
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn connect_device_platform() -> DevicePlatform {
+    native_device_platform(std::env::consts::OS)
+}
+
+/// 浏览器一律报 `web`。
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn connect_device_platform() -> DevicePlatform {
+    DevicePlatform::Web
+}
+
 fn sdk_device_info(config: &SdkConfig) -> DeviceInfo {
     let device_id = config.effective_device_id();
-    #[cfg(not(target_arch = "wasm32"))]
-    let platform = native_device_platform(std::env::consts::OS);
+    let platform = connect_device_platform();
     #[cfg(not(target_arch = "wasm32"))]
     let model = "FlareSDK".to_string();
-    #[cfg(target_arch = "wasm32")]
-    let platform = DevicePlatform::Web;
     #[cfg(target_arch = "wasm32")]
     let model = "FlareSDK-Web".to_string();
 
