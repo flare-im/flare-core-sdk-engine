@@ -1471,6 +1471,9 @@ OFFLINE_SERIAL_MARGIN = 100_000
 SERIAL_FLOOR_MAX_JUMP = 1_000_000
 RESCUE_BASE = f"https://{st.RESCUE_MIRROR_HOST}:{st.RESCUE_MIRROR_PORT}/flare/v1"
 DNS_HEADER, DNS_TXT, DNS_IN = 12, 16, 1
+# What the platform answers a second person who tries the author's emergency path.
+AUTHOR_ONLY = "error.access.changeSet.emergencyAuthorOnly"
+CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=300, stale-if-error=604800"
 
 
 def offline_serial(mirror_serials, recovery_serials=()):
@@ -1724,6 +1727,73 @@ def retire(admin, approver, ap_ids, reason):
         return {"accessPoints": ap_ids, "retired": False, "error": str(error)[:800]}
 
 
+def refused_as_not_author(status, body):
+    """The second person's emergency call is refused for being not the author, not for any other
+    reason (a missing permission would prove nothing about the author-only rule).
+
+    >>> refused_as_not_author(403, {"code": 403, "message": AUTHOR_ONLY})
+    True
+    >>> refused_as_not_author(403, {"code": 403, "message": "error.permission.denied"})
+    False
+    >>> refused_as_not_author(409, {"message": AUTHOR_ONLY})
+    False
+    """
+    return status == 403 and AUTHOR_ONLY in json.dumps(body, ensure_ascii=False, default=str)
+
+
+def points_to_restart(stopped, retired):
+    """After a case, whatever access points it stopped run again, unless a publication has since
+    taken them out of the manifest: then every point a client can still find is running.
+
+    >>> points_to_restart(["ap-a1", "ap-a2"], None)
+    ['ap-a1', 'ap-a2']
+    >>> points_to_restart(["ap-a1", "ap-a2"], {"retired": False, "error": "lint"})
+    ['ap-a1', 'ap-a2']
+    >>> points_to_restart(["ap-a1", "ap-a2"], {"retired": True})
+    []
+    """
+    return [] if (retired or {}).get("retired") else list(stopped)
+
+
+def needs_supersede(offline_serial, platform_serial):
+    """An offline manifest left on the mirrors must be overtaken by a platform manifest before the
+    next case: otherwise the sequence stays below it and every later publication is a rollback.
+
+    >>> needs_supersede(None, None)
+    False
+    >>> needs_supersede(201000, None), needs_supersede(201000, 201000), needs_supersede(201000, 201001)
+    (True, True, False)
+    """
+    return offline_serial is not None and (platform_serial or 0) <= offline_serial
+
+
+def supersede_offline(admin, approver, app, offline_serial, reason):
+    """The floor past the offline serial, then an ordinary publication above it."""
+    floor = admin.ok("POST", "/platform/access/serial-floor", {"floor": offline_serial}, reason=reason)
+    bump_weight(admin, active_points(admin)[0])
+    publication = publish(admin, approver, reason)
+    serial = max(r["serial"] for r in serials(admin, publication["changeSet"]) if r["appId"] == app["appId"])
+    return {"floor": floor, "platformSerial": serial}
+
+
+def cleanup_step(cleanup, name, action):
+    """One clean-up step: its failure is recorded and fails the case, and the next step still runs."""
+    try:
+        cleanup[name] = action()
+    except (SystemExit, Exception) as error:  # noqa: BLE001 - clean-up must reach every step
+        cleanup[name] = {"error": str(error)[:800]}
+
+
+def cleanup_failed(cleanup):
+    """
+    >>> cleanup_failed({"accessPoints": [], "offline": {"error": "x"}})
+    True
+    >>> cleanup_failed({"accessPoints": ["ap-a1"], "offline": None})
+    False
+    """
+    return any(isinstance(value, dict) and "error" in value for value in cleanup.values())
+
+
 def stop_control_plane():
     state = ls.load_state()
     for role in ("api", "worker", "prober"):
@@ -1750,7 +1820,7 @@ def emergency_publish(author, other, reason):
     ls.require(final["status"] == "published", f"emergency change set failed: {final.get('failure')}")
     return {"changeSet": change_set, "callToPublishedSec": round(time.time() - started, 3), "observedAtMs": now_ms(),
             "emergency": final.get("emergency"), "publishedAt": final.get("publishedAt"),
-            "notAuthor": {"status": refused_status,
+            "notAuthor": {"status": refused_status, "authorOnly": refused_as_not_author(refused_status, refused),
                           "body": refused if not isinstance(refused, (bytes, str)) else str(refused)[:300]},
             "lintPassed": (final.get("lint") or {}).get("passed")}
 
@@ -1793,41 +1863,99 @@ def wait_offline(fleet, timeout=180):
     return gone
 
 
-def send_round(fleet, label, timeout=60):
-    """Each client sends one text to the next one. Dispatched to all first, then collected, so
-    one client waiting for its acknowledgement holds up nobody else."""
-    pending = []
+def dispatch_round(fleet, label):
+    """Each client sends one text to the next one. Every message carries its own token in the
+    text, so Core's copy is found even when the acknowledgement never came back to the client."""
+    rows = []
     for index, client in enumerate(fleet):
         peer = fleet[(index + 1) % len(fleet)]
-        identity = uuid.uuid4().hex
+        identity, token = uuid.uuid4().hex, uuid.uuid4().hex
         client.send(op="send", id=identity, to=json.loads(peer.config_file.read_text())["user"],
-                    text=f"{label} {client.name} {now_ms()}")
-        pending.append((client, identity))
-    rows = []
-    for client, identity in pending:
-        event = client.wait(lambda e: isinstance(e.get("data"), dict) and e["data"].get("id") == identity, timeout)
-        data = (event or {}).get("data") or {}
-        rows.append({"client": client.name, "label": label, "clientMsgId": data.get("clientMsgId"),
-                     "error": data.get("message") if event and event["kind"] == "error" else (None if event else "timeout")})
+                    text=f"{label} {client.name} {token}")
+        rows.append({"client": client.name, "label": label, "id": identity, "token": token,
+                     "dispatchedAtMs": now_ms(), "clientMsgId": None, "error": None})
     return rows
 
 
-def persisted(app, sent, timeout=180):
-    """Which accepted messages Core stored: an accepted message must not be lost to the outage."""
-    ids = [row["clientMsgId"] for row in sent if row["clientMsgId"]]
-    ls.require(all(re.fullmatch(r"[A-Za-z0-9_.:-]+", i) for i in ids), "unexpected client message id")
+def ack_of(events, identity):
+    """The client's answer to one `send`: `sent` with the client message id, or `error`."""
+    for event in list(events):
+        data = event.get("data")
+        if event.get("kind") in ("sent", "error") and isinstance(data, dict) and data.get("id") == identity:
+            return event
+    return None
+
+
+def collect_acks(fleet, rows, timeout):
+    """Fills in the answers that have arrived, under one deadline for all rows: a client stuck on
+    its acknowledgement costs the round `timeout` once, not once per client. Rows still open
+    stay open and can be collected again later (after the reconnect).
+
+    >>> class C: pass
+    >>> c = C(); c.name = "a"; c.events = [{"kind": "sent", "data": {"id": "1", "clientMsgId": "m1"}},
+    ...                                     {"kind": "error", "data": {"id": "2", "message": "offline"}}]
+    >>> rows = [{"client": "a", "id": i, "clientMsgId": None, "error": None} for i in ("1", "2", "3")]
+    >>> [(r["clientMsgId"], r["error"]) for r in collect_acks([c], rows, 0)]
+    [('m1', None), (None, 'offline'), (None, None)]
+    """
+    clients = {client.name: client for client in fleet}
+    deadline = time.time() + timeout
+    while True:
+        for row in rows:
+            if row["clientMsgId"] or row["error"]:
+                continue
+            event = ack_of(clients[row["client"]].events, row["id"])
+            if event and event["kind"] == "sent":
+                row["clientMsgId"] = event["data"].get("clientMsgId")
+            elif event:
+                row["error"] = event["data"].get("message") or "error"
+        if all(row["clientMsgId"] or row["error"] for row in rows) or time.time() >= deadline:
+            return rows
+        time.sleep(0.5)
+
+
+def message_outcome(rows, stored_ids, stored_tokens):
+    """Every dispatched message the SDK did not refuse outright must be in Core: acknowledged or
+    not, found by its client message id or by its token.
+
+    >>> rows = [{"clientMsgId": "m1", "token": "t1", "error": None},
+    ...         {"clientMsgId": None, "token": "t2", "error": None},
+    ...         {"clientMsgId": None, "token": "t3", "error": "not connected"}]
+    >>> message_outcome(rows, {"m1"}, {"t2"})
+    {'dispatched': 3, 'refused': 1, 'mustStore': 2, 'stored': 2, 'lost': []}
+    >>> message_outcome(rows, {"m1"}, set())["lost"]
+    ['t2']
+    """
+    must = [row for row in rows if not row["error"]]
+    lost = [row["token"] for row in must
+            if row["clientMsgId"] not in stored_ids and row["token"] not in stored_tokens]
+    return {"dispatched": len(rows), "refused": len(rows) - len(must), "mustStore": len(must),
+            "stored": len(must) - len(lost), "lost": lost}
+
+
+def persisted(app, rows, since_ms, timeout=180):
+    """What Core stored of these messages, polled until every one that must be there is."""
+    for row in rows:
+        ls.require(re.fullmatch(r"[0-9a-f]{32}", row["token"])
+                   and (row["clientMsgId"] is None or re.fullmatch(r"[A-Za-z0-9_.:-]+", row["clientMsgId"])),
+                   f"unexpected message id in {row}")
     keys = st.Lab().core
-    deadline, found = time.time() + timeout, set()
-    while ids and time.time() < deadline:
-        listed = ",".join(f"'{i}'" for i in ids)
-        rows = ls.psql(keys, f"SELECT client_msg_id FROM messages WHERE tenant_id='{app['appId']}' "
-                             f"AND client_msg_id IN ({listed})", ls.DATABASES["core"], check=False)
-        found = set(rows.split()) if rows else set()
-        if found >= set(ids):
-            break
+    deadline = time.time() + timeout
+    while True:
+        ids = [row["clientMsgId"] for row in rows if row["clientMsgId"]]
+        tokens = [row["token"] for row in rows]
+        scope = f"tenant_id='{app['appId']}' AND created_at >= to_timestamp({since_ms} / 1000.0)"
+        found_ids = ls.psql(keys, f"SELECT client_msg_id FROM messages WHERE {scope} AND client_msg_id IN ("
+                                  + ",".join(f"'{i}'" for i in ids) + ")", ls.DATABASES["core"], check=False) \
+            if ids else ""
+        found_tokens = ls.psql(keys, "SELECT t FROM unnest(ARRAY[" + ",".join(f"'{t}'" for t in tokens)
+                                     + f"]) AS t WHERE EXISTS (SELECT 1 FROM messages WHERE {scope} "
+                                     "AND position(convert_to(t, 'UTF8') in content) > 0)",
+                               ls.DATABASES["core"], check=False)
+        outcome = message_outcome(rows, set(found_ids.split()), set(found_tokens.split()))
+        if not outcome["lost"] or time.time() >= deadline:
+            return outcome
         time.sleep(2)
-    return {"accepted": len(ids), "stored": len(found & set(ids)), "lost": sorted(set(ids) - found),
-            "refused": [row for row in sent if not row["clientMsgId"]]}
 
 
 def stop_access_points(ap_ids):
@@ -1900,9 +2028,18 @@ def offline_manifest(app, name, access_points, serial=None, recovery_serials=())
 
 
 def wait_adopted(fleet, serial, marks, timeout):
-    """Each client's `changed` event to at least `serial` after its mark."""
+    """Each client's `changed` event to at least `serial` after its mark. Looks at least once, so
+    a timeout of 0 reports what has already happened.
+
+    >>> class C: pass
+    >>> c = C(); c.name = "a"; c.events = [{"kind": "changed", "ts": 5, "data": {"serial": 9, "source": "https:x"}}]
+    >>> wait_adopted([c], 9, {"a": 0}, 0)
+    {'a': {'ts': 5, 'serial': 9, 'source': 'https:x'}}
+    >>> wait_adopted([c], 10, {"a": 0}, 0), wait_adopted([c], 9, {"a": 1}, 0)
+    ({}, {})
+    """
     deadline, adopted = time.time() + timeout, {}
-    while len(adopted) < len(fleet) and time.time() < deadline:
+    while True:
         for client in fleet:
             if client.name in adopted:
                 continue
@@ -1911,8 +2048,9 @@ def wait_adopted(fleet, serial, marks, timeout):
                     adopted[client.name] = {"ts": event["ts"], "serial": event["data"]["serial"],
                                             "source": event["data"].get("source")}
                     break
+        if len(adopted) == len(fleet) or time.time() >= deadline:
+            return adopted
         time.sleep(0.5)
-    return adopted
 
 
 def recovery_serials(facts):
@@ -1931,15 +2069,20 @@ def command_total_outage(args):
     ls.require(spares, f"every lab site is in the manifest ({old}); retire some first")
     fleet = start_fleet(app, args.clients, "total", seed)
     result = {"oldAccessPoints": old, "newAccessPoints": spares}
-    messages = []
+    messages, stopped, cleanup = [], [], {}
+    since = now_ms()
     try:
         wait_fleet_online(fleet)
-        messages += send_round(fleet, "before")
+        messages += collect_acks(fleet, dispatch_round(fleet, "before"), 60)
         marks = {c.name: len(c.events) for c in fleet}
+        stopped = list(old)
         stop_access_points(old)
         result["outageAtMs"] = now_ms()
         result["secondsToOffline"] = wait_offline(fleet)
-        messages += send_round(fleet, "during")
+        # Sent while nothing is reachable: answers may only come after the reconnect.
+        during = dispatch_round(fleet, "during")
+        collect_acks(fleet, during, 10)
+        messages += during
         start_access_points(spares)
         activate(admin, spares)
         publication = emergency_publish(admin, approver, "every access point down: new nodes")
@@ -1947,19 +2090,27 @@ def command_total_outage(args):
         result["reconnect"] = wait_reconnected(fleet, set(spares), publication["observedAtMs"], marks)
         log(f"back on new nodes: {result['reconnect']['back']}/{len(fleet)}, "
             f"max {result['reconnect']['maxDelayMs']} ms")
-        messages += send_round(fleet, "after")
-        result["messages"] = {"sent": messages, **persisted(app, messages)}
+        messages += dispatch_round(fleet, "after")
+        collect_acks(fleet, messages, 120)
+        result["messages"] = {"rows": messages, **persisted(app, messages, since)}
         result["retire"] = retire(admin, approver, old, "dead access points after the total outage")
     finally:
         for client in fleet:
             client.stop()
+        cleanup_step(cleanup, "accessPoints",
+                     lambda: start_access_points(points_to_restart(stopped, result.get("retire")))
+                     or points_to_restart(stopped, result.get("retire")))
+        result["cleanup"] = cleanup
     stored = result.get("messages", {})
-    notes = result.get("publication", {}).get("notAuthor", {})
+    by_label = {label: [r for r in stored.get("rows", []) if r["label"] == label] for label in ("before", "during", "after")}
     result["checks"] = {
         "reconnectedWithinLimit": result.get("reconnect", {}).get("pass", False),
-        "noAcceptedMessageLost": bool(stored) and not stored["lost"] and stored["accepted"] > 0,
-        "secondPersonRefused": notes.get("status") not in (None, 200),
+        "noDispatchedMessageLost": bool(stored) and not stored["lost"] and stored["mustStore"] > 0,
+        "everyRoundSent": all(by_label.values()),
+        "secondPersonRefused": bool(result.get("publication", {}).get("notAuthor", {}).get("authorOnly")),
         "publishedAsEmergency": bool(result.get("publication", {}).get("emergency")),
+        "deadPointsRetired": bool(result.get("retire", {}).get("retired")),
+        "labRestored": not cleanup_failed(cleanup),
     }
     result["pass"] = all(result["checks"].values())
     evidence("r1-total-outage", result)
@@ -1979,23 +2130,28 @@ def command_break_glass(args):
     lab = st.Lab()
     fleet = start_fleet(app, args.clients, "glass", seed)
     result = {"oldAccessPoints": old, "newAccessPoints": spares}
+    stopped, cleanup, uploaded_serial = [], {}, None
     try:
         wait_fleet_online(fleet)
         marks = {c.name: len(c.events) for c in fleet}
+        stopped = list(old)
         stop_access_points(old)
         result["secondsToOffline"] = wait_offline(fleet)
         start_access_points(spares)
         stop_control_plane()
         offline = offline_manifest(app, "break-glass", spares, recovery_serials=recovery_serials(facts))
-        put_everywhere(lab, app, offline["file"].read_bytes(),
-                       headers={"cache-control": "public, max-age=60, stale-while-revalidate=300, stale-if-error=604800"})
-        uploaded = now_ms()
         facts.setdefault("offlineSerials", []).append(offline["serial"])
         save_facts(facts)
+        uploaded_serial = offline["serial"]
+        put_everywhere(lab, app, offline["file"].read_bytes(), headers={"cache-control": CACHE_CONTROL})
+        uploaded = now_ms()
         result["offline"] = {k: (str(v) if isinstance(v, Path) else v) for k, v in offline.items()}
         result["reconnect"] = wait_reconnected(fleet, set(spares), uploaded, marks)
-        adopted = wait_adopted(fleet, offline["serial"], marks, 0)
-        result["adoptedOffline"] = {"clients": len(fleet), "adopted": len(adopted), "samples": adopted}
+        left = (uploaded + RECONNECT_AFTER_PUBLISH_MS) / 1000 - time.time()
+        adopted = wait_adopted(fleet, offline["serial"], marks, max(0, left))
+        delays = [value["ts"] - uploaded for value in adopted.values()]
+        result["adoptedOffline"] = {"clients": len(fleet), "adopted": len(adopted), "maxDelayMs": max(delays, default=None),
+                                    "limitMs": RECONNECT_AFTER_PUBLISH_MS, "samples": adopted}
         log(f"offline manifest {offline['serial']}: {len(adopted)}/{len(fleet)} adopted, "
             f"{result['reconnect']['back']} back on new nodes")
         start_control_plane()
@@ -2009,25 +2165,35 @@ def command_break_glass(args):
         bump_weight(admin, spares[0])
         publication = publish(admin, approver, "the offline topology, signed by the platform again")
         platform_serial = max(r["serial"] for r in serials(admin, publication["changeSet"]) if r["appId"] == app["appId"])
+        result["platform"] = {"serial": platform_serial, "approveToPublishedSec": publication["approveToPublishedSec"]}
         adopted = wait_adopted(fleet, platform_serial, marks, 10 * 60)
-        result["platform"] = {"serial": platform_serial, "approveToPublishedSec": publication["approveToPublishedSec"],
-                              "adopted": len(adopted), "samples": adopted,
-                              "online": sum(online_on(c.status(), set(spares)) for c in fleet)}
+        result["platform"].update({"adopted": len(adopted), "samples": adopted,
+                                   "online": sum(online_on(c.status(), set(spares)) for c in fleet)})
         result["retire"] = retire(admin, approver, old, "dead access points after the break-glass publication")
     finally:
-        start_control_plane()
         for client in fleet:
             client.stop()
+        cleanup_step(cleanup, "controlPlane", lambda: start_control_plane() or "running")
+        restart = points_to_restart(stopped, result.get("retire"))
+        cleanup_step(cleanup, "accessPoints", lambda: start_access_points(restart) or restart)
+        if needs_supersede(uploaded_serial, result.get("platform", {}).get("serial")):
+            cleanup_step(cleanup, "offline", lambda: supersede_offline(
+                admin, approver, app, uploaded_serial, f"offline manifest {uploaded_serial} left by an interrupted case"))
+        result["cleanup"] = cleanup
     platform = result.get("platform", {})
     floor = result.get("floor", {})
+    adopted_offline = result.get("adoptedOffline", {})
     result["checks"] = {
-        "offlineAdoptedByAll": result.get("adoptedOffline", {}).get("adopted") == len(fleet),
+        "offlineAdoptedByAll": adopted_offline.get("adopted") == len(fleet)
+        and (adopted_offline.get("maxDelayMs") or 1 << 60) <= RECONNECT_AFTER_PUBLISH_MS,
         "reconnectedWithinLimit": result.get("reconnect", {}).get("pass", False),
         "floorRaisedPastOffline": floor.get("after", 0) >= result.get("offline", {}).get("serial", 1 << 62),
         "floorTooHighRefused": floor.get("tooHigh", {}).get("status") not in (None, 200)
         and "floorTooHigh" in json.dumps(floor.get("tooHigh", {}).get("body")),
         "platformAboveOffline": platform.get("serial", 0) > result.get("offline", {}).get("serial", 1 << 62),
         "platformAdoptedByAll": platform.get("adopted") == len(fleet) and platform.get("online") == len(fleet),
+        "deadPointsRetired": bool(result.get("retire", {}).get("retired")),
+        "labRestored": not cleanup_failed(cleanup),
     }
     result["pass"] = all(result["checks"].values())
     evidence("r2-break-glass", result)
@@ -2081,6 +2247,8 @@ def command_serial_continuity(_args):
 
     # Reverse: signed outside the platform, floor never raised.
     client = Client(f"continuity-ahead-{now_ms()}", app, seed=seed_file(app)).start()
+    uploaded_serial, repaired, cleanup = None, None, {}
+    steps["unannounced"] = {}
     try:
         ls.require(online_wait(client, set(manifest_points(app)), 90), "the reverse-case client did not come online")
         current = manifest_points(app)
@@ -2090,7 +2258,8 @@ def command_serial_continuity(_args):
         facts.setdefault("offlineSerials", []).append(offline["serial"])
         save_facts(facts)
         mark = len(client.events)
-        put_everywhere(lab, app, offline["file"].read_bytes())
+        uploaded_serial = offline["serial"]
+        put_everywhere(lab, app, offline["file"].read_bytes(), headers={"cache-control": CACHE_CONTROL})
         client.refresh()
         took = wait_adopted([client], offline["serial"], {client.name: mark}, 120)
         triggered = now_ms()
@@ -2109,9 +2278,9 @@ def command_serial_continuity(_args):
         event = client.refresh()
         report = (event or {}).get("data", {}).get("report", {})
         attempts = [a for a in report.get("attempts", []) if a.get("document") == "access"]
-        steps["unannounced"] = {"offlineSerial": offline["serial"], "adopted": took.get(client.name),
+        steps["unannounced"].update({"offlineSerial": offline["serial"], "adopted": took.get(client.name),
                                 "mirrorAudit": ahead, "platformSerial": lower, "refreshAttempts": attempts,
-                                "held": ((client.status() or {}).get("access") or {}).get("serial")}
+                                "held": ((client.status() or {}).get("access") or {}).get("serial")})
         # Put right: the floor past the offline serial, then the platform is ahead again.
         floor = admin.ok("POST", "/platform/access/serial-floor", {"floor": offline["serial"]},
                          reason=f"offline manifest {offline['serial']} found on the mirrors")
@@ -2119,17 +2288,22 @@ def command_serial_continuity(_args):
         bump_weight(admin, current[0])
         publication = publish(admin, approver, "after raising the floor")
         repaired = max(r["serial"] for r in serials(admin, publication["changeSet"]) if r["appId"] == app["appId"])
-        steps["unannounced"]["repair"] = {"floor": floor, "platformSerial": repaired,
-                                          "adopted": wait_adopted([client], repaired, {client.name: mark}, 10 * 60)
-                                          .get(client.name)}
+        steps["unannounced"]["repair"] = {"floor": floor, "platformSerial": repaired}
+        steps["unannounced"]["repair"]["adopted"] = wait_adopted([client], repaired, {client.name: mark},
+                                                                 10 * 60).get(client.name)
     finally:
         client.stop()
+        if needs_supersede(uploaded_serial, repaired):
+            cleanup_step(cleanup, "offline", lambda: supersede_offline(
+                admin, approver, app, uploaded_serial, f"offline manifest {uploaded_serial} left by an interrupted case"))
+        steps["unannounced"]["cleanup"] = cleanup
     reverse = steps["unannounced"]
-    reverse["pass"] = (bool(reverse["adopted"]) and len(reverse["mirrorAudit"]) == len(st.MIRRORS)
-                       and reverse["platformSerial"] < reverse["offlineSerial"]
+    reverse["pass"] = (bool(reverse.get("adopted")) and len(reverse.get("mirrorAudit", {})) == len(st.MIRRORS)
+                       and reverse.get("platformSerial", 1 << 62) < reverse.get("offlineSerial", 0)
                        and any(a.get("code") == "rollback" or a.get("result") == "olderSerial"
-                               for a in reverse["refreshAttempts"])
-                       and reverse["held"] == reverse["offlineSerial"] and bool(reverse["repair"]["adopted"]))
+                               for a in reverse.get("refreshAttempts", []))
+                       and reverse.get("held") == reverse.get("offlineSerial")
+                       and bool((reverse.get("repair") or {}).get("adopted")) and not cleanup_failed(cleanup))
     evidence("r3-serial-continuity", {"steps": steps, "pass": steps["reserved"]["pass"] and reverse["pass"]})
     log(json.dumps({"reserved": steps["reserved"]["pass"], "unannounced": reverse["pass"]}))
 
@@ -2163,6 +2337,34 @@ def doh_seed(app, payload):
     file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     file.write_bytes(forge("ok-forge-good", key, stale, [cert]))
     return file
+
+
+def closable_mirrors(sources, mirrors):
+    """The lab mirrors behind the manifest's https sources, and the sources no lab mirror serves.
+    The case must close every listed mirror, so anything it cannot close stops it. `wellKnown`
+    (the Cell's own mirror) is reached through the access points, which are dead in the seed.
+
+    >>> class M:
+    ...     def __init__(self, key, base): self.key, self.base_url = key, base
+    >>> mirrors = {"a": M("a", "https://cfg-a.x:1/flare/v1"), "b": M("b", "https://cfg-b.x:2/flare/v1")}
+    >>> sources = [{"kind": "https", "url": "https://cfg-a.x:1/flare/v1/0123/"}, {"kind": "wellKnown"},
+    ...            {"kind": "dohTxt", "name": "_flare.0123.boot.x"}]
+    >>> closable_mirrors(sources, mirrors)
+    (['a'], [])
+    >>> closable_mirrors(sources + [{"kind": "https", "url": "https://other.example/flare/v1/0123/"}], mirrors)
+    (['a'], ['https://other.example/flare/v1/0123/'])
+    """
+    keys, unknown = [], []
+    for source in sources:
+        if source.get("kind") != "https":
+            continue
+        url = source.get("url") or ""
+        key = next((m.key for m in mirrors.values() if url.startswith(m.base_url.rstrip("/") + "/")), None)
+        if key is None:
+            unknown.append(url)
+        elif key not in keys:
+            keys.append(key)
+    return keys, unknown
 
 
 def command_doh_fallback(_args):
@@ -2204,9 +2406,14 @@ def command_doh_fallback(_args):
         if keys_doc:
             rescue.put(app, KEYS_FILE, keys_doc)
         seed = doh_seed(app, payload)
-        for site in st.MIRRORS.values():
-            st.mirror_stop(state, site)
+        to_close, unknown = closable_mirrors(payload["bootstrap"]["sources"], st.MIRRORS)
+        result["mirrorsClosed"] = to_close
+        ls.require(not unknown, f"the manifest lists mirrors this case cannot close: {unknown}; "
+                                "disable them in the console first")
+        for key in to_close:
+            site = st.MIRRORS[key]
             closed.append(site)
+            st.mirror_stop(state, site)
         pointer = f"v=flare1;u={RESCUE_BASE}/{app['bootstrapId']}/"
         doh.serve(record["name"], pointer)
         live = {p["id"] for region in payload["regions"] for cell in region["cells"] for p in cell["accessPoints"]}
