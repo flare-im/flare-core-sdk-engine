@@ -17,11 +17,16 @@ clients (examples/access_lab_client.rs, one process each). Each case writes its 
   python3 scripts/access_acceptance.py recovery        # a signed recovery link brings a stranded client back
   python3 scripts/access_acceptance.py total-outage    # every access point down; new nodes, emergency publish
   python3 scripts/access_acceptance.py break-glass     # access points and control plane down; offline-signed nodes
-  python3 scripts/access_acceptance.py serial-continuity # reserved recovery serial; an unannounced serial is a rollback
+  python3 scripts/access_acceptance.py serial-continuity # reserved recovery serial; an unannounced serial is not overwritten
   python3 scripts/access_acceptance.py doh-fallback    # every listed mirror closed; the DoH pointer finds a rescue mirror
   python3 scripts/access_acceptance.py extras          # storage, projection, prober, admin, Edge facts
   python3 scripts/access_acceptance.py web-sw          # the web bundle update in a real browser
   python3 scripts/access_acceptance.py upgrade-required # a stand-in gateway refuses this version
+
+total-outage, break-glass, serial-continuity and doh-fallback need a platform database initialized by
+the flare-platform build under test. A lab initialized before the initial schema or seeds changed is
+refused by flare-platform (`access_stack.py up` says so): re-initialize it with
+`access_stack.py down --destroy` and `up`, or drop the platform database (see access_stack.SCHEMA_REMEDY).
 """
 import argparse
 import base64
@@ -1767,9 +1772,13 @@ def needs_supersede(offline_serial, platform_serial):
     return offline_serial is not None and (platform_serial or 0) <= offline_serial
 
 
-def supersede_offline(admin, approver, app, offline_serial, reason):
-    """The floor past the offline serial, then an ordinary publication above it."""
+def supersede_offline(admin, approver, app, offline_serial, reason, before_publish=None):
+    """The floor past the offline serial, then an ordinary publication above it. `before_publish`
+    runs between the two: where the worker is still stopped, it starts only once the floor is up,
+    as the runbook orders it."""
     floor = admin.ok("POST", "/platform/access/serial-floor", {"floor": offline_serial}, reason=reason)
+    if before_publish:
+        before_publish()
     bump_weight(admin, active_points(admin)[0])
     publication = publish(admin, approver, reason)
     serial = max(r["serial"] for r in serials(admin, publication["changeSet"]) if r["appId"] == app["appId"])
@@ -1794,14 +1803,20 @@ def cleanup_failed(cleanup):
     return any(isinstance(value, dict) and "error" in value for value in cleanup.values())
 
 
+CONTROL_PLANE = ("api", "worker", "prober")
+
+
 def stop_control_plane():
     state = ls.load_state()
-    for role in ("api", "worker", "prober"):
+    for role in CONTROL_PLANE:
         ls.signal_process(state, f"platform-{role}", 15, wait=30)
 
 
-def start_control_plane():
-    for role in ("api", "worker", "prober"):
+def start_control_plane(roles=CONTROL_PLANE):
+    """Starts the roles that are not running. After an offline manifest, `("api",)` first: the
+    worker publishes on its own (a leftover intent, a due re-signature) and must only start once
+    the serial floor is above the offline serial."""
+    for role in roles:
         if not ls.live(ls.load_state(), f"platform-{role}"):
             st.platform_process(ls.load_state(), st.Lab(), role)
 
@@ -2060,7 +2075,9 @@ def recovery_serials(facts):
 
 def command_total_outage(args):
     """Clients online, then every access point they know goes away. New nodes come up and the
-    author publishes them alone through the emergency path."""
+    author publishes them alone through the emergency path.
+
+    Needs a platform database initialized by this flare-platform build (see the module docstring)."""
     facts = load_facts()
     app = facts["apps"]["main"]
     admin, approver, _ = people()
@@ -2119,8 +2136,11 @@ def command_total_outage(args):
 
 def command_break_glass(args):
     """Every access point down and the control plane down too: the runbook signs the new nodes
-    offline and uploads them by hand. When the control plane is back the floor goes past that
-    serial and the platform publishes the same topology."""
+    offline and uploads them by hand. When the control plane is back it follows the runbook's
+    order: platform-api alone, the floor past that serial, then worker and prober, then the
+    platform publishes the same topology.
+
+    Needs a platform database initialized by this flare-platform build (see the module docstring)."""
     facts = load_facts()
     app = facts["apps"]["main"]
     admin, approver, _ = people()
@@ -2154,9 +2174,10 @@ def command_break_glass(args):
                                     "limitMs": RECONNECT_AFTER_PUBLISH_MS, "samples": adopted}
         log(f"offline manifest {offline['serial']}: {len(adopted)}/{len(fleet)} adopted, "
             f"{result['reconnect']['back']} back on new nodes")
-        start_control_plane()
+        start_control_plane(("api",))
         floor = admin.ok("POST", "/platform/access/serial-floor", {"floor": offline["serial"]},
                          reason=f"offline manifest {offline['serial']} signed during the outage")
+        start_control_plane()
         status, body = admin.call("POST", "/platform/access/serial-floor",
                                   {"floor": floor["after"] + SERIAL_FLOOR_MAX_JUMP + 1}, reason="implausible floor")
         result["floor"] = {**floor, "tooHigh": {"status": status, "body": body if isinstance(body, dict) else str(body)}}
@@ -2173,12 +2194,15 @@ def command_break_glass(args):
     finally:
         for client in fleet:
             client.stop()
-        cleanup_step(cleanup, "controlPlane", lambda: start_control_plane() or "running")
+        # The same order as the main path: the worker waits for the floor if an offline copy is left.
+        cleanup_step(cleanup, "controlPlaneApi", lambda: start_control_plane(("api",)) or "running")
         restart = points_to_restart(stopped, result.get("retire"))
         cleanup_step(cleanup, "accessPoints", lambda: start_access_points(restart) or restart)
         if needs_supersede(uploaded_serial, result.get("platform", {}).get("serial")):
             cleanup_step(cleanup, "offline", lambda: supersede_offline(
-                admin, approver, app, uploaded_serial, f"offline manifest {uploaded_serial} left by an interrupted case"))
+                admin, approver, app, uploaded_serial, f"offline manifest {uploaded_serial} left by an interrupted case",
+                before_publish=start_control_plane))
+        cleanup_step(cleanup, "controlPlane", lambda: start_control_plane() or "running")
         result["cleanup"] = cleanup
     platform = result.get("platform", {})
     floor = result.get("floor", {})
@@ -2200,10 +2224,82 @@ def command_break_glass(args):
     log(json.dumps(result["checks"]))
 
 
+def mirrors_ahead(admin, timeout=180):
+    """One mirror audit on demand: the lab mirrors whose check, once run again, reports a copy
+    ahead of anything the platform signed."""
+    triggered = now_ms()
+    run_job(admin, "access_mirror_audit")
+    lab_ids = {m.id for m in st.MIRRORS.values()}
+    ahead, deadline = {}, time.time() + timeout
+    while len(ahead) < len(lab_ids) and time.time() < deadline:
+        for mirror in admin.ok("GET", "/platform/access/mirrors"):
+            check = mirror.get("lastCheck") or {}
+            if mirror["id"] in lab_ids and (check.get("at") or 0) >= triggered \
+                    and (check.get("error") or "").startswith("ahead:"):
+                ahead[mirror["id"]] = check
+        time.sleep(2)
+    return ahead
+
+
+def mirror_serials(app):
+    """The access serial each lab mirror serves right now, read anonymously as a client does."""
+    found = {}
+    for key, site in st.MIRRORS.items():
+        status, body, _ = https_get(f"{site.base_url}/{app['bootstrapId']}/{ACCESS_FILE}")
+        try:
+            found[key] = payload_of(body)["serial"] if status == 200 else None
+        except (ValueError, KeyError):
+            found[key] = None
+    return found
+
+
+def kept_everywhere(serials_by_mirror, offline_serial):
+    """
+    >>> kept_everywhere({"a": 201000, "b": 201000}, 201000)
+    True
+    >>> kept_everywhere({"a": 201000, "b": 1500}, 201000)
+    False
+    >>> kept_everywhere({}, 201000), kept_everywhere(None, 201000)
+    (False, False)
+    """
+    return bool(serials_by_mirror) and all(value == offline_serial for value in serials_by_mirror.values())
+
+
+def publish_refused(author, approver, reason):
+    """The two-person flow, expected to end failed: the change set as the API reports it."""
+    detail = author.ok("POST", "/platform/access/change-sets", reason=reason)
+    change_set = detail["id"]
+    detail = author.ok("POST", f"/platform/access/change-sets/{change_set}:submit", reason=reason)
+    ls.require(detail["status"] == "pending_approval",
+               f"submit left {detail['status']}: {json.dumps(detail.get('lint'))[:800]}")
+    approver.ok("POST", f"/platform/access/change-sets/{change_set}:approve", reason=reason)
+    final = wait_change_set(author, change_set)
+    return {"changeSet": change_set, "status": final["status"], "failure": final.get("failure")}
+
+
+def refused_as_ahead(publication):
+    """The platform's publication failed because a mirror holds a higher serial, and for no other
+    reason: a lint or signing failure would prove nothing about the mirrors.
+
+    >>> refused_as_ahead({"status": "failed", "failure": "mirrors.ahead:apps=1"})
+    True
+    >>> refused_as_ahead({"status": "failed", "failure": "mirrors.quorumNotReached:apps=1"})
+    False
+    >>> refused_as_ahead({"status": "published", "failure": None}), refused_as_ahead(None)
+    (False, False)
+    """
+    publication = publication or {}
+    return publication.get("status") == "failed" and (publication.get("failure") or "").startswith("mirrors.ahead")
+
+
 def command_serial_continuity(_args):
     """A recovery link signed with a reserved serial gives way to the next platform manifest. The
-    reverse: an offline manifest whose serial the platform was never told about makes the next
-    platform manifest a rollback for whoever holds it, and the mirror audit reports the copy ahead."""
+    reverse: an offline manifest whose serial the platform was never told about stays on the
+    mirrors. The mirror audit reports the copy ahead, and the next platform publication refuses to
+    write over it: the change set fails with `mirrors.ahead`, every mirror still serves the offline
+    serial and the client keeps it. Raising the floor past it puts the platform ahead again.
+
+    Needs a platform database initialized by this flare-platform build (see the module docstring)."""
     facts = load_facts()
     app = facts["apps"]["main"]
     admin, approver, _ = people()
@@ -2262,25 +2358,15 @@ def command_serial_continuity(_args):
         put_everywhere(lab, app, offline["file"].read_bytes(), headers={"cache-control": CACHE_CONTROL})
         client.refresh()
         took = wait_adopted([client], offline["serial"], {client.name: mark}, 120)
-        triggered = now_ms()
-        run_job(admin, "access_mirror_audit")
-        ahead, deadline = {}, time.time() + 180
-        while len(ahead) < len(st.MIRRORS) and time.time() < deadline:
-            for mirror in admin.ok("GET", "/platform/access/mirrors"):
-                check = mirror.get("lastCheck") or {}
-                if mirror["id"] in {m.id for m in st.MIRRORS.values()} and (check.get("at") or 0) >= triggered \
-                        and (check.get("error") or "").startswith("ahead:"):
-                    ahead[mirror["id"]] = check
-            time.sleep(2)
+        ahead = mirrors_ahead(admin)
         bump_weight(admin, current[0])
-        publication = publish(admin, approver, "next platform manifest, floor not raised")
-        lower = max(r["serial"] for r in serials(admin, publication["changeSet"]) if r["appId"] == app["appId"])
-        event = client.refresh()
-        report = (event or {}).get("data", {}).get("report", {})
-        attempts = [a for a in report.get("attempts", []) if a.get("document") == "access"]
+        refused = publish_refused(admin, approver, "next platform manifest, floor not raised")
+        client.refresh()
         steps["unannounced"].update({"offlineSerial": offline["serial"], "adopted": took.get(client.name),
-                                "mirrorAudit": ahead, "platformSerial": lower, "refreshAttempts": attempts,
-                                "held": ((client.status() or {}).get("access") or {}).get("serial")})
+                                     "mirrorAudit": ahead, "refusedPublication": refused,
+                                     "mirrorSerials": mirror_serials(app),
+                                     "mirrorAuditAfter": mirrors_ahead(admin),
+                                     "held": ((client.status() or {}).get("access") or {}).get("serial")})
         # Put right: the floor past the offline serial, then the platform is ahead again.
         floor = admin.ok("POST", "/platform/access/serial-floor", {"floor": offline["serial"]},
                          reason=f"offline manifest {offline['serial']} found on the mirrors")
@@ -2298,12 +2384,17 @@ def command_serial_continuity(_args):
                 admin, approver, app, uploaded_serial, f"offline manifest {uploaded_serial} left by an interrupted case"))
         steps["unannounced"]["cleanup"] = cleanup
     reverse = steps["unannounced"]
-    reverse["pass"] = (bool(reverse.get("adopted")) and len(reverse.get("mirrorAudit", {})) == len(st.MIRRORS)
-                       and reverse.get("platformSerial", 1 << 62) < reverse.get("offlineSerial", 0)
-                       and any(a.get("code") == "rollback" or a.get("result") == "olderSerial"
-                               for a in reverse.get("refreshAttempts", []))
-                       and reverse.get("held") == reverse.get("offlineSerial")
-                       and bool((reverse.get("repair") or {}).get("adopted")) and not cleanup_failed(cleanup))
+    reverse["checks"] = {
+        "offlineAdopted": bool(reverse.get("adopted")),
+        "auditAheadOnEveryMirror": len(reverse.get("mirrorAudit", {})) == len(st.MIRRORS),
+        "lowerPublicationRefused": refused_as_ahead(reverse.get("refusedPublication")),
+        "everyMirrorKeptOffline": kept_everywhere(reverse.get("mirrorSerials"), reverse.get("offlineSerial")),
+        "auditStillAhead": len(reverse.get("mirrorAuditAfter", {})) == len(st.MIRRORS),
+        "clientKeptOffline": reverse.get("held") is not None and reverse.get("held") == reverse.get("offlineSerial"),
+        "repairAdopted": bool((reverse.get("repair") or {}).get("adopted")),
+        "labRestored": not cleanup_failed(cleanup),
+    }
+    reverse["pass"] = all(reverse["checks"].values())
     evidence("r3-serial-continuity", {"steps": steps, "pass": steps["reserved"]["pass"] and reverse["pass"]})
     log(json.dumps({"reserved": steps["reserved"]["pass"], "unannounced": reverse["pass"]}))
 
@@ -2371,19 +2462,24 @@ def command_doh_fallback(_args):
     """Every mirror the manifest lists is closed and every access point the client knows is dead.
     The TXT record points at a rescue mirror on a fresh host; the client finds it through the
     resolver the manifest names. The audit reports the record as different while it points away
-    and matching once it is put back."""
+    and matching once it is put back.
+
+    Needs a platform database initialized by this flare-platform build (see the module docstring)."""
     facts = load_facts()
     app = facts["apps"]["main"]
     admin, approver, _ = people()
     view = admin.ok("GET", "/platform/access/doh-records")
     ls.require(view["configured"] and st.DOH_RESOLVER in view["resolvers"],
                "the platform has no DoH pointer for the lab resolver: restart platform-api, platform-worker and "
-               f"platform-prober with this access_stack.py (it sets FLARE_ACCESS_DOH_*); now {view}")
+               "platform-prober with this access_stack.py (it sets FLARE_ACCESS_DOH_*). Their platform database must "
+               "be initialized by this flare-platform build, or they refuse to start: `access_stack.py down "
+               f"--destroy` and `up`, or drop {st.PG_DATABASE_PLATFORM} (see access_stack.SCHEMA_REMEDY); now {view}")
     doh, rescue = FakeDoh(), RescueMirror()
     result = {}
     state = ls.load_state()
     closed = []
     client = None
+    finished = False
     try:
         bump_weight(admin, active_points(admin)[0])
         publication = publish(admin, approver, "manifest that lists the DoH pointer")
@@ -2428,12 +2524,18 @@ def command_doh_fallback(_args):
                             "rescueRequests": [r for r in rescue.served if r["atMs"] >= started]}
         log(f"client via DoH: adopted={bool(adopted)} online={online}")
         result["auditDuring"] = doh_audit(admin, app)
+        finished = True
     finally:
         if client:
             client.stop()
         for site in closed:
             if not ls.live(ls.load_state(), site.front):
                 st.mirror_start(ls.load_state(), site)
+        if not finished:
+            # The case broke off: the fake resolver and the rescue mirror still go away, and the
+            # error that stopped it is the one that propagates.
+            doh.close()
+            rescue.close()
     try:
         doh.serve(record["name"], record["value"])
         result["auditAfter"] = doh_audit(admin, app)
@@ -3044,7 +3146,7 @@ def main():
     glass = sub.add_parser("break-glass", help="access points and control plane down; the offline runbook")
     glass.add_argument("--clients", type=int, default=20)
     glass.set_defaults(func=command_break_glass)
-    sub.add_parser("serial-continuity", help="reserved recovery serial; an unannounced serial is a rollback"
+    sub.add_parser("serial-continuity", help="reserved recovery serial; an unannounced serial is not overwritten"
                    ).set_defaults(func=command_serial_continuity)
     sub.add_parser("doh-fallback", help="every listed mirror closed; the DoH pointer leads to a rescue mirror"
                    ).set_defaults(func=command_doh_fallback)

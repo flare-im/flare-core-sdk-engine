@@ -515,6 +515,37 @@ def platform_env(lab, role):
     return env
 
 
+# What flare-platform says when its database was initialized by a build with another initial
+# schema (schema.sql, plugins.sql or seeds.sql changed): it never migrates or adopts that database.
+SCHEMA_DIFFERS = "initial schema differs from this build"
+SCHEMA_REMEDY = (
+    f"the lab's platform database {PG_DATABASE_PLATFORM} was initialized by another flare-platform build: "
+    "its initial schema digest differs and flare-platform refuses it. Re-initialize it with "
+    "`python3 scripts/access_stack.py down --destroy` and then `up` (this drops every lab database and bucket "
+    "and the trust material cached for them), or drop only that database and remove `platformInitialized` from "
+    f"{LAB / 'stack' / 'state.json'} before `up`.")
+
+
+def schema_differs(text):
+    """
+    >>> schema_differs("Error: Platform initial schema differs from this build")
+    True
+    >>> schema_differs("Platform requires its explicit fresh initializer")
+    False
+    """
+    return SCHEMA_DIFFERS in (text or "").lower()
+
+
+def log_tail(file, size=4000):
+    try:
+        with open(file, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - size))
+            return handle.read().decode(errors="replace")
+    except OSError:
+        return ""
+
+
 def platform_process(state, lab, role):
     binary = ls.TARGET / "flare-platform"
     ls.require(binary.exists(), f"missing binary {binary}")
@@ -523,13 +554,22 @@ def platform_process(state, lab, role):
     known = state["processes"][f"platform-{role}"]
 
     def ready():
-        ls.require(ls.process_alive(known["pid"], known["needle"]), f"platform-{role} exited; see {known['log']}")
+        if not ls.process_alive(known["pid"], known["needle"]):
+            ls.require(not schema_differs(log_tail(known["log"])), f"platform-{role} exited: {SCHEMA_REMEDY}")
+            ls.require(False, f"platform-{role} exited; see {known['log']}")
         return ls.port_open(port)
     ls.wait_for(ready, 60, f"platform-{role} :{port}")
 
 
 def platform_database(state, lab):
+    binary = str(ls.TARGET / "flare-platform")
     if state.get("platformInitialized"):
+        # A replay on an initialized database is read-only apart from the permission catalog; it is
+        # what tells a database of another build apart before three processes refuse to start.
+        result = subprocess.run([binary, "initialize"], cwd=str(ls.RUN), text=True, capture_output=True,
+                                env={"PATH": os.defpath, "DATABASE_URL": lab.platform_url("accesslab_platform_migrate")})
+        ls.require(not schema_differs(result.stdout + result.stderr), SCHEMA_REMEDY)
+        ls.require(result.returncode == 0, f"platform initialize: {result.stdout[-500:]} {result.stderr[-800:]}")
         return
     keys = lab.core
     for role, password in lab.db.items():
@@ -537,7 +577,6 @@ def platform_database(state, lab):
         verb = "ALTER" if exists == "1" else "CREATE"
         ls.psql(keys, f"{verb} ROLE \"{role}\" LOGIN PASSWORD '{password}' NOSUPERUSER NOCREATEDB NOCREATEROLE "
                       "NOREPLICATION NOBYPASSRLS;")
-    binary = str(ls.TARGET / "flare-platform")
     roles = ls.run([binary, "db-roles", "--migrator", "accesslab_platform_migrate"], env={"PATH": os.defpath}).stdout
     ls.psql(keys, "SET client_min_messages = warning;\n" + roles)
     ls.psql(keys, "SET client_min_messages = warning;\n"
