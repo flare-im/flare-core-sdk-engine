@@ -11,6 +11,10 @@ containers and directory, plus what the access control plane needs:
 - one Edge per access point, rendered from the flare-deploy production template, behind an SNI
   router: each access point needs its own address, which a single machine has only by name;
 - RustFS containers: one per simulated cloud mirror (TLS in front, private CA) and the Cell's own.
+  Each mirror's front has a second HTTPS listener (`upload_port`) that is the S3 API itself: release
+  packages are uploaded by presigned URL and copied between mirrors over HTTPS only. The release
+  cases need nothing else from the stack: flare-platform, the Core gateways (build gate on CONNECT)
+  and the Social gateway (426 gate, reads flare_tenant_client_policy) are already part of it.
 
 Every listener binds the loopback address. Names resolve for real: macOS answers *.localhost.
 Clients trust the private CA through the SDK's `tls_ca_cert_path` setting; no system trust store
@@ -119,6 +123,7 @@ class MirrorSite:
     tld: str
     s3_port: int
     tls_port: int
+    upload_port: int
 
     @property
     def id(self):
@@ -145,6 +150,12 @@ class MirrorSite:
         return f"http://127.0.0.1:{self.s3_port}"
 
     @property
+    def upload_endpoint(self):
+        """The HTTPS front of the S3 API (path style, Host passed through so a presigned URL
+        verifies): flare-platform moves release packages over HTTPS only."""
+        return f"https://{self.host}:{self.upload_port}"
+
+    @property
     def front(self):
         return f"mirror-{self.key}"
 
@@ -152,9 +163,9 @@ class MirrorSite:
 # The provider and top-level domain are what the control plane records for a mirror. All of them
 # are simulated here: separate RustFS instances on this machine, not separate clouds.
 MIRRORS = {
-    "a": MirrorSite("a", "sim-aws", "com", ls.port(43901), ls.port(43611)),
-    "b": MirrorSite("b", "sim-aliyun", "cn", ls.port(43902), ls.port(43612)),
-    "c": MirrorSite("c", "sim-tencent", "net", ls.port(43903), ls.port(43613)),
+    "a": MirrorSite("a", "sim-aws", "com", ls.port(43901), ls.port(43611), ls.port(43621)),
+    "b": MirrorSite("b", "sim-aliyun", "cn", ls.port(43902), ls.port(43612), ls.port(43622)),
+    "c": MirrorSite("c", "sim-tencent", "net", ls.port(43903), ls.port(43613), ls.port(43623)),
 }
 CELL_S3_PORT = ls.port(43904)
 CELL_BUCKET = "flare-bootstrap"
@@ -172,6 +183,7 @@ EXTRA_PORTS = sorted({PLATFORM_API, PLATFORM_WORKER, PLATFORM_PROBER, SOCIAL_CON
                       *(g[0] + 1 for g in ls.GATEWAYS.values()),
                       *(p for g in ls.GATEWAYS.values() for p in g[:3]),
                       *(m.s3_port for m in MIRRORS.values()), *(m.tls_port for m in MIRRORS.values()),
+                      *(m.upload_port for m in MIRRORS.values()),
                       *(s.tls_port for s in SITES.values()), *(s.health_port for s in SITES.values()),
                       *(s.udp_port for s in SITES.values()), *(p for s in SITES.values() for p in s.http_ports)})
 ls.ALL_PORTS = sorted({*ls.ALL_PORTS, *EXTRA_PORTS})
@@ -410,6 +422,22 @@ http {{
         }}
         location / {{ return 404; }}
     }}
+    # Release packages: the S3 API itself over TLS, for presigned uploads and the platform's copies
+    # between mirrors. The Host header is the one the signature covers, so it is passed through.
+    server {{
+        listen 127.0.0.1:{site.upload_port} ssl;
+        server_name {site.host};
+        ssl_certificate {certificate};
+        ssl_certificate_key {key};
+        client_max_body_size 4g;
+        location / {{
+            proxy_pass http://127.0.0.1:{site.s3_port};
+            proxy_set_header Host $http_host;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_request_buffering off;
+        }}
+    }}
 }}
 """
 
@@ -473,9 +501,15 @@ stream {{
 def fronts_up(state):
     ensure_ca()
     for site in MIRRORS.values():
-        if not ls.live(state, site.front):
-            ls.path("nginx", site.front).mkdir(parents=True, exist_ok=True, mode=0o700)
-            nginx_process(state, site.front, mirror_front_source(site))
+        source = mirror_front_source(site)
+        file = ls.path("nginx", site.front, "nginx.conf")
+        if ls.live(state, site.front) and file.exists() and file.read_text() == source:
+            continue
+        if ls.live(state, site.front):
+            # A front rendered by an older `up` (no upload listener): restart it on the new file.
+            ls.signal_process(state, site.front, signal.SIGTERM, wait=10)
+        ls.path("nginx", site.front).mkdir(parents=True, exist_ok=True, mode=0o700)
+        nginx_process(state, site.front, source)
     for site in SITES.values():
         if not ls.live(state, site.edge):
             nginx_process(state, site.edge, edge_source(site))

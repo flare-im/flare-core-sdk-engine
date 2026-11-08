@@ -13,18 +13,27 @@ clients (examples/access_lab_client.rs, one process each). Each case writes its 
   python3 scripts/access_acceptance.py migrate         # move every address; online and frozen clients
   python3 scripts/access_acceptance.py mirror-down     # primary mirror closed, then black-holed
   python3 scripts/access_acceptance.py lint            # one reverse case per publication rule
-  python3 scripts/access_acceptance.py release         # hand-signed release manifest and packs on the mirrors
+  python3 scripts/access_acceptance.py release         # a release through the platform: upload, approve, publish, withdraw
   python3 scripts/access_acceptance.py recovery        # a signed recovery link brings a stranded client back
   python3 scripts/access_acceptance.py total-outage    # every access point down; new nodes, emergency publish
   python3 scripts/access_acceptance.py break-glass     # access points and control plane down; offline-signed nodes
   python3 scripts/access_acceptance.py serial-continuity # reserved recovery serial; an unannounced serial is not overwritten
   python3 scripts/access_acceptance.py doh-fallback    # every listed mirror closed; the DoH pointer finds a rescue mirror
   python3 scripts/access_acceptance.py extras          # storage, projection, prober, admin, Edge facts
-  python3 scripts/access_acceptance.py web-sw          # the web bundle update in a real browser
-  python3 scripts/access_acceptance.py upgrade-required # a stand-in gateway refuses this version
+  python3 scripts/access_acceptance.py web-sw          # the web bundle update in a real browser, releases from the platform
+  python3 scripts/access_acceptance.py upgrade-required # the real Core gateway refuses a build below the policy floor
+  python3 scripts/access_acceptance.py release-rollout # 10,000 installs against a 5% rollout, advance, halt
+  python3 scripts/access_acceptance.py forced-update   # floor raised: CONNECT refused, REST 426, newer build, reconnect
+  python3 scripts/access_acceptance.py apk-negative    # wrong signing cert, wrong hash, unsigned file, downgrade
 
 total-outage, break-glass, serial-continuity and doh-fallback need a platform database initialized by
-the flare-platform build under test. A lab initialized before the initial schema or seeds changed is
+the flare-platform build under test. So do the release cases (release, release-rollout, forced-update,
+apk-negative, upgrade-required, web-sw): they use the release schema, the two-person release and policy
+flow, the artifact credentials on the mirrors (set by the cases, through the platform) and the mirrors'
+HTTPS upload fronts, which `access_stack.py up` renders. A lab brought up before those existed needs
+`access_stack.py up` again (it restarts a mirror front whose configuration changed) and, because the
+platform schema changed, `access_stack.py down --destroy` then `up` and `seed`.
+A lab initialized before the initial schema or seeds changed is
 refused by flare-platform (`access_stack.py up` says so): re-initialize it with
 `access_stack.py down --destroy` and `up`, or drop the platform database (see access_stack.SCHEMA_REMEDY).
 """
@@ -32,6 +41,7 @@ import argparse
 import base64
 import gzip
 import hashlib
+import io
 import json
 import math
 import os
@@ -42,6 +52,7 @@ import shutil
 import socket
 import sqlite3
 import statistics
+import struct
 import subprocess
 import sys
 import threading
@@ -50,6 +61,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import access_stack as st  # noqa: E402
@@ -1210,30 +1222,22 @@ def command_lint(_args):
     evidence("6-lint", {"cases": results, "pass": all(r["pass"] for r in results) and len(results) == 6})
 
 
-# --------------------------------------------- secondary: release manifest --
-RELEASE_FILE = "release/tauri/stable.dsse.json"
+# ------------------------------------- the release platform, driven for real --
+# Release, policy and package flows go through the admin API of flare-platform (client application,
+# draft, upload, verification job, submit, approve, publish, advance, halt, policy change) with two
+# staff members; manifests are signed by the platform's online key and reach the mirrors through its
+# publisher. Nothing here signs or writes a release manifest by hand. A lab initialized before the
+# release schema existed has to be re-initialized: `access_stack.py down --destroy`, then `up`
+# (flare-platform refuses the old platform database, access_stack.SCHEMA_REMEDY), then `seed`.
 RELEASE_APP = {"version": "1.0.0", "build": 100, "distribution": "direct", "channel": "stable",
                "target": "darwin-aarch64", "locale": "zh-CN"}
+TAURI_TARGET = "darwin-aarch64"
+SOCIAL_API = f"http://127.0.0.1:{ls.SOCIAL_API}/api/v1"
+COUNT_BUILD_FLOOR = 1000
 
 
 def object_url(site, app, name):
     return f"{site.base_url}/{app['bootstrapId']}/{name}"
-
-
-def release_entry(app, packs, *, build=200, halted=False, package=None):
-    artifact = {"kind": "apk", "urls": [object_url(s, app, package["name"]) for s in st.MIRRORS.values()],
-                "sizeBytes": package["size"], "sha256": package["sha256"], "signingCertSha256": "ab" * 32}
-    return {"releaseId": f"rel-{build}", "version": f"2.{build}", "build": build, "publishedAt": iso(now_ms()),
-            "rollout": {"basisPoints": 10000, "salt": f"rel-{build}", "halted": halted},
-            "notes": {"zh-CN": [f"第 {build} 版实验台说明"], "en": [f"Lab notes for {build}"]},
-            "artifacts": {"direct": artifact}, "resourcePacks": packs}
-
-
-def release_document(app, key, cert, serial, releases, policy=None):
-    payload = {"schema": "flare.release.v1", "bootstrapId": app["bootstrapId"], "platform": "tauri",
-               "channel": "stable", "serial": serial, "issuedAt": iso(now_ms() - 60_000),
-               "expiresAt": iso(now_ms() + 14 * DAY_MS), "policy": policy or {}, "releases": releases}
-    return forge("ok-forge-good", key, payload, [cert], RELEASE_PAYLOAD_TYPE)
 
 
 def update_status(client, op="update_state", **arguments):
@@ -1275,53 +1279,358 @@ def wait_packs(client, app, expected, timeout=20):
     return held
 
 
+def release_file(platform, channel):
+    return f"release/{platform}/{channel}.dsse.json"
+
+
+def fault_of(body):
+    """The fault key of an error answer, whatever the envelope calls the field."""
+    return json.dumps(body, ensure_ascii=False) if not isinstance(body, str) else body
+
+
+def put_presigned(request, body):
+    """The uploader's step: the presigned PUT exactly as the platform handed it out."""
+    import ssl
+    context = ssl.create_default_context(cafile=str(st.ca_file()))
+    item = urllib.request.Request(request["url"], data=body, method=request.get("method") or "PUT",
+                                  headers=request.get("headers") or {})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context))
+    try:
+        with opener.open(item, timeout=180) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+    except OSError as error:
+        return f"{type(error).__name__}: {error}"
+
+
+def lab_signer(name):
+    """A throwaway APK signing identity in the lab directory: an RSA key and a self-signed
+    certificate. (DER certificate, SHA-256 fingerprint as the client application registers it.)"""
+    directory = st.lab_path("apk")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    key, pem, der = directory / f"{name}.key.pem", directory / f"{name}.cert.pem", directory / f"{name}.cert.der"
+    if not der.exists():
+        openssl = ls.openssl()
+        ls.run([openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650", "-sha256",
+                "-subj", f"/CN=Flare access lab APK signer {name}", "-keyout", str(key), "-out", str(pem)])
+        os.chmod(key, 0o600)
+        ls.run([openssl, "x509", "-in", str(pem), "-outform", "DER", "-out", str(der)])
+    certificate = der.read_bytes()
+    return certificate, hashlib.sha256(certificate).hexdigest()
+
+
+def _prefixed(value):
+    return struct.pack("<I", len(value)) + value
+
+
+def lab_apk(certificate=None, size=1 << 20):
+    """A ZIP with a real APK Signing Block (scheme v2) in front of the central directory, carrying
+    `certificate`. The platform reads the signer certificate out of that block and does not check
+    the signature value (the device does at install time), so the signature fields are empty.
+    Without a certificate the file is a plain ZIP: no signing block."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("AndroidManifest.xml", b"flare access lab")
+        archive.writestr("classes.dex", secrets.token_bytes(size))
+    data = buffer.getvalue()
+    if certificate is None:
+        return data
+    eocd = data.rindex(b"PK\x05\x06")
+    directory_offset = struct.unpack("<I", data[eocd + 16:eocd + 20])[0]
+    signed_data = _prefixed(b"") + _prefixed(_prefixed(certificate)) + _prefixed(b"")
+    signer = _prefixed(signed_data) + _prefixed(b"") + _prefixed(b"")
+    value = _prefixed(_prefixed(signer))
+    pair = struct.pack("<Q", 4 + len(value)) + struct.pack("<I", 0x7109871A) + value
+    size_field = struct.pack("<Q", len(pair) + 8 + 16)
+    block = size_field + pair + size_field + b"APK Sig Block 42"
+    return (data[:directory_offset] + block + data[directory_offset:eocd + 16]
+            + struct.pack("<I", directory_offset + len(block)) + data[eocd + 20:])
+
+
+def lab_minisign_key():
+    return base64.b64encode(hashlib.sha256(b"flare access lab minisign").digest() * 2).decode()
+
+
+def lab_updater_signature():
+    return base64.b64encode(b"untrusted comment: flare access lab signature\n" + secrets.token_bytes(48)).decode()
+
+
+def artifact_credentials(admin, lab, facts):
+    """Each mirror's package credential, apart from the credential that writes manifests. The
+    endpoint is the mirror's HTTPS upload front (the platform moves packages over HTTPS only).
+    RustFS has one root key per instance, so the lab cannot scope it to {bootstrapId}/artifacts/ as
+    production does."""
+    wanted = {site.id: site.upload_endpoint for site in st.MIRRORS.values()}
+    if facts.get("artifactCredentials") == wanted:
+        return
+    mirrors = {m["id"]: m for m in admin.ok("GET", "/platform/access/mirrors")}
+    for key, site in st.MIRRORS.items():
+        access, secret_key = lab.rustfs[key]
+        admin.ok("PUT", f"/platform/access/mirrors/{site.id}/artifact-credential", {
+            "expectedRevision": mirrors[site.id]["revision"],
+            "credentials": {"endpoint": site.upload_endpoint, "region": "us-east-1", "bucket": site.bucket,
+                            "prefix": "flare/v1", "accessKeyId": access, "secretAccessKey": secret_key}},
+            "lab package credential")
+    facts["artifactCredentials"] = wanted
+    save_facts(facts)
+
+
+def urls_of(artifact):
+    if not artifact:
+        return []
+    if artifact.get("targets"):
+        return next(iter(artifact["targets"].values())).get("urls") or []
+    return artifact.get("urls") or []
+
+
+class Releases:
+    """The release API of one application, driven by two staff members: the author writes and
+    submits, a second person approves (the platform refuses anything else in production mode)."""
+
+    def __init__(self, app, author, approver):
+        self.app, self.author, self.approver = app, author, approver
+        self.base = f"/apps/{app['appId']}"
+
+    def get(self, path):
+        return self.author.ok("GET", self.base + path)
+
+    # -- registration
+    def client_app(self, platform, distributions, *, channels=("stable",), certs=(), minisign=None):
+        found = next((c for c in self.get("/client-apps") if c["platform"] == platform), None)
+        if found is None:
+            body = {"platform": platform, "displayName": f"Access lab {platform}", "channels": list(channels),
+                    "distributions": distributions}
+            if certs:
+                body["signingCertSha256"] = list(certs)
+            if minisign:
+                body["minisignPublicKey"] = minisign
+            return self.author.ok("POST", self.base + "/client-apps", body)
+        patch = {"revision": found["revision"]}
+        if not set(channels) <= set(found["channels"]):
+            patch["channels"] = sorted(set(channels) | set(found["channels"]))
+        if not set(certs) <= set(found["signingCertSha256"]):
+            patch["signingCertSha256"] = sorted(set(certs) | set(found["signingCertSha256"]))
+        if not all(found["distributions"].get(k) == v for k, v in distributions.items()):
+            patch["distributions"] = {**found["distributions"], **distributions}
+        if len(patch) == 1:
+            return found
+        return self.author.ok("PATCH", f"{self.base}/client-apps/{found['id']}", patch)
+
+    def tauri_app(self):
+        return self.client_app("tauri", {"direct": {"kind": "tauri"}}, channels=("stable", "canary"),
+                               minisign=lab_minisign_key())
+
+    # -- releases
+    def next_build(self, platform, channel):
+        page = self.get(f"/releases?platform={platform}&channel={channel}&page=1&pageSize=100")
+        return max([COUNT_BUILD_FLOOR, *(r["build"] for r in page["items"])]) + 10
+
+    def draft(self, platform, channel, build, *, packs=(), stages=None):
+        body = {"platform": platform, "channel": channel, "version": f"2.{build}", "build": build,
+                "notes": {"zh-CN": [f"第 {build} 版实验台说明"], "en": [f"Lab notes for {build}"]},
+                "resourcePacks": list(packs)}
+        if stages:
+            body["rolloutStages"] = list(stages)
+        return self.author.ok("POST", self.base + "/releases", body)
+
+    def view(self, release_id):
+        return self.get(f"/releases/{release_id}")
+
+    def transition(self, release_id, verb, who=None, reason=None):
+        return (who or self.author).ok("POST", f"{self.base}/releases/{release_id}:{verb}", None,
+                                       reason or f"lab {verb}")
+
+    def go_live(self, release_id):
+        self.transition(release_id, "submit")
+        self.transition(release_id, "approve", self.approver, "second person approves")
+        return self.transition(release_id, "publish")
+
+    def advance(self, release_id):
+        return self.transition(release_id, "advance")
+
+    def halt(self, release_id):
+        return self.transition(release_id, "halt")
+
+    def quiet(self, platform, channel):
+        """No floor and nothing on offer: the state a case starts from, whatever earlier runs left."""
+        self.set_policy(platform, channel)
+        page = self.get(f"/releases?platform={platform}&channel={channel}&page=1&pageSize=100")
+        for item in page["items"]:
+            if item["status"] == "published":
+                self.halt(item["id"])
+
+    # -- packages
+    def upload(self, release, distribution, body, name, *, target=None, signature=None, declared_sha256=None):
+        """initiate -> presigned PUT -> complete; returns the upload after the worker's verdict."""
+        started = self.author.ok("POST", f"{self.base}/releases/{release['id']}/artifacts:initiate", {
+            "distribution": distribution, "target": target, "name": name, "sizeBytes": len(body),
+            "sha256": declared_sha256 or hashlib.sha256(body).hexdigest(), "signature": signature})
+        status = put_presigned(started["uploadRequest"], body)
+        ls.require(status == 200, f"presigned upload of {name}: {status}")
+        upload_id = started["upload"]["id"]
+        completed = self.author.call("POST", f"{self.base}/release-uploads/{upload_id}:complete", {})
+        ls.require(completed[0] == 200, f"complete {name}: {completed}")
+        return self.wait_upload(upload_id)
+
+    def wait_upload(self, upload_id, timeout=300):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            upload = self.get(f"/release-uploads/{upload_id}")
+            if upload["status"] in ("verified", "failed"):
+                return upload
+            time.sleep(1)
+        raise SystemExit(f"upload {upload_id} still not verified after {timeout}s")
+
+    def wait_replicas(self, release_id, distribution, count, timeout=240):
+        """The worker copies a verified package to the other independent mirrors; the artifact's
+        addresses grow as each copy verifies."""
+        deadline = time.time() + timeout
+        urls = []
+        while time.time() < deadline:
+            urls = urls_of(self.view(release_id)["artifacts"].get(distribution))
+            if len(urls) >= count:
+                break
+            time.sleep(2)
+        return urls
+
+    def package(self, release, *, size=1 << 20, name=None):
+        """A tauri package for the release's one distribution, replicated everywhere."""
+        blob = secrets.token_bytes(size)
+        upload = self.upload(release, "direct", blob, name or f"app-{release['build']}.tar.gz",
+                             target=TAURI_TARGET, signature=lab_updater_signature())
+        ls.require(upload["status"] == "verified", f"package not verified: {upload.get('failure')}")
+        urls = self.wait_replicas(release["id"], "direct", len(st.MIRRORS))
+        return {"sha256": hashlib.sha256(blob).hexdigest(), "size": len(blob), "urls": urls, "upload": upload}
+
+    # -- policy
+    def policy(self, platform, channel):
+        return self.get(f"/release-policies/{platform}/{channel}")
+
+    def set_policy(self, platform, channel, *, min_build=0, recommend_below=0, block_ui=False, blocked=()):
+        """Propose and approve: two people, effective immediately. No-op when it already holds."""
+        view = self.policy(platform, channel)
+        if view.get("pending"):
+            self.author.ok("POST", f"{self.base}/release-policy-changes/{view['pending']['id']}:reject", None,
+                           "lab clears a leftover proposal")
+            view = self.policy(platform, channel)
+        current = view.get("effective")
+        if (current is None and not (min_build or recommend_below or block_ui or blocked)) or (
+                current and current["minBuild"] == min_build and current["recommendBelowBuild"] == recommend_below
+                and current["blockUi"] == block_ui and not blocked and not current["blockedBuilds"]):
+            return current
+        proposal = {"revision": current["revision"] if current else None, "minBuild": min_build,
+                    "recommendBelowBuild": recommend_below, "blockedBuilds": list(blocked), "blockUi": block_ui,
+                    "effectiveFrom": now_ms() - 1000}
+        change = self.author.ok("POST", f"{self.base}/release-policies/{platform}/{channel}/changes", proposal,
+                                "lab policy change")
+        self.approver.ok("POST", f"{self.base}/release-policy-changes/{change['id']}:approve", None,
+                         "second person approves the policy")
+        return self.policy(platform, channel)["effective"]
+
+
+def release_lab(facts, app):
+    admin, approver, _ = people()
+    artifact_credentials(admin, st.Lab(), facts)
+    return Releases(app, admin, approver)
+
+
+def read_release(app, platform, channel):
+    body = read_document(app, release_file(platform, channel))
+    if not body:
+        return None, None
+    try:
+        return body, payload_of(body)
+    except (ValueError, KeyError):
+        return None, None
+
+
+def wait_release(app, platform, channel, predicate, timeout=240, what="release manifest"):
+    """The signed manifest on the mirrors once `predicate(payload)` holds."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        body, payload = read_release(app, platform, channel)
+        if payload is not None and predicate(payload):
+            return body, payload
+        time.sleep(1)
+    raise SystemExit(f"{what}: the mirrors did not carry the expected {platform}/{channel} manifest in {timeout}s")
+
+
+def entry_of(payload, build):
+    return next((r for r in payload["releases"] if r["build"] == build), None)
+
+
+def wait_projection(app, platform, min_build, timeout=150):
+    """The build gate reaches both data planes: Core's and Social's client policy rows."""
+    keys = st.Lab().core
+
+    def seen():
+        for database, table in (("core", "tenant_client_policy"), ("social", "flare_tenant_client_policy")):
+            value = ls.psql(keys, f"SELECT coalesce(build_policies->'{platform}'->>'min_build','0') FROM {table} "
+                                  f"WHERE tenant_id='{app['appId']}'", ls.DATABASES[database], check=False)
+            if (value or "0") != str(min_build):
+                return False
+        return True
+    ls.wait_for(seen, timeout, f"{platform} min_build {min_build} projected to Core and Social", 2)
+
+
+def release_summary(status):
+    status = status or {}
+    return {k: status.get(k) for k in ("state", "prompt", "blockUi", "readOnly", "error", "blockReason")} | \
+        {"releaseBuild": (status.get("release") or {}).get("build")}
+
+
 def command_release(_args):
-    """Everything a control plane would publish, signed by hand with a certified lab key: the
-    release service does not exist yet. The mirrors, TLS, the fetch path and the client are real."""
+    """A tauri release through the real platform: client application, draft with a resource pack,
+    package upload, verification and copy by the worker, two-person approval, publish; the signed
+    manifest and pack come from the mirrors, then the release is halted (withdrawn) and a policy
+    raises the floor. The client side is the same engine client as ever; its assertions are the
+    ones this case always made. Needs `seed` run on a lab initialized by this build."""
     facts = load_facts()
     app = facts["apps"]["forge"]
     lab = st.Lab()
-    key = lab_key("good")
-    cert = certify("ok-forge-good", key["publicKey"], "forge-good.cert")
+    rel = release_lab(facts, app)
+    rel.tauri_app()
     seed = seed_file(app)
+    rel.quiet("tauri", "stable")
     steps = {}
     pack_body = json.dumps({"schema": "flare.resource.v1", "kind": "strings",
                             "locales": {"zh-CN": {"composerReadOnlyUpdate": "实验台词条"}}}, ensure_ascii=False).encode()
     pack_name = "res/strings-1.json"
-    blob = secrets.token_bytes(1 << 20)
-    package = {"name": "pkg/app-200.apk", "size": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
     put_everywhere(lab, app, pack_body, pack_name)
-    put_everywhere(lab, app, blob, package["name"], {"content-type": "application/octet-stream"})
     primary = st.MIRRORS["a"]
     pack = {"id": "strings-main", "kind": "strings", "packVersion": 1, "minBuild": 0,
             # The first address answers 404: the client has to fail over to the next mirror.
             "url": [object_url(primary, app, "res/missing.json"), object_url(st.MIRRORS["b"], app, pack_name)],
             "sha256": hashlib.sha256(pack_body).hexdigest(), "sizeBytes": len(pack_body)}
+    build = rel.next_build("tauri", "stable")
+    app_info = {**RELEASE_APP, "build": build - 100}
     client_name = f"release-{now_ms()}"
+    draft = rel.draft("tauri", "stable", build, packs=[pack], stages=[10000])
+    package = rel.package(draft)
+    steps["package"] = {"status": package["upload"]["status"], "copies": len(package["urls"]),
+                        "signingCert": package["upload"].get("signingCertSha256")}
+    rel.go_live(draft["id"])
+    document_live, payload_live = wait_release(app, "tauri", "stable", lambda p: (
+        entry_of(p, build) is not None and not entry_of(p, build)["rollout"]["halted"]))
+    steps["manifest"] = {"serial": payload_live["serial"], "builds": [r["build"] for r in payload_live["releases"]],
+                         "artifact": entry_of(payload_live, build)["artifacts"]["direct"]["kind"]}
 
     def client(**extra):
-        return Client(client_name, app, seed=seed, no_login=True, tick=60, app_info=RELEASE_APP, **extra).start()
+        return Client(client_name, app, seed=seed, no_login=True, tick=60, app_info=app_info, **extra).start()
 
     def wait_ready(item):
         ls.require(item.wait(lambda e: e["kind"] == "started", 30), "release client did not start")
 
-    def summary(status):
-        status = status or {}
-        return {k: status.get(k) for k in ("state", "prompt", "blockUi", "readOnly", "error", "blockReason")} | \
-            {"releaseBuild": (status.get("release") or {}).get("build")}
-
-    document_1 = release_document(app, key, cert, 1, [release_entry(app, [pack], package=package)])
-    put_everywhere(lab, app, document_1, RELEASE_FILE)
     first = client()
     try:
         wait_ready(first)
-        checked = settled_update(first)
-        steps["check"] = summary(checked)
+        steps["check"] = release_summary(settled_update(first))
         steps["resourcesFirstRun"] = (first.ask("update_resources", 20) or {}).get("data", {}).get("resources")
         steps["packsStored"] = wait_packs(first, app, ["strings-main"])
         started = time.time()
         downloaded = (first.ask("update_download", 60) or {}).get("data", {}).get("status")
-        steps["download"] = {**summary(downloaded), "seconds": round(time.time() - started, 3)}
+        steps["download"] = {**release_summary(downloaded), "seconds": round(time.time() - started, 3)}
         steps["install"] = (first.ask("update_install", 20) or {}).get("data", {})
     finally:
         first.stop()
@@ -1331,17 +1640,18 @@ def command_release(_args):
         resources = (second.ask("update_resources", 20) or {}).get("data", {}).get("resources") or {}
         steps["resourcesAfterRestart"] = resources
         steps["contentMatches"] = [p.get("contentJson") == pack_body.decode() for p in resources.get("packs", [])]
-        # Withdrawn: the release is halted and carries no pack any more.
-        document_2 = release_document(app, key, cert, 2, [release_entry(app, [], halted=True, package=package)])
-        put_everywhere(lab, app, document_2, RELEASE_FILE)
-        steps["afterWithdrawal"] = summary(settled_update(second))
+        # Withdrawn: the release is halted, so clients stop being offered it and drop its pack.
+        rel.halt(draft["id"])
+        document_halted, _ = wait_release(app, "tauri", "stable", lambda p: (
+            entry_of(p, build) is not None and entry_of(p, build)["rollout"]["halted"]))
+        steps["afterWithdrawal"] = release_summary(settled_update(second))
         steps["packsAfterWithdrawal"] = wait_packs(second, app, [])
         run_snapshot = (second.ask("update_resources", 20) or {}).get("data", {}).get("resources") or {}
         steps["runSnapshotKept"] = [p["id"] for p in run_snapshot.get("packs", [])]
-        # A mirror serving the older document changes nothing.
-        put_everywhere(lab, app, document_1, RELEASE_FILE)
-        steps["afterReplayOfSerial1"] = summary(settled_update(second))
-        put_everywhere(lab, app, document_2, RELEASE_FILE)
+        # A mirror serving the older (validly signed) document changes nothing.
+        put_everywhere(lab, app, document_live, release_file("tauri", "stable"))
+        steps["afterReplayOfOlderSerial"] = release_summary(settled_update(second))
+        put_everywhere(lab, app, document_halted, release_file("tauri", "stable"))
     finally:
         second.stop()
     third = client()
@@ -1349,16 +1659,21 @@ def command_release(_args):
         wait_ready(third)
         resources = (third.ask("update_resources", 20) or {}).get("data", {}).get("resources") or {}
         steps["resourcesAfterWithdrawalRestart"] = [p["id"] for p in resources.get("packs", [])]
-        # Forced update from the manifest alone.
-        document_3 = release_document(app, key, cert, 3, [release_entry(app, [], build=201, package=package)],
-                                      {"minBuild": 150, "blockUi": True})
-        put_everywhere(lab, app, document_3, RELEASE_FILE)
-        steps["required"] = summary(settled_update(third))
+        # Forced update from the signed manifest alone: a newer build is on offer and a policy
+        # (proposed and approved by two people) raises the floor above this client's build.
+        newer = rel.draft("tauri", "stable", rel.next_build("tauri", "stable"), stages=[10000])
+        rel.package(newer)
+        rel.go_live(newer["id"])
+        rel.set_policy("tauri", "stable", min_build=app_info["build"] + 50, block_ui=True)
+        wait_release(app, "tauri", "stable", lambda p: p["policy"].get("minBuild") == app_info["build"] + 50)
+        steps["required"] = release_summary(settled_update(third))
     finally:
         third.stop()
-        delete_everywhere(lab, app, RELEASE_FILE)
+        rel.set_policy("tauri", "stable")
     checks = {
-        "checkFindsRelease": steps["check"]["state"] == "available" and steps["check"]["releaseBuild"] == 200,
+        "uploadVerifiedAndCopied": steps["package"]["status"] == "verified" and steps["package"]["copies"] == len(st.MIRRORS),
+        "manifestSignedByPlatform": steps["manifest"]["artifact"] == "tauri",
+        "checkFindsRelease": steps["check"]["state"] == "available" and steps["check"]["releaseBuild"] == build,
         "firstRunHasNoPacks": (steps["resourcesFirstRun"] or {}).get("packs") == [],
         "packStoredViaSecondUrl": steps["packsStored"] == ["strings-main"],
         "downloadVerified": steps["download"]["state"] == "readyToInstall",
@@ -1366,12 +1681,124 @@ def command_release(_args):
         "withdrawalClearsRelease": steps["afterWithdrawal"]["state"] == "upToDate",
         "withdrawalRemovesPack": steps["packsAfterWithdrawal"] == [],
         "runSnapshotUnchanged": steps["runSnapshotKept"] == ["strings-main"],
-        "replayIgnored": steps["afterReplayOfSerial1"]["state"] == "upToDate",
+        "replayIgnored": steps["afterReplayOfOlderSerial"]["state"] == "upToDate",
         "goneAfterRestart": steps["resourcesAfterWithdrawalRestart"] == [],
         "requiredBlocks": steps["required"]["state"] == "required" and steps["required"]["blockUi"] is True,
     }
     evidence("s1-release", {"steps": steps, "checks": checks, "pass": all(checks.values())})
     log(json.dumps(checks))
+
+
+def bucket_of(install_id, salt):
+    """The client's rollout bucket (access/src/release/evaluate.rs): u32_be(SHA-256(id ':' salt)[0..4]) mod 10000."""
+    digest = hashlib.sha256(f"{install_id}:{salt}".encode()).digest()
+    return int.from_bytes(digest[:4], "big") % 10_000
+
+
+def command_release_rollout(_args):
+    """The staged rollout as clients see it: a release published at 500 basis points reaches 5% of
+    10,000 synthetic installations, 5% +- 0.5%, bucketed by the client's own rule with the salt in
+    the published manifest; the advance to the last stage reaches all of them, the halt none.
+    The tolerance is 2.3 standard deviations of a uniform bucket, so a correct rule fails about
+    2% of runs by chance (each release has its own salt: run again)."""
+    facts = load_facts()
+    app = facts["apps"]["forge"]
+    rel = release_lab(facts, app)
+    rel.tauri_app()
+    rel.quiet("tauri", "canary")
+    build = rel.next_build("tauri", "canary")
+    draft = rel.draft("tauri", "canary", build, stages=[500, 10000])
+    rel.package(draft)
+    rel.go_live(draft["id"])
+    installs = [f"install-{index:05d}" for index in range(10_000)]
+
+    def reach(payload):
+        entry = entry_of(payload, build)
+        hits = sum(bucket_of(i, entry["rollout"]["salt"]) < entry["rollout"]["basisPoints"] for i in installs)
+        return {"basisPoints": entry["rollout"]["basisPoints"], "halted": entry["rollout"]["halted"],
+                "salt": entry["rollout"]["salt"], "hits": 0 if entry["rollout"]["halted"] else hits}
+
+    _, payload = wait_release(app, "tauri", "canary", lambda p: entry_of(p, build) is not None)
+    staged = reach(payload)
+    rel.advance(draft["id"])
+    _, payload = wait_release(app, "tauri", "canary", lambda p: entry_of(p, build)["rollout"]["basisPoints"] == 10000)
+    full = reach(payload)
+    rel.halt(draft["id"])
+    _, payload = wait_release(app, "tauri", "canary", lambda p: entry_of(p, build)["rollout"]["halted"])
+    halted = reach(payload)
+    rate = staged["hits"] / len(installs)
+    checks = {"publishedAtFivePercent": staged["basisPoints"] == 500,
+              "hitRateWithinHalfPoint": 0.045 <= rate <= 0.055,
+              "advanceReachesEveryone": full["basisPoints"] == 10000 and full["hits"] == len(installs),
+              "haltReachesNobody": halted["halted"] and halted["hits"] == 0}
+    evidence("s1-release-rollout", {"installs": len(installs), "build": build, "staged": staged, "rate": rate,
+                                    "full": full, "halted": halted, "checks": checks, "pass": all(checks.values())})
+    log(json.dumps(checks) + f" rate={rate:.4f}")
+
+
+def command_apk_negative(_args):
+    """What the platform refuses to ship, with a real APK signing block: one signed by a
+    certificate the client application did not register; a file whose bytes are not the declared
+    SHA-256; a plain ZIP without any signing block; and a build that does not rise. The positive
+    control is the registered certificate: verified, copied, and carried by the signed manifest
+    with its real fingerprint."""
+    facts = load_facts()
+    app = facts["apps"]["forge"]
+    rel = release_lab(facts, app)
+    good_cert, good_fingerprint = lab_signer("good")
+    bad_cert, bad_fingerprint = lab_signer("other")
+    rel.client_app("android", {"direct": {"kind": "apk"}}, certs=(good_fingerprint,))
+    checks, results = {}, {}
+
+    def negative(label, build, body, *, declared=None):
+        draft = rel.draft("android", "stable", build)
+        upload = rel.upload(draft, "direct", body, f"{label}-{build}.apk", declared_sha256=declared)
+        attached = rel.view(draft["id"])["artifacts"].get("direct")
+        results[label] = {"status": upload["status"], "failure": upload.get("failure"),
+                          "signingCertSha256": upload.get("signingCertSha256"), "attached": bool(attached)}
+        return upload
+
+    first = rel.next_build("android", "stable")
+    mismatch = negative("cert-mismatch", first, lab_apk(bad_cert))
+    checks["certMismatchFailed"] = mismatch["status"] == "failed" and "signingCertMismatch" in (mismatch.get("failure") or "")
+    checks["certMismatchNamesTheFoundFingerprint"] = bad_fingerprint in json.dumps(results["cert-mismatch"]) \
+        or mismatch.get("signingCertSha256") in (None, bad_fingerprint)
+    body = lab_apk(good_cert)
+    wrong = negative("hash-mismatch", first + 10, body, declared=hashlib.sha256(lab_apk(good_cert)).hexdigest())
+    checks["hashMismatchFailed"] = wrong["status"] == "failed" and "digestMismatch" in (wrong.get("failure") or "")
+    plain = negative("unsigned", first + 20, lab_apk(None))
+    checks["unsignedFailed"] = plain["status"] == "failed" and "unsigned" in (plain.get("failure") or "")
+    checks["nothingFailedIsAttached"] = not any(r["attached"] for r in results.values())
+    # The registered certificate: verified, copied, published.
+    live_build = first + 30
+    draft = rel.draft("android", "stable", live_build, stages=[10000])
+    upload = rel.upload(draft, "direct", lab_apk(good_cert), f"app-{live_build}.apk")
+    urls = rel.wait_replicas(draft["id"], "direct", len(st.MIRRORS))
+    results["registered"] = {"status": upload["status"], "failure": upload.get("failure"),
+                             "signingCertSha256": upload.get("signingCertSha256"), "copies": len(urls)}
+    checks["registeredCertVerified"] = upload["status"] == "verified" and upload.get("signingCertSha256") == good_fingerprint
+    checks["registeredCopiedToEveryMirror"] = len(urls) == len(st.MIRRORS)
+    rel.go_live(draft["id"])
+    _, payload = wait_release(app, "android", "stable", lambda p: entry_of(p, live_build) is not None)
+    artifact = entry_of(payload, live_build)["artifacts"]["direct"]
+    checks["manifestCarriesRealFingerprint"] = artifact.get("kind") == "apk" and \
+        artifact.get("signingCertSha256") == good_fingerprint
+    # Downgrade: a build that is not above everything already published.
+    low = rel.author.call("POST", f"{rel.base}/releases", {
+        "platform": "android", "channel": "stable", "version": "0.0.1", "build": live_build - 1,
+        "notes": {"en": ["downgrade"]}})
+    same = rel.author.call("POST", f"{rel.base}/releases", {
+        "platform": "android", "channel": "stable", "version": "0.0.2", "build": live_build,
+        "notes": {"en": ["same build"]}})
+    results["downgrade"] = {"status": low[0], "body": low[1]}
+    results["sameBuild"] = {"status": same[0], "body": same[1]}
+    checks["downgradeRefused"] = low[0] == 409 and "buildNotMonotonic" in fault_of(low[1])
+    checks["sameBuildRefused"] = same[0] == 409 and "buildTaken" in fault_of(same[1])
+    evidence("s6-apk-negative", {"fingerprints": {"registered": good_fingerprint, "other": bad_fingerprint},
+                                 "results": results, "checks": checks, "pass": all(checks.values())})
+    log(json.dumps(checks))
+
+
 
 
 # -------------------------------------------- secondary: recovery link import --
@@ -2556,101 +2983,216 @@ def command_doh_fallback(_args):
     log(json.dumps(result["checks"]))
 
 
-# ---------------------------------------- stand-in: the server's version gate --
-class RefusingGateway:
-    """Takes a gateway's port behind the real Edge and refuses every CONNECT the way a gateway
-    with the version gate would. The gate itself does not exist yet: this is the stand-in."""
+# ------------------------------------- the server's version gate, for real --
+def social_user(app):
+    """A Social account of the application, through the real register route (the verification
+    code is the one the lab's Social writes to its log, as in live_stack's prove-s5)."""
+    run = secrets.token_hex(4)
+    login_key, password, device = f"fu-{run}@forced.flare.test", f"Fu#{run}aA1", f"forced-device-{run}"
+    headers = {"x-flare-platform": "web"}
+    status, raw, _ = request("POST", SOCIAL_API + "/auth/verification-codes", {
+        "tenant_id": app["appId"], "login_type": 1, "login_key": login_key, "purpose": 1}, headers)
+    ls.require(status == 200, f"verification code: {status} {raw[:300]!r}")
+    code_file = ls.path("logs", "verification_codes.log")
 
-    def __init__(self, port, frame):
-        self.frame = frame
-        self.served = 0
-        self.server = socket.socket()
-        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server.bind(("127.0.0.1", port))
-        self.server.listen(16)
-        threading.Thread(target=self._accept, daemon=True).start()
+    def code():
+        if not code_file.exists():
+            return None
+        for line in reversed(code_file.read_text().splitlines()):
+            parts = line.split("\t")
+            if len(parts) == 6 and parts[1] == app["appId"] and parts[3] == login_key:
+                return parts[5]
+        return None
+    verification = ls.wait_for(code, 20, "verification code")
+    status, raw, _ = request("POST", SOCIAL_API + "/auth/register", {
+        "tenant_id": app["appId"], "login_type": 1, "login_key": login_key, "password": password,
+        "device_id": device, "platform": "web", "display_name": "Forced update", "verification_code": verification},
+        headers)
+    ls.require(status == 200, f"register: {status} {raw[:300]!r}")
+    data = decoded(raw)["data"]
+    return (data.get("tokens") or data)["access_token"]
 
-    def _accept(self):
-        while True:
-            try:
-                connection, _ = self.server.accept()
-            except OSError:
-                return
-            threading.Thread(target=self._serve, args=(connection,), daemon=True).start()
 
-    def _serve(self, connection):
-        try:
-            connection.settimeout(5)
-            request = b""
-            while b"\r\n\r\n" not in request:
-                chunk = connection.recv(4096)
-                if not chunk:
-                    return
-                request += chunk
-            key = next(line.split(b":", 1)[1].strip() for line in request.split(b"\r\n")
-                       if line.lower().startswith(b"sec-websocket-key:"))
-            accept = base64.b64encode(hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest())
-            connection.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
-                               b"Connection: Upgrade\r\nSec-WebSocket-Accept: " + accept + b"\r\n\r\n")
-            connection.recv(65536)  # the client's CONNECT
-            size = len(self.frame)
-            header = bytes([0x82, size]) if size < 126 else bytes([0x82, 126]) + size.to_bytes(2, "big")
-            connection.sendall(header + self.frame)
-            self.served += 1
-            time.sleep(0.5)
-        except (OSError, StopIteration):
-            pass
-        finally:
-            connection.close()
+def social_probe(token, build, path="/users/me/profile"):
+    """An authenticated Social write as the desktop shell sends it. (status, body, headers)."""
+    headers = {"Authorization": "Bearer " + token, "x-flare-platform": "desktop", "x-flare-app-build": str(build),
+               "x-flare-distribution": RELEASE_APP["distribution"]}
+    if path == "/users/me/profile":
+        headers["Idempotency-Key"] = str(uuid.uuid4())
+        status, raw, response = request("PUT", SOCIAL_API + path, {"nickname": "forced update"}, headers)
+    else:
+        status, raw, response = request("POST", SOCIAL_API + path, {}, headers)
+    return status, decoded(raw), response
 
-    def close(self):
-        self.server.close()
+
+def refusals_counted():
+    """Core gateways' handshake_rejected_total{reason=below_min_build|blocked_build}, summed."""
+    total, reachable = 0, 0
+    for name, gateway in ls.GATEWAYS.items():
+        status, raw, _ = request("GET", f"http://127.0.0.1:{gateway[2]}/metrics", None, {})
+        if status != 200:
+            continue
+        reachable += 1
+        for line in raw.decode(errors="replace").splitlines():
+            if line.startswith("handshake_rejected_total") and re.search(r'reason="(below_min_build|blocked_build)"', line):
+                total += int(float(line.rsplit(" ", 1)[1]))
+    return {"reachableGateways": reachable, "refusals": total}
+
+
+def refused_client(app, name, build, seed, attempts=6):
+    """A client the real Core gateway refuses at CONNECT. The gate reads the policy through the
+    tenant runtime cache, so a client that gets in while the cache is still old is retried."""
+    for _ in range(attempts):
+        client = Client(name, app, seed=seed, app_info={**RELEASE_APP, "build": build}, single_runtime=True).start()
+        terminal = client.wait(lambda e: e["kind"] == "connection" and e["data"].get("phase") == "actionRequired", 45)
+        if terminal:
+            return client, terminal
+        client.stop()
+        time.sleep(10)
+    return None, None
+
+
+def wait_online(client, timeout=90):
+    deadline = time.time() + timeout
+    status = None
+    while time.time() < deadline:
+        status = client.status()
+        if online_on(status):
+            return status
+        time.sleep(1)
+    return None
 
 
 def command_upgrade_required(_args):
-    """A client refused at CONNECT goes to `required` and read-only with nothing else telling it.
-    Uses an access point whose gateway is gone (after `migrate`): the real SNI router and Edge in
-    front, the stand-in on the gateway's port."""
+    """A client below the floor is refused by the real Core gateway at CONNECT and goes to
+    `required` and read-only with nothing else telling it. The floor is a policy change proposed
+    and approved by two staff members and projected by the platform to Core; the refusal comes
+    from the gateway behind the real Edge and SNI router. Policy restored afterwards. Needs `seed`
+    on a lab initialized by this build."""
     facts = load_facts()
     app = facts["apps"]["main"]
-    site = st.SITES["ap-a1"]
-    gateway_port = ls.GATEWAYS[site.gateway][0]
-    ls.require(not ls.port_open(gateway_port), "the gateway of ap-a1 still runs; run migrate first")
-    state = ls.load_state()
-    if not ls.live(state, site.edge):
-        st.command_ctl(argparse.Namespace(action="start", process=site.edge))
-    payload = payload_of(read_document(app))
-    key = lab_key("good")
-    cert = certify("ok-forge-good", key["publicKey"], "forge-good.cert")
-    payload["serial"] += 1
-    only_dead_mirror(payload, app)
-    cell = payload["regions"][0]["cells"][0]
-    cell["accessPoints"] = [{**cell["accessPoints"][0], "id": site.ap_id, "host": site.host}]
-    file = st.lab_path("seeds", f"upgrade-{now_ms()}.json")
-    file.write_bytes(forge("ok-forge-good", key, payload, [cert]))
-    min_build = 30201
-    frame = subprocess.run([str(CLIENT), "upgrade-frame", str(min_build)], capture_output=True, check=True).stdout
-    gateway = RefusingGateway(gateway_port, frame)
-    client = Client(f"upgrade-{now_ms()}", app, seed=file, app_info=RELEASE_APP, single_runtime=True)
-    client.start()
-    result = {"standIn": True, "minBuild": min_build}
+    rel = release_lab(facts, app)
+    rel.tauri_app()
+    rel.quiet("tauri", "stable")
+    build = rel.next_build("tauri", "stable")
+    draft = rel.draft("tauri", "stable", build, stages=[10000])
+    rel.package(draft)
+    rel.go_live(draft["id"])
+    wait_release(app, "tauri", "stable", lambda p: entry_of(p, build) is not None)
+    min_build = build - 50
+    client_build = build - 100
+    seed = seed_file(app)
+    result = {"build": build, "minBuild": min_build, "clientBuild": client_build}
+    client = None
     try:
-        terminal = client.wait(lambda e: e["kind"] == "connection" and e["data"].get("phase") == "actionRequired", 60)
-        result["connection"] = (terminal or {}).get("data")
+        rel.set_policy("tauri", "stable", min_build=min_build, block_ui=True)
+        wait_projection(app, "tauri", min_build)
+        client, terminal = refused_client(app, f"upgrade-{now_ms()}", client_build, seed)
+        ls.require(client is not None, "the gateway never refused the old build")
+        result["connection"] = terminal.get("data")
         failed = client.wait(lambda e: e["kind"] == "loginFailed", 20)
         result["connectError"] = (failed or {}).get("data")
-        event = client.ask("update_state", 20)
-        result["update"] = (event or {}).get("data", {}).get("status")
-        result["refusals"] = gateway.served
+        status = (client.ask("update_state", 20) or {}).get("data", {}).get("status")
+        result["update"] = status
+        result["gateways"] = refusals_counted()
     finally:
-        client.stop()
-        gateway.close()
+        if client:
+            client.stop()
+        rel.set_policy("tauri", "stable")
     status = result["update"] or {}
-    result["pass"] = (bool(terminal) and status.get("state") == "required" and status.get("readOnly") is True
-                      and gateway.served >= 1)
+    result["checks"] = {"connectRefused": bool(result["connection"]), "stateRequired": status.get("state") == "required",
+                        "readOnly": status.get("readOnly") is True}
+    result["pass"] = all(result["checks"].values())
     evidence("s4-upgrade-required", result)
-    log(json.dumps({k: result[k] for k in ("refusals", "pass")}) + " " + json.dumps(
+    log(json.dumps(result["checks"]) + " " + json.dumps(
         {k: status.get(k) for k in ("state", "readOnly", "blockUi", "prompt")}))
+
+
+def command_forced_update(_args):
+    """The whole forced-update cycle against the real platform and gateways. Build N is on offer;
+    a policy proposed by one staff member and approved by another raises the floor to N with
+    effectiveFrom now. An old build is refused at CONNECT (UPGRADE_REQUIRED, the client goes
+    read-only) and on Social REST with 426 and the documented body; a newer build is published;
+    the same client restarts on it and reconnects. Policy restored afterwards. Needs `seed` on a
+    lab initialized by this build."""
+    facts = load_facts()
+    app = facts["apps"]["main"]
+    rel = release_lab(facts, app)
+    rel.tauri_app()
+    rel.quiet("tauri", "stable")
+    first = rel.next_build("tauri", "stable")
+    draft = rel.draft("tauri", "stable", first, stages=[10000])
+    rel.package(draft)
+    rel.go_live(draft["id"])
+    wait_release(app, "tauri", "stable", lambda p: entry_of(p, first) is not None)
+    old_build = first - 100
+    seed = seed_file(app)
+    name = f"forced-{now_ms()}"
+    token = social_user(app)
+    result = {"firstBuild": first, "oldBuild": old_build}
+    client = upgraded = None
+    try:
+        # Before the floor: the old build connects and Social answers it.
+        before = Client(name, app, seed=seed, app_info={**RELEASE_APP, "build": old_build}, single_runtime=True).start()
+        try:
+            result["onlineBeforeFloor"] = bool(wait_online(before))
+        finally:
+            before.stop()
+        result["restBeforeFloor"] = social_probe(token, old_build)[0]
+        rel.set_policy("tauri", "stable", min_build=first, block_ui=True)
+        wait_projection(app, "tauri", first)
+        client, terminal = refused_client(app, name, old_build, seed)
+        ls.require(client is not None, "the gateway never refused the old build")
+        result["connection"] = terminal.get("data")
+        failed = client.wait(lambda e: e["kind"] == "loginFailed", 20)
+        result["connectError"] = (failed or {}).get("data")
+        result["readOnlyUpdate"] = (client.ask("update_state", 20) or {}).get("data", {}).get("status")
+        result["gateways"] = refusals_counted()
+        status, body, headers = social_probe(token, old_build)
+        result["rest"] = {"status": status, "body": body, "contentType": (headers or {}).get("Content-Type")}
+        result["restAtFloor"] = social_probe(token, first)[0]
+        result["restLogoutExempt"] = social_probe(token, old_build, "/auth/logout")[0]
+        # The newer build is published; the refused client learns it is the target.
+        newer = first + 10
+        draft2 = rel.draft("tauri", "stable", newer, stages=[10000])
+        rel.package(draft2)
+        rel.go_live(draft2["id"])
+        wait_release(app, "tauri", "stable", lambda p: entry_of(p, newer) is not None)
+        checked = release_summary(settled_update(client))
+        result["offeredToRefusedClient"] = checked
+        # The upgrade: the same installation, now on the newer build.
+        client.stop()
+        client = None
+        upgraded = Client(name, app, seed=seed, app_info={**RELEASE_APP, "build": newer}, single_runtime=True).start()
+        online = wait_online(upgraded)
+        result["afterUpgrade"] = {"online": bool(online), "connection": (online or {}).get("connection"),
+                                  "update": release_summary((upgraded.ask("update_state", 20) or {}).get("data", {}).get("status"))}
+        token = social_user(app)
+        result["restAfterUpgrade"] = social_probe(token, newer)[0]
+    finally:
+        for item in (client, upgraded):
+            if item:
+                item.stop()
+        rel.set_policy("tauri", "stable")
+    body = (result.get("rest") or {}).get("body")
+    status = result.get("readOnlyUpdate") or {}
+    result["checks"] = {
+        "onlineBeforeFloor": result.get("onlineBeforeFloor") is True,
+        "restBeforeFloorAllowed": result.get("restBeforeFloor") == 200,
+        "connectRefused": bool(result.get("connection")),
+        "clientReadOnly": status.get("state") == "required" and status.get("readOnly") is True,
+        "rest426": (result.get("rest") or {}).get("status") == 426,
+        "rest426Body": isinstance(body, dict) and body.get("code") == "UPGRADE_REQUIRED"
+        and (body.get("data") or {}).get("minBuild") == first and (body.get("data") or {}).get("platform") == "tauri",
+        "restAtFloorAllowed": result.get("restAtFloor") == 200,
+        "logoutExempt": result.get("restLogoutExempt") not in (426, 0),
+        "newerBuildOffered": (result.get("offeredToRefusedClient") or {}).get("releaseBuild") == first + 10,
+        "reconnectsAfterUpgrade": (result.get("afterUpgrade") or {}).get("online") is True,
+        "restAfterUpgrade": result.get("restAfterUpgrade") == 200,
+    }
+    result["pass"] = all(result["checks"].values())
+    evidence("s5-forced-update", result)
+    log(json.dumps(result["checks"]))
 
 
 # ------------------------------------------- secondary: Service Worker, real browser --
@@ -2658,7 +3200,6 @@ WEB_SITE_PORT = ls.port(43620)
 WEB_HOST = f"web.{st.HOST_SUFFIX}"
 WEB_ORIGIN = f"https://{WEB_HOST}:{WEB_SITE_PORT}"
 WEB_APP = ls.ROOT / "flare-social-examples/apps/flare-social-web-app"
-WEB_RELEASE_FILE = "release/web/stable.dsse.json"
 CHROMIUM = Path.home() / ("Library/Caches/ms-playwright/chromium-1248/chrome-mac-arm64/"
                           "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing")
 HOUR_MS = 3_600_000
@@ -2721,19 +3262,6 @@ def web_deploy(root, build):
 
 def web_manifest_sha(root, build):
     return hashlib.sha256((root / "builds" / build / "asset-manifest.json").read_bytes()).hexdigest()
-
-
-def web_release(app, key, cert, serial, build, sha256, number, packs=()):
-    entry = {"releaseId": f"web-{number}", "version": f"1.{number}", "build": number, "publishedAt": iso(now_ms()),
-             "rollout": {"basisPoints": 10000, "salt": f"web-{number}", "halted": False},
-             "notes": {"zh-CN": [f"构建 {build}"], "en": [f"Build {build}"]},
-             "artifacts": {"web": {"kind": "web_bundle", "buildId": build, "sha256": sha256,
-                                   "urls": [f"{WEB_ORIGIN}/builds/{build}/asset-manifest.json"]}},
-             "resourcePacks": list(packs)}
-    payload = {"schema": "flare.release.v1", "bootstrapId": app["bootstrapId"], "platform": "web", "channel": "stable",
-               "serial": serial, "issuedAt": iso(now_ms() - 60_000), "expiresAt": iso(now_ms() + 14 * DAY_MS),
-               "policy": {}, "releases": [entry]}
-    return forge("ok-forge-good", key, payload, [cert], RELEASE_PAYLOAD_TYPE)
 
 
 class Browser:
@@ -2884,11 +3412,43 @@ def store_facts(store, bootstrap):
             "sources": (store.get(f"bootstrap/sources/{bootstrap}") or {}).get("text"), "keys": sorted(store)}
 
 
+def web_register(rel, release, build_id, sha256):
+    """The web bundle of a draft release: the platform fetches the asset manifest from the site
+    and requires the declared hash. (status, body) of the register call."""
+    revision = rel.view(release["id"])["revision"]
+    return rel.author.call("POST", f"{rel.base}/releases/{release['id']}/artifacts:register", {
+        "revision": revision, "distribution": "web", "artifact": {
+            "kind": "web_bundle", "buildId": build_id, "sha256": sha256,
+            "urls": [f"{WEB_ORIGIN}/builds/{build_id}/asset-manifest.json"]}})
+
+
+def web_live(rel, app, build_id, sha256, packs=()):
+    """One more web release on offer for everybody: draft, register the bundle, two-person
+    approval, publish, and wait until the mirrors carry a manifest that lists it."""
+    build = rel.next_build("web", "stable")
+    draft = rel.draft("web", "stable", build, packs=packs, stages=[10000])
+    status, body = web_register(rel, draft, build_id, sha256)
+    ls.require(status == 200, f"register web bundle {build_id}: {status} {fault_of(body)[:400]}")
+    rel.go_live(draft["id"])
+    wait_release(app, "web", "stable", lambda p: entry_of(p, build) is not None)
+    return draft, build
+
+
+def offered_web(app):
+    """Build ids on offer, in manifest order (the first one is what a web client moves to)."""
+    _, payload = read_release(app, "web", "stable")
+    return [r["artifacts"]["web"]["buildId"] for r in (payload or {}).get("releases", [])
+            if not r["rollout"]["halted"] and "web" in r["artifacts"]]
+
+
 def command_web_sw(args):
     """The update path a browser takes: signed manifests from the mirrors through fetch and CORS,
     the worker installed from a new query string, every open tab reloaded, then the same way back;
-    and what a reload has to keep. Runs on the `forge` application, whose documents nothing else
-    reads, so it can also serve an older manifest on purpose."""
+    and what a reload has to keep. The web releases are made through the real platform (bundle
+    registered by hash, two-person approval, platform-signed manifest); rolling back is halting
+    the newest release. Runs on the `forge` application, whose access documents nothing else
+    reads, so it can also serve an older access manifest on purpose. Needs `seed` on a lab
+    initialized by this build."""
     WEB_BUILD_PREFIX[0] = "core-build-" if args.app == "core" else "build-"
     facts = load_facts()
     app = facts["apps"]["forge"]
@@ -2896,6 +3456,9 @@ def command_web_sw(args):
     lab = st.Lab()
     key = lab_key("good")
     cert = certify("ok-forge-good", key["publicKey"], "forge-good.cert")
+    rel = release_lab(facts, app)
+    rel.client_app("web", {"web": {"kind": "web_bundle"}})
+    rel.quiet("web", "stable")
     web = st.lab_path("web")
     root = web / "site"
     profile = web / f"profile-{now_ms()}"
@@ -2917,8 +3480,9 @@ def command_web_sw(args):
     pack = {"id": "web-strings", "kind": "strings", "packVersion": 1, "minBuild": 0,
             "url": [object_url(s, app, "res/web-strings-1.json") for s in st.MIRRORS.values()],
             "sha256": hashlib.sha256(pack_body).hexdigest(), "sizeBytes": len(pack_body)}
-    put_everywhere(lab, app, web_release(app, key, cert, 1, "lab-a", sha_a, 1), WEB_RELEASE_FILE)
+    release_a, _ = web_live(rel, app, "lab-a", sha_a)
     browser = Browser(profile)
+    live = [release_a]
     try:
         browser.ask("open", count=2)
         first = wait_tabs(browser, entries, lambda t: t["active"] == "lab-a" and t["controller"] == "lab-a", 60,
@@ -2929,10 +3493,16 @@ def command_web_sw(args):
             "first store"), bootstrap)
         web_deploy(root, "lab-b")
         sha_b = web_manifest_sha(root, "lab-b")
+        # The platform refuses a bundle whose asset manifest is not the declared one.
+        refused_draft = rel.draft("web", "stable", rel.next_build("web", "stable"), stages=[10000])
+        refused_status, refused_body = web_register(rel, refused_draft, "lab-b", "0" * 64)
+        steps["platformRefusesWrongHash"] = {"status": refused_status, "body": fault_of(refused_body)[:300]}
         browser.ask("reload", tab=0)
         steps["reloadAfterDeploy"] = tab_view(browser.tabs()[0], entries)
         put_everywhere(lab, app, newer)
-        put_everywhere(lab, app, web_release(app, key, cert, 2, "lab-b", sha_b, 2, [pack]), WEB_RELEASE_FILE)
+        release_b, _ = web_live(rel, app, "lab-b", sha_b, [pack])
+        live.append(release_b)
+        steps["offeredAfterB"] = offered_web(app)
         steps["update"] = web_update_to(browser, entries, "lab-b", 7 * HOUR_MS)
         adopted = wait_store(browser, lambda s: f"resource/{bootstrap}/web-strings" in s and
                              s.get(f"manifest/access/{bootstrap}/current", {}).get("sha256") ==
@@ -2943,8 +3513,8 @@ def command_web_sw(args):
         browser.ask("reload", tab=1)
         time.sleep(1)
         steps["storeAfterReload"] = store_facts(web_store(browser), bootstrap)
-        # The mirrors fall back to the older, validly signed manifest. The serial on the page's own
-        # disk is what refuses it; the seed in the bundle alone would take it.
+        # The mirrors fall back to the older, validly signed access manifest. The serial on the
+        # page's own disk is what refuses it; the seed in the bundle alone would take it.
         put_everywhere(lab, app, genuine)
         browser.ask("clock", offsetMs=14 * HOUR_MS)
         browser.ask("reload", tab=0)
@@ -2959,34 +3529,53 @@ def command_web_sw(args):
         steps["reloadWithSiteDown"] = tab_view(browser.tabs()[0], entries)
         st.command_ctl(argparse.Namespace(action="start", process="web-site"))
         ls.wait_for(lambda: ls.port_open(WEB_SITE_PORT), 20, "web site")
-        # Rollback is the same step with the older build in the manifest.
-        put_everywhere(lab, app, web_release(app, key, cert, 3, "lab-a", sha_a, 3, [pack]), WEB_RELEASE_FILE)
+        # Rollback is halting the newest release: the manifest then lists the previous bundle first.
+        rel.halt(release_b["id"])
+        wait_release(app, "web", "stable", lambda p: [r["artifacts"]["web"]["buildId"] for r in p["releases"]
+                                                       if not r["rollout"]["halted"]][:1] == ["lab-a"])
+        steps["offeredAfterRollback"] = offered_web(app)
         steps["rollback"] = web_update_to(browser, entries, "lab-a", 21 * HOUR_MS)
-        # A wrong hash must not install.
-        put_everywhere(lab, app, web_release(app, key, cert, 4, "lab-b", "0" * 64, 4), WEB_RELEASE_FILE)
-        browser.ask("clock", offsetMs=28 * HOUR_MS)
-        browser.ask("reload", tab=0)
-        browser.ask("reload", tab=1)
-        index, _ = wait_prompt(browser, entries, 30, "bad prompt")
-        if index is not None:
-            browser.ask("click", tab=index, action="update")
-            time.sleep(6)
-        steps["wrongHash"] = {"prompted": index is not None,
-                              "after": [tab_view(t, entries) for t in browser.tabs()]}
-        # Withdrawn from the manifest, the pack leaves the page's store.
+        # A bundle that is not what the manifest declares must not install: registered with the
+        # right hash, then the site's file changes under it.
+        release_c, _ = web_live(rel, app, "lab-b", sha_b)
+        live.append(release_c)
+        served = root / "builds" / "lab-b" / "asset-manifest.json"
+        original = served.read_bytes()
+        served.write_bytes(original + b"\n")
+        try:
+            browser.ask("clock", offsetMs=28 * HOUR_MS)
+            browser.ask("reload", tab=0)
+            browser.ask("reload", tab=1)
+            index, _ = wait_prompt(browser, entries, 30, "bad prompt")
+            if index is not None:
+                browser.ask("click", tab=index, action="update")
+                time.sleep(6)
+            steps["wrongHash"] = {"prompted": index is not None,
+                                  "after": [tab_view(t, entries) for t in browser.tabs()]}
+        finally:
+            served.write_bytes(original)
+        # Withdrawn from the manifest, the pack leaves the page's store (it went with the halted release).
         wait_store(browser, lambda s: f"resource/{bootstrap}/web-strings" not in s, 15, "pack withdrawal")
         steps["storeAfterWithdrawal"] = store_facts(web_store(browser), bootstrap)
         steps["logs"] = browser.ask("logs")
         browser.ask("screenshot", tab=0, path=str(web / "last.png"))
     finally:
         browser.quit()
-        delete_everywhere(lab, app, WEB_RELEASE_FILE)
+        for release in live:
+            try:
+                if rel.view(release["id"])["status"] == "published":
+                    rel.halt(release["id"])
+            except SystemExit:
+                pass
         delete_everywhere(lab, app, "res/web-strings-1.json")
         put_everywhere(lab, app, genuine)
     update, rollback, wrong = steps["update"], steps["rollback"], steps["wrongHash"]
     adoption, reload_facts = steps["storeAfterAdoption"], steps["storeAfterReload"]
     attempt = steps["storeAfterRollbackAttempt"]
     checks = {
+        "platformRefusesWrongHash": steps["platformRefusesWrongHash"]["status"] >= 400,
+        "newestOfferedFirst": steps["offeredAfterB"][:1] == ["lab-b"],
+        "haltOffersPreviousBundle": steps["offeredAfterRollback"][:1] == ["lab-a"],
         "firstInstallRegistersRunningBuild": bool(first),
         "reloadStaysOnOwnBuildAfterDeploy": steps["reloadAfterDeploy"]["running"] == "lab-a",
         "newQueryInstallsAndBothTabsMove": update.get("moved") is True,
@@ -3139,6 +3728,9 @@ def main():
     hole.set_defaults(func=command_mirror_hole)
     sub.add_parser("lint").set_defaults(func=command_lint)
     sub.add_parser("release").set_defaults(func=command_release)
+    sub.add_parser("release-rollout").set_defaults(func=command_release_rollout)
+    sub.add_parser("forced-update").set_defaults(func=command_forced_update)
+    sub.add_parser("apk-negative").set_defaults(func=command_apk_negative)
     sub.add_parser("recovery").set_defaults(func=command_recovery)
     total = sub.add_parser("total-outage", help="every access point down; new nodes through the emergency publish")
     total.add_argument("--clients", type=int, default=20)
