@@ -442,24 +442,44 @@ pub fn is_valid_path_segment(value: &str) -> bool {
             .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-'))
 }
 
+/// 把设备平台的各种写法归一成 CONNECT 词汇：`web`、`h5`、`pc`、`android`、`ios`、`harmonyos`。
+///
+/// 别名与 flare-core 的 `DevicePlatform::from_str` 一致（`desktop`→`pc`，`mobile_web`→`h5`，
+/// `iphone`/`ipad`→`ios`，`harmony`/`openharmony`→`harmonyos`），另外把桌面操作系统名
+/// `windows`、`macos`、`linux` 也当作 `pc`。Core 的 CONNECT 门禁和 Social 的 HTTP 门禁都先过这一步，
+/// 同一个客户端无论在哪边报哪种写法，判定都一样。认不出的返回 `None`。
+pub fn normalize_device_platform(device_platform: &str) -> Option<&'static str> {
+    let platform = device_platform.trim().to_ascii_lowercase();
+    Some(match platform.as_str() {
+        "web" => "web",
+        "h5" | "mobile_web" => "h5",
+        "pc" | "desktop" | "windows" | "macos" | "linux" => "pc",
+        "android" => "android",
+        "ios" | "iphone" | "ipad" => "ios",
+        "harmonyos" | "harmony" | "openharmony" => "harmonyos",
+        _ => return None,
+    })
+}
+
 /// CONNECT 设备平台 → 发布清单平台段（Core 门禁、Social 门禁、引擎查更新共用这一处）。
 ///
-/// 设备平台是 CONNECT 词汇（`web`、`h5`、`pc`、`ios`、`android`、`harmonyos`），桌面也接受
-/// `desktop`、`windows`、`macos`、`linux`。桌面分两种外壳：`distribution` 为 `electron` 时是
-/// `electron`，其余都是 `tauri`。没有发布清单的平台（鸿蒙等）返回 `None`，不设版本门禁。
+/// 设备平台先经 [`normalize_device_platform`] 归一。桌面分两种外壳，只看 `distribution`：
+/// `tauri` 是 `tauri`，`electron` 是 `electron`；其余（没给、`direct` 等）认不出外壳，返回 `None`——
+/// 不设版本门禁，也不查发布清单，免得把 Electron 客户端按 Tauri 的清单拦下或升级。没有发布清单的
+/// 平台（鸿蒙等）同样返回 `None`。
 pub fn release_platform(device_platform: &str, distribution: Option<&str>) -> Option<&'static str> {
-    let platform = device_platform.trim().to_ascii_lowercase();
-    match platform.as_str() {
-        "web" | "h5" | "mobile_web" => Some("web"),
+    match normalize_device_platform(device_platform)? {
+        "web" | "h5" => Some("web"),
         "android" => Some("android"),
         "ios" => Some("ios"),
-        "pc" | "desktop" | "windows" | "macos" | "linux" => Some(
-            if distribution.is_some_and(|value| value.trim().eq_ignore_ascii_case("electron")) {
-                "electron"
-            } else {
-                "tauri"
-            },
-        ),
+        "pc" => {
+            let shell = distribution.map(|value| value.trim().to_ascii_lowercase());
+            match shell.as_deref() {
+                Some("tauri") => Some("tauri"),
+                Some("electron") => Some("electron"),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -475,17 +495,25 @@ mod tests {
         for (device, distribution, expected) in [
             ("web", None, Some("web")),
             ("h5", None, Some("web")),
+            ("mobile_web", None, Some("web")),
             ("android", Some("play"), Some("android")),
             ("ios", Some("appstore"), Some("ios")),
             ("IOS", None, Some("ios")),
-            ("pc", None, Some("tauri")),
+            ("iphone", None, Some("ios")),
+            ("iPad", Some("appstore"), Some("ios")),
+            ("pc", None, None),
+            ("pc", Some("direct"), None),
             ("pc", Some("tauri"), Some("tauri")),
+            ("pc", Some(" Tauri "), Some("tauri")),
             ("pc", Some("electron"), Some("electron")),
             ("desktop", Some("Electron"), Some("electron")),
-            ("windows", Some("direct"), Some("tauri")),
+            ("desktop", Some("tauri"), Some("tauri")),
+            ("windows", Some("direct"), None),
             ("macos", Some("electron"), Some("electron")),
-            ("linux", None, Some("tauri")),
+            ("linux", None, None),
             ("harmonyos", Some("appgallery"), None),
+            ("harmony", None, None),
+            ("openharmony", None, None),
             ("", None, None),
             ("other", None, None),
         ] {
@@ -494,6 +522,19 @@ mod tests {
                 expected,
                 "{device} / {distribution:?}"
             );
+        }
+        for (raw, normalized) in [
+            ("desktop", Some("pc")),
+            ("Windows", Some("pc")),
+            ("mobile_web", Some("h5")),
+            ("iphone", Some("ios")),
+            ("ipad", Some("ios")),
+            ("harmony", Some("harmonyos")),
+            ("OpenHarmony", Some("harmonyos")),
+            (" web ", Some("web")),
+            ("fridge", None),
+        ] {
+            assert_eq!(normalize_device_platform(raw), normalized, "{raw}");
         }
         for segment in ["web", "android", "ios", "tauri", "electron"] {
             assert!(is_valid_path_segment(segment));

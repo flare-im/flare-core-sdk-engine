@@ -87,7 +87,7 @@ fn release_document(policy: Value) -> Vec<u8> {
     let payload = json!({
         "schema": "flare.release.v1",
         "bootstrapId": BOOTSTRAP_ID,
-        "platform": release_platform(Some("play")),
+        "platform": release_platform(Some("tauri")),
         "channel": "stable",
         "serial": 88,
         "issuedAt": format_rfc3339_ms(now_ms() - DAY_MS),
@@ -186,7 +186,7 @@ impl flare_access::download::ArtifactTransport for NoArtifacts {
 
 fn app() -> UpdateApp {
     UpdateApp {
-        platform: release_platform(Some("play")).to_owned(),
+        platform: release_platform(Some("tauri")).to_owned(),
         channel: "stable".into(),
         version: Some("2.3.2".into()),
         build: Some(20302),
@@ -490,14 +490,19 @@ async fn a_second_init_keeps_the_prompt_record_the_read_only_choice_and_the_loca
 
 #[test]
 fn the_platform_segment_follows_the_runtime() {
+    let mobile = match std::env::consts::OS {
+        "android" => Some("android"),
+        "ios" => Some("ios"),
+        _ => None,
+    };
     assert_eq!(
         release_platform(Some("electron")),
-        match std::env::consts::OS {
-            "android" => "android",
-            "ios" => "ios",
-            _ => "electron",
-        }
+        mobile.unwrap_or("electron")
     );
+    assert_eq!(release_platform(Some("tauri")), mobile.unwrap_or("tauri"));
+    // 桌面认不出外壳：不查发布清单（空平台段让 `can_check` 为假）。
+    assert_eq!(release_platform(None), mobile.unwrap_or(""));
+    assert_eq!(release_platform(Some("direct")), mobile.unwrap_or(""));
 }
 
 const PACK_ID: &str = "strings-main";
@@ -522,7 +527,7 @@ fn pack_document(serial: u64, packs: Vec<Value>) -> Vec<u8> {
     let payload = json!({
         "schema": "flare.release.v1",
         "bootstrapId": BOOTSTRAP_ID,
-        "platform": release_platform(Some("play")),
+        "platform": release_platform(Some("tauri")),
         "channel": "stable",
         "serial": serial,
         "issuedAt": format_rfc3339_ms(now_ms() - DAY_MS),
@@ -596,7 +601,7 @@ fn apk_document(url: &str) -> Vec<u8> {
     let payload = json!({
         "schema": "flare.release.v1",
         "bootstrapId": BOOTSTRAP_ID,
-        "platform": release_platform(Some("play")),
+        "platform": release_platform(Some("tauri")),
         "channel": "stable",
         "serial": 88,
         "issuedAt": format_rfc3339_ms(now_ms() - DAY_MS),

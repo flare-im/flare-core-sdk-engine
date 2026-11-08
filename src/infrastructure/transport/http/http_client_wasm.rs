@@ -67,7 +67,12 @@ impl FetchDeadline {
 
 /// Private transfer path: no cookie/request context, redirect or response-body
 /// diagnostics. A dropped Rust caller aborts the browser request as well.
-pub async fn put_private_bytes(url: String, body: Vec<u8>, content_type: String) -> Result<()> {
+pub async fn put_private_bytes(
+    url: String,
+    body: Vec<u8>,
+    content_type: String,
+    explicit_headers: HashMap<String, String>,
+) -> Result<()> {
     use futures::FutureExt;
     let (mut sender, receiver) = futures::channel::oneshot::channel();
     wasm_bindgen_futures::spawn_local(async move {
@@ -75,6 +80,9 @@ pub async fn put_private_bytes(url: String, body: Vec<u8>, content_type: String)
             let window=web_sys::window().ok_or_else(||FlareError::system("browser window unavailable"))?;
             let headers=Headers::new().map_err(|_|FlareError::system("private upload headers unavailable"))?;
             headers.set("Content-Type",&content_type).map_err(|_|FlareError::system("private upload content type invalid"))?;
+            for (key, value) in &explicit_headers {
+                headers.set(key, value).map_err(|_|FlareError::system("private upload header invalid"))?;
+            }
             let init=RequestInit::new();
             init.set_method("PUT");init.set_mode(RequestMode::Cors);init.set_headers(&headers);
             init.set_credentials(web_sys::RequestCredentials::Omit);

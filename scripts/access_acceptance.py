@@ -1423,8 +1423,7 @@ class Releases:
 
     # -- releases
     def next_build(self, platform, channel):
-        page = self.get(f"/releases?platform={platform}&channel={channel}&page=1&pageSize=100")
-        return max([COUNT_BUILD_FLOOR, *(r["build"] for r in page["items"])]) + 10
+        return max([COUNT_BUILD_FLOOR, *(r["build"] for r in self.releases(platform, channel))]) + 10
 
     def draft(self, platform, channel, build, *, packs=(), stages=None):
         body = {"platform": platform, "channel": channel, "version": f"2.{build}", "build": build,
@@ -1452,13 +1451,36 @@ class Releases:
     def halt(self, release_id):
         return self.transition(release_id, "halt")
 
+    def releases(self, platform, channel, page_size=100):
+        """Every release of the channel, all pages."""
+        items, page = [], 1
+        while True:
+            answer = self.get(f"/releases?platform={platform}&channel={channel}&page={page}&pageSize={page_size}")
+            items += answer["items"]
+            if len(answer["items"]) < page_size or len(items) >= answer.get("total", 0):
+                return items
+            page += 1
+
     def quiet(self, platform, channel):
-        """No floor and nothing on offer: the state a case starts from, whatever earlier runs left."""
+        """No floor and nothing on offer: the state a case starts from, whatever earlier runs left.
+        Published releases are halted and submitted or approved ones sent back to draft, on every
+        page. The platform has no way to delete a draft; a leftover draft is inert (never in a
+        manifest, and `next_build` steps past its build)."""
         self.set_policy(platform, channel)
-        page = self.get(f"/releases?platform={platform}&channel={channel}&page=1&pageSize=100")
-        for item in page["items"]:
-            if item["status"] == "published":
-                self.halt(item["id"])
+        for item in self.releases(platform, channel):
+            self.withdraw(item["id"], item["status"])
+
+    def withdraw(self, release_id, status=None):
+        """Takes one release out of play: halt it when published, send it back to draft when it
+        waits for review. Cleanup must not fail the case, so a refusal is only logged."""
+        try:
+            status = status or self.view(release_id)["status"]
+            if status == "published":
+                self.halt(release_id)
+            elif status in ("submitted", "approved"):
+                self.transition(release_id, "reject", self.approver, "lab cleanup")
+        except SystemExit as error:
+            log(f"cleanup of {release_id} refused: {error}")
 
     # -- packages
     def upload(self, release, distribution, body, name, *, target=None, signature=None, declared_sha256=None):
@@ -1607,6 +1629,8 @@ def command_release(_args):
     app_info = {**RELEASE_APP, "build": build - 100}
     client_name = f"release-{now_ms()}"
     draft = rel.draft("tauri", "stable", build, packs=[pack], stages=[10000])
+    # Everything this case publishes is withdrawn again at the end, pass or fail.
+    published = [draft["id"]]
     package = rel.package(draft)
     steps["package"] = {"status": package["upload"]["status"], "copies": len(package["urls"]),
                         "signingCert": package["upload"].get("signingCertSha256")}
@@ -1662,6 +1686,7 @@ def command_release(_args):
         # Forced update from the signed manifest alone: a newer build is on offer and a policy
         # (proposed and approved by two people) raises the floor above this client's build.
         newer = rel.draft("tauri", "stable", rel.next_build("tauri", "stable"), stages=[10000])
+        published.append(newer["id"])
         rel.package(newer)
         rel.go_live(newer["id"])
         rel.set_policy("tauri", "stable", min_build=app_info["build"] + 50, block_ui=True)
@@ -1670,6 +1695,8 @@ def command_release(_args):
     finally:
         third.stop()
         rel.set_policy("tauri", "stable")
+        for release_id in published:
+            rel.withdraw(release_id)
     checks = {
         "uploadVerifiedAndCopied": steps["package"]["status"] == "verified" and steps["package"]["copies"] == len(st.MIRRORS),
         "manifestSignedByPlatform": steps["manifest"]["artifact"] == "tauri",
@@ -1689,18 +1716,44 @@ def command_release(_args):
     log(json.dumps(checks))
 
 
+# One (installId, salt) -> bucket pair the client's rule must reproduce. The same vector is
+# asserted against `access/src/release/evaluate.rs::bucket` in a Rust unit test
+# (`the_bucket_matches_the_acceptance_golden_vector`), so this helper and the client cannot drift.
+BUCKET_GOLDEN = (("install-00042", "rel_01JC8WGOLDEN", 1274), ("7f3c1e9a-golden", "salt-0001", 8848))
+ROLLOUT_INSTALLS = 100_000
+
+
 def bucket_of(install_id, salt):
-    """The client's rollout bucket (access/src/release/evaluate.rs): u32_be(SHA-256(id ':' salt)[0..4]) mod 10000."""
+    """The client's rollout bucket (access/src/release/evaluate.rs): u32_be(SHA-256(id ':' salt)[0..4]) mod 10000.
+
+    >>> [bucket_of(i, s) == expected for i, s, expected in BUCKET_GOLDEN]
+    [True, True]
+    """
     digest = hashlib.sha256(f"{install_id}:{salt}".encode()).digest()
     return int.from_bytes(digest[:4], "big") % 10_000
 
 
+def offered(entry, install_id):
+    """Whether the client offers this release to the installation: the release is not halted and
+    the installation's bucket is inside the rollout (`usable` and `in_rollout` in evaluate.rs).
+
+    >>> live = {"rollout": {"halted": False, "basisPoints": 10000, "salt": "s"}}
+    >>> offered(live, "a"), offered({"rollout": {**live["rollout"], "halted": True}}, "a")
+    (True, False)
+    >>> offered({"rollout": {"halted": False, "basisPoints": 0, "salt": "s"}}, "a")
+    False
+    """
+    rollout = entry["rollout"]
+    return not rollout["halted"] and bucket_of(install_id, rollout["salt"]) < rollout["basisPoints"]
+
+
 def command_release_rollout(_args):
     """The staged rollout as clients see it: a release published at 500 basis points reaches 5% of
-    10,000 synthetic installations, 5% +- 0.5%, bucketed by the client's own rule with the salt in
-    the published manifest; the advance to the last stage reaches all of them, the halt none.
-    The tolerance is 2.3 standard deviations of a uniform bucket, so a correct rule fails about
-    2% of runs by chance (each release has its own salt: run again)."""
+    100,000 synthetic installations, 5% +- 0.5%, decided by the client's own rule with the salt in
+    the published manifest; the advance to the last stage reaches all of them, the halt none (the
+    halted manifest is evaluated like any other). One standard deviation of the hit rate is
+    0.069%, so the tolerance is about 7 sigma: a correct rule practically never fails it. The
+    helper is pinned to the client by a golden vector checked on both sides."""
     facts = load_facts()
     app = facts["apps"]["forge"]
     rel = release_lab(facts, app)
@@ -1708,29 +1761,33 @@ def command_release_rollout(_args):
     rel.quiet("tauri", "canary")
     build = rel.next_build("tauri", "canary")
     draft = rel.draft("tauri", "canary", build, stages=[500, 10000])
-    rel.package(draft)
-    rel.go_live(draft["id"])
-    installs = [f"install-{index:05d}" for index in range(10_000)]
+    installs = [f"install-{index:06d}" for index in range(ROLLOUT_INSTALLS)]
 
     def reach(payload):
         entry = entry_of(payload, build)
-        hits = sum(bucket_of(i, entry["rollout"]["salt"]) < entry["rollout"]["basisPoints"] for i in installs)
         return {"basisPoints": entry["rollout"]["basisPoints"], "halted": entry["rollout"]["halted"],
-                "salt": entry["rollout"]["salt"], "hits": 0 if entry["rollout"]["halted"] else hits}
+                "salt": entry["rollout"]["salt"], "hits": sum(offered(entry, i) for i in installs)}
 
-    _, payload = wait_release(app, "tauri", "canary", lambda p: entry_of(p, build) is not None)
-    staged = reach(payload)
-    rel.advance(draft["id"])
-    _, payload = wait_release(app, "tauri", "canary", lambda p: entry_of(p, build)["rollout"]["basisPoints"] == 10000)
-    full = reach(payload)
-    rel.halt(draft["id"])
-    _, payload = wait_release(app, "tauri", "canary", lambda p: entry_of(p, build)["rollout"]["halted"])
-    halted = reach(payload)
+    try:
+        rel.package(draft)
+        rel.go_live(draft["id"])
+        _, payload = wait_release(app, "tauri", "canary", lambda p: entry_of(p, build) is not None)
+        staged = reach(payload)
+        rel.advance(draft["id"])
+        _, payload = wait_release(app, "tauri", "canary",
+                                  lambda p: entry_of(p, build)["rollout"]["basisPoints"] == 10000)
+        full = reach(payload)
+        rel.halt(draft["id"])
+        _, payload = wait_release(app, "tauri", "canary", lambda p: entry_of(p, build)["rollout"]["halted"])
+        halted = reach(payload)
+    finally:
+        rel.withdraw(draft["id"])
     rate = staged["hits"] / len(installs)
-    checks = {"publishedAtFivePercent": staged["basisPoints"] == 500,
+    checks = {"bucketMatchesClientGoldenVector": all(bucket_of(i, s) == b for i, s, b in BUCKET_GOLDEN),
+              "publishedAtFivePercent": staged["basisPoints"] == 500 and not staged["halted"],
               "hitRateWithinHalfPoint": 0.045 <= rate <= 0.055,
               "advanceReachesEveryone": full["basisPoints"] == 10000 and full["hits"] == len(installs),
-              "haltReachesNobody": halted["halted"] and halted["hits"] == 0}
+              "haltReachesNobody": halted["halted"] is True and halted["hits"] == 0}
     evidence("s1-release-rollout", {"installs": len(installs), "build": build, "staged": staged, "rate": rate,
                                     "full": full, "halted": halted, "checks": checks, "pass": all(checks.values())})
     log(json.dumps(checks) + f" rate={rate:.4f}")
@@ -1761,8 +1818,10 @@ def command_apk_negative(_args):
     first = rel.next_build("android", "stable")
     mismatch = negative("cert-mismatch", first, lab_apk(bad_cert))
     checks["certMismatchFailed"] = mismatch["status"] == "failed" and "signingCertMismatch" in (mismatch.get("failure") or "")
-    checks["certMismatchNamesTheFoundFingerprint"] = bad_fingerprint in json.dumps(results["cert-mismatch"]) \
-        or mismatch.get("signingCertSha256") in (None, bad_fingerprint)
+    # The refusal must name the certificate it found: the field, or the failure detail. Neither
+    # saying anything fails the check.
+    checks["certMismatchNamesTheFoundFingerprint"] = mismatch.get("signingCertSha256") == bad_fingerprint \
+        or bad_fingerprint in (mismatch.get("failure") or "")
     body = lab_apk(good_cert)
     wrong = negative("hash-mismatch", first + 10, body, declared=hashlib.sha256(lab_apk(good_cert)).hexdigest())
     checks["hashMismatchFailed"] = wrong["status"] == "failed" and "digestMismatch" in (wrong.get("failure") or "")
@@ -1778,18 +1837,23 @@ def command_apk_negative(_args):
                              "signingCertSha256": upload.get("signingCertSha256"), "copies": len(urls)}
     checks["registeredCertVerified"] = upload["status"] == "verified" and upload.get("signingCertSha256") == good_fingerprint
     checks["registeredCopiedToEveryMirror"] = len(urls) == len(st.MIRRORS)
-    rel.go_live(draft["id"])
-    _, payload = wait_release(app, "android", "stable", lambda p: entry_of(p, live_build) is not None)
-    artifact = entry_of(payload, live_build)["artifacts"]["direct"]
-    checks["manifestCarriesRealFingerprint"] = artifact.get("kind") == "apk" and \
-        artifact.get("signingCertSha256") == good_fingerprint
-    # Downgrade: a build that is not above everything already published.
-    low = rel.author.call("POST", f"{rel.base}/releases", {
-        "platform": "android", "channel": "stable", "version": "0.0.1", "build": live_build - 1,
-        "notes": {"en": ["downgrade"]}})
-    same = rel.author.call("POST", f"{rel.base}/releases", {
-        "platform": "android", "channel": "stable", "version": "0.0.2", "build": live_build,
-        "notes": {"en": ["same build"]}})
+    try:
+        rel.go_live(draft["id"])
+        _, payload = wait_release(app, "android", "stable", lambda p: entry_of(p, live_build) is not None)
+        artifact = entry_of(payload, live_build)["artifacts"]["direct"]
+        checks["manifestCarriesRealFingerprint"] = artifact.get("kind") == "apk" and \
+            artifact.get("signingCertSha256") == good_fingerprint
+        # Downgrade: a build that is not above everything already published.
+        low = rel.author.call("POST", f"{rel.base}/releases", {
+            "platform": "android", "channel": "stable", "version": "0.0.1", "build": live_build - 1,
+            "notes": {"en": ["downgrade"]}})
+        same = rel.author.call("POST", f"{rel.base}/releases", {
+            "platform": "android", "channel": "stable", "version": "0.0.2", "build": live_build,
+            "notes": {"en": ["same build"]}})
+    finally:
+        # Withdrawn again, pass or fail. The negative drafts cannot be deleted (the platform has
+        # no such operation); they are inert and `next_build` steps past them.
+        rel.withdraw(draft["id"])
     results["downgrade"] = {"status": low[0], "body": low[1]}
     results["sameBuild"] = {"status": same[0], "body": same[1]}
     checks["downgradeRefused"] = low[0] == 409 and "buildNotMonotonic" in fault_of(low[1])
@@ -3025,26 +3089,61 @@ def social_probe(token, build, path="/users/me/profile"):
     return status, decoded(raw), response
 
 
-def refusals_counted():
-    """Core gateways' handshake_rejected_total{reason=below_min_build|blocked_build}, summed."""
+def rejections_of(metrics_text, reason):
+    """`handshake_rejected_total{reason=...}` summed over the series of one gateway's metrics.
+
+    >>> text = "\\n".join(['handshake_rejected_total{reason="below_min_build"} 3',
+    ...                    'handshake_rejected_total{reason="token_invalid"} 9'])
+    >>> rejections_of(text, "below_min_build"), rejections_of(text, "blocked_build")
+    (3, 0)
+    """
+    total = 0
+    for line in metrics_text.splitlines():
+        if line.startswith("handshake_rejected_total") and f'reason="{reason}"' in line:
+            total += int(float(line.rsplit(" ", 1)[1]))
+    return total
+
+
+def refusals_counted(reason="below_min_build"):
+    """Core gateways' handshake_rejected_total{reason}, summed over the gateways that answered."""
     total, reachable = 0, 0
-    for name, gateway in ls.GATEWAYS.items():
+    for _name, gateway in ls.GATEWAYS.items():
         status, raw, _ = request("GET", f"http://127.0.0.1:{gateway[2]}/metrics", None, {})
         if status != 200:
             continue
         reachable += 1
-        for line in raw.decode(errors="replace").splitlines():
-            if line.startswith("handshake_rejected_total") and re.search(r'reason="(below_min_build|blocked_build)"', line):
-                total += int(float(line.rsplit(" ", 1)[1]))
+        total += rejections_of(raw.decode(errors="replace"), reason)
     return {"reachableGateways": reachable, "refusals": total}
 
 
+def gateway_refusal(client):
+    """What the gateway's CONNECT refusal carried, as the client recorded it (diagnostics export):
+    `{"atMs", "minBuild"}`, or None when no gateway refused it. A manifest that raises the floor
+    leaves this empty, so it tells the two ways of learning about an upgrade apart."""
+    event = client.ask("diagnostics", 20) or {}
+    return ((event.get("data") or {}).get("value") or {}).get("upgradeRefusal")
+
+
+def upgrade_refused(event):
+    """The terminal CONNECT refusal for an upgrade, as the connection status reports it.
+
+    >>> upgrade_refused({"kind": "connection", "data": {"phase": "actionRequired", "reason": "upgradeRequired"}})
+    True
+    >>> upgrade_refused({"kind": "connection", "data": {"phase": "actionRequired", "reason": "expired"}})
+    False
+    """
+    data = event.get("data") or {}
+    return event.get("kind") == "connection" and data.get("phase") == "actionRequired" \
+        and data.get("reason") == "upgradeRequired"
+
+
 def refused_client(app, name, build, seed, attempts=6):
-    """A client the real Core gateway refuses at CONNECT. The gate reads the policy through the
-    tenant runtime cache, so a client that gets in while the cache is still old is retried."""
+    """A client the real Core gateway refuses at CONNECT with UPGRADE_REQUIRED. The gate reads the
+    policy through the tenant runtime cache, so a client that gets in while the cache is still old
+    is retried."""
     for _ in range(attempts):
         client = Client(name, app, seed=seed, app_info={**RELEASE_APP, "build": build}, single_runtime=True).start()
-        terminal = client.wait(lambda e: e["kind"] == "connection" and e["data"].get("phase") == "actionRequired", 45)
+        terminal = client.wait(upgrade_refused, 45)
         if terminal:
             return client, terminal
         client.stop()
@@ -3065,7 +3164,9 @@ def wait_online(client, timeout=90):
 
 def command_upgrade_required(_args):
     """A client below the floor is refused by the real Core gateway at CONNECT and goes to
-    `required` and read-only with nothing else telling it. The floor is a policy change proposed
+    `required` and read-only. The refusal is proven to be the gateway's: terminal reason
+    `upgradeRequired`, the floor carried in the refusal, and the gateways' below_min_build
+    counter rising. The floor is a policy change proposed
     and approved by two staff members and projected by the platform to Core; the refusal comes
     from the gateway behind the real Edge and SNI router. Policy restored afterwards. Needs `seed`
     on a lab initialized by this build."""
@@ -3085,13 +3186,20 @@ def command_upgrade_required(_args):
     result = {"build": build, "minBuild": min_build, "clientBuild": client_build}
     client = None
     try:
+        # The platform has one policy per channel and projects the same floor into the signed
+        # manifest and into Core: there is no way to raise the gateway's floor alone, and
+        # `blockUi` false would still put `minBuild` in the manifest. What proves the gateway did
+        # it is therefore what only the gateway produces: the terminal reason with the floor it
+        # carried (the client's diagnostics), and the gateways' own refusal counter rising.
         rel.set_policy("tauri", "stable", min_build=min_build, block_ui=True)
         wait_projection(app, "tauri", min_build)
+        result["gatewaysBefore"] = refusals_counted()
         client, terminal = refused_client(app, f"upgrade-{now_ms()}", client_build, seed)
         ls.require(client is not None, "the gateway never refused the old build")
         result["connection"] = terminal.get("data")
         failed = client.wait(lambda e: e["kind"] == "loginFailed", 20)
         result["connectError"] = (failed or {}).get("data")
+        result["refusal"] = gateway_refusal(client)
         status = (client.ask("update_state", 20) or {}).get("data", {}).get("status")
         result["update"] = status
         result["gateways"] = refusals_counted()
@@ -3099,9 +3207,14 @@ def command_upgrade_required(_args):
         if client:
             client.stop()
         rel.set_policy("tauri", "stable")
+        rel.withdraw(draft["id"])
     status = result["update"] or {}
-    result["checks"] = {"connectRefused": bool(result["connection"]), "stateRequired": status.get("state") == "required",
-                        "readOnly": status.get("readOnly") is True}
+    result["checks"] = {
+        "connectRefusedForUpgrade": upgrade_refused({"kind": "connection", "data": result["connection"]}),
+        "gatewayCarriedTheFloor": (result.get("refusal") or {}).get("minBuild") == min_build,
+        "gatewayCountedTheRefusal": result["gateways"]["refusals"] > result["gatewaysBefore"]["refusals"],
+        "stateRequired": status.get("state") == "required",
+        "readOnly": status.get("readOnly") is True}
     result["pass"] = all(result["checks"].values())
     evidence("s4-upgrade-required", result)
     log(json.dumps(result["checks"]) + " " + json.dumps(
@@ -3122,6 +3235,7 @@ def command_forced_update(_args):
     rel.quiet("tauri", "stable")
     first = rel.next_build("tauri", "stable")
     draft = rel.draft("tauri", "stable", first, stages=[10000])
+    published = [draft["id"]]
     rel.package(draft)
     rel.go_live(draft["id"])
     wait_release(app, "tauri", "stable", lambda p: entry_of(p, first) is not None)
@@ -3141,11 +3255,13 @@ def command_forced_update(_args):
         result["restBeforeFloor"] = social_probe(token, old_build)[0]
         rel.set_policy("tauri", "stable", min_build=first, block_ui=True)
         wait_projection(app, "tauri", first)
+        result["gatewaysBefore"] = refusals_counted()
         client, terminal = refused_client(app, name, old_build, seed)
         ls.require(client is not None, "the gateway never refused the old build")
         result["connection"] = terminal.get("data")
         failed = client.wait(lambda e: e["kind"] == "loginFailed", 20)
         result["connectError"] = (failed or {}).get("data")
+        result["refusal"] = gateway_refusal(client)
         result["readOnlyUpdate"] = (client.ask("update_state", 20) or {}).get("data", {}).get("status")
         result["gateways"] = refusals_counted()
         status, body, headers = social_probe(token, old_build)
@@ -3155,6 +3271,7 @@ def command_forced_update(_args):
         # The newer build is published; the refused client learns it is the target.
         newer = first + 10
         draft2 = rel.draft("tauri", "stable", newer, stages=[10000])
+        published.append(draft2["id"])
         rel.package(draft2)
         rel.go_live(draft2["id"])
         wait_release(app, "tauri", "stable", lambda p: entry_of(p, newer) is not None)
@@ -3174,12 +3291,17 @@ def command_forced_update(_args):
             if item:
                 item.stop()
         rel.set_policy("tauri", "stable")
+        for release_id in published:
+            rel.withdraw(release_id)
     body = (result.get("rest") or {}).get("body")
     status = result.get("readOnlyUpdate") or {}
     result["checks"] = {
         "onlineBeforeFloor": result.get("onlineBeforeFloor") is True,
         "restBeforeFloorAllowed": result.get("restBeforeFloor") == 200,
-        "connectRefused": bool(result.get("connection")),
+        "connectRefusedForUpgrade": upgrade_refused({"kind": "connection", "data": result.get("connection")}),
+        "gatewayCarriedTheFloor": (result.get("refusal") or {}).get("minBuild") == first,
+        "gatewayCountedTheRefusal": (result.get("gateways") or {}).get("refusals", 0)
+        > (result.get("gatewaysBefore") or {}).get("refusals", 0),
         "clientReadOnly": status.get("state") == "required" and status.get("readOnly") is True,
         "rest426": (result.get("rest") or {}).get("status") == 426,
         "rest426Body": isinstance(body, dict) and body.get("code") == "UPGRADE_REQUIRED"
@@ -3496,7 +3618,8 @@ def command_web_sw(args):
         # The platform refuses a bundle whose asset manifest is not the declared one.
         refused_draft = rel.draft("web", "stable", rel.next_build("web", "stable"), stages=[10000])
         refused_status, refused_body = web_register(rel, refused_draft, "lab-b", "0" * 64)
-        steps["platformRefusesWrongHash"] = {"status": refused_status, "body": fault_of(refused_body)[:300]}
+        steps["platformRefusesWrongHash"] = {"status": refused_status, "body": fault_of(refused_body)[:300],
+                                             "draft": refused_draft["id"]}
         browser.ask("reload", tab=0)
         steps["reloadAfterDeploy"] = tab_view(browser.tabs()[0], entries)
         put_everywhere(lab, app, newer)
@@ -3562,18 +3685,15 @@ def command_web_sw(args):
     finally:
         browser.quit()
         for release in live:
-            try:
-                if rel.view(release["id"])["status"] == "published":
-                    rel.halt(release["id"])
-            except SystemExit:
-                pass
+            rel.withdraw(release["id"])
         delete_everywhere(lab, app, "res/web-strings-1.json")
         put_everywhere(lab, app, genuine)
     update, rollback, wrong = steps["update"], steps["rollback"], steps["wrongHash"]
     adoption, reload_facts = steps["storeAfterAdoption"], steps["storeAfterReload"]
     attempt = steps["storeAfterRollbackAttempt"]
     checks = {
-        "platformRefusesWrongHash": steps["platformRefusesWrongHash"]["status"] >= 400,
+        "platformRefusesWrongHash": steps["platformRefusesWrongHash"]["status"] == 409
+        and "error.release.artifact.digestMismatch" in steps["platformRefusesWrongHash"]["body"],
         "newestOfferedFirst": steps["offeredAfterB"][:1] == ["lab-b"],
         "haltOffersPreviousBundle": steps["offeredAfterRollback"][:1] == ["lab-a"],
         "firstInstallRegistersRunningBuild": bool(first),
