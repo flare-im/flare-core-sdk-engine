@@ -2354,15 +2354,39 @@ def activate(admin, ap_ids):
 
 def retire(admin, approver, ap_ids, reason):
     """After an incident: the dead access points leave the manifest through an ordinary two-person
-    publication, once their users sit elsewhere. Clean-up, so it is recorded, never fatal."""
+    publication, once their users sit elsewhere. Clean-up, so it is recorded, never fatal. The
+    points it disabled are listed with their earlier status: when the publication then fails,
+    `revert_retired` puts them back instead of leaving the lab's topology half retired."""
+    disabled = []
     try:
         for ap_id in ap_ids:
-            if access_point(admin, ap_id)["status"] != "disabled":
+            before = access_point(admin, ap_id)["status"]
+            if before != "disabled":
                 set_status(admin, ap_id, "disabled")
+                disabled.append({"id": ap_id, "was": before})
         result = publish(admin, approver, reason)
         return {"accessPoints": ap_ids, "changeSet": result["changeSet"], "retired": True}
     except (SystemExit, StopIteration) as error:
-        return {"accessPoints": ap_ids, "retired": False, "error": str(error)[:800]}
+        return {"accessPoints": ap_ids, "retired": False, "error": str(error)[:800], "disabled": disabled}
+
+
+def revert_retired(admin, retired):
+    """Clean-up after a retirement that failed part-way: the access points it had disabled get
+    their earlier status back. Nothing to do when it succeeded or never started. A failure of the
+    revert itself is raised, for `cleanup_step` to record and fail the case.
+
+    >>> revert_retired(None, None), revert_retired(None, {"retired": True, "disabled": [{"id": "a", "was": "active"}]})
+    ([], [])
+    >>> revert_retired(None, {"retired": False, "disabled": []})
+    []
+    """
+    if not retired or retired.get("retired"):
+        return []
+    reverted = []
+    for entry in retired.get("disabled") or []:
+        set_status(admin, entry["id"], entry["was"])
+        reverted.append(entry["id"])
+    return reverted
 
 
 def refused_as_not_author(status, body):
@@ -2445,13 +2469,27 @@ def stop_control_plane():
         ls.signal_process(state, f"platform-{role}", 15, wait=30)
 
 
+def platform_port(role):
+    """The port a control plane role listens on once it is ready.
+
+    >>> platform_port("api") == st.PLATFORM_API and platform_port("prober") == st.PLATFORM_PROBER
+    True
+    """
+    return dict(api=st.PLATFORM_API, worker=st.PLATFORM_WORKER, prober=st.PLATFORM_PROBER)[role]
+
+
 def start_control_plane(roles=CONTROL_PLANE):
-    """Starts the roles that are not running. After an offline manifest, `("api",)` first: the
-    worker publishes on its own (a leftover intent, a due re-signature) and must only start once
-    the serial floor is above the offline serial."""
+    """Starts the roles that are not running, and returns once every named role listens: a role
+    already started but still coming up (an earlier step began it) is waited for as well, so the
+    next call to the API does not meet a process that is not ready. After an offline manifest,
+    `("api",)` first: the worker publishes on its own (a leftover intent, a due re-signature) and
+    must only start once the serial floor is above the offline serial."""
     for role in roles:
         if not ls.live(ls.load_state(), f"platform-{role}"):
-            st.platform_process(ls.load_state(), st.Lab(), role)
+            st.platform_process(ls.load_state(), st.Lab(), role)  # returns once it listens
+        else:
+            port = platform_port(role)
+            ls.wait_for(lambda port=port: ls.port_open(port), 60, f"platform-{role} :{port}")
 
 
 def emergency_publish(author, other, reason):
@@ -2579,6 +2617,35 @@ def message_outcome(rows, stored_ids, stored_tokens):
             if row["clientMsgId"] not in stored_ids and row["token"] not in stored_tokens]
     return {"dispatched": len(rows), "refused": len(rows) - len(must), "mustStore": len(must),
             "stored": len(must) - len(lost), "lost": lost}
+
+
+def round_delivered(rows, label, planned):
+    """A round sent while the client is online must deliver everything: as many rows as planned,
+    each acknowledged, none refused. A refusal there is a defect of the SDK or the lab, not the
+    excused refusal of a client that is offline.
+
+    >>> ok = {"label": "before", "clientMsgId": "m", "error": None}
+    >>> round_delivered([ok, ok], "before", 2), round_delivered([ok], "before", 2)
+    (True, False)
+    >>> round_delivered([ok, {**ok, "error": "not connected"}], "before", 2)
+    False
+    >>> round_delivered([ok, {**ok, "clientMsgId": None}], "before", 2)
+    False
+    """
+    own = [row for row in rows if row["label"] == label]
+    return len(own) == planned and all(row["clientMsgId"] and not row["error"] for row in own)
+
+
+def rounds_sent(rows, planned):
+    """Every round dispatched its planned count of messages (`planned` maps label to count).
+
+    >>> rows = [{"label": "before"}, {"label": "before"}, {"label": "during"}]
+    >>> rounds_sent(rows, {"before": 2, "during": 1}), rounds_sent(rows, {"before": 2, "during": 2})
+    (True, False)
+    >>> rounds_sent(rows, {"before": 2, "after": 1})
+    False
+    """
+    return all(sum(row["label"] == label for row in rows) == count for label, count in planned.items())
 
 
 def persisted(app, rows, since_ms, timeout=180):
@@ -2750,13 +2817,15 @@ def command_total_outage(args):
         cleanup_step(cleanup, "accessPoints",
                      lambda: start_access_points(points_to_restart(stopped, result.get("retire")))
                      or points_to_restart(stopped, result.get("retire")))
+        cleanup_step(cleanup, "retireReverted", lambda: revert_retired(admin, result.get("retire")))
         result["cleanup"] = cleanup
     stored = result.get("messages", {})
     by_label = {label: [r for r in stored.get("rows", []) if r["label"] == label] for label in ("before", "during", "after")}
     result["checks"] = {
         "reconnectedWithinLimit": result.get("reconnect", {}).get("pass", False),
         "noDispatchedMessageLost": bool(stored) and not stored["lost"] and stored["mustStore"] > 0,
-        "everyRoundSent": all(by_label.values()),
+        "beforeRoundDelivered": round_delivered(stored.get("rows", []), "before", len(fleet)),
+        "everyRoundSent": rounds_sent(stored.get("rows", []), {label: len(fleet) for label in by_label}),
         "secondPersonRefused": bool(result.get("publication", {}).get("notAuthor", {}).get("authorOnly")),
         "publishedAsEmergency": bool(result.get("publication", {}).get("emergency")),
         "deadPointsRetired": bool(result.get("retire", {}).get("retired")),
@@ -2831,6 +2900,7 @@ def command_break_glass(args):
         cleanup_step(cleanup, "controlPlaneApi", lambda: start_control_plane(("api",)) or "running")
         restart = points_to_restart(stopped, result.get("retire"))
         cleanup_step(cleanup, "accessPoints", lambda: start_access_points(restart) or restart)
+        cleanup_step(cleanup, "retireReverted", lambda: revert_retired(admin, result.get("retire")))
         if needs_supersede(uploaded_serial, result.get("platform", {}).get("serial")):
             cleanup_step(cleanup, "offline", lambda: supersede_offline(
                 admin, approver, app, uploaded_serial, f"offline manifest {uploaded_serial} left by an interrupted case",
