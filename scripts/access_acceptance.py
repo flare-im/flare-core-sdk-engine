@@ -865,10 +865,8 @@ def command_migrate(args):
     result = {"frozen": {"serial": old_serial, "statusBeforeFreeze": frozen_status}}
     try:
         wait_fleet_online(fleet)
-        for ap_id in ("ap-b1", "ap-b2"):
-            site = st.SITES[ap_id]
-            admin.ok("POST", "/platform/access/access-points", {
-                "id": ap_id, "cellId": st.CELL, "host": site.host, "services": SERVICES, "status": "active"})
+        # New rows on a fresh lab; rows an earlier incident case retired come back to active.
+        activate(admin, ["ap-b1", "ap-b2"])
         points = {p["id"]: p for p in admin.ok("GET", "/platform/access/access-points?pageSize=100")["items"]}
         for ap_id in ("ap-a1", "ap-a2"):
             admin.ok("POST", f"/platform/access/access-points/{ap_id}:drain", {
@@ -1602,13 +1600,30 @@ class Releases:
             log(f"cleanup of {release_id} refused: {error}")
 
     # -- packages
-    def upload(self, release, distribution, body, name, *, target=None, signature=None, declared_sha256=None):
-        """initiate -> presigned PUT -> complete; returns the upload after the worker's verdict."""
+    def upload(self, release, distribution, body, name, *, target=None, signature=None, declared_sha256=None,
+               lab=None, outcome=None):
+        """initiate -> presigned PUT -> complete; returns the upload after the worker's verdict.
+
+        A declared SHA-256 other than the body's is signed into the presigned PUT, so the store
+        refuses it. With `lab`, the body is then written behind the platform's back, as a store
+        that ignores the checksum would keep it, to reach the worker's own read-back hash.
+        `outcome` (a dict) receives the presigned PUT's status."""
         started = self.author.ok("POST", f"{self.base}/releases/{release['id']}/artifacts:initiate", {
             "distribution": distribution, "target": target, "name": name, "sizeBytes": len(body),
             "sha256": declared_sha256 or hashlib.sha256(body).hexdigest(), "signature": signature})
         status = put_presigned(started["uploadRequest"], body)
-        ls.require(status == 200, f"presigned upload of {name}: {status}")
+        if outcome is not None:
+            outcome["presignedPut"] = status
+        if status != 200 and lab is not None:
+            target_url = urllib.parse.urlsplit(started["uploadRequest"]["url"])
+            site = next(m for m in st.MIRRORS.values() if m.upload_port == target_url.port)
+            access, secret_key = lab.rustfs[site.key]
+            written, raw, _ = st.s3_request("PUT", site.s3_endpoint, access, secret_key,
+                                            urllib.parse.unquote(target_url.path), body=body,
+                                            headers={"content-type": "application/octet-stream"})
+            ls.require(written == 200, f"direct write of {name}: {written} {raw[:200]!r}")
+        else:
+            ls.require(status == 200, f"presigned upload of {name}: {status}")
         upload_id = started["upload"]["id"]
         completed = self.author.call("POST", f"{self.base}/release-uploads/{upload_id}:complete", {})
         ls.require(completed[0] == 200, f"complete {name}: {completed}")
@@ -1772,9 +1787,9 @@ def command_release(_args):
         steps["check"] = release_summary(settled_update(first))
         steps["resourcesFirstRun"] = (first.ask("update_resources", 20) or {}).get("data", {}).get("resources")
         steps["packsStored"] = wait_packs(first, app, ["strings-main"])
-        started = time.time()
-        downloaded = (first.ask("update_download", 60) or {}).get("data", {}).get("status")
-        steps["download"] = {**release_summary(downloaded), "seconds": round(time.time() - started, 3)}
+        # A desktop release is not downloaded by the engine: the install plan hands the Tauri
+        # updater the version and the package hash it must verify (the controller downloads
+        # only `package` releases).
         steps["install"] = (first.ask("update_install", 20) or {}).get("data", {})
     finally:
         first.stop()
@@ -1823,7 +1838,8 @@ def command_release(_args):
         "checkFindsRelease": steps["check"]["state"] == "available" and steps["check"]["releaseBuild"] == build,
         "firstRunHasNoPacks": (steps["resourcesFirstRun"] or {}).get("packs") == [],
         "packStoredViaSecondUrl": steps["packsStored"] == ["strings-main"],
-        "downloadVerified": steps["download"]["state"] == "readyToInstall",
+        "installPlanCarriesPackage": steps["install"].get("plan") == {
+            "kind": "desktopUpdater", "sha256": package["sha256"], "target": TAURI_TARGET, "version": f"2.{build}.0"},
         "packLoadedOnRestart": steps["contentMatches"] == [True],
         "withdrawalClearsRelease": steps["afterWithdrawal"]["state"] == "upToDate",
         "withdrawalRemovesPack": steps["packsAfterWithdrawal"] == [],
@@ -1929,10 +1945,12 @@ def command_apk_negative(_args):
 
     def negative(label, build, body, *, declared=None):
         draft = rel.draft("android", "stable", build)
-        upload = rel.upload(draft, "direct", body, f"{label}-{build}.apk", declared_sha256=declared)
+        outcome = {}
+        upload = rel.upload(draft, "direct", body, f"{label}-{build}.apk", declared_sha256=declared,
+                            lab=st.Lab() if declared else None, outcome=outcome)
         attached = rel.view(draft["id"])["artifacts"].get("direct")
         results[label] = {"status": upload["status"], "failure": upload.get("failure"),
-                          "signingCertSha256": upload.get("signingCertSha256"), "attached": bool(attached)}
+                          "signingCertSha256": upload.get("signingCertSha256"), "attached": bool(attached), **outcome}
         return upload
 
     first = rel.next_build("android", "stable")
@@ -1944,6 +1962,9 @@ def command_apk_negative(_args):
         or bad_fingerprint in (mismatch.get("failure") or "")
     body = lab_apk(good_cert)
     wrong = negative("hash-mismatch", first + 10, body, declared=hashlib.sha256(lab_apk(good_cert)).hexdigest())
+    # Two layers: the store refuses the presigned PUT (the declared hash is signed into it), and
+    # the bytes written anyway are refused by the worker's read-back.
+    checks["hashMismatchRefusedByStore"] = results["hash-mismatch"]["presignedPut"] == 400
     checks["hashMismatchFailed"] = wrong["status"] == "failed" and "digestMismatch" in (wrong.get("failure") or "")
     plain = negative("unsigned", first + 20, lab_apk(None))
     checks["unsignedFailed"] = plain["status"] == "failed" and "unsigned" in (plain.get("failure") or "")
@@ -3690,7 +3711,12 @@ def command_web_sw(args):
     registered by hash, two-person approval, platform-signed manifest); rolling back is halting
     the newest release. Runs on the `forge` application, whose access documents nothing else
     reads, so it can also serve an older access manifest on purpose. Needs `seed` on a lab
-    initialized by this build."""
+    initialized by this build, and the two bundles in ~/.flare-access-lab/web/build-lab-a and
+    build-lab-b: `vite build --outDir <dir>` of the web app with VITE_FLARE_WEB_BUILD_ID=lab-a (or
+    lab-b), VITE_TENANT_ID=<forge appId> and VITE_FLARE_ACCESS_JSON={"trustMode":"production",
+    "bootstrapId":<forge>,"trustRoots":<trust/trust-roots.json>,"seed":<a forge seed>}. The platform
+    fetches the site's asset manifests from loopback, which access_stack allows for this one host
+    only (FLARE_RELEASE_PRIVATE_FETCH_HOSTS)."""
     WEB_BUILD_PREFIX[0] = "core-build-" if args.app == "core" else "build-"
     facts = load_facts()
     app = facts["apps"]["forge"]

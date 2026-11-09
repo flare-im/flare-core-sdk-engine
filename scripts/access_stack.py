@@ -546,6 +546,8 @@ def platform_env(lab, role):
     }
     if role == "api":
         env["FLARE_PLATFORM_WORKER_DATABASE_URL"] = lab.platform_url("accesslab_platform_worker")
+        # The web-sw case's site is on loopback; production fetches public addresses only.
+        env["FLARE_RELEASE_PRIVATE_FETCH_HOSTS"] = f"web.{HOST_SUFFIX}"
     return env
 
 
