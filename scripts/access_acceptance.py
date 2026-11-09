@@ -289,12 +289,34 @@ def serials(admin, change_set):
 
 
 def bump_weight(admin, ap_id):
-    """A real topology edit, so the publication has something to change."""
+    """A real topology edit, so the publication has something to change.
+
+    Only an active access point is in the published manifests: editing a disabled one (the lab
+    after `migrate` or an incident case retired the a-points) changes nothing, and the change set
+    would be "published" with no publication at all. So a named point that is not active gives way
+    to the first active one.
+
+    >>> class Admin:
+    ...     def __init__(self): self.sent = []
+    ...     def ok(self, method, path, body=None):
+    ...         if method == "GET":
+    ...             return {"items": [{"id": "ap-a1", "status": "disabled", "weight": 100, "revision": 3},
+    ...                               {"id": "ap-b1", "status": "active", "weight": 100, "revision": 7}]}
+    ...         self.sent.append((path, body))
+    >>> admin = Admin()
+    >>> bump_weight(admin, "ap-a1")
+    'ap-b1'
+    >>> admin.sent
+    [('/platform/access/access-points/ap-b1', {'expectedRevision': 7, 'weight': 101})]
+    """
     view = admin.ok("GET", f"/platform/access/access-points?pageSize=100")["items"]
     point = next(p for p in view if p["id"] == ap_id)
+    if point["status"] != "active":
+        point = next(p for p in view if p["status"] == "active")
     weight = 100 if point["weight"] != 100 else 101
-    admin.ok("PATCH", f"/platform/access/access-points/{ap_id}",
+    admin.ok("PATCH", f"/platform/access/access-points/{point['id']}",
              {"expectedRevision": point["revision"], "weight": weight})
+    return point["id"]
 
 
 # ------------------------------------------------------------------- seeding --
@@ -566,7 +588,8 @@ def command_publish_p95(args):
     values = [s["approveToPublishedSec"] for s in samples]
     summary = {"count": len(values), "p50": percentile(values, .5), "p95": percentile(values, .95),
                "max": max(values), "min": min(values), "mean": round(statistics.mean(values), 3),
-               "limitSec": 120, "pass": percentile(values, .95) <= 120}
+               "limitSec": 120, "everySamplePublished": all(s["publications"] for s in samples),
+               "pass": percentile(values, .95) <= 120 and all(s["publications"] for s in samples)}
     evidence("1-publish-p95", {"summary": summary, "samples": samples})
     log(json.dumps(summary))
 
