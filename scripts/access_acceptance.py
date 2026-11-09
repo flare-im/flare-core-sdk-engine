@@ -24,6 +24,7 @@ clients (examples/access_lab_client.rs, one process each). Each case writes its 
   python3 scripts/access_acceptance.py upgrade-required # the real Core gateway refuses a build below the policy floor
   python3 scripts/access_acceptance.py release-rollout # 10,000 installs against a 5% rollout, advance, halt
   python3 scripts/access_acceptance.py forced-update   # floor raised: CONNECT refused, REST 426, newer build, reconnect
+  python3 scripts/access_acceptance.py floor-eviction  # floor raised under an online old build: evicted, terminal
   python3 scripts/access_acceptance.py apk-negative    # wrong signing cert, wrong hash, unsigned file, downgrade
 
 total-outage, break-glass, serial-continuity and doh-fallback need a platform database initialized by
@@ -3362,6 +3363,99 @@ def command_upgrade_required(_args):
         {k: status.get(k) for k in ("state", "readOnly", "blockUi", "prompt")}))
 
 
+def evictions_counted(reason="below_min_build"):
+    """Core gateways' connections_evicted_total{reason}, summed over the gateways that answered."""
+    total, reachable = 0, 0
+    for _name, gateway in ls.GATEWAYS.items():
+        status, raw, _ = request("GET", f"http://127.0.0.1:{gateway[2]}/metrics", None, {})
+        if status != 200:
+            continue
+        reachable += 1
+        for line in raw.decode(errors="replace").splitlines():
+            if line.startswith("connections_evicted_total") and f'reason="{reason}"' in line:
+                total += int(float(line.rsplit(" ", 1)[1]))
+    return {"reachableGateways": reachable, "evictions": total}
+
+
+# The evictor's defaults (flare-signaling-gateway build_floor_evictor): a notice of the policy
+# change sweeps at once, the periodic sweep runs every 60 s, and one sweep's closes are spread over
+# 30 s. A session below the floor is closed at the latest one sweep plus one window after Core
+# holds the raised floor.
+EVICTION_LIMIT_MS = (60 + 30) * 1000
+
+
+def command_floor_eviction(_args):
+    """A floor raised while an old build is online. The gateway closes that session with the same
+    typed UPGRADE_REQUIRED refusal CONNECT sends, the client takes it as terminal (actionRequired,
+    upgradeRequired, no reconnect), and connections_evicted_total{below_min_build} rises; a build
+    at the floor stays online on its connection. Policy restored afterwards. Needs `seed` on a lab
+    initialized by this build."""
+    facts = load_facts()
+    app = facts["apps"]["main"]
+    rel = release_lab(facts, app)
+    rel.tauri_app()
+    rel.quiet("tauri", "stable")
+    first = rel.next_build("tauri", "stable")
+    draft = rel.draft("tauri", "stable", first, stages=[10000])
+    rel.package(draft)
+    rel.go_live(draft["id"])
+    wait_release(app, "tauri", "stable", lambda p: entry_of(p, first) is not None)
+    seed = seed_file(app)
+    result = {"floor": first, "oldBuild": first - 100}
+    old = Client(f"evict-old-{now_ms()}", app, seed=seed, app_info={**RELEASE_APP, "build": first - 100},
+                 single_runtime=True).start()
+    kept = Client(f"evict-kept-{now_ms()}", app, seed=seed, app_info={**RELEASE_APP, "build": first},
+                  single_runtime=True).start()
+    try:
+        ls.require(wait_online(old) and wait_online(kept), "the clients did not come online before the floor")
+        kept_mark = len(kept.events)
+        result["before"] = evictions_counted()
+        rel.set_policy("tauri", "stable", min_build=first, block_ui=True)
+        approved = now_ms()
+        wait_projection(app, "tauri", first)
+        projected = now_ms()
+        terminal = old.wait(upgrade_refused, EVICTION_LIMIT_MS / 1000 + 30)
+        closed = terminal["ts"] if terminal else None
+        result["closed"] = {"approvedToProjectedMs": projected - approved,
+                            "projectedToClosedMs": closed - projected if closed else None,
+                            "approvedToClosedMs": closed - approved if closed else None,
+                            "terminal": (terminal or {}).get("data")}
+        result["refusal"] = gateway_refusal(old)
+        # Terminal: the old build does not dial again on its own.
+        time.sleep(20)
+        result["afterTerminal"] = [e["data"].get("phase") for e in old.events
+                                   if closed and e["kind"] == "connection" and e["ts"] > closed]
+        result["oldUpdate"] = release_summary((old.ask("update_state", 20) or {}).get("data", {}).get("status"))
+        status = kept.status()
+        result["kept"] = {"online": online_on(status),
+                          "phases": [e["data"].get("phase") for e in kept.events[kept_mark:] if e["kind"] == "connection"]}
+        result["after"] = evictions_counted()
+    finally:
+        old.stop()
+        kept.stop()
+        rel.set_policy("tauri", "stable")
+        rel.withdraw(draft["id"])
+    closed = result.get("closed") or {}
+    result["checks"] = {
+        "evictedWithUpgradeRequired": closed.get("terminal") is not None,
+        # Measured from the approval: the projection poll (every 2 s) can see Core's row after
+        # the gateway already acted on the notice.
+        "evictedWithinLimit": closed.get("approvedToClosedMs") is not None
+        and closed["approvedToClosedMs"] <= closed["approvedToProjectedMs"] + EVICTION_LIMIT_MS,
+        "refusalCarriedTheFloor": (result.get("refusal") or {}).get("minBuild") == first,
+        "noReconnectAfterEviction": not any(phase in ("connecting", "online") for phase in result.get("afterTerminal", [])),
+        "clientRequiredAndReadOnly": result.get("oldUpdate", {}).get("state") == "required"
+        and result.get("oldUpdate", {}).get("readOnly") is True,
+        "buildAtFloorStaysOnline": result.get("kept", {}).get("online") is True
+        and not any(phase != "online" for phase in result.get("kept", {}).get("phases", [])),
+        "gatewayCountedTheEviction": result.get("after", {}).get("evictions", 0)
+        > result.get("before", {}).get("evictions", 0),
+    }
+    result["pass"] = all(result["checks"].values())
+    evidence("s7-floor-eviction", result)
+    log(json.dumps(result["checks"]) + " " + json.dumps(closed.get("approvedToClosedMs")))
+
+
 def command_forced_update(_args):
     """The whole forced-update cycle against the real platform and gateways. Build N is on offer;
     a policy proposed by one staff member and approved by another raises the floor to N with
@@ -3996,6 +4090,7 @@ def main():
     sub.add_parser("release").set_defaults(func=command_release)
     sub.add_parser("release-rollout").set_defaults(func=command_release_rollout)
     sub.add_parser("forced-update").set_defaults(func=command_forced_update)
+    sub.add_parser("floor-eviction").set_defaults(func=command_floor_eviction)
     sub.add_parser("apk-negative").set_defaults(func=command_apk_negative)
     sub.add_parser("recovery").set_defaults(func=command_recovery)
     total = sub.add_parser("total-outage", help="every access point down; new nodes through the emergency publish")
