@@ -399,6 +399,8 @@ fn lock(shared: &Mutex<SharedStatus>) -> std::sync::MutexGuard<'_, SharedStatus>
 }
 
 impl Refresher {
+    // wasm 上取数器握着浏览器 HTTP 句柄、不是 Send：任务只在单线程执行器上跑（同 `AccessRuntime` 的 Send/Sync 说明）。
+    #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
     pub fn spawn(
         kernel: Arc<AccessKernel>,
         http: Arc<dyn flare_access::HttpFetch>,
