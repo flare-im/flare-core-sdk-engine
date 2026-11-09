@@ -3649,7 +3649,9 @@ def command_forced_update(_args):
 WEB_SITE_PORT = ls.port(43620)
 WEB_HOST = f"web.{st.HOST_SUFFIX}"
 WEB_ORIGIN = f"https://{WEB_HOST}:{WEB_SITE_PORT}"
-WEB_APP = ls.ROOT / "flare-social-examples/apps/flare-social-web-app"
+# The web app under test, per `web-sw --app`; its node_modules also provide @playwright/test.
+WEB_APPS = {"social": ls.ROOT / "flare-social-examples/apps/flare-social-web-app",
+            "core": ls.ROOT / "flare-core-examples/apps/flare-core-web-app"}
 CHROMIUM = Path.home() / ("Library/Caches/ms-playwright/chromium-1248/chrome-mac-arm64/"
                           "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing")
 HOUR_MS = 3_600_000
@@ -3715,8 +3717,8 @@ def web_manifest_sha(root, build):
 
 
 class Browser:
-    def __init__(self, profile):
-        env = {**os.environ, "FLARE_WEB_APP_PACKAGE": str(WEB_APP / "package.json"), "FLARE_WEB_SITE": WEB_ORIGIN + "/",
+    def __init__(self, profile, web_app):
+        env = {**os.environ, "FLARE_WEB_APP_PACKAGE": str(web_app / "package.json"), "FLARE_WEB_SITE": WEB_ORIGIN + "/",
                "FLARE_BROWSER_PROFILE": str(profile), "FLARE_PLAYWRIGHT_CHROMIUM": str(CHROMIUM),
                "NO_PROXY": ls.NO_PROXY + ",.localhost", "no_proxy": ls.NO_PROXY + ",.localhost"}
         self.process = subprocess.Popen(["node", str(Path(__file__).with_name("access_sw_browser.mjs"))], env=env,
@@ -3903,7 +3905,10 @@ def command_web_sw(args):
     lab-b), VITE_TENANT_ID=<forge appId> and VITE_FLARE_ACCESS_JSON={"trustMode":"production",
     "bootstrapId":<forge>,"trustRoots":<trust/trust-roots.json>,"seed":<a forge seed>}. The platform
     fetches the site's asset manifests from loopback, which access_stack allows for this one host
-    only (FLARE_RELEASE_PRIVATE_FETCH_HOSTS)."""
+    only (FLARE_RELEASE_PRIVATE_FETCH_HOSTS). `--app core` runs the Core reference web app
+    (flare-core-examples/apps/flare-core-web-app, with the engine's wasm binding built into
+    bindings/wasm/pkg): bundles in core-build-lab-a and core-build-lab-b, built the same way
+    except that the tenant variable is VITE_FLARE_TENANT_ID."""
     WEB_BUILD_PREFIX[0] = "core-build-" if args.app == "core" else "build-"
     facts = load_facts()
     app = facts["apps"]["forge"]
@@ -3936,7 +3941,7 @@ def command_web_sw(args):
             "url": [object_url(s, app, "res/web-strings-1.json") for s in st.MIRRORS.values()],
             "sha256": hashlib.sha256(pack_body).hexdigest(), "sizeBytes": len(pack_body)}
     release_a, _ = web_live(rel, app, "lab-a", sha_a)
-    browser = Browser(profile)
+    browser = Browser(profile, WEB_APPS[args.app])
     live = [release_a]
     try:
         browser.ask("open", count=2)
