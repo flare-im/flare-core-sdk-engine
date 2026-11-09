@@ -508,6 +508,26 @@ async fn upgrade_required_and_session_ending_kicks_terminate() {
     assert_eq!(status.reason.as_deref(), Some("kicked"));
 }
 
+/// 在线连接被升级门槛拒绝（协商后的 UPGRADE_REQUIRED）：与建连时被拒一样终止并提示升级。
+#[tokio::test]
+async fn a_mid_session_upgrade_required_terminates_like_a_connect_rejection() {
+    let mut h = harness();
+    h.link.start("alice", Tokens::new("t1", [])).await.unwrap();
+    h.wait_phase(ConnectionPhase::Online, SHORT).await;
+    h.lose(
+        h.current_epoch(),
+        DisconnectReason::Rejected(ServerRejection {
+            code: ErrorCode::UpgradeRequired,
+            reason: "UPGRADE_REQUIRED".into(),
+            retry_after_ms: None,
+            min_build: Some(30_201),
+            release_hint: None,
+        }),
+    );
+    let status = h.wait_phase(ConnectionPhase::ActionRequired, SHORT).await;
+    assert_eq!(status.reason.as_deref(), Some("upgradeRequired"));
+}
+
 /// 所有接入点都连不上：退避（去相关抖动），连续两轮后进入 Recovering（serviceUnavailable）。
 #[tokio::test]
 async fn exhausted_rounds_back_off_then_recover() {
