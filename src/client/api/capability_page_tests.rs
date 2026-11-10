@@ -77,6 +77,7 @@ fn catalog(plugins: Vec<Value>, unavailable: Value) -> Value {
 }
 
 type Answers = Arc<SyncMutex<HashMap<String, Vec<Value>>>>;
+type Uploads = Arc<SyncMutex<Vec<(String, Vec<(String, String)>, Vec<u8>)>>>;
 struct Fixture {
     api: CapabilityApi,
     catalog: Arc<SyncMutex<Value>>,
@@ -84,6 +85,7 @@ struct Fixture {
     /// Results per capability id, served in turn (the last one repeats).
     answers: Answers,
     errors: Arc<SyncMutex<HashMap<String, (u16, String)>>>,
+    uploads: Uploads,
     server: tokio::task::JoinHandle<()>,
 }
 impl Drop for Fixture {
@@ -97,13 +99,15 @@ impl Fixture {
         let calls = Arc::new(SyncMutex::new(Vec::new()));
         let answers: Answers = Arc::new(SyncMutex::new(HashMap::new()));
         let errors = Arc::new(SyncMutex::new(HashMap::<String, (u16, String)>::new()));
+        let uploads: Uploads = Arc::new(SyncMutex::new(Vec::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let (c, q, a, e) = (
+        let (c, q, a, e, u) = (
             catalog.clone(),
             calls.clone(),
             answers.clone(),
             errors.clone(),
+            uploads.clone(),
         );
         let server = tokio::spawn(async move {
             loop {
@@ -112,6 +116,7 @@ impl Fixture {
                 let mut line = String::new();
                 reader.read_line(&mut line).await.unwrap();
                 let mut len = 0;
+                let mut headers = Vec::new();
                 loop {
                     let mut header = String::new();
                     reader.read_line(&mut header).await.unwrap();
@@ -119,12 +124,21 @@ impl Fixture {
                         break;
                     }
                     let (name, value) = header.trim().split_once(':').unwrap();
+                    headers.push((name.to_ascii_lowercase(), value.trim().to_owned()));
                     if name.eq_ignore_ascii_case("content-length") {
                         len = value.trim().parse().unwrap();
                     }
                 }
                 let mut bytes = vec![0; len];
                 reader.read_exact(&mut bytes).await.unwrap();
+                if line.starts_with("PUT ") {
+                    u.lock()
+                        .unwrap()
+                        .push((line.trim().to_owned(), headers, bytes));
+                    let mut socket = reader.into_inner();
+                    socket.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                    continue;
+                }
                 let body: Value = serde_json::from_slice(&bytes).unwrap();
                 q.lock().unwrap().push(body.clone());
                 let capability = body["capabilityId"].as_str().unwrap().to_string();
@@ -184,6 +198,7 @@ impl Fixture {
             calls,
             answers,
             errors,
+            uploads,
             server,
         }
     }
@@ -226,6 +241,193 @@ fn history(extra: Value) -> Value {
         request[key] = value.clone();
     }
     request
+}
+
+fn declare_upload(f: &Fixture) {
+    let mut catalog = f.catalog.lock().unwrap();
+    let plugin = &mut catalog["plugins"][0];
+    for operation in [
+        "example.poll.material_prepare",
+        "example.poll.material_complete",
+    ] {
+        plugin["operations"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(operation));
+    }
+    plugin["extensions"]["contributions"].as_array_mut().unwrap().push(json!({
+        "kind":"page","id":"example.poll.upload","schemaVersion":1,"requiredPermissions":[],
+        "source":{"operation":"example.poll.wallet"},
+        "schema":{"title":"Receipt","inputs":[
+            {"id":"method","kind":"select","label":"Method","default":"bank",
+             "choices":[{"value":"bank","label":"Bank"},{"value":"qr","label":"QR"}]},
+            {"id":"receipt","kind":"file","label":"Receipt","required":true,
+             "showWhen":{"field":"method","anyOf":["qr"]},
+             "file":{"accept":["image/png"],"maxBytes":5242880,
+               "upload":{"prepareOperation":"example.poll.material_prepare",
+                 "completeOperation":"example.poll.material_complete","purpose":"privateReceipt"}}}],
+          "actions":[{"id":"save","label":"Save","form":["method","receipt"],
+            "target":{"kind":"operation","operation":"example.poll.hide"}}]}}));
+}
+fn upload_request() -> Value {
+    json!({"page":{"pluginId":"example.poll","page":"example.poll.upload"},
+        "inputId":"receipt","platform":"web","locale":"en-US","commandId":"upload-one",
+        "fileName":"receipt.png","contentType":"image/png","bytes":[137,80,78,71],
+        "formValues":{"method":"qr"}})
+}
+fn prepared_upload(ready: bool) -> Value {
+    use sha2::{Digest, Sha256};
+    json!({"fileId":"file:receipt-one","ready":ready,"contentType":"image/png","sizeBytes":4,
+        "sha256":hex::encode(Sha256::digest([137,80,78,71])),
+        "uploadUrl":"/private/example/materials/file-1?grant=ephemeral","expiresAtMs":chrono::Utc::now().timestamp_millis()+60000})
+}
+
+#[tokio::test]
+async fn file_upload_uses_declared_purpose_private_put_and_strict_completed_reference() {
+    let mut f = Fixture::new().await;
+    declare_upload(&f);
+    let base = f.api.http.as_ref().unwrap().url_for("/").await.unwrap();
+    let context = Arc::new(HttpRequestContext::new());
+    context
+        .set_auth_context("core-test-token".into(), None)
+        .await;
+    context
+        .set_gateway_context("gateway-test-token".into(), "201".into(), "u1".into(), None)
+        .await;
+    f.api.http = Some(HttpClient::with_context(base, context));
+    f.answer(
+        "example.poll.material_prepare",
+        vec![prepared_upload(false)],
+    );
+    f.answer(
+        "example.poll.material_complete",
+        vec![json!({"fileId":"file:receipt-one"})],
+    );
+    assert_eq!(
+        f.api.plugin_file_upload(upload_request()).await.unwrap(),
+        json!({"fileId":"file:receipt-one"})
+    );
+    let prepare = f.calls_to("example.poll.material_prepare");
+    assert_eq!(prepare.len(), 1);
+    assert_eq!(
+        prepare[0]["payload"],
+        json!({"commandId":"upload-one","purpose":"privateReceipt",
+        "fileName":"receipt.png","contentType":"image/png","sizeBytes":4,
+        "sha256":prepared_upload(false)["sha256"]})
+    );
+    assert_eq!(prepare[0]["expectedUserId"], "u1");
+    assert_eq!(prepare[0]["expectedTenantId"], "201");
+    let uploads = f.uploads.lock().unwrap();
+    assert_eq!(uploads.len(), 1);
+    assert_eq!(
+        uploads[0].0,
+        "PUT /private/example/materials/file-1?grant=ephemeral HTTP/1.1"
+    );
+    assert_eq!(uploads[0].2, [137, 80, 78, 71]);
+    assert!(
+        uploads[0]
+            .1
+            .iter()
+            .any(|(key, value)| key == "content-type" && value == "image/png")
+    );
+    assert!(!uploads[0].1.iter().any(|(key, _)| matches!(
+        key.as_str(),
+        "authorization" | "cookie" | "x-user-id" | "x-tenant-id" | "referer"
+    )));
+    assert_eq!(
+        f.calls_to("example.poll.material_complete")[0]["payload"],
+        json!({"commandId":"upload-one","fileId":"file:receipt-one"})
+    );
+    // Upload transport commands do not invoke the form's financial operation.
+    assert!(f.calls_to("example.poll.hide").is_empty());
+}
+
+#[tokio::test]
+async fn file_upload_ready_retry_keeps_command_and_skips_expired_grant_and_complete() {
+    let f = Fixture::new().await;
+    declare_upload(&f);
+    let mut prepared = prepared_upload(true);
+    prepared.as_object_mut().unwrap().remove("uploadUrl");
+    prepared["expiresAtMs"] = json!(1);
+    f.answer("example.poll.material_prepare", vec![prepared]);
+    for _ in 0..2 {
+        assert_eq!(
+            f.api.plugin_file_upload(upload_request()).await.unwrap(),
+            json!({"fileId":"file:receipt-one"})
+        );
+    }
+    assert_eq!(f.calls_to("example.poll.material_prepare").len(), 2);
+    for call in f.calls_to("example.poll.material_prepare") {
+        assert_eq!(call["payload"]["commandId"], "upload-one");
+    }
+    assert!(f.uploads.lock().unwrap().is_empty());
+    assert!(f.calls_to("example.poll.material_complete").is_empty());
+}
+
+#[tokio::test]
+async fn file_upload_refuses_hidden_unknown_forged_or_disallowed_inputs_before_prepare() {
+    let f = Fixture::new().await;
+    declare_upload(&f);
+    for (key, value) in [
+        ("formValues", json!({"method":"bank"})),
+        ("formValues", json!({"method":"qr","unknown":"stale"})),
+        ("contentType", json!("application/pdf")),
+        ("inputId", json!("unknown")),
+        (
+            "data",
+            json!({"_session":{"tenantId":"201","userId":"someone-else"}}),
+        ),
+        ("purpose", json!("forged")),
+    ] {
+        let mut request = upload_request();
+        request[key] = value;
+        assert!(f.api.plugin_file_upload(request).await.is_err(), "{key}");
+    }
+    assert!(f.calls_to("example.poll.material_prepare").is_empty());
+    assert!(f.uploads.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn file_upload_refuses_mismatched_metadata_and_external_or_expired_grants() {
+    let f = Fixture::new().await;
+    declare_upload(&f);
+    for (key, value) in [
+        ("contentType", json!("application/pdf")),
+        ("sizeBytes", json!(5)),
+        ("sha256", json!("wrong")),
+        ("fileId", json!("https://host/file")),
+        ("uploadUrl", json!("https://external/private/file?grant=x")),
+        ("uploadUrl", json!("/private/../file?grant=x")),
+        ("expiresAtMs", json!(1)),
+    ] {
+        let mut prepared = prepared_upload(false);
+        prepared[key] = value;
+        f.answer("example.poll.material_prepare", vec![prepared]);
+        assert!(
+            f.api.plugin_file_upload(upload_request()).await.is_err(),
+            "{key}"
+        );
+    }
+    assert!(f.uploads.lock().unwrap().is_empty());
+    assert!(f.calls_to("example.poll.material_complete").is_empty());
+}
+
+#[tokio::test]
+async fn file_upload_does_not_accept_another_file_or_grant_from_complete() {
+    let f = Fixture::new().await;
+    declare_upload(&f);
+    f.answer(
+        "example.poll.material_prepare",
+        vec![prepared_upload(false)],
+    );
+    for completed in [
+        json!({"fileId":"other-file"}),
+        json!({"fileId":"file:receipt-one","uploadUrl":"/private/grant"}),
+    ] {
+        f.answer("example.poll.material_complete", vec![completed]);
+        assert!(f.api.plugin_file_upload(upload_request()).await.is_err());
+    }
+    assert_eq!(f.uploads.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -343,13 +545,15 @@ async fn an_unavailable_page_is_an_inert_view_and_a_next_page_fails() {
     assert_eq!(view["fields"][0]["value"], "¥1.00");
     assert_eq!(f.calls_to("example.poll.wallet")[0]["payload"], json!({}));
 
-    // The source answers that the plugin is disabled.
-    f.fail("example.poll.wallet", 403, "PLUGIN_DISABLED");
-    let view = f.api.plugin_page(wallet.clone()).await.unwrap();
-    assert_eq!(view["available"], false);
-    assert_eq!(view["unavailableReason"], "disabled");
-    assert_eq!(view["title"], "");
-    assert!(view.get("data").is_none());
+    // The source answers that the plugin, or the feature it belongs to, is disabled.
+    for reason in ["PLUGIN_DISABLED", "PLUGIN_FEATURE_DISABLED"] {
+        f.fail("example.poll.wallet", 403, reason);
+        let view = f.api.plugin_page(wallet.clone()).await.unwrap();
+        assert_eq!(view["available"], false, "{reason}");
+        assert_eq!(view["unavailableReason"], "disabled", "{reason}");
+        assert_eq!(view["title"], "", "{reason}");
+        assert!(view.get("data").is_none(), "{reason}");
+    }
     // Another failure of the source is an error.
     f.fail("example.poll.wallet", 422, "WALLET_LOCKED");
     assert!(f.api.plugin_page(wallet.clone()).await.is_err());
@@ -454,4 +658,153 @@ async fn page_actions_bind_over_the_page_and_never_name_a_message() {
     no_gesture["userGesture"] = json!(false);
     assert!(f.api.invoke_plugin_action(no_gesture).await.is_err());
     assert_eq!(f.calls_to("example.poll.hide").len(), 1);
+}
+
+#[tokio::test]
+async fn conversation_page_context_follows_navigation_without_entering_business_payload() {
+    let f = Fixture::new().await;
+    f.answer(
+        "example.poll.wallet",
+        vec![json!({"currency":"CNY","conversationId":"other-group"})],
+    );
+    let first=f.api.plugin_page(json!({"pluginId":"example.poll","page":"example.poll.wallet","platform":"web","conversationId":"group-1","arguments":{"conversationId":"other-group"}})).await.unwrap();
+    assert_eq!(first["conversationId"], "group-1");
+    let call = &f.calls_to("example.poll.wallet")[0];
+    assert_eq!(call["conversationId"], "group-1");
+    assert_eq!(
+        call["payload"],
+        json!({}),
+        "context is outside the source DTO"
+    );
+    let opened=f.api.invoke_plugin_action(json!({"page":{"pluginId":"example.poll","page":"example.poll.wallet"},"platform":"web","actionId":"history","userGesture":true,"conversationId":first["conversationId"],"data":first["data"]})).await.unwrap();
+    assert_eq!(opened["conversationId"], "group-1");
+    assert_eq!(opened["payload"], json!({"currency":"CNY"}));
+    f.answer("example.poll.history", vec![ledger(&["l1"], Some("next"))]);
+    let next=f.api.plugin_page(json!({"pluginId":"example.poll","page":opened["target"]["page"],"platform":"web","conversationId":opened["conversationId"],"arguments":opened["payload"]})).await.unwrap();
+    assert_eq!(
+        f.calls_to("example.poll.history")[0]["conversationId"],
+        "group-1"
+    );
+    assert_eq!(
+        f.calls_to("example.poll.history")[0]["payload"],
+        json!({"currency":"CNY"})
+    );
+    f.api.invoke_plugin_action(json!({"page":{"pluginId":"example.poll","page":"example.poll.history"},"platform":"web","actionId":"hide","userGesture":true,"conversationId":next["conversationId"],"data":{"conversationId":"other-group"},"row":{"key":"l1","input":{"lineId":"l1"}},"formValues":{"note":"done"}})).await.unwrap();
+    assert_eq!(
+        f.calls_to("example.poll.hide")[0]["conversationId"],
+        "group-1"
+    );
+    assert_eq!(
+        f.calls_to("example.poll.hide")[0]["payload"],
+        json!({"lineId":"l1","note":"done"})
+    );
+    let sent = f.calls_to("example.poll.history").len();
+    assert!(f.api.plugin_page(json!({"pluginId":"example.poll","page":"example.poll.history","platform":"web","conversationId":"other-group","arguments":{"currency":"CNY"},"cursor":"next","previous":next})).await.is_err(),"cannot append another conversation to a page");
+    assert_eq!(f.calls_to("example.poll.history").len(), sent);
+}
+
+#[tokio::test]
+async fn page_payload_cannot_select_the_invocation_conversation() {
+    let f = Fixture::new().await;
+    f.api.invoke_plugin_action(json!({"page":{"pluginId":"example.poll","page":"example.poll.history"},"platform":"web","actionId":"hide","userGesture":true,"data":{"conversationId":"injected"},"row":{"key":"l1","input":{"lineId":"l1"}},"formValues":{"note":"done"}})).await.unwrap();
+    assert!(f.calls_to("example.poll.hide")[0]["conversationId"].is_null());
+}
+
+/// Snapshots of the declarative Check-in and Task page contracts, with no
+/// compile-time dependency on commercial services. Calls use the real SDK
+/// HTTP transport; the endpoint records the authorization envelope separately
+/// from each operation's business input.
+#[tokio::test]
+async fn checkin_and_task_group_menu_pages_keep_context_through_the_real_transport() {
+    let f = Fixture::new().await;
+    let fixture: Value = serde_json::from_slice(include_bytes!(
+        "../../../tests/vectors/plugin_group_pages.json"
+    ))
+    .unwrap();
+    *f.catalog.lock().unwrap() = catalog(fixture["plugins"].as_array().unwrap().clone(), json!([]));
+    let open_entry = |plugin: &str, entry: &str| json!({"message":{"pluginId":plugin,"contributionId":entry,"schemaVersion":1,"summary":"Group","payload":{"conversationId":"injected"}},"platform":"web","actionId":"open","userGesture":true,"conversationId":"group-1"});
+    let open_page = |plugin: &str, navigation: &Value| json!({"pluginId":plugin,"page":navigation["target"]["page"],"platform":"web","conversationId":navigation["conversationId"],"arguments":navigation["payload"]});
+    let menu = f
+        .api
+        .invoke_plugin_action(open_entry("flare.checkin", "flare.checkin.menu"))
+        .await
+        .unwrap();
+    assert_eq!(menu["conversationId"], "group-1");
+    assert_eq!(menu["payload"], json!({}));
+    f.answer("flare.checkin.plan.list",vec![json!({"items":[{"planId":"p1","title":"Daily","status":"open","kind":"daily"}],"nextCursor":null,"conversationId":"injected"})]);
+    let plans = f
+        .api
+        .plugin_page(open_page("flare.checkin", &menu))
+        .await
+        .unwrap();
+    assert_eq!(
+        f.calls_to("flare.checkin.plan.list")[0]["payload"],
+        json!({})
+    );
+    let plan_navigation=f.api.invoke_plugin_action(json!({"page":{"pluginId":"flare.checkin","page":"flare.checkin.plans"},"platform":"web","conversationId":plans["conversationId"],"actionId":"open","userGesture":true,"row":{"key":"p1","input":{"planId":"p1"}}})).await.unwrap();
+    f.answer("flare.checkin.plan.get",vec![json!({"plan":{"planId":"p1","title":"Daily","kind":"daily","status":"open"},"occurrence":null,"conversationId":"injected"})]);
+    let plan = f
+        .api
+        .plugin_page(open_page("flare.checkin", &plan_navigation))
+        .await
+        .unwrap();
+    assert_eq!(
+        f.calls_to("flare.checkin.plan.get")[0]["payload"],
+        json!({"planId":"p1"})
+    );
+    let actions_navigation=f.api.invoke_plugin_action(json!({"page":{"pluginId":"flare.checkin","page":"flare.checkin.plan.page"},"platform":"web","conversationId":plan["conversationId"],"actionId":"myActions","userGesture":true,"data":plan["data"]})).await.unwrap();
+    f.answer("flare.checkin.my.actions",vec![json!({"items":[{"actionId":"a1","planId":"p1","status":"unavailable"}],"nextCursor":null,"conversationId":"injected"})]);
+    let actions = f
+        .api
+        .plugin_page(open_page("flare.checkin", &actions_navigation))
+        .await
+        .unwrap();
+    f.api.invoke_plugin_action(json!({"page":{"pluginId":"flare.checkin","page":"flare.checkin.my.actions.page"},"platform":"web","conversationId":actions["conversationId"],"actionId":"resume","userGesture":true,"row":{"key":"a1","input":{"actionId":"a1"}}})).await.unwrap();
+    assert_eq!(
+        f.calls_to("flare.checkin.action.resume")[0]["payload"],
+        json!({"actionId":"a1"})
+    );
+    let task_menu = f
+        .api
+        .invoke_plugin_action(open_entry("flare.task", "flare.task.mine.menu"))
+        .await
+        .unwrap();
+    f.answer("flare.task.mine",vec![json!({"items":[{"taskId":"t1","title":"Follow up","status":"open","doneUserIds":[]}],"nextCursor":null,"conversationId":"injected"})]);
+    let tasks = f
+        .api
+        .plugin_page(open_page("flare.task", &task_menu))
+        .await
+        .unwrap();
+    assert_eq!(f.calls_to("flare.task.mine")[0]["payload"], json!({}));
+    f.api.invoke_plugin_action(json!({"page":{"pluginId":"flare.task","page":"flare.task.mine.page"},"platform":"web","conversationId":tasks["conversationId"],"actionId":"complete","userGesture":true,"row":{"key":"t1","input":{"taskId":"t1"}}})).await.unwrap();
+    assert_eq!(
+        f.calls_to("flare.task.complete")[0]["payload"],
+        json!({"taskId":"t1"})
+    );
+    // A foreign entity cannot cause fallback to another conversation: Core's
+    // refusal is surfaced while the route context stays the original group.
+    f.fail(
+        "flare.checkin.action.resume",
+        403,
+        "NOT_CONVERSATION_MEMBER",
+    );
+    assert!(f.api.invoke_plugin_action(json!({"page":{"pluginId":"flare.checkin","page":"flare.checkin.my.actions.page"},"platform":"web","conversationId":"group-1","actionId":"resume","userGesture":true,"data":{"conversationId":"other-group"},"row":{"key":"foreign","input":{"actionId":"foreign"}}})).await.is_err());
+    assert_eq!(
+        f.calls_to("flare.checkin.action.resume").last().unwrap()["conversationId"],
+        "group-1"
+    );
+    for operation in [
+        "flare.checkin.plan.list",
+        "flare.checkin.plan.get",
+        "flare.checkin.my.actions",
+        "flare.checkin.action.resume",
+        "flare.task.mine",
+        "flare.task.complete",
+    ] {
+        assert_eq!(
+            f.calls_to(operation)[0]["conversationId"],
+            "group-1",
+            "{operation}"
+        );
+    }
 }

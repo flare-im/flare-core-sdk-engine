@@ -355,8 +355,7 @@ impl FlareImWasmRuntime {
             }
             "presence.subscribe" => Ok(json!({ "subscribed": true })),
             "capability.list" => Ok(json!({ "capabilities": [] })),
-            "capability.list_user" => Ok(json!({ "capabilities": [] })),
-            "capability.dispatch" | "capability.grant" | "capability.revoke" => Err(js_message(
+            "capability.dispatch" => Err(js_message(
                 "capabilityUnavailable",
                 operation,
                 "WASM capability runtime is not connected to a host plugin adapter",

@@ -1729,6 +1729,17 @@
           "result": "json"
         },
         {
+          "op": "plugin_file_upload",
+          "method": "plugin_file_upload",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
           "op": "plugin_account_entries",
           "method": "plugin_account_entries",
           "args": [
@@ -1749,21 +1760,6 @@
           "op": "capability_list",
           "method": "list_capabilities",
           "args": [],
-          "result": "json"
-        },
-        {
-          "op": "capability_list_user",
-          "method": "list_user_capabilities",
-          "args": [
-            [
-              "tenant_id",
-              "optional_str_ref"
-            ],
-            [
-              "user_id",
-              "optional_str_ref"
-            ]
-          ],
           "result": "json"
         },
         {
@@ -1792,56 +1788,6 @@
             ]
           ],
           "result": "json"
-        },
-        {
-          "op": "capability_grant",
-          "method": "grant_user_capability",
-          "args": [
-            [
-              "tenant_id",
-              "str_ref"
-            ],
-            [
-              "user_id",
-              "str_ref"
-            ],
-            [
-              "capability_id",
-              "str_ref"
-            ],
-            [
-              "expires_at_rfc3339",
-              "optional_str_ref"
-            ],
-            [
-              "plan_code",
-              "optional_str_ref"
-            ],
-            [
-              "source",
-              "optional_str_ref"
-            ]
-          ],
-          "result": "unit"
-        },
-        {
-          "op": "capability_revoke",
-          "method": "revoke_user_capability",
-          "args": [
-            [
-              "tenant_id",
-              "str_ref"
-            ],
-            [
-              "user_id",
-              "str_ref"
-            ],
-            [
-              "capability_id",
-              "str_ref"
-            ]
-          ],
-          "result": "unit"
         }
       ]
     }

@@ -6,7 +6,7 @@
 //! 不碰同步游标。测试台每做完一步，都把这一步推出的全部更新应用到宿主侧窗口上，并断言它与
 //! 视图持有的窗口逐行相同、版本号连续——核心产出的每个增量都要能照做。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -47,6 +47,7 @@ use crate::shared::error::{ErrorCode, FlareError, Result};
 pub(super) const CONVERSATION: &str = "c1";
 
 type BoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>;
+pub(super) type AfterBackfill = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
 
 pub(super) fn proto(seq: u64) -> ProtoMessage {
     ProtoMessage {
@@ -87,6 +88,12 @@ pub(super) struct ScriptedServer {
     pub offline: AtomicBool,
     /// 回页时说还有更早、却一条也不给（坏掉的服务端）。
     pub empty_pages_with_more: AtomicBool,
+    /// Optional exact server pages, including proof-only pages and failures.
+    pub backfill_pages: StdMutex<VecDeque<Result<SingleConversationSyncRes>>>,
+    /// A deterministic concurrent local write just before a backfill answers.
+    pub after_backfill: StdMutex<Option<AfterBackfill>>,
+    /// Optional deterministic foreground synchronization work.
+    pub foreground: StdMutex<Option<AfterBackfill>>,
     requests: StdMutex<Vec<Req>>,
     /// 推进游标的同步请求次数（视图不该发）。
     pub cursor_syncs: AtomicUsize,
@@ -150,7 +157,13 @@ impl ScriptedServer {
 
 impl SessionSyncRunner for ScriptedServer {
     fn request_message_sync(&self, _conversation_id: &str) -> BoxFuture<'_, ()> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            let hook = self.foreground.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook().await?;
+            }
+            Ok(())
+        })
     }
 
     fn request_message_sync_from_seq(
@@ -176,33 +189,55 @@ impl SessionSyncRunner for ScriptedServer {
                 .lock()
                 .unwrap()
                 .push(Req::Before(before_seq, limit));
-            self.check_online()?;
-            let (seqs, has_more) = if self.empty_pages_with_more.load(Ordering::SeqCst) {
-                (Vec::new(), true)
-            } else {
-                self.page_before(before_seq, limit)
-            };
-            let rows = seqs.iter().copied().map(row).collect::<Vec<_>>();
-            if !rows.is_empty() {
-                self.stores.messages.save_batch(&rows).await?;
-            }
-            let page = SingleConversationSyncRes {
-                conversation_id: conversation_id.clone(),
-                items: seqs
+            let result = async {
+                self.check_online()?;
+                let scripted = self.backfill_pages.lock().unwrap().pop_front();
+                let page = if let Some(page) = scripted {
+                    page?
+                } else {
+                    let (seqs, has_more) = if self.empty_pages_with_more.load(Ordering::SeqCst) {
+                        (Vec::new(), true)
+                    } else {
+                        self.page_before(before_seq, limit)
+                    };
+                    SingleConversationSyncRes {
+                        conversation_id: conversation_id.clone(),
+                        items: seqs
+                            .iter()
+                            .map(|seq| SyncSliceItem {
+                                conversation_seq: *seq,
+                                created_at: 0,
+                                payload: Some(ItemPayload::Message(proto(*seq))),
+                            })
+                            .collect(),
+                        has_more,
+                        ..Default::default()
+                    }
+                };
+                let rows = page
+                    .items
                     .iter()
-                    .map(|seq| SyncSliceItem {
-                        conversation_seq: *seq,
-                        created_at: 0,
-                        payload: Some(ItemPayload::Message(proto(*seq))),
+                    .filter_map(|item| match &item.payload {
+                        Some(ItemPayload::Message(message)) => {
+                            Some(IMMessage::new(message.clone()))
+                        }
+                        _ => None,
                     })
-                    .collect(),
-                has_more,
-                ..Default::default()
-            };
-            self.sync_apply
-                .record_backfill_coverage(&conversation_id, before_seq, &page)
-                .await;
-            Ok(has_more)
+                    .collect::<Vec<_>>();
+                if !rows.is_empty() {
+                    self.stores.messages.save_batch(&rows).await?;
+                }
+                self.sync_apply
+                    .record_backfill_coverage(&conversation_id, before_seq, &page)
+                    .await;
+                Ok(page.has_more)
+            }
+            .await;
+            let hook = self.after_backfill.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook().await?;
+            }
+            result
         })
     }
 
@@ -288,6 +323,8 @@ impl ReadCounts {
 pub(super) struct CountingMessageStore {
     inner: Arc<dyn MessageStore>,
     pub counts: ReadCounts,
+    /// Deterministic write/event between the initial read and view registration.
+    pub after_read: StdMutex<Option<AfterBackfill>>,
 }
 
 impl CountingMessageStore {
@@ -331,9 +368,15 @@ impl MessageReader for CountingMessageStore {
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
         self.counts.pages.fetch_add(1, Ordering::SeqCst);
-        self.inner
+        let rows = self
+            .inner
             .get_by_conversation(conversation_id, before_seq, limit)
-            .await
+            .await?;
+        let hook = self.after_read.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook().await?;
+        }
+        Ok(rows)
     }
 
     async fn get_by_conversation_after(
@@ -581,6 +624,7 @@ impl Harness {
         let reads = Arc::new(CountingMessageStore {
             inner: stores.messages.clone(),
             counts: ReadCounts::default(),
+            after_read: StdMutex::new(None),
         });
         let conversation_api = ConversationApi::new(
             Arc::new(
@@ -619,6 +663,9 @@ impl Harness {
             max_seq: setup.max_seq,
             offline: AtomicBool::new(false),
             empty_pages_with_more: AtomicBool::new(false),
+            backfill_pages: StdMutex::new(VecDeque::new()),
+            after_backfill: StdMutex::new(None),
+            foreground: StdMutex::new(None),
             requests: StdMutex::new(Vec::new()),
             cursor_syncs: AtomicUsize::new(0),
             stores: stores.clone(),
@@ -661,13 +708,16 @@ impl Harness {
     }
 
     pub async fn open(&self) {
+        self.try_open().await.unwrap();
+    }
+
+    pub async fn try_open(&self) -> Result<()> {
         self.opened(OpenTimelineViewRequest {
             conversation_id: CONVERSATION.into(),
             message_limit: self.page_size,
             anchor: None,
         })
         .await
-        .unwrap();
     }
 
     pub async fn open_around(&self, message_id: Option<&str>, seq: Option<u64>) -> Result<()> {

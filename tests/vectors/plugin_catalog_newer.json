@@ -1,0 +1,126 @@
+{
+  "$comment": "A catalog from a server newer than this client, kept as a fixed case: whatever this client cannot read costs only itself. Do not update it to match the protocol. Read by capability_ui_tests through parse_catalog, resolve_plugin_message and plugin_ui_action.",
+  "tenantId": "201",
+  "version": 7,
+  "validUntilMs": 4102444800000,
+  "plugins": [
+    {
+      "pluginId": "example.poll",
+      "version": "1.0.0",
+      "manifestDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "grantRevision": 1,
+      "operations": ["example.poll.vote"],
+      "extensions": {
+        "platforms": ["web", "tauri", "android", "ios", "flutter", "harmonyos"],
+        "contributions": [
+          {
+            "id": "example.poll.card",
+            "kind": "message-content",
+            "schemaVersion": 1,
+            "requiredPermissions": [],
+            "schema": {
+              "title": "Poll",
+              "fields": [{ "label": "Question", "path": "/question" }],
+              "actions": [
+                {
+                  "id": "vote",
+                  "label": "Vote",
+                  "target": { "kind": "operation", "operation": "example.poll.vote" },
+                  "input": { "pollId": "/pollId" }
+                }
+              ]
+            }
+          },
+          {
+            "id": "example.poll.hologram",
+            "kind": "from-a-newer-server",
+            "schemaVersion": 1,
+            "requiredPermissions": [],
+            "schema": {
+              "title": "Hologram",
+              "actions": [
+                {
+                  "id": "vote",
+                  "label": "Vote",
+                  "target": { "kind": "operation", "operation": "example.poll.vote" },
+                  "input": { "pollId": "/pollId" }
+                }
+              ]
+            }
+          },
+          {
+            "id": "example.poll.anchored",
+            "kind": "message-content",
+            "schemaVersion": 1,
+            "requiredPermissions": [],
+            "fromANewerServer": { "anchor": "top" },
+            "schema": {
+              "title": "Anchored",
+              "actions": [
+                {
+                  "id": "vote",
+                  "label": "Vote",
+                  "target": { "kind": "operation", "operation": "example.poll.vote" },
+                  "input": { "pollId": "/pollId" }
+                }
+              ]
+            }
+          },
+          {
+            "id": "example.poll.tally",
+            "kind": "message-content",
+            "schemaVersion": 1,
+            "requiredPermissions": [],
+            "schema": {
+              "title": "Tally",
+              "fields": [{ "label": "Question", "path": "/question" }],
+              "actions": [
+                {
+                  "id": "vote",
+                  "label": "Vote",
+                  "target": { "kind": "operation", "operation": "example.poll.vote" },
+                  "input": { "pollId": "/pollId" }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "pluginId": "example.newer",
+      "version": "2.0.0",
+      "manifestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "grantRevision": 1,
+      "operations": ["example.newer.vote"],
+      "fromANewerServer": true,
+      "extensions": {
+        "platforms": ["web", "tauri", "android", "ios", "flutter", "harmonyos"],
+        "contributions": [
+          {
+            "id": "example.newer.card",
+            "kind": "message-content",
+            "schemaVersion": 1,
+            "requiredPermissions": [],
+            "schema": {
+              "title": "Newer",
+              "actions": [
+                {
+                  "id": "vote",
+                  "label": "Vote",
+                  "target": { "kind": "operation", "operation": "example.newer.vote" },
+                  "input": { "pollId": "/pollId" }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    { "version": "3.0.0" }
+  ],
+  "unavailable": [
+    { "pluginId": "example.off", "reason": "disabled" },
+    { "pluginId": "example.paused", "reason": "from_a_newer_server" }
+  ]
+}

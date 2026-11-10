@@ -6,7 +6,7 @@ use crate::FlareError;
 use crate::application::notification::NotificationHandlerRegistry;
 use crate::client::api::{
     CapabilityApi, CapabilityDispatchResult, ConversationApi, MediaApi, MessageApi,
-    MessageBuildApi, PresenceApi, UserCapabilityGrantDto, ViewApi,
+    MessageBuildApi, PresenceApi, ViewApi,
 };
 use crate::extension::capability::SdkCapabilityRegistry;
 use crate::infrastructure::transport::http::HttpRequestContext;
@@ -180,18 +180,6 @@ impl IMClient {
     ) -> Result<CapabilityDispatchResult> {
         self.capability_registry()?
             .invoke(capability_id, payload, conversation_id, tenant_id)
-            .await
-    }
-
-    /// 经注册表查询某 `capability_id` 所属命名空间插件的用户授权列表。
-    pub async fn list_capability_grants(
-        &self,
-        capability_id: &str,
-        tenant_id: Option<&str>,
-        user_id: Option<&str>,
-    ) -> Result<Vec<UserCapabilityGrantDto>> {
-        self.capability_registry()?
-            .list_user_grants_for_capability(capability_id, tenant_id, user_id)
             .await
     }
 

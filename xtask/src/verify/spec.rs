@@ -98,7 +98,6 @@ pub(crate) fn verify_spec(root: &Path) -> Result<()> {
         "DispatchCapabilityResponse",
         "FfiContractVersion",
         "ListCapabilitiesResponse",
-        "ListUserCapabilitiesResponse",
         "MediaAccessUrl",
         "MediaCacheEntry",
         "MediaCacheStats",

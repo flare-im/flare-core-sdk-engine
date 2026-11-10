@@ -8,6 +8,28 @@ use flare_im_core_sdk::serde_json::{self, Value};
 use crate::{BindingResponse, binding_invalid_parameter};
 use flare_im_core_sdk::Result;
 use flare_im_core_sdk::client::HeartbeatAppState;
+
+/// Five MiB of bytes expand to at most twenty MiB as a compact JSON integer
+/// array. Keep the larger transport budget exclusive to this upload API;
+/// the Core implementation still enforces the declaration's raw byte limit.
+pub const PLUGIN_FILE_UPLOAD_JSON_MAX_BYTES: usize = 24 * 1024 * 1024;
+
+pub fn plugin_file_upload_json_limit(operation: &str) -> Option<usize> {
+    matches!(
+        operation,
+        "plugin_file_upload" | "capability.plugin_file_upload"
+    )
+    .then_some(PLUGIN_FILE_UPLOAD_JSON_MAX_BYTES)
+}
+
+pub fn validate_json_request_size(operation: &str, json: &str) -> Result<()> {
+    if plugin_file_upload_json_limit(operation).is_some_and(|limit| json.len() >= limit) {
+        return Err(binding_invalid_parameter(
+            "plugin file upload request too large",
+        ));
+    }
+    Ok(())
+}
 use flare_im_core_sdk::client::api::{
     CreateLocationRequest, CreateRichDocRequest, CreateStickerRequest, EditRichDocRequest,
 };
@@ -721,6 +743,36 @@ impl From<CreateRichDocJson> for CreateRichDocRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_upload_budget_covers_five_mib_and_is_scoped_and_bounded() {
+        assert_eq!(
+            plugin_file_upload_json_limit("plugin_file_upload"),
+            Some(24 * 1024 * 1024)
+        );
+        assert_eq!(
+            plugin_file_upload_json_limit("capability.plugin_file_upload"),
+            Some(24 * 1024 * 1024)
+        );
+        for other in [
+            "capability.dispatch",
+            "plugin_ui_invoke",
+            "media.upload",
+            "plugin_file_upload_extra",
+        ] {
+            assert_eq!(plugin_file_upload_json_limit(other), None);
+        }
+        let five_mib = 5 * 1024 * 1024;
+        // Every byte is the longest decimal u8 representation. Metadata can
+        // still use almost four MiB without raising any other API's budget.
+        let bytes_json = format!("[{}255]", "255,".repeat(five_mib - 1));
+        assert_eq!(bytes_json.len(), five_mib * 4 + 1);
+        assert!(validate_json_request_size("plugin_file_upload", &bytes_json).is_ok());
+        let at_limit = " ".repeat(PLUGIN_FILE_UPLOAD_JSON_MAX_BYTES);
+        assert!(validate_json_request_size("plugin_file_upload", &at_limit).is_err());
+        assert!(validate_json_request_size("capability.plugin_file_upload", &at_limit).is_err());
+        assert!(validate_json_request_size("plugin_file_upload", &at_limit[1..]).is_ok());
+    }
 
     #[test]
     fn message_media_preview_reference_is_paired_strict_and_positive() {

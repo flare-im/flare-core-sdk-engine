@@ -21,7 +21,8 @@ mod view;
 pub use crate::extension::capability::ui::PluginComposerAction;
 pub(crate) use capability::TenantNotices;
 pub use capability::{
-    CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, UserCapabilityGrantDto,
+    CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, PluginFileUploadPage,
+    PluginFileUploadRequest,
 };
 pub use conversation::ConversationApi;
 pub use media::{

@@ -761,6 +761,11 @@ fn render_dispatch_group_json_fn(group: &DispatchGroup) -> Result<Vec<String>> {
         format!("    {},", sig_args.join(",\n    ")),
         ") -> Result<BindingResponse> {".to_string(),
     ];
+    if group.id == "capability" {
+        lines.push(format!(
+            "    validate_json_request_size(operation, {json_name})?;"
+        ));
+    }
     let mut json_arms = Vec::new();
     for op in &group.operations {
         if let Some(body) = render_operation_body_json(op, group)? {

@@ -26,13 +26,11 @@ pub const CAPABILITY_DISPATCH_OPERATIONS: &[&str] = &[
     "plugin_composer_actions",
     "plugin_detail",
     "plugin_page",
+    "plugin_file_upload",
     "plugin_account_entries",
     "plugin_catalog_invalidate",
     "capability_list",
-    "capability_list_user",
     "capability_dispatch",
-    "capability_grant",
-    "capability_revoke",
 ];
 
 pub fn is_capability_operation(operation: &str) -> bool {
@@ -155,6 +153,15 @@ pub async fn dispatch_capability(
             )
             .await?,
         ),
+        "plugin_file_upload" => json(
+            api.plugin_file_upload(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
         "plugin_account_entries" => json(
             api.plugin_account_entries(
                 params
@@ -169,14 +176,6 @@ pub async fn dispatch_capability(
             Ok(BindingResponse::unit())
         }
         "capability_list" => json(api.list_capabilities().await?),
-        "capability_list_user" => {
-            let tenant_id_o = optional_string(&params, "tenantId");
-            let user_id_o = optional_string(&params, "userId");
-            json(
-                api.list_user_capabilities(tenant_id_o.as_deref(), user_id_o.as_deref())
-                    .await?,
-            )
-        }
         "capability_dispatch" => {
             let capability_id_s = json_string(&params, "capabilityId")?;
             let conversation_id_o = optional_string(&params, "conversationId");
@@ -196,32 +195,6 @@ pub async fn dispatch_capability(
                 .await?,
             )
         }
-        "capability_grant" => {
-            let tenant_id_s = json_string(&params, "tenantId")?;
-            let user_id_s = json_string(&params, "userId")?;
-            let capability_id_s = json_string(&params, "capabilityId")?;
-            let expires_at_rfc3339_o = optional_string(&params, "expiresAtRfc3339");
-            let plan_code_o = optional_string(&params, "planCode");
-            let source_o = optional_string(&params, "source");
-            api.grant_user_capability(
-                &tenant_id_s,
-                &user_id_s,
-                &capability_id_s,
-                expires_at_rfc3339_o.as_deref(),
-                plan_code_o.as_deref(),
-                source_o.as_deref(),
-            )
-            .await?;
-            Ok(BindingResponse::unit())
-        }
-        "capability_revoke" => {
-            let tenant_id_s = json_string(&params, "tenantId")?;
-            let user_id_s = json_string(&params, "userId")?;
-            let capability_id_s = json_string(&params, "capabilityId")?;
-            api.revoke_user_capability(&tenant_id_s, &user_id_s, &capability_id_s)
-                .await?;
-            Ok(BindingResponse::unit())
-        }
         _ => Err(binding_operation_not_supported(operation)),
     }
 }
@@ -232,6 +205,7 @@ pub async fn dispatch_capability_json(
     operation: &str,
     params_json: &str,
 ) -> Result<BindingResponse> {
+    validate_json_request_size(operation, params_json)?;
     let params = dispatch_params_from_json(params_json)?;
     dispatch_capability(api, client, operation, params).await
 }

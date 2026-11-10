@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::client::api::{CapabilityDispatchResult, UserCapabilityGrantDto};
+use crate::client::api::CapabilityDispatchResult;
 use crate::shared::error::Result;
 
 use super::manifest::SdkPluginManifest;
@@ -24,10 +24,4 @@ pub trait SdkCapabilityPlugin: Send + Sync {
         conversation_id: Option<&str>,
         tenant_id: Option<&str>,
     ) -> Result<CapabilityDispatchResult>;
-
-    async fn list_user_grants(
-        &self,
-        tenant_id: Option<&str>,
-        user_id: Option<&str>,
-    ) -> Result<Vec<UserCapabilityGrantDto>>;
 }

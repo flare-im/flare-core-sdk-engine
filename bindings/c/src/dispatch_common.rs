@@ -93,7 +93,12 @@ pub(crate) fn json_dispatch_entry(
                 return code;
             }
         };
-        let params_json = match c_str_to_string(params_json) {
+        let scan_limit =
+            flare_im_core_sdk_bindings_runtime::dispatch_support::plugin_file_upload_json_limit(
+                &operation,
+            )
+            .unwrap_or(abi::MAX_CSTRING_BYTES);
+        let params_json = match abi::read_c_str_with_limit(params_json, scan_limit) {
             Ok(s) => s,
             Err(code) => {
                 let ctx = CallbackContext::new(context, callback);
@@ -221,7 +226,12 @@ pub(crate) fn invoke_entry(
                 return code;
             }
         };
-        let params_json = match c_str_to_string(params_json) {
+        let scan_limit =
+            flare_im_core_sdk_bindings_runtime::dispatch_support::plugin_file_upload_json_limit(
+                &api_id,
+            )
+            .unwrap_or(abi::MAX_CSTRING_BYTES);
+        let params_json = match abi::read_c_str_with_limit(params_json, scan_limit) {
             Ok(s) => s,
             Err(code) => {
                 let ctx = CallbackContext::new(context, callback);

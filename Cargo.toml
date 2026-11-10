@@ -110,7 +110,7 @@ schemars = { workspace = true }
 flare-plugin-protocol = { version = "0.1.0", path = "../flare-protocol/flare-plugin-protocol" }
 anyhow = { workspace = true }
 thiserror = "2.0"
-async-trait = "0.1"
+async-trait = "0.1.92"
 arc-swap = "1.7"
 prost = "0.14"
 prost-types = { workspace = true }

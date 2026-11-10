@@ -244,7 +244,7 @@ async fn the_first_message_at_seq_three_is_the_start_when_proven() {
     assert_eq!(h.server.take_requests(), vec![]);
 }
 
-/// 窗口为空、会话有消息：以会话已知最新 seq 之上一位为锚回填一页。
+/// 窗口为空、会话有消息：打开首屏就以已知最新 seq 之上一位为锚回填，不等待用户手动翻页。
 #[tokio::test]
 async fn an_empty_window_backfills_above_the_newest_known_seq() {
     let h = Harness::new(Setup {
@@ -257,8 +257,6 @@ async fn an_empty_window_backfills_above_the_newest_known_seq() {
     })
     .await;
     h.open().await;
-    assert_eq!(h.window().await, (vec![], true));
-    h.load_older().await.unwrap();
     assert_eq!(h.server.take_requests(), vec![Req::Before(51, 40)]);
     assert_eq!(h.window().await, (seqs(11, 50), true));
 }
@@ -445,7 +443,7 @@ fn vectors() -> Vectors {
 
 async fn run_step(h: &Harness, step: &Step, at: &str) -> Result<()> {
     match step.action.as_str() {
-        "open" => h.open().await,
+        "open" => return h.try_open().await,
         "openAround" => return h.open_around(step.message_id.as_deref(), step.seq).await,
         "loadOlder" => return h.load_older().await.map(|_| ()),
         "loadNewer" => return h.load_newer().await.map(|_| ()),

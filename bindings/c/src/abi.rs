@@ -22,10 +22,17 @@ pub const MAX_CSTRING_BYTES: usize = 4 * 1024 * 1024;
 /// - 并发写同一缓冲在 C 侧为 UB；本侧按只读快照解释。
 #[inline]
 pub fn read_c_str(ptr: *const c_char) -> Result<String, i32> {
+    read_c_str_with_limit(ptr, MAX_CSTRING_BYTES)
+}
+
+/// A caller-selected bounded scan, reserved for a known operation's larger
+/// request contract. Other C strings retain the default four MiB bound.
+#[inline]
+pub fn read_c_str_with_limit(ptr: *const c_char, scan_limit: usize) -> Result<String, i32> {
     if ptr.is_null() {
         return Err(FLARE_ERR_NULL_POINTER);
     }
-    let len = scan_nul_terminated_len(ptr)?;
+    let len = scan_nul_terminated_len(ptr, scan_limit)?;
     // SAFETY: `ptr` 已判非空；`len` 为不超过 MAX 的前缀长度且下一字节为 NUL 或 len 在边界内合法子串。
     // 调用方保证 [ptr, ptr+len) 在调用期间有效且可读；无所有权转移。
     let slice = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
@@ -44,11 +51,11 @@ pub fn read_c_str_opt(ptr: *const c_char) -> Result<Option<String>, i32> {
 }
 
 #[inline]
-fn scan_nul_terminated_len(ptr: *const c_char) -> Result<usize, i32> {
+fn scan_nul_terminated_len(ptr: *const c_char, scan_limit: usize) -> Result<usize, i32> {
     // SAFETY: `ptr` 非空；每次仅做单字节只读，直到 NUL 或达到上限。
     unsafe {
         let mut n = 0usize;
-        while n < MAX_CSTRING_BYTES {
+        while n < scan_limit {
             let b = *ptr.add(n) as u8;
             if b == 0 {
                 return Ok(n);
@@ -147,6 +154,26 @@ pub fn catch_ffi_flare_string(f: impl FnOnce() -> FlareString) -> FlareString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operation_specific_string_bound_does_not_relax_the_default_scan() {
+        let mut bytes = vec![b'1'; MAX_CSTRING_BYTES + 16];
+        bytes.push(0);
+        let pointer = bytes.as_ptr().cast();
+        assert_eq!(read_c_str(pointer), Err(FLARE_ERR_INVALID_PARAM));
+        assert_eq!(
+            read_c_str_with_limit(pointer, bytes.len()).unwrap().len(),
+            bytes.len() - 1
+        );
+        assert_eq!(
+            read_c_str_with_limit(pointer, bytes.len() - 1),
+            Err(FLARE_ERR_INVALID_PARAM)
+        );
+        assert_eq!(
+            read_c_str_with_limit(std::ptr::null(), bytes.len()),
+            Err(FLARE_ERR_NULL_POINTER)
+        );
+    }
 
     #[test]
     fn catch_ffi_i32_converts_panic_to_stable_error_code() {

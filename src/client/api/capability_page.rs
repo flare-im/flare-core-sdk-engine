@@ -12,7 +12,7 @@ use flare_plugin_protocol::{
 impl CapabilityApi {
     /// A plugin page (a `page` contribution, such as a wallet), resolved like
     /// a card's detail: `{pluginId, page, platform, locale?, arguments?,
-    /// filters?, cursor?, previous?, refresh?}` in, a v2 view out (`available`,
+    /// conversationId?, filters?, cursor?, previous?, refresh?}` in, a v2 view out (`available`,
     /// `title`, `fields`, `actions`, `menuActions?`, `blocks?`, `inputs?`,
     /// `nextCursor?`, `unavailableReason?`) plus `data`, what it was resolved
     /// against, which a page action passes back.
@@ -22,6 +22,10 @@ impl CapabilityApi {
     ///   `{}` from an account entry. The page's source (a declared query) is
     ///   called with its input bound from them; a page without a source is
     ///   resolved against them.
+    /// - `conversationId`: the host's conversation route, carried separately
+    ///   from business arguments and filters. It is retained on the returned
+    ///   page and page navigation. Source data never selects this context;
+    ///   Core authorizes current membership on each invocation.
     /// - `filters`: values of the rows block's filter inputs, validated like a
     ///   form and joined to the source input.
     /// - Paging and refresh follow `plugin_detail`: `cursor` (the view's
@@ -47,7 +51,11 @@ impl CapabilityApi {
             .run_with_user(|viewer| async move {
                 let viewer = viewer.unwrap_or_default();
                 let inert = |reason| {
-                    ui_page::page_view(&ResolvedPluginView::unavailable_page(reason), None)
+                    ui_page::page_view(
+                        &ResolvedPluginView::unavailable_page(reason),
+                        None,
+                        request.conversation_id.as_deref(),
+                    )
                 };
                 let catalog = match self.fetch_plugin_ui_catalog().await {
                     Ok((_, catalog)) => catalog,
@@ -126,7 +134,7 @@ impl CapabilityApi {
                     }
                     None => {}
                 }
-                ui_page::page_view(&view, Some(data))
+                ui_page::page_view(&view, Some(data), request.conversation_id.as_deref())
             })
             .await
     }
@@ -145,15 +153,11 @@ impl CapabilityApi {
             return Ok(input);
         };
         let viewer = (!viewer.is_empty()).then_some(viewer);
-        let conversation = input
-            .get("conversationId")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
         match self
             .dispatch_with(
                 &source.operation,
                 input,
-                conversation.as_deref(),
+                request.conversation_id.as_deref(),
                 Some(&self.default_tenant_id),
                 viewer,
                 None,
@@ -204,12 +208,7 @@ impl CapabilityApi {
                 };
                 let (_, declaration) = catalog
                     .page(&request.page.plugin_id, &request.page.page, &context)
-                    .map_err(|_| {
-                        FlareError::localized(
-                            ErrorCode::OperationNotSupported,
-                            "sdk.plugin.ui_action_unavailable",
-                        )
-                    })?;
+                    .map_err(ui_page::page_admission_unavailable)?;
                 let action = declaration
                     .schema
                     .actions
@@ -241,15 +240,11 @@ impl CapabilityApi {
                         payload,
                         ..
                     } => {
-                        let conversation = request.conversation_id.as_deref().or_else(|| {
-                            request
-                                .data
-                                .as_ref()
-                                .and_then(|v| v["conversationId"].as_str())
-                        });
+                        let conversation = request.conversation_id.as_deref();
                         let (mut response, mut continuation) = if let Some(policy) = &action.command {
                             self.page_command(crate::client::api::page_command::PageCommandCall {
                                 plugin: &request.page.plugin_id,
+                                catalog: &catalog,
                                 viewer: user_id.as_deref().unwrap_or_default(),
                                 operation: &operation,
                                 payload,
@@ -305,6 +300,7 @@ impl CapabilityApi {
                             }
                             let target_request = ui_page::parse_page(serde_json::json!({
                                 "pluginId":plugin,"page":transition.page,"platform":request.platform,
+                                "conversationId":conversation,
                                 "arguments":next["payload"],
                             }))?;
                             let prepared = ui_page::prepare_page(target, &target_request)?;
@@ -319,6 +315,7 @@ impl CapabilityApi {
                             }
                             let call = ui_page::parse_page_action(serde_json::json!({
                                 "page":{"pluginId":plugin,"page":transition.page},"platform":request.platform,
+                                "conversationId":conversation,
                                 "actionId":action_id,"userGesture":request.user_gesture,"data":data,
                             }))?;
                             let PreparedAction::Ready {target:UiActionTarget::Operation {operation},mut payload,..} =
@@ -335,9 +332,9 @@ impl CapabilityApi {
                                 }
                                 payload["commandId"] = command.clone();
                             }
-                            let follow_conversation = call.data.as_ref().and_then(|d| d["conversationId"].as_str()).or(conversation);
+                            let follow_conversation = call.conversation_id.as_deref();
                             let followed = self.page_command(crate::client::api::page_command::PageCommandCall {
-                                plugin,viewer:user_id.as_deref().unwrap_or_default(),operation:&operation,
+                                plugin,catalog:&catalog,viewer:user_id.as_deref().unwrap_or_default(),operation:&operation,
                                 payload,conversation:follow_conversation,policy,continuation:follow.continuation.clone(),
                             }).await;
                             match followed {
@@ -348,7 +345,7 @@ impl CapabilityApi {
                                 // The financial submit may have committed. Show its own
                                 // journal/recovery UI; never leave a password retry on the
                                 // initiating page after an unknown follow-up.
-                                Err(_) => return Ok(serde_json::json!({"kind":"host","target":{"kind":"page","pluginId":plugin,"page":transition.page},"payload":next["payload"]})),
+                                Err(_) => return Ok(ui_page::page_navigation(serde_json::json!({"kind":"host","target":{"kind":"page","pluginId":plugin,"page":transition.page},"payload":next["payload"]}), conversation)),
                             }
                         }
                         if response.success
@@ -361,14 +358,14 @@ impl CapabilityApi {
                                 .unwrap_or(&request.page.plugin_id);
                             let target_page = next["target"]["page"].as_str().unwrap_or_default();
                             if catalog.page(target_plugin, target_page, &context).is_ok() {
-                                return Ok(next);
+                                return Ok(ui_page::page_navigation(next, conversation));
                             }
                         }
                         Ok(serde_json::json!({"kind":"operation","response":response}))
                     }
                     PreparedAction::Ready {
                         target, payload, ..
-                    } => Ok(serde_json::json!({"kind":"host","target":target,"payload":payload})),
+                    } => Ok(ui_page::page_navigation(serde_json::json!({"kind":"host","target":target,"payload":payload}), request.conversation_id.as_deref())),
                 }
             })
             .await

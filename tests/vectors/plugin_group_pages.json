@@ -1,0 +1,905 @@
+{
+  "plugins": [
+    {
+      "pluginId": "flare.checkin",
+      "version": "0.1.0",
+      "manifestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "grantRevision": 1,
+      "extensions": {
+        "contributions": [
+          {
+            "id": "flare.checkin.plans",
+            "kind": "page",
+            "requiredPermissions": [
+              "flare.checkin.use"
+            ],
+            "schema": {
+              "actions": [
+                {
+                  "id": "open",
+                  "input": {
+                    "planId": "/planId"
+                  },
+                  "label": "本期签到",
+                  "target": {
+                    "kind": "page",
+                    "page": "flare.checkin.plan.page"
+                  }
+                },
+                {
+                  "confirm": "结束后不能继续签到",
+                  "hiddenWhen": [
+                    {
+                      "anyOf": [
+                        "closed"
+                      ],
+                      "path": "/status"
+                    }
+                  ],
+                  "id": "close",
+                  "input": {
+                    "planId": "/planId"
+                  },
+                  "label": "结束计划",
+                  "style": "danger",
+                  "target": {
+                    "kind": "operation",
+                    "operation": "flare.checkin.plan.close"
+                  }
+                },
+                {
+                  "id": "rules",
+                  "input": {
+                    "planId": "/planId"
+                  },
+                  "label": "配置触发规则",
+                  "target": {
+                    "kind": "page",
+                    "page": "flare.checkin.plan.rules"
+                  }
+                },
+                {
+                  "id": "myActions",
+                  "input": {
+                    "planId": "/planId"
+                  },
+                  "label": "我的奖励与任务",
+                  "target": {
+                    "kind": "page",
+                    "page": "flare.checkin.my.actions.page"
+                  }
+                },
+                {
+                  "id": "settings",
+                  "label": "群签到设置",
+                  "target": {
+                    "kind": "page",
+                    "page": "flare.checkin.group.settings"
+                  }
+                }
+              ],
+              "blocks": [
+                {
+                  "actions": [
+                    "open",
+                    "close",
+                    "rules",
+                    "myActions"
+                  ],
+                  "columns": [
+                    {
+                      "label": "标题",
+                      "path": "/title"
+                    },
+                    {
+                      "label": "类型",
+                      "path": "/kind"
+                    },
+                    {
+                      "label": "状态",
+                      "path": "/status"
+                    },
+                    {
+                      "label": "关键词",
+                      "path": "/keyword"
+                    }
+                  ],
+                  "emptyText": "暂无签到计划",
+                  "keyPath": "/planId",
+                  "kind": "rows",
+                  "path": "/items",
+                  "source": "flare.checkin.plan.list"
+                }
+              ],
+              "title": "群签到"
+            },
+            "schemaVersion": 1,
+            "source": {
+              "cursorPath": "/nextCursor",
+              "operation": "flare.checkin.plan.list"
+            }
+          },
+          {
+            "id": "flare.checkin.group.settings",
+            "kind": "page",
+            "requiredPermissions": [
+              "flare.checkin.use"
+            ],
+            "schema": {
+              "actions": [
+                {
+                  "form": [
+                    "dailyEnabled",
+                    "eventEnabled",
+                    "challengeEnabled",
+                    "mode",
+                    "keywords"
+                  ],
+                  "id": "save",
+                  "label": "保存",
+                  "style": "primary",
+                  "target": {
+                    "kind": "operation",
+                    "operation": "flare.checkin.group.configure"
+                  }
+                }
+              ],
+              "inputs": [
+                {
+                  "default": true,
+                  "defaultPath": "/dailyEnabled",
+                  "id": "dailyEnabled",
+                  "kind": "toggle",
+                  "label": "每日签到"
+                },
+                {
+                  "default": true,
+                  "defaultPath": "/eventEnabled",
+                  "id": "eventEnabled",
+                  "kind": "toggle",
+                  "label": "活动签到"
+                },
+                {
+                  "default": true,
+                  "defaultPath": "/challengeEnabled",
+                  "id": "challengeEnabled",
+                  "kind": "toggle",
+                  "label": "连续挑战"
+                },
+                {
+                  "choices": [
+                    {
+                      "label": "继承应用",
+                      "value": "inherit"
+                    },
+                    {
+                      "label": "替换",
+                      "value": "replace"
+                    },
+                    {
+                      "label": "关闭关键词",
+                      "value": "disabled"
+                    }
+                  ],
+                  "default": "inherit",
+                  "defaultPath": "/mode",
+                  "id": "mode",
+                  "kind": "select",
+                  "label": "群关键词"
+                },
+                {
+                  "defaultPath": "/keywords",
+                  "id": "keywords",
+                  "kind": "options",
+                  "label": "替换关键词",
+                  "max": 20,
+                  "maxLength": 32
+                }
+              ],
+              "title": "群签到设置"
+            },
+            "schemaVersion": 1,
+            "source": {
+              "operation": "flare.checkin.group.get"
+            }
+          },
+          {
+            "id": "flare.checkin.plan.rules",
+            "kind": "page",
+            "requiredPermissions": [
+              "flare.checkin.use"
+            ],
+            "schema": {
+              "actions": [
+                {
+                  "form": [
+                    "ruleId",
+                    "trigger",
+                    "minTotalDays",
+                    "minConsecutiveDays",
+                    "actionKind",
+                    "rewardBudgetId",
+                    "rewardCurrency",
+                    "rewardAmountMinor",
+                    "taskTitle",
+                    "taskDescription",
+                    "deadlineOffsetMs",
+                    "notificationText",
+                    "notificationAudience",
+                    "remove"
+                  ],
+                  "id": "save",
+                  "input": {
+                    "planId": "/plan/planId"
+                  },
+                  "label": "保存规则",
+                  "style": "primary",
+                  "target": {
+                    "kind": "operation",
+                    "operation": "flare.checkin.plan.rule.configure"
+                  }
+                }
+              ],
+              "blocks": [
+                {
+                  "kind": "text",
+                  "path": "/plan/title",
+                  "style": "title"
+                },
+                {
+                  "kind": "text",
+                  "text": "群管理员可配置规则。奖励限批准预算；任务负责人为签到本人。相同规则标识会替换原规则。"
+                },
+                {
+                  "emptyText": "尚未配置规则",
+                  "itemsPath": "/plan/rules",
+                  "kind": "entries",
+                  "limit": 10,
+                  "numbered": false,
+                  "textPath": "/id"
+                }
+              ],
+              "inputs": [
+                {
+                  "id": "ruleId",
+                  "kind": "text",
+                  "label": "规则标识",
+                  "maxLength": 64,
+                  "required": true
+                },
+                {
+                  "choices": [
+                    {
+                      "label": "签到时",
+                      "value": "submitted"
+                    },
+                    {
+                      "label": "达到连续天数",
+                      "value": "streakReached"
+                    },
+                    {
+                      "label": "挑战完成",
+                      "value": "completed"
+                    }
+                  ],
+                  "default": "submitted",
+                  "id": "trigger",
+                  "kind": "select",
+                  "label": "触发时机"
+                },
+                {
+                  "id": "minTotalDays",
+                  "kind": "number",
+                  "label": "累计天数条件",
+                  "max": 365,
+                  "min": 1
+                },
+                {
+                  "id": "minConsecutiveDays",
+                  "kind": "number",
+                  "label": "连续天数条件",
+                  "max": 365,
+                  "min": 1
+                },
+                {
+                  "choices": [
+                    {
+                      "label": "批准预算奖励",
+                      "value": "reward"
+                    },
+                    {
+                      "label": "给签到本人创建任务",
+                      "value": "task"
+                    },
+                    {
+                      "label": "通知",
+                      "value": "notification"
+                    }
+                  ],
+                  "default": "notification",
+                  "id": "actionKind",
+                  "kind": "select",
+                  "label": "动作类型"
+                },
+                {
+                  "id": "rewardBudgetId",
+                  "kind": "text",
+                  "label": "批准预算标识",
+                  "maxLength": 128
+                },
+                {
+                  "id": "rewardCurrency",
+                  "kind": "text",
+                  "label": "奖励币种",
+                  "maxLength": 12
+                },
+                {
+                  "id": "rewardAmountMinor",
+                  "kind": "number",
+                  "label": "奖励最小单位金额",
+                  "max": 9007199254740991,
+                  "min": 1
+                },
+                {
+                  "id": "taskTitle",
+                  "kind": "text",
+                  "label": "任务标题",
+                  "maxLength": 100
+                },
+                {
+                  "id": "taskDescription",
+                  "kind": "textarea",
+                  "label": "任务说明",
+                  "maxLength": 1000
+                },
+                {
+                  "id": "deadlineOffsetMs",
+                  "kind": "number",
+                  "label": "任务截止间隔（毫秒）",
+                  "max": 31536000000,
+                  "min": 60000
+                },
+                {
+                  "id": "notificationText",
+                  "kind": "textarea",
+                  "label": "通知内容",
+                  "maxLength": 500
+                },
+                {
+                  "choices": [
+                    {
+                      "label": "签到本人",
+                      "value": "submitter"
+                    }
+                  ],
+                  "default": "submitter",
+                  "id": "notificationAudience",
+                  "kind": "select",
+                  "label": "通知对象"
+                },
+                {
+                  "default": false,
+                  "id": "remove",
+                  "kind": "toggle",
+                  "label": "删除此规则"
+                }
+              ],
+              "title": "签到触发规则"
+            },
+            "schemaVersion": 1,
+            "source": {
+              "input": {
+                "planId": "/planId"
+              },
+              "operation": "flare.checkin.plan.get"
+            }
+          },
+          {
+            "id": "flare.checkin.my.actions.page",
+            "kind": "page",
+            "requiredPermissions": [
+              "flare.checkin.use"
+            ],
+            "schema": {
+              "actions": [
+                {
+                  "hiddenWhen": [
+                    {
+                      "anyOf": [
+                        "running",
+                        "succeeded"
+                      ],
+                      "path": "/status"
+                    },
+                    {
+                      "anyOf": [
+                        "BUDGET_EXHAUSTED",
+                        "REWARD_NOT_AUTHORIZED"
+                      ],
+                      "path": "/errorCode"
+                    }
+                  ],
+                  "id": "resume",
+                  "input": {
+                    "actionId": "/actionId"
+                  },
+                  "label": "恢复执行",
+                  "target": {
+                    "kind": "operation",
+                    "operation": "flare.checkin.action.resume"
+                  }
+                }
+              ],
+              "blocks": [
+                {
+                  "actions": [
+                    "resume"
+                  ],
+                  "columns": [
+                    {
+                      "label": "动作",
+                      "path": "/action/kind"
+                    },
+                    {
+                      "label": "状态",
+                      "path": "/status"
+                    },
+                    {
+                      "label": "任务",
+                      "path": "/result/taskId"
+                    },
+                    {
+                      "label": "回执",
+                      "path": "/result/receiptId"
+                    },
+                    {
+                      "label": "失败原因",
+                      "path": "/errorCode"
+                    }
+                  ],
+                  "emptyText": "暂无奖励或任务",
+                  "filters": [],
+                  "keyPath": "/actionId",
+                  "kind": "rows",
+                  "path": "/items",
+                  "source": "flare.checkin.my.actions"
+                }
+              ],
+              "title": "我的奖励与任务"
+            },
+            "schemaVersion": 1,
+            "source": {
+              "cursorPath": "/nextCursor",
+              "input": {
+                "planId": "/planId"
+              },
+              "operation": "flare.checkin.my.actions"
+            }
+          },
+          {
+            "id": "flare.checkin.plan.page",
+            "kind": "page",
+            "requiredPermissions": [
+              "flare.checkin.use"
+            ],
+            "schema": {
+              "actions": [
+                {
+                  "hiddenWhen": [
+                    {
+                      "anyOf": [
+                        "daily"
+                      ],
+                      "negate": true,
+                      "path": "/plan/kind"
+                    },
+                    {
+                      "anyOf": [
+                        "closed",
+                        "upcoming"
+                      ],
+                      "path": "/occurrence/status"
+                    }
+                  ],
+                  "id": "submit_daily",
+                  "input": {
+                    "occurrenceId": "/occurrence/occurrenceId",
+                    "planId": "/plan/planId"
+                  },
+                  "label": "本期签到",
+                  "style": "primary",
+                  "target": {
+                    "kind": "operation",
+                    "operation": "flare.checkin.daily.submit"
+                  }
+                },
+                {
+                  "hiddenWhen": [
+                    {
+                      "anyOf": [
+                        "event"
+                      ],
+                      "negate": true,
+                      "path": "/plan/kind"
+                    },
+                    {
+                      "anyOf": [
+                        "closed",
+                        "upcoming"
+                      ],
+                      "path": "/occurrence/status"
+                    }
+                  ],
+                  "id": "submit_event",
+                  "input": {
+                    "occurrenceId": "/occurrence/occurrenceId",
+                    "planId": "/plan/planId"
+                  },
+                  "label": "本期签到",
+                  "style": "primary",
+                  "target": {
+                    "kind": "operation",
+                    "operation": "flare.checkin.event.submit"
+                  }
+                },
+                {
+                  "hiddenWhen": [
+                    {
+                      "anyOf": [
+                        "challenge"
+                      ],
+                      "negate": true,
+                      "path": "/plan/kind"
+                    },
+                    {
+                      "anyOf": [
+                        "closed",
+                        "upcoming"
+                      ],
+                      "path": "/occurrence/status"
+                    }
+                  ],
+                  "id": "submit_challenge",
+                  "input": {
+                    "occurrenceId": "/occurrence/occurrenceId",
+                    "planId": "/plan/planId"
+                  },
+                  "label": "本期签到",
+                  "style": "primary",
+                  "target": {
+                    "kind": "operation",
+                    "operation": "flare.checkin.challenge.submit"
+                  }
+                },
+                {
+                  "id": "share",
+                  "input": {
+                    "planId": "/plan/planId"
+                  },
+                  "label": "分享本期卡片",
+                  "target": {
+                    "kind": "operation",
+                    "operation": "flare.checkin.plan.share"
+                  }
+                },
+                {
+                  "id": "myActions",
+                  "input": {
+                    "planId": "/plan/planId"
+                  },
+                  "label": "我的奖励与任务",
+                  "target": {
+                    "kind": "page",
+                    "page": "flare.checkin.my.actions.page"
+                  }
+                }
+              ],
+              "blocks": [
+                {
+                  "kind": "text",
+                  "path": "/plan/title",
+                  "style": "title"
+                },
+                {
+                  "kind": "text",
+                  "path": "/plan/description"
+                },
+                {
+                  "kind": "status",
+                  "path": "/occurrence/status",
+                  "values": {
+                    "closed": {
+                      "label": "已结束",
+                      "tone": "neutral"
+                    },
+                    "open": {
+                      "label": "进行中",
+                      "tone": "info"
+                    },
+                    "upcoming": {
+                      "label": "未开始",
+                      "tone": "warning"
+                    }
+                  }
+                },
+                {
+                  "kind": "time",
+                  "label": "开始",
+                  "path": "/occurrence/startsAtMs"
+                },
+                {
+                  "kind": "time",
+                  "label": "结束",
+                  "path": "/occurrence/endsAtMs"
+                },
+                {
+                  "fields": [
+                    {
+                      "label": "参与人数",
+                      "path": "/occurrence/participantCount"
+                    }
+                  ],
+                  "kind": "fields"
+                }
+              ],
+              "title": "本期签到"
+            },
+            "schemaVersion": 1,
+            "source": {
+              "input": {
+                "planId": "/planId"
+              },
+              "operation": "flare.checkin.plan.get"
+            }
+          },
+          {
+            "icon": "calendar",
+            "id": "flare.checkin.menu",
+            "kind": "conversation-menu",
+            "requiredPermissions": [
+              "flare.checkin.use"
+            ],
+            "schema": {
+              "actions": [
+                {
+                  "id": "open",
+                  "label": "签到计划",
+                  "target": {
+                    "kind": "page",
+                    "page": "flare.checkin.plans"
+                  }
+                }
+              ],
+              "title": "群签到"
+            },
+            "schemaVersion": 1
+          }
+        ],
+        "nativeCapabilities": [],
+        "platforms": [
+          "web",
+          "tauri",
+          "android",
+          "ios",
+          "flutter",
+          "harmonyos"
+        ]
+      },
+      "operations": [
+        "flare.checkin.lifecycle.unbound",
+        "flare.checkin.daily.create",
+        "flare.checkin.event.create",
+        "flare.checkin.challenge.create",
+        "flare.checkin.daily.submit",
+        "flare.checkin.event.submit",
+        "flare.checkin.challenge.submit",
+        "flare.checkin.plan.list",
+        "flare.checkin.admin.list",
+        "flare.checkin.plan.get",
+        "flare.checkin.admin.get",
+        "flare.checkin.records",
+        "flare.checkin.admin.records",
+        "flare.checkin.plan.close",
+        "flare.checkin.admin.close",
+        "flare.checkin.on_message",
+        "flare.checkin.current",
+        "flare.checkin.view",
+        "flare.checkin.progress",
+        "flare.checkin.plan.rule.configure",
+        "flare.checkin.group.get",
+        "flare.checkin.group.configure",
+        "flare.checkin.plan.share",
+        "flare.checkin.my.actions",
+        "flare.checkin.action.resume",
+        "flare.checkin.admin.actions",
+        "flare.checkin.admin.action.retry"
+      ]
+    },
+    {
+      "pluginId": "flare.task",
+      "version": "0.1.1",
+      "manifestDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "grantRevision": 1,
+      "extensions": {
+        "contributions": [
+          {
+            "id": "flare.task.mine.page",
+            "kind": "page",
+            "requiredPermissions": [
+              "flare.task.use"
+            ],
+            "schema": {
+              "actions": [
+                {
+                  "hiddenWhen": [
+                    {
+                      "path": "/doneUserIds",
+                      "viewer": true
+                    },
+                    {
+                      "anyOf": [
+                        "cancelled"
+                      ],
+                      "path": "/status"
+                    }
+                  ],
+                  "id": "complete",
+                  "input": {
+                    "taskId": "/taskId"
+                  },
+                  "label": "完成",
+                  "style": "primary",
+                  "target": {
+                    "kind": "operation",
+                    "operation": "flare.task.complete"
+                  }
+                },
+                {
+                  "hiddenWhen": [
+                    {
+                      "negate": true,
+                      "path": "/doneUserIds",
+                      "viewer": true
+                    },
+                    {
+                      "anyOf": [
+                        "cancelled"
+                      ],
+                      "path": "/status"
+                    }
+                  ],
+                  "id": "reopen",
+                  "input": {
+                    "taskId": "/taskId"
+                  },
+                  "label": "撤销完成",
+                  "target": {
+                    "kind": "operation",
+                    "operation": "flare.task.reopen"
+                  }
+                }
+              ],
+              "blocks": [
+                {
+                  "actions": [
+                    "complete",
+                    "reopen"
+                  ],
+                  "columns": [
+                    {
+                      "label": "标题",
+                      "path": "/title"
+                    },
+                    {
+                      "label": "状态",
+                      "path": "/status",
+                      "values": {
+                        "cancelled": "已取消",
+                        "done": "已完成",
+                        "open": "进行中",
+                        "overdue": "已逾期"
+                      }
+                    },
+                    {
+                      "format": "time",
+                      "label": "截止",
+                      "path": "/deadlineMs"
+                    }
+                  ],
+                  "emptyText": "暂无分配给我的任务",
+                  "filters": [],
+                  "keyPath": "/taskId",
+                  "kind": "rows",
+                  "path": "/items",
+                  "source": "flare.task.mine"
+                }
+              ],
+              "title": "我的群任务",
+              "translations": {
+                "en-US": {
+                  "actions": {
+                    "complete": "Complete",
+                    "reopen": "Undo completion"
+                  },
+                  "fields": [],
+                  "texts": {
+                    "已取消": "Cancelled",
+                    "已完成": "Done",
+                    "已逾期": "Overdue",
+                    "截止": "Due",
+                    "暂无分配给我的任务": "No tasks assigned to me",
+                    "标题": "Title",
+                    "状态": "Status",
+                    "进行中": "In progress"
+                  },
+                  "title": "My conversation tasks"
+                }
+              }
+            },
+            "schemaVersion": 1,
+            "source": {
+              "cursorPath": "/nextCursor",
+              "operation": "flare.task.mine"
+            }
+          },
+          {
+            "icon": "success",
+            "id": "flare.task.mine.menu",
+            "kind": "conversation-menu",
+            "requiredPermissions": [
+              "flare.task.use"
+            ],
+            "schema": {
+              "actions": [
+                {
+                  "id": "open",
+                  "label": "我的任务",
+                  "target": {
+                    "kind": "page",
+                    "page": "flare.task.mine.page"
+                  }
+                }
+              ],
+              "title": "我的群任务",
+              "translations": {
+                "en-US": {
+                  "actions": {
+                    "open": "My tasks"
+                  },
+                  "fields": [],
+                  "texts": {},
+                  "title": "My conversation tasks"
+                }
+              }
+            },
+            "schemaVersion": 1
+          }
+        ],
+        "nativeCapabilities": [],
+        "platforms": [
+          "web",
+          "tauri",
+          "android",
+          "ios",
+          "flutter",
+          "harmonyos"
+        ]
+      },
+      "operations": [
+        "flare.task.service.automation.prepare",
+        "flare.task.service.automation.ensure",
+        "flare.task.service.automation.get",
+        "flare.task.create",
+        "flare.task.complete",
+        "flare.task.reopen",
+        "flare.task.cancel",
+        "flare.task.details",
+        "flare.task.mine",
+        "flare.task.admin.list",
+        "flare.task.admin.get",
+        "flare.task.admin.cancel",
+        "flare.task.admin.delete"
+      ]
+    }
+  ]
+}

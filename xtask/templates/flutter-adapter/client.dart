@@ -16,21 +16,21 @@ import 'codec/wire_codec.dart';
 /// Default high-level Flutter client implementation.
 final class DefaultFlareImClient implements FlareImClient {
   DefaultFlareImClient(this._bridge)
-      : events = DefaultEventsApi(_bridge),
-        connection = _DefaultConnectionApi(_bridge),
-        access = _DefaultAccessApi(_bridge),
-        update = _DefaultUpdateApi(_bridge),
-        lifecycle = _DefaultLifecycleApi(_bridge),
-        messageBuilder = DefaultMessageBuilderApi(_bridge),
-        conversations = _DefaultConversationsApi(_bridge),
-        messages = _DefaultMessagesApi(_bridge),
-        sync = _DefaultSyncApi(_bridge),
-        user = _DefaultUserApi(_bridge),
-        presence = _DefaultPresenceApi(_bridge),
-        media = _DefaultMediaApi(_bridge),
-        capabilities = _DefaultCapabilitiesApi(_bridge),
-        views = _DefaultViewsApi(_bridge),
-        diagnostics = _DefaultDiagnosticsApi(_bridge);
+    : events = DefaultEventsApi(_bridge),
+      connection = _DefaultConnectionApi(_bridge),
+      access = _DefaultAccessApi(_bridge),
+      update = _DefaultUpdateApi(_bridge),
+      lifecycle = _DefaultLifecycleApi(_bridge),
+      messageBuilder = DefaultMessageBuilderApi(_bridge),
+      conversations = _DefaultConversationsApi(_bridge),
+      messages = _DefaultMessagesApi(_bridge),
+      sync = _DefaultSyncApi(_bridge),
+      user = _DefaultUserApi(_bridge),
+      presence = _DefaultPresenceApi(_bridge),
+      media = _DefaultMediaApi(_bridge),
+      capabilities = _DefaultCapabilitiesApi(_bridge),
+      views = _DefaultViewsApi(_bridge),
+      diagnostics = _DefaultDiagnosticsApi(_bridge);
 
   final NativeBridge _bridge;
   PlatformLifecycleSource? _platform;
@@ -70,7 +70,9 @@ final class DefaultFlareImClient implements FlareImClient {
   @override
   Future<Map<String, Object?>> create(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.sdkCreate, request);
+      NativeCallMap.sdkCreate,
+      request,
+    );
   }
 
   /// Initializes the core with [request].
@@ -88,10 +90,12 @@ final class DefaultFlareImClient implements FlareImClient {
     bool installPlatformLifecycle = true,
     PlatformLifecycleSource? platform,
   }) async {
-    events.emitLifecycle(const LifecycleEvent(
-      name: LifecycleEventName.initializing,
-      operation: 'sdk.init',
-    ));
+    events.emitLifecycle(
+      const LifecycleEvent(
+        name: LifecycleEventName.initializing,
+        operation: 'sdk.init',
+      ),
+    );
     try {
       if (platform != null) _platform = platform;
       final source = _platform;
@@ -109,16 +113,20 @@ final class DefaultFlareImClient implements FlareImClient {
           onError: _platformLifecycleFailed,
         )..install();
       }
-      events.emitLifecycle(const LifecycleEvent(
-        name: LifecycleEventName.initialized,
-        operation: 'sdk.init',
-      ));
+      events.emitLifecycle(
+        const LifecycleEvent(
+          name: LifecycleEventName.initialized,
+          operation: 'sdk.init',
+        ),
+      );
     } catch (error) {
-      events.emitLifecycle(LifecycleEvent(
-        name: LifecycleEventName.initFailed,
-        operation: 'sdk.init',
-        error: sdkErrorFromException(error, 'sdk.init'),
-      ));
+      events.emitLifecycle(
+        LifecycleEvent(
+          name: LifecycleEventName.initFailed,
+          operation: 'sdk.init',
+          error: sdkErrorFromException(error, 'sdk.init'),
+        ),
+      );
       rethrow;
     }
   }
@@ -149,18 +157,22 @@ final class DefaultFlareImClient implements FlareImClient {
   Future<void> login(Map<String, Object?> request) async {
     try {
       await _bridge.invoke<void>(NativeCallMap.sdkLogin, request);
-      events.emitLifecycle(LifecycleEvent(
-        name: LifecycleEventName.loginSucceeded,
-        operation: 'sdk.login',
-        userId: request['userId']?.toString(),
-      ));
+      events.emitLifecycle(
+        LifecycleEvent(
+          name: LifecycleEventName.loginSucceeded,
+          operation: 'sdk.login',
+          userId: request['userId']?.toString(),
+        ),
+      );
     } catch (error) {
-      events.emitLifecycle(LifecycleEvent(
-        name: LifecycleEventName.loginFailed,
-        operation: 'sdk.login',
-        userId: request['userId']?.toString(),
-        error: sdkErrorFromException(error, 'sdk.login'),
-      ));
+      events.emitLifecycle(
+        LifecycleEvent(
+          name: LifecycleEventName.loginFailed,
+          operation: 'sdk.login',
+          userId: request['userId']?.toString(),
+          error: sdkErrorFromException(error, 'sdk.login'),
+        ),
+      );
       rethrow;
     }
   }
@@ -181,7 +193,9 @@ final class DefaultFlareImClient implements FlareImClient {
   }
 
   @override
-  Future<void> setConnectTokenRefresher(ConnectTokenRefresher? refresher) async {
+  Future<void> setConnectTokenRefresher(
+    ConnectTokenRefresher? refresher,
+  ) async {
     if (_bridge case final ConnectTokenRefresherBridge hook) {
       await hook.setConnectTokenRefresher(refresher);
       return;
@@ -203,7 +217,7 @@ final class DefaultFlareImClient implements FlareImClient {
 
   @override
   Future<HeartbeatEffectiveIntervalResponse>
-      heartbeatEffectiveInterval() async {
+  heartbeatEffectiveInterval() async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
       NativeCallMap.sdkHeartbeatEffectiveInterval,
     );
@@ -212,41 +226,95 @@ final class DefaultFlareImClient implements FlareImClient {
 
   @override
   Future<PushLifecycleStatus> updatePushToken(PushTokenInput request) async {
-    final raw = mapValue(await _bridge.invoke<Object?>(NativeCallMap.sdkUpdatePushToken, {'provider': request.provider, 'platform': request.platform, 'token': request.token}));
-    return PushLifecycleStatus(configuredProviders: intValue(raw['configuredProviders']), pendingRevocations: intValue(raw['pendingRevocations']), registeredProviders: intValue(raw['registeredProviders']), state: raw['state'] as String, lastError: raw['lastError'] as String?);
+    final raw = mapValue(
+      await _bridge.invoke<Object?>(NativeCallMap.sdkUpdatePushToken, {
+        'provider': request.provider,
+        'platform': request.platform,
+        'token': request.token,
+      }),
+    );
+    return PushLifecycleStatus(
+      configuredProviders: intValue(raw['configuredProviders']),
+      pendingRevocations: intValue(raw['pendingRevocations']),
+      registeredProviders: intValue(raw['registeredProviders']),
+      state: raw['state'] as String,
+      lastError: raw['lastError'] as String?,
+    );
   }
 
   @override
-  Future<PushLifecycleStatus> clearPushToken(ClearPushTokenRequest request) async {
-    final raw = mapValue(await _bridge.invoke<Object?>(NativeCallMap.sdkClearPushToken, {'provider': request.provider}));
-    return PushLifecycleStatus(configuredProviders: intValue(raw['configuredProviders']), pendingRevocations: intValue(raw['pendingRevocations']), registeredProviders: intValue(raw['registeredProviders']), state: raw['state'] as String, lastError: raw['lastError'] as String?);
+  Future<PushLifecycleStatus> clearPushToken(
+    ClearPushTokenRequest request,
+  ) async {
+    final raw = mapValue(
+      await _bridge.invoke<Object?>(NativeCallMap.sdkClearPushToken, {
+        'provider': request.provider,
+      }),
+    );
+    return PushLifecycleStatus(
+      configuredProviders: intValue(raw['configuredProviders']),
+      pendingRevocations: intValue(raw['pendingRevocations']),
+      registeredProviders: intValue(raw['registeredProviders']),
+      state: raw['state'] as String,
+      lastError: raw['lastError'] as String?,
+    );
   }
 
   @override
-  Future<PushLifecycleStatus> setPushPermission(SetPushPermissionRequest request) async {
-    final raw = mapValue(await _bridge.invoke<Object?>(NativeCallMap.sdkSetPushPermission, {'allowed': request.allowed}));
-    return PushLifecycleStatus(configuredProviders: intValue(raw['configuredProviders']), pendingRevocations: intValue(raw['pendingRevocations']), registeredProviders: intValue(raw['registeredProviders']), state: raw['state'] as String, lastError: raw['lastError'] as String?);
+  Future<PushLifecycleStatus> setPushPermission(
+    SetPushPermissionRequest request,
+  ) async {
+    final raw = mapValue(
+      await _bridge.invoke<Object?>(NativeCallMap.sdkSetPushPermission, {
+        'allowed': request.allowed,
+      }),
+    );
+    return PushLifecycleStatus(
+      configuredProviders: intValue(raw['configuredProviders']),
+      pendingRevocations: intValue(raw['pendingRevocations']),
+      registeredProviders: intValue(raw['registeredProviders']),
+      state: raw['state'] as String,
+      lastError: raw['lastError'] as String?,
+    );
   }
 
   @override
   Future<PushLifecycleStatus> reconcilePush() async {
-    final raw = mapValue(await _bridge.invoke<Object?>(NativeCallMap.sdkReconcilePush));
-    return PushLifecycleStatus(configuredProviders: intValue(raw['configuredProviders']), pendingRevocations: intValue(raw['pendingRevocations']), registeredProviders: intValue(raw['registeredProviders']), state: raw['state'] as String, lastError: raw['lastError'] as String?);
+    final raw = mapValue(
+      await _bridge.invoke<Object?>(NativeCallMap.sdkReconcilePush),
+    );
+    return PushLifecycleStatus(
+      configuredProviders: intValue(raw['configuredProviders']),
+      pendingRevocations: intValue(raw['pendingRevocations']),
+      registeredProviders: intValue(raw['registeredProviders']),
+      state: raw['state'] as String,
+      lastError: raw['lastError'] as String?,
+    );
   }
 
   @override
   Future<PushLifecycleStatus> pushStatus() async {
-    final raw = mapValue(await _bridge.invoke<Object?>(NativeCallMap.sdkPushStatus));
-    return PushLifecycleStatus(configuredProviders: intValue(raw['configuredProviders']), pendingRevocations: intValue(raw['pendingRevocations']), registeredProviders: intValue(raw['registeredProviders']), state: raw['state'] as String, lastError: raw['lastError'] as String?);
+    final raw = mapValue(
+      await _bridge.invoke<Object?>(NativeCallMap.sdkPushStatus),
+    );
+    return PushLifecycleStatus(
+      configuredProviders: intValue(raw['configuredProviders']),
+      pendingRevocations: intValue(raw['pendingRevocations']),
+      registeredProviders: intValue(raw['registeredProviders']),
+      state: raw['state'] as String,
+      lastError: raw['lastError'] as String?,
+    );
   }
 
   @override
   Future<void> logout() async {
     await _bridge.invoke<void>(NativeCallMap.sdkLogout);
-    events.emitLifecycle(const LifecycleEvent(
-      name: LifecycleEventName.loggedOut,
-      operation: 'sdk.logout',
-    ));
+    events.emitLifecycle(
+      const LifecycleEvent(
+        name: LifecycleEventName.loggedOut,
+        operation: 'sdk.logout',
+      ),
+    );
   }
 
   @override
@@ -254,10 +322,12 @@ final class DefaultFlareImClient implements FlareImClient {
     await _uninstallPlatformLifecycle();
     await events.unsubscribeAll();
     await _bridge.invoke<void>(NativeCallMap.sdkDispose);
-    events.emitLifecycle(const LifecycleEvent(
-      name: LifecycleEventName.disposed,
-      operation: 'sdk.dispose',
-    ));
+    events.emitLifecycle(
+      const LifecycleEvent(
+        name: LifecycleEventName.disposed,
+        operation: 'sdk.dispose',
+      ),
+    );
   }
 
   @override
@@ -278,7 +348,6 @@ final class DefaultFlareImClient implements FlareImClient {
   @override
   Future<bool> sessionActive() =>
       _bridge.invoke<bool>(NativeCallMap.sdkSessionActive);
-
 }
 
 final class _DefaultConnectionApi implements ConnectionApi {
@@ -288,7 +357,9 @@ final class _DefaultConnectionApi implements ConnectionApi {
 
   @override
   Future<ConnectionStatus> getStatus() async {
-    final raw = await _bridge.invoke<Object?>(NativeCallMap.connectionGetStatus);
+    final raw = await _bridge.invoke<Object?>(
+      NativeCallMap.connectionGetStatus,
+    );
     return connectionStatusFromJson(raw);
   }
 
@@ -351,24 +422,23 @@ final class _DefaultUpdateApi implements UpdateApi {
 
   @override
   Future<UpdateInstallPlan> install() async => updateInstallPlanFromJson(
-        await _bridge.invoke<Object?>(NativeCallMap.updateInstall),
-      );
+    await _bridge.invoke<Object?>(NativeCallMap.updateInstall),
+  );
 
   @override
   Future<UpdateStatus> reportInstall(
     UpdateReportInstallRequest request,
-  ) async =>
-      updateStatusFromJson(
-        await _bridge.invoke<Object?>(
-          NativeCallMap.updateReportInstall,
-          updateReportInstallRequestToMap(request),
-        ),
-      );
+  ) async => updateStatusFromJson(
+    await _bridge.invoke<Object?>(
+      NativeCallMap.updateReportInstall,
+      updateReportInstallRequestToMap(request),
+    ),
+  );
 
   @override
   Future<UpdateStatus> defer() async => updateStatusFromJson(
-        await _bridge.invoke<Object?>(NativeCallMap.updateDefer),
-      );
+    await _bridge.invoke<Object?>(NativeCallMap.updateDefer),
+  );
 
   @override
   Future<UpdateStatus> skip(UpdateSkipRequest request) async =>
@@ -380,9 +450,7 @@ final class _DefaultUpdateApi implements UpdateApi {
       );
 
   @override
-  Future<UpdateStatus> markPrompted(
-    UpdateMarkPromptedRequest request,
-  ) async =>
+  Future<UpdateStatus> markPrompted(UpdateMarkPromptedRequest request) async =>
       updateStatusFromJson(
         await _bridge.invoke<Object?>(
           NativeCallMap.updateMarkPrompted,
@@ -402,13 +470,12 @@ final class _DefaultUpdateApi implements UpdateApi {
   @override
   Future<UpdateResources> getResources(
     UpdateGetResourcesRequest request,
-  ) async =>
-      updateResourcesFromJson(
-        await _bridge.invoke<Object?>(
-          NativeCallMap.updateGetResources,
-          updateGetResourcesRequestToMap(request),
-        ),
-      );
+  ) async => updateResourcesFromJson(
+    await _bridge.invoke<Object?>(
+      NativeCallMap.updateGetResources,
+      updateGetResourcesRequestToMap(request),
+    ),
+  );
 }
 
 final class _DefaultAccessApi implements AccessApi {
@@ -424,8 +491,9 @@ final class _DefaultAccessApi implements AccessApi {
 
   @override
   Future<List<AccessPointInfo>> listAccessPoints() async {
-    final raw =
-        await _bridge.invoke<Object?>(NativeCallMap.accessListAccessPoints);
+    final raw = await _bridge.invoke<Object?>(
+      NativeCallMap.accessListAccessPoints,
+    );
     return accessPointInfoListFromJson(raw);
   }
 
@@ -460,8 +528,9 @@ final class _DefaultAccessApi implements AccessApi {
 
   @override
   Future<Map<String, Object?>> exportDiagnostics() async {
-    final raw =
-        await _bridge.invoke<Object?>(NativeCallMap.accessExportDiagnostics);
+    final raw = await _bridge.invoke<Object?>(
+      NativeCallMap.accessExportDiagnostics,
+    );
     return mapValue(raw);
   }
 }
@@ -489,10 +558,7 @@ final class _DefaultConversationsApi implements ConversationsApi {
     NativeCallDescriptor descriptor, [
     Map<String, Object?>? request,
   ]) async {
-    final raw = await _bridge.invoke<Map<String, Object?>>(
-      descriptor,
-      request,
-    );
+    final raw = await _bridge.invoke<Map<String, Object?>>(descriptor, request);
     return listConversationsResponseFromJson(raw);
   }
 
@@ -503,7 +569,8 @@ final class _DefaultConversationsApi implements ConversationsApi {
 
   @override
   Future<ListConversationsResponse> listConversationsByQuery(
-      ConversationListQuery request) {
+    ConversationListQuery request,
+  ) {
     return _listConversations(
       NativeCallMap.conversationListByQuery,
       conversationListQueryToMap(request),
@@ -518,15 +585,21 @@ final class _DefaultConversationsApi implements ConversationsApi {
   @override
   Future<Conversation> getConversation(Map<String, Object?> request) async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.conversationGet, request);
+      NativeCallMap.conversationGet,
+      request,
+    );
     return _conversationFromResponse(
-        raw, NativeCallMap.conversationGet.operation);
+      raw,
+      NativeCallMap.conversationGet.operation,
+    );
   }
 
   @override
   Future<Conversation> getOneConversation(Map<String, Object?> request) async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.conversationGetOne, request);
+      NativeCallMap.conversationGetOne,
+      request,
+    );
     return _conversationFromResponse(
       raw,
       NativeCallMap.conversationGetOne.operation,
@@ -535,9 +608,12 @@ final class _DefaultConversationsApi implements ConversationsApi {
 
   @override
   Future<Conversation> getGroupConversationByUserIds(
-      Map<String, Object?> request) async {
+    Map<String, Object?> request,
+  ) async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.conversationGetGroupByUserIds, request);
+      NativeCallMap.conversationGetGroupByUserIds,
+      request,
+    );
     return _conversationFromResponse(
       raw,
       NativeCallMap.conversationGetGroupByUserIds.operation,
@@ -546,17 +622,23 @@ final class _DefaultConversationsApi implements ConversationsApi {
 
   @override
   Future<ListConversationsResponse> getMultipleConversations(
-      Map<String, Object?> request) async {
+    Map<String, Object?> request,
+  ) async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.conversationGetMultiple, request);
+      NativeCallMap.conversationGetMultiple,
+      request,
+    );
     return listConversationsResponseFromJson(raw);
   }
 
   @override
   Future<ListConversationsResponse> listConversationsPaginated(
-      Map<String, Object?> request) async {
+    Map<String, Object?> request,
+  ) async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.conversationListPaginated, request);
+      NativeCallMap.conversationListPaginated,
+      request,
+    );
     return listConversationsResponseFromJson(raw);
   }
 
@@ -568,9 +650,11 @@ final class _DefaultConversationsApi implements ConversationsApi {
   @override
   Future<ConversationTotalUnreadResponse> getTotalUnread() async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.conversationTotalUnread);
+      NativeCallMap.conversationTotalUnread,
+    );
     return ConversationTotalUnreadResponse(
-        totalUnread: intValue(raw['totalUnread']));
+      totalUnread: intValue(raw['totalUnread']),
+    );
   }
 
   Conversation _conversationFromResponse(
@@ -613,7 +697,8 @@ final class _DefaultConversationsApi implements ConversationsApi {
 
   @override
   Future<HomeTimelineSnapshot> bootstrapHomeTimeline(
-      BootstrapHomeTimelineRequest request) async {
+    BootstrapHomeTimelineRequest request,
+  ) async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
       NativeCallMap.conversationBootstrapHome,
       bootstrapHomeTimelineRequestToMap(request),
@@ -623,7 +708,8 @@ final class _DefaultConversationsApi implements ConversationsApi {
 
   @override
   Future<ConversationTimelineSnapshot> openConversationTimeline(
-      OpenConversationTimelineRequest request) async {
+    OpenConversationTimelineRequest request,
+  ) async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
       NativeCallMap.conversationOpenTimeline,
       openConversationTimelineRequestToMap(request),
@@ -672,13 +758,17 @@ final class _DefaultConversationsApi implements ConversationsApi {
   @override
   Future<void> clearLocalChatHistory(Map<String, Object?> request) {
     return _bridge.invoke<void>(
-        NativeCallMap.conversationClearLocalChatHistory, request);
+      NativeCallMap.conversationClearLocalChatHistory,
+      request,
+    );
   }
 
   @override
   Future<void> clearChatHistoryForSelf(Map<String, Object?> request) {
     return _bridge.invoke<void>(
-        NativeCallMap.conversationClearChatHistoryForSelf, request);
+      NativeCallMap.conversationClearChatHistoryForSelf,
+      request,
+    );
   }
 }
 
@@ -705,10 +795,7 @@ final class _DefaultMessagesApi implements MessagesApi {
   Future<Message> createTextMessage(CreateTextMessageRequest request) async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
       NativeCallMap.messageCreateText,
-      {
-        'conversationId': request.conversationId,
-        'text': request.text,
-      },
+      {'conversationId': request.conversationId, 'text': request.text},
     );
     return messageFromJson(raw);
   }
@@ -716,12 +803,15 @@ final class _DefaultMessagesApi implements MessagesApi {
   @override
   Future<Map<String, Object?>> dispatchMessage(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.messageDispatch, request);
+      NativeCallMap.messageDispatch,
+      request,
+    );
   }
 
   @override
   Future<SendMessageResponse> sendMessageNoOss(
-      SendMessageRequest request) async {
+    SendMessageRequest request,
+  ) async {
     final raw = await _dispatchMap(
       NativeCallMap.messageSendNoOss,
       sendMessageRequestToMap(request),
@@ -737,30 +827,32 @@ final class _DefaultMessagesApi implements MessagesApi {
     final wireRequest = sendMessageRequestToMap(request);
     try {
       final result = await _bridge.invoke<Map<String, Object?>>(
-          NativeCallMap.messageSend, wireRequest);
+        NativeCallMap.messageSend,
+        wireRequest,
+      );
       final ack = sendAckFromJson(result);
       callback?.onSuccess(MessageSendAckEvent(ack: ack));
       return ack;
     } catch (error) {
-      callback?.onFailure(MessageSendFailedEvent(
-        clientMsgId: request.message.clientMsgId,
-        reason: error.toString(),
-        error: sdkErrorFromException(error, 'message.send'),
-      ));
+      callback?.onFailure(
+        MessageSendFailedEvent(
+          clientMsgId: request.message.clientMsgId,
+          reason: error.toString(),
+          error: sdkErrorFromException(error, 'message.send'),
+        ),
+      );
       rethrow;
     }
   }
 
   @override
   Future<ListMessagesResponse> listMessages(ListMessagesRequest request) async {
-    final raw = await _bridge.invoke<Map<String, Object?>>(
-      NativeCallMap.messageList,
-      {
-        'conversationId': request.conversationId,
-        'beforeSeq': request.beforeSeq,
-        'limit': request.limit,
-      },
-    );
+    final raw = await _bridge
+        .invoke<Map<String, Object?>>(NativeCallMap.messageList, {
+          'conversationId': request.conversationId,
+          'beforeSeq': request.beforeSeq,
+          'limit': request.limit,
+        });
     return listMessagesResponseFromJson(raw);
   }
 
@@ -863,7 +955,8 @@ final class _DefaultMessagesApi implements MessagesApi {
 
   @override
   Future<ListMessagesResponse> searchMessages(
-      MessageSearchQuery request) async {
+    MessageSearchQuery request,
+  ) async {
     final raw = await _dispatchMap(
       NativeCallMap.messageSearch,
       messageSearchQueryToMap(request),
@@ -873,7 +966,8 @@ final class _DefaultMessagesApi implements MessagesApi {
 
   @override
   Future<ListMessagesResponse> searchMessagesByQuery(
-      MessageSearchQuery request) async {
+    MessageSearchQuery request,
+  ) async {
     final raw = await _dispatchMap(
       NativeCallMap.messageSearchByQuery,
       messageSearchQueryToMap(request),
@@ -882,7 +976,9 @@ final class _DefaultMessagesApi implements MessagesApi {
   }
 
   @override
-  Future<Map<String, Object?>> readReceiptMembers(MessageReadReceiptMembersRequest request) {
+  Future<Map<String, Object?>> readReceiptMembers(
+    MessageReadReceiptMembersRequest request,
+  ) {
     return _dispatchMap(
       NativeCallMap.messageReadReceiptMembers,
       messageReadReceiptMembersRequestToMap(request),
@@ -891,7 +987,8 @@ final class _DefaultMessagesApi implements MessagesApi {
 
   @override
   Future<ListMessagesResponse> searchMessagesInConversation(
-      MessageSearchQuery request) async {
+    MessageSearchQuery request,
+  ) async {
     final raw = await _dispatchMap(
       NativeCallMap.messageSearchInConversation,
       messageSearchQueryToMap(request),
@@ -922,8 +1019,9 @@ final class _DefaultSyncApi implements SyncApi {
 
   @override
   Future<SyncConversationSummariesResponse>
-      syncConversationSummariesWithVersions(
-          SyncConversationSummariesRequest request) async {
+  syncConversationSummariesWithVersions(
+    SyncConversationSummariesRequest request,
+  ) async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
       NativeCallMap.syncConversationSummariesWithVersions,
       syncConversationSummariesRequestToMap(request),
@@ -933,7 +1031,8 @@ final class _DefaultSyncApi implements SyncApi {
 
   @override
   Future<StartupHomeSyncResponse> bootstrapStartupHome(
-      StartupHomeSyncRequest request) async {
+    StartupHomeSyncRequest request,
+  ) async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
       NativeCallMap.syncBootstrapStartupHome,
       startupHomeSyncRequestToMap(request),
@@ -943,7 +1042,8 @@ final class _DefaultSyncApi implements SyncApi {
 
   @override
   Future<ConversationHistoryBackfillResponse> backfillConversationHistory(
-      ConversationHistoryBackfillRequest request) async {
+    ConversationHistoryBackfillRequest request,
+  ) async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
       NativeCallMap.syncConversationHistoryBackfill,
       conversationHistoryBackfillRequestToMap(request),
@@ -970,14 +1070,19 @@ final class _DefaultPresenceApi implements PresenceApi {
   @override
   Future<Map<String, Object?>> getUserPresence(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.presenceGet, request);
+      NativeCallMap.presenceGet,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> batchGetUserPresence(
-      Map<String, Object?> request) {
+    Map<String, Object?> request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.presenceBatchGet, request);
+      NativeCallMap.presenceBatchGet,
+      request,
+    );
   }
 
   @override
@@ -1008,57 +1113,77 @@ final class _DefaultMediaApi implements MediaApi {
   @override
   Future<Map<String, Object?>> uploadFile(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaUploadFile, request);
+      NativeCallMap.mediaUploadFile,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> uploadImage(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaUploadImage, request);
+      NativeCallMap.mediaUploadImage,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> uploadVideo(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaUploadVideo, request);
+      NativeCallMap.mediaUploadVideo,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> uploadBytes(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaUploadBytes, request);
+      NativeCallMap.mediaUploadBytes,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> deleteFile(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaDeleteFile, request);
+      NativeCallMap.mediaDeleteFile,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> getMediaUrl(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaGetUrl, request);
+      NativeCallMap.mediaGetUrl,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> getTempDownloadUrl(
-      Map<String, Object?> request) {
+    Map<String, Object?> request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaTempDownloadUrl, request);
+      NativeCallMap.mediaTempDownloadUrl,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> resolveMediaAccess(
-      Map<String, Object?> request) {
+    Map<String, Object?> request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaResolveAccess, request);
+      NativeCallMap.mediaResolveAccess,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> cacheRemoteMedia(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaCacheRemote, request);
+      NativeCallMap.mediaCacheRemote,
+      request,
+    );
   }
 
   @override
@@ -1083,59 +1208,79 @@ final class _DefaultMediaApi implements MediaApi {
   @override
   Future<Map<String, Object?>> getUserDownloadSubfolder() {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaUserDownloadGetSubfolder);
+      NativeCallMap.mediaUserDownloadGetSubfolder,
+    );
   }
 
   @override
   Future<void> setUserDownloadSubfolder(Map<String, Object?> request) {
     return _bridge.invoke<void>(
-        NativeCallMap.mediaUserDownloadSetSubfolder, request);
+      NativeCallMap.mediaUserDownloadSetSubfolder,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> getUserDownloadSavedPath(
-      Map<String, Object?> request) {
+    Map<String, Object?> request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaUserDownloadGetSavedPath, request);
+      NativeCallMap.mediaUserDownloadGetSavedPath,
+      request,
+    );
   }
 
   @override
   Future<void> deleteUserDownloadRecord(Map<String, Object?> request) {
     return _bridge.invoke<void>(
-        NativeCallMap.mediaUserDownloadDeleteRecord, request);
+      NativeCallMap.mediaUserDownloadDeleteRecord,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> getUserDownloadDirectory() {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaUserDownloadGetDirectory);
+      NativeCallMap.mediaUserDownloadGetDirectory,
+    );
   }
 
   @override
   Future<Map<String, Object?>> setUserDownloadDirectory(
-      Map<String, Object?> request) {
+    Map<String, Object?> request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaUserDownloadSetDirectory, request);
+      NativeCallMap.mediaUserDownloadSetDirectory,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> downloadToUserDirectory(
-      Map<String, Object?> request) {
+    Map<String, Object?> request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaDownloadToUserDirectory, request);
+      NativeCallMap.mediaDownloadToUserDirectory,
+      request,
+    );
   }
 
   @override
   Future<bool> cancelUserFileDownload(Map<String, Object?> request) {
     return _bridge.invoke<bool>(
-        NativeCallMap.mediaCancelUserFileDownload, request);
+      NativeCallMap.mediaCancelUserFileDownload,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> downloadFileToDownloads(
-      Map<String, Object?> request) {
+    Map<String, Object?> request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.mediaDownloadFileToDownloads, request);
+      NativeCallMap.mediaDownloadFileToDownloads,
+      request,
+    );
   }
 }
 
@@ -1145,117 +1290,173 @@ final class _DefaultCapabilitiesApi implements CapabilitiesApi {
   final NativeBridge _bridge;
 
   @override
-  Future<Map<String, Object?>> preparePluginCommand(PluginCommandRequest request) {
-    return _bridge.invoke<Map<String, Object?>>(NativeCallMap.capabilityPreparePluginCommand, pluginCommandRequestToMap(request));
-  }
-
-  @override
-  Future<Map<String, Object?>> pendingPluginCommand(PluginCommandRequest request) {
-    return _bridge.invoke<Map<String, Object?>>(NativeCallMap.capabilityPendingPluginCommand, pluginCommandRequestToMap(request));
-  }
-
-  @override
-  Future<Map<String, Object?>> submitPluginCommand(PluginCommandRequest request) {
-    return _bridge.invoke<Map<String, Object?>>(NativeCallMap.capabilitySubmitPluginCommand, pluginCommandRequestToMap(request));
-  }
-
-  @override
-  Future<Map<String, Object?>> reconcilePluginCommand(PluginCommandRequest request) {
-    return _bridge.invoke<Map<String, Object?>>(NativeCallMap.capabilityReconcilePluginCommand, pluginCommandRequestToMap(request));
-  }
-
-  @override
-  Future<Map<String, Object?>> acknowledgePluginCommand(PluginCommandRequest request) {
-    return _bridge.invoke<Map<String, Object?>>(NativeCallMap.capabilityAcknowledgePluginCommand, pluginCommandRequestToMap(request));
-  }
-
-  @override
-  Future<Map<String, Object?>> presentPluginMessage(PluginUiEvaluationRequest request) {
+  Future<Map<String, Object?>> preparePluginCommand(
+    PluginCommandRequest request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.capabilityPluginUiPresent, pluginUiEvaluationRequestToMap(request));
+      NativeCallMap.capabilityPreparePluginCommand,
+      pluginCommandRequestToMap(request),
+    );
   }
 
   @override
-  Future<Map<String, Object?>> invokePluginAction(PluginUiEvaluationRequest request) {
+  Future<Map<String, Object?>> pendingPluginCommand(
+    PluginCommandRequest request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.capabilityPluginUiInvoke, pluginUiEvaluationRequestToMap(request));
+      NativeCallMap.capabilityPendingPluginCommand,
+      pluginCommandRequestToMap(request),
+    );
   }
 
   @override
-  Future<Map<String, Object?>> pluginUiAction(PluginUiEvaluationRequest request) {
+  Future<Map<String, Object?>> submitPluginCommand(
+    PluginCommandRequest request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.capabilityPluginUiAction, pluginUiEvaluationRequestToMap(request));
+      NativeCallMap.capabilitySubmitPluginCommand,
+      pluginCommandRequestToMap(request),
+    );
   }
 
   @override
-  Future<Map<String, Object?>> resolvePluginMessage(PluginUiEvaluationRequest request) {
+  Future<Map<String, Object?>> reconcilePluginCommand(
+    PluginCommandRequest request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.capabilityPluginUiResolve, pluginUiEvaluationRequestToMap(request));
+      NativeCallMap.capabilityReconcilePluginCommand,
+      pluginCommandRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<Map<String, Object?>> acknowledgePluginCommand(
+    PluginCommandRequest request,
+  ) {
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.capabilityAcknowledgePluginCommand,
+      pluginCommandRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<Map<String, Object?>> presentPluginMessage(
+    PluginUiEvaluationRequest request,
+  ) {
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.capabilityPluginUiPresent,
+      pluginUiEvaluationRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<Map<String, Object?>> invokePluginAction(
+    PluginUiEvaluationRequest request,
+  ) {
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.capabilityPluginUiInvoke,
+      pluginUiEvaluationRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<Map<String, Object?>> pluginUiAction(
+    PluginUiEvaluationRequest request,
+  ) {
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.capabilityPluginUiAction,
+      pluginUiEvaluationRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<Map<String, Object?>> resolvePluginMessage(
+    PluginUiEvaluationRequest request,
+  ) {
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.capabilityPluginUiResolve,
+      pluginUiEvaluationRequestToMap(request),
+    );
   }
 
   @override
   Future<Map<String, Object?>> pluginUiCatalog(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.capabilityPluginUiCatalog, request);
+      NativeCallMap.capabilityPluginUiCatalog,
+      request,
+    );
   }
 
   @override
-  Future<Map<String, Object?>> pluginComposerActions(PluginUiEvaluationRequest request) {
+  Future<Map<String, Object?>> pluginComposerActions(
+    PluginUiEvaluationRequest request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.capabilityPluginComposerActions, pluginUiEvaluationRequestToMap(request));
+      NativeCallMap.capabilityPluginComposerActions,
+      pluginUiEvaluationRequestToMap(request),
+    );
   }
 
   @override
   Future<Map<String, Object?>> pluginDetail(PluginUiEvaluationRequest request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.capabilityPluginDetail, pluginUiEvaluationRequestToMap(request));
+      NativeCallMap.capabilityPluginDetail,
+      pluginUiEvaluationRequestToMap(request),
+    );
   }
 
   @override
   Future<Map<String, Object?>> pluginPage(PluginUiEvaluationRequest request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.capabilityPluginPage, pluginUiEvaluationRequestToMap(request));
+      NativeCallMap.capabilityPluginPage,
+      pluginUiEvaluationRequestToMap(request),
+    );
   }
 
   @override
-  Future<Map<String, Object?>> pluginAccountEntries(PluginUiEvaluationRequest request) {
+  Future<Map<String, Object?>> pluginFileUpload(
+    PluginUiEvaluationRequest request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.capabilityPluginAccountEntries, pluginUiEvaluationRequestToMap(request));
+      NativeCallMap.capabilityPluginFileUpload,
+      pluginUiEvaluationRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<Map<String, Object?>> pluginAccountEntries(
+    PluginUiEvaluationRequest request,
+  ) {
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.capabilityPluginAccountEntries,
+      pluginUiEvaluationRequestToMap(request),
+    );
   }
 
   @override
   Future<void> invalidatePluginCatalog(Map<String, Object?> request) {
-    return _bridge.invoke<void>(NativeCallMap.capabilityPluginCatalogInvalidate, request);
+    return _bridge.invoke<void>(
+      NativeCallMap.capabilityPluginCatalogInvalidate,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> listCapabilities(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.capabilityList, request);
-  }
-
-  @override
-  Future<Map<String, Object?>> listUserCapabilities(
-      Map<String, Object?> request) {
-    return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.capabilityListUser, request);
+      NativeCallMap.capabilityList,
+      request,
+    );
   }
 
   @override
   Future<Map<String, Object?>> dispatchCapability(
-      Map<String, Object?> request) {
+    Map<String, Object?> request,
+  ) {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.capabilityDispatch, request);
-  }
-
-  @override
-  Future<void> grantCapability(Map<String, Object?> request) {
-    return _bridge.invoke<void>(NativeCallMap.capabilityGrant, request);
-  }
-
-  @override
-  Future<void> revokeCapability(Map<String, Object?> request) {
-    return _bridge.invoke<void>(NativeCallMap.capabilityRevoke, request);
+      NativeCallMap.capabilityDispatch,
+      request,
+    );
   }
 }
 
@@ -1343,20 +1544,23 @@ final class _DefaultDiagnosticsApi implements DiagnosticsApi {
 
   @override
   Future<Map<String, Object?>> getSdkVersion() {
-    return _bridge
-        .invoke<Map<String, Object?>>(NativeCallMap.diagnosticsSdkVersion);
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.diagnosticsSdkVersion,
+    );
   }
 
   @override
   Future<Map<String, Object?>> getFfiContractVersion() {
     return _bridge.invoke<Map<String, Object?>>(
-        NativeCallMap.diagnosticsFfiContractVersion);
+      NativeCallMap.diagnosticsFfiContractVersion,
+    );
   }
 
   @override
   Future<Map<String, Object?>> getDataRoot() {
-    return _bridge
-        .invoke<Map<String, Object?>>(NativeCallMap.diagnosticsDataRoot);
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.diagnosticsDataRoot,
+    );
   }
 
   @override
@@ -1375,8 +1579,9 @@ SdkErrorPayload sdkErrorFromException(Object error, String operation) {
       message: error.message,
       operation: error.operation ?? operation,
       details: error.details is Map
-          ? (error.details as Map)
-              .map((key, value) => MapEntry(key.toString(), value.toString()))
+          ? (error.details as Map).map(
+              (key, value) => MapEntry(key.toString(), value.toString()),
+            )
           : const {},
     );
   }

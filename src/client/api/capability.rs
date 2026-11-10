@@ -5,12 +5,9 @@
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
-use flare_grpc_proto::capability::capability_service_client::CapabilityServiceClient;
+use flare_grpc_proto::capability::DispatchCapabilityRequest;
 #[cfg(not(target_arch = "wasm32"))]
-use flare_grpc_proto::capability::{
-    DispatchCapabilityRequest, GrantUserCapabilityRequest, ListUserCapabilitiesRequest,
-    RevokeUserCapabilityRequest,
-};
+use flare_grpc_proto::capability::capability_service_client::CapabilityServiceClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(not(target_arch = "wasm32"))]
@@ -28,8 +25,11 @@ use crate::shared::error::{ErrorCode, FlareError, Result};
 
 #[path = "capability_entry_availability.rs"]
 mod entry_availability;
+#[path = "capability_file_upload.rs"]
+mod file_upload;
 #[path = "capability_page.rs"]
 mod page;
+pub use file_upload::{PluginFileUploadPage, PluginFileUploadRequest};
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_page_tests.rs"]
 mod page_tests;
@@ -334,15 +334,6 @@ impl CapabilityApi {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn effective_tenant_id(&self, tenant_id: Option<&str>) -> String {
-        tenant_id
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(crate::shared::util::normalize_tenant_id)
-            .unwrap_or_else(|| crate::shared::util::normalize_tenant_id(&self.default_tenant_id))
-    }
-
     pub async fn resolve_plugin_message(&self, request: Value) -> Result<Value> {
         self.session_guard
             .run(async {
@@ -497,8 +488,9 @@ impl CapabilityApi {
     /// presented in the last minutes are announced with `PluginStateChanged`,
     /// so hosts present them again against a fresh catalog (a disabled
     /// plugin's cards turn inert, a re-enabled one's come back). The SDK does
-    /// the same by itself when a plugin call answers disabled, not installed,
-    /// no permission or unsupported platform.
+    /// the same by itself when a plugin call answers disabled (the plugin or
+    /// one of its features), not installed, no permission or unsupported
+    /// platform.
     pub async fn invalidate_plugin_catalog(&self) -> Result<()> {
         self.catalog_flight.invalidate();
         if let Some(driver) = &self.viewer_state {
@@ -776,7 +768,14 @@ impl CapabilityApi {
                     }
                     ui::PreparedAction::Ready {
                         target, payload, ..
-                    } => Ok(serde_json::json!({"kind":"host","target":target,"payload":payload})),
+                    } => Ok(crate::extension::capability::ui_page::page_navigation(
+                        serde_json::json!({"kind":"host","target":target,"payload":payload}),
+                        stored
+                            .as_ref()
+                            .map(|message| message.conversation_id.as_str())
+                            .filter(|id| !id.is_empty())
+                            .or(request.conversation_id.as_deref()),
+                    )),
                 }
             })
             .await
@@ -1099,75 +1098,6 @@ impl CapabilityApi {
         ))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn list_user_capabilities(
-        &self,
-        tenant_id: Option<&str>,
-        user_id: Option<&str>,
-    ) -> Result<Vec<UserCapabilityGrantDto>> {
-        let api = self.clone();
-        let tenant_id = tenant_id.map(str::to_string);
-        let user_id = user_id.map(str::to_string);
-        self.session_guard
-            .run_with_user(move |session_user_id| async move {
-                let tenant = api.effective_tenant_id(tenant_id.as_deref());
-                let user = user_id
-                    .or(session_user_id)
-                    .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未连接"))?;
-                let ch = api.connect().await?;
-                let mut client = CapabilityServiceClient::new(ch);
-                let mut req = tonic::Request::new(ListUserCapabilitiesRequest {
-                    tenant_id: tenant,
-                    user_id: user,
-                });
-                api.enrich_metadata(&mut req).await?;
-                let resp = client.list_user_capabilities(req).await.map_err(|s| {
-                    FlareError::system(format!("ListUserCapabilities: {}", s.message()))
-                })?;
-                let mut out = Vec::new();
-                for g in resp.into_inner().grants {
-                    let granted_at = g
-                        .granted_at
-                        .map(|t| prost_timestamp_to_rfc3339(&t))
-                        .unwrap_or_default();
-                    let expires_at = g.expires_at.as_ref().map(prost_timestamp_to_rfc3339);
-                    let plan = if g.plan_code.is_empty() {
-                        None
-                    } else {
-                        Some(g.plan_code)
-                    };
-                    let source = if g.source.is_empty() {
-                        None
-                    } else {
-                        Some(g.source)
-                    };
-                    out.push(UserCapabilityGrantDto {
-                        tenant_id: g.tenant_id,
-                        user_id: g.user_id,
-                        capability_id: g.capability_id,
-                        granted_at,
-                        expires_at,
-                        plan_code: plan,
-                        source,
-                    });
-                }
-                Ok(out)
-            })
-            .await
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub async fn list_user_capabilities(
-        &self,
-        _tenant_id: Option<&str>,
-        _user_id: Option<&str>,
-    ) -> Result<Vec<UserCapabilityGrantDto>> {
-        Err(FlareError::localized(
-            ErrorCode::OperationNotSupported,
-            "sdk.capability.wasm_not_supported",
-        ))
-    }
-
     pub async fn dispatch(
         &self,
         capability_id: &str,
@@ -1302,102 +1232,6 @@ impl CapabilityApi {
         )
         .await
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn grant_user_capability(
-        &self,
-        tenant_id: &str,
-        user_id: &str,
-        capability_id: &str,
-        expires_at_rfc3339: Option<&str>,
-        plan_code: Option<&str>,
-        source: Option<&str>,
-    ) -> Result<()> {
-        let api = self.clone();
-        let tenant_id = tenant_id.to_string();
-        let user_id = user_id.to_string();
-        let capability_id = capability_id.to_string();
-        let expires_at_rfc3339 = expires_at_rfc3339.unwrap_or("").to_string();
-        let plan_code = plan_code.unwrap_or("").to_string();
-        let source = source.unwrap_or("").to_string();
-        self.session_guard
-            .run(async move {
-                let ch = api.connect().await?;
-                let mut client = CapabilityServiceClient::new(ch);
-                let mut req = tonic::Request::new(GrantUserCapabilityRequest {
-                    tenant_id,
-                    user_id,
-                    capability_id,
-                    expires_at_rfc3339,
-                    plan_code,
-                    source,
-                });
-                api.enrich_metadata(&mut req).await?;
-                client.grant_user_capability(req).await.map_err(|s| {
-                    FlareError::system(format!("GrantUserCapability: {}", s.message()))
-                })?;
-                Ok(())
-            })
-            .await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn revoke_user_capability(
-        &self,
-        tenant_id: &str,
-        user_id: &str,
-        capability_id: &str,
-    ) -> Result<()> {
-        let api = self.clone();
-        let tenant_id = tenant_id.to_string();
-        let user_id = user_id.to_string();
-        let capability_id = capability_id.to_string();
-        self.session_guard
-            .run(async move {
-                let ch = api.connect().await?;
-                let mut client = CapabilityServiceClient::new(ch);
-                let mut req = tonic::Request::new(RevokeUserCapabilityRequest {
-                    tenant_id,
-                    user_id,
-                    capability_id,
-                });
-                api.enrich_metadata(&mut req).await?;
-                client.revoke_user_capability(req).await.map_err(|s| {
-                    FlareError::system(format!("RevokeUserCapability: {}", s.message()))
-                })?;
-                Ok(())
-            })
-            .await
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub async fn grant_user_capability(
-        &self,
-        _tenant_id: &str,
-        _user_id: &str,
-        _capability_id: &str,
-        _expires_at_rfc3339: Option<&str>,
-        _plan_code: Option<&str>,
-        _source: Option<&str>,
-    ) -> Result<()> {
-        Err(FlareError::localized(
-            ErrorCode::OperationNotSupported,
-            "sdk.capability.wasm_not_supported",
-        ))
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub async fn revoke_user_capability(
-        &self,
-        _tenant_id: &str,
-        _user_id: &str,
-        _capability_id: &str,
-    ) -> Result<()> {
-        Err(FlareError::localized(
-            ErrorCode::OperationNotSupported,
-            "sdk.capability.wasm_not_supported",
-        ))
-    }
 }
 
 /// A presented card as the bindings return it: the view plus `stateVersion`
@@ -1429,16 +1263,6 @@ fn card_view(
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn prost_timestamp_to_rfc3339(t: &prost_types::Timestamp) -> String {
-    use chrono::{TimeZone, Utc};
-    let dt = Utc
-        .timestamp_opt(t.seconds, t.nanos as u32)
-        .single()
-        .unwrap_or_else(Utc::now);
-    dt.to_rfc3339()
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityDescriptorDto {
@@ -1451,18 +1275,6 @@ pub struct CapabilityDescriptorDto {
     pub message_types: Vec<String>,
     pub timeout_ms: u64,
     pub description: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserCapabilityGrantDto {
-    pub tenant_id: String,
-    pub user_id: String,
-    pub capability_id: String,
-    pub granted_at: String,
-    pub expires_at: Option<String>,
-    pub plan_code: Option<String>,
-    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

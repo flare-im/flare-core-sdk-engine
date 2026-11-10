@@ -160,6 +160,24 @@ read exactly as `serde_json` does; being compiled once in this crate, they keep 
 single copy of the (recursive) message reader in builds that link several crates,
 such as the browser bundle.
 
+## Plugin page command recovery
+
+An explicit page action with `command.mode: "observe"` checks a stored intent
+through its currently declared query. The SDK refreshes the authorized catalog
+and requires the target in both `operations` and `queryOperations`; a missing
+query descriptor fails closed. It sends the saved command ID, capability ID and
+exact payload, ignoring caller replacements, and verifies the query envelope,
+original identity and canonical payload digest before completing the journal by
+compare-and-set. It never resends the original write or prepares a new intent.
+
+A verified terminal business rejection remains `success: false` with its
+original error code. `NotFound`, mismatched receipts and transport errors keep
+the original outcome unknown and prevent acknowledgement. Known answers are
+reused without a query; only an original successful answer follows its saved
+continuation. Admin documents do not support this client-journal mode and reject
+it during manifest validation. The separate `reconcile_plugin_command` API keeps
+its existing frozen-query contract.
+
 ## Event system
 
 Events uniformly use `SdkEvent`:

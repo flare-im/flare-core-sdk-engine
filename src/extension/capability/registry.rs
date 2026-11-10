@@ -5,8 +5,8 @@ use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 
+use crate::client::api::CapabilityDispatchResult;
 use crate::client::api::session_guard::SessionGuard;
-use crate::client::api::{CapabilityDispatchResult, UserCapabilityGrantDto};
 use crate::extension::capability::{SdkCapabilityPlugin, SdkPluginManifest};
 use crate::kernel::CurrentUserIdStore;
 use crate::shared::error::{ErrorCode, FlareError, Result};
@@ -185,24 +185,6 @@ impl SdkCapabilityRegistry {
             .await
     }
 
-    /// 解析处理该 `capability_id` 命名空间的插件并列出用户授权（与 [`SdkCapabilityPlugin::list_user_grants`] 一致）。
-    pub async fn list_user_grants_for_capability(
-        &self,
-        capability_id: &str,
-        tenant_id: Option<&str>,
-        user_id: Option<&str>,
-    ) -> Result<Vec<UserCapabilityGrantDto>> {
-        self.session_guard.ensure_active().await?;
-        let Some(plugin) = self.resolve_by_capability(capability_id) else {
-            return Err(FlareError::localized(
-                ErrorCode::OperationNotSupported,
-                format!("sdk.capability.no_plugin_for:{capability_id}"),
-            ));
-        };
-        self.ensure_plugin_can_invoke(plugin.plugin_id(), capability_id)?;
-        plugin.list_user_grants(tenant_id, user_id).await
-    }
-
     pub fn list_plugin_ids(&self) -> Vec<String> {
         self.plugins
             .read()
@@ -287,7 +269,6 @@ mod tests {
 
     struct CountingPlugin {
         invoke_calls: Arc<AtomicUsize>,
-        grant_calls: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -323,15 +304,6 @@ mod tests {
                 data: Value::Null,
                 error: None,
             })
-        }
-
-        async fn list_user_grants(
-            &self,
-            _tenant_id: Option<&str>,
-            _user_id: Option<&str>,
-        ) -> Result<Vec<UserCapabilityGrantDto>> {
-            self.grant_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(Vec::new())
         }
     }
 
@@ -371,14 +343,6 @@ mod tests {
                 error: None,
             })
         }
-
-        async fn list_user_grants(
-            &self,
-            _tenant_id: Option<&str>,
-            _user_id: Option<&str>,
-        ) -> Result<Vec<UserCapabilityGrantDto>> {
-            Ok(Vec::new())
-        }
     }
 
     #[tokio::test]
@@ -386,11 +350,9 @@ mod tests {
         let current_user_id = Arc::new(RwLock::new("alice".to_string()));
         let registry = SdkCapabilityRegistry::new_session_bound(current_user_id.clone());
         let invoke_calls = Arc::new(AtomicUsize::new(0));
-        let grant_calls = Arc::new(AtomicUsize::new(0));
         registry
             .register(Arc::new(CountingPlugin {
                 invoke_calls: invoke_calls.clone(),
-                grant_calls: grant_calls.clone(),
             }))
             .expect("register test plugin");
 
@@ -402,13 +364,6 @@ mod tests {
             .expect_err("logged-out registry invoke must fail");
         assert_eq!(err.code(), Some(ErrorCode::NotConnected));
         assert_eq!(invoke_calls.load(Ordering::SeqCst), 0);
-
-        let err = registry
-            .list_user_grants_for_capability("test.echo", None, None)
-            .await
-            .expect_err("logged-out registry grants must fail");
-        assert_eq!(err.code(), Some(ErrorCode::NotConnected));
-        assert_eq!(grant_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -418,7 +373,6 @@ mod tests {
         registry
             .register(Arc::new(CountingPlugin {
                 invoke_calls: invoke_calls.clone(),
-                grant_calls: Arc::new(AtomicUsize::new(0)),
             }))
             .expect("register test plugin");
 

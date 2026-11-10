@@ -17,6 +17,7 @@ use std::collections::BTreeSet;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ResolveRequest {
+    #[serde(deserialize_with = "tolerant_catalog")]
     catalog: UiCatalog,
     message: PluginMessage,
     platform: ClientPlatform,
@@ -31,6 +32,7 @@ struct ResolveRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ActionRequest {
+    #[serde(deserialize_with = "tolerant_catalog")]
     catalog: UiCatalog,
     platform: ClientPlatform,
     plugin_id: String,
@@ -443,6 +445,18 @@ pub(crate) fn parse_catalog(data: &Value) -> Option<UiCatalog> {
         }
     }
     Some(catalog)
+}
+
+/// The catalog a host hands back in a request, read like [`parse_catalog`]:
+/// hosts keep the raw `plugin_ui_catalog` result, so what this client cannot
+/// read costs only that plugin or contribution here too. Only an unreadable
+/// envelope refuses the request.
+fn tolerant_catalog<'de, D>(deserializer: D) -> std::result::Result<UiCatalog, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Value::deserialize(deserializer)?;
+    parse_catalog(&raw).ok_or_else(|| serde::de::Error::custom("unreadable plugin catalog"))
 }
 
 pub(crate) fn resolve(

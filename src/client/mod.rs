@@ -30,7 +30,7 @@ pub use api::{
     CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, ConversationApi,
     CreateLocationRequest, CreateRichDocRequest, CreateStickerRequest, EditRichDocRequest,
     FileDownloadProgress, FileDownloadProgressCallback, MediaApi, MessageApi, MessageBuildApi,
-    UploadPhase, UploadProgress, UploadProgressCallback, UserCapabilityGrantDto,
+    UploadPhase, UploadProgress, UploadProgressCallback,
 };
 pub use builder::IMClientBuilder;
 pub use config::{

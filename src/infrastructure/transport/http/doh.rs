@@ -97,7 +97,7 @@ pub(crate) mod tests {
     pub(crate) struct ScriptedLookup {
         addresses: Vec<IpAddr>,
         calls: AtomicUsize,
-        refused: AtomicUsize,
+        refused: std::sync::Mutex<usize>,
     }
 
     impl ScriptedLookup {
@@ -109,11 +109,10 @@ pub(crate) mod tests {
     #[async_trait::async_trait]
     impl DohLookup for ScriptedLookup {
         fn covers(&self, _host: &str) -> bool {
-            self.refused
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-                    left.checked_sub(1)
-                })
-                .is_err()
+            let mut refused = self.refused.lock().unwrap();
+            let covered = *refused == 0;
+            *refused = refused.saturating_sub(1);
+            covered
         }
 
         async fn lookup(&self, _host: &str) -> Option<DohAnswer> {
@@ -138,7 +137,7 @@ pub(crate) mod tests {
         let lookup = Arc::new(ScriptedLookup {
             addresses,
             calls: AtomicUsize::new(0),
-            refused: AtomicUsize::new(refused),
+            refused: std::sync::Mutex::new(refused),
         });
         (DohCache::new(lookup.clone()), lookup)
     }

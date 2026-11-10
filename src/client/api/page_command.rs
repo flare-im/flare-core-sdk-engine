@@ -2,13 +2,19 @@
 use super::{CapabilityApi, CapabilityDispatchResult};
 use crate::{
     ErrorCode, FlareError, Result,
-    domain::{PluginCommand, PluginCommandScope},
+    domain::{PluginCommand, PluginCommandRecord, PluginCommandScope},
 };
-use flare_plugin_protocol::ui::{UiPageCommand, UiPageCommandMode, UiPageTransition};
+use flare_plugin_protocol::{
+    command::{
+        CommandObservation, CommandObservationRequest, CommandOutcome, ObservedCommandResult,
+    },
+    ui::{UiCatalog, UiPageCommand, UiPageCommandMode, UiPageTransition},
+};
 use serde_json::{Value, json};
 
 pub(super) struct PageCommandCall<'a> {
     pub plugin: &'a str,
+    pub catalog: &'a UiCatalog,
     pub viewer: &'a str,
     pub operation: &'a str,
     pub payload: Value,
@@ -17,6 +23,117 @@ pub(super) struct PageCommandCall<'a> {
     pub continuation: Option<UiPageTransition>,
 }
 impl CapabilityApi {
+    /// Complete only a verified read of the immutable authenticated intent.
+    /// The action's bound payload never replaces the saved payload or identity.
+    async fn observe_page_command(
+        &self,
+        catalog: &UiCatalog,
+        plugin: &str,
+        operation: &str,
+        scope: &PluginCommandScope,
+        pending: Option<PluginCommandRecord>,
+    ) -> Result<(CapabilityDispatchResult, Option<UiPageTransition>)> {
+        let denied = || {
+            FlareError::localized(
+                ErrorCode::PermissionDenied,
+                "sdk.plugin_command.invalid_scope",
+            )
+        };
+        let unknown =
+            || FlareError::localized(ErrorCode::ServiceUnavailable, "sdk.plugin.outcome_unknown");
+        if catalog.tenant_id != scope.tenant_id
+            || catalog.valid_until_ms <= chrono::Utc::now().timestamp_millis()
+            || !catalog.plugins.iter().any(|p| {
+                p.plugin_id == plugin
+                    && p.operations.contains(operation)
+                    && p.query_operations.contains(operation)
+            })
+            || self.session_guard.capture_user().await?.as_deref() != Some(scope.user_id.as_str())
+        {
+            return Err(denied());
+        }
+        let record = pending.ok_or_else(|| {
+            FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "sdk.plugin_command.command_changed",
+            )
+        })?;
+        let command = &record.command;
+        if !command.capability_id.starts_with(&format!("{plugin}.")) {
+            return Err(denied());
+        }
+        if let Some(response) = record.response {
+            let response = serde_json::from_value(response)
+                .map_err(|_| FlareError::system("invalid journal response"))?;
+            return Ok((response, record.command.continuation));
+        }
+        let request = CommandObservationRequest {
+            command_id: command.command_id.clone(),
+            capability_id: command.capability_id.clone(),
+            payload: command.payload.clone(),
+        };
+        let response = self
+            .dispatch_with(
+                operation,
+                serde_json::to_value(request)
+                    .map_err(|_| FlareError::system("observation encoding"))?,
+                command.conversation_id.as_deref(),
+                Some(&scope.tenant_id),
+                Some(&scope.user_id),
+                None,
+            )
+            .await?;
+        if !response.success || response.plugin_id != plugin || response.capability_id != operation
+        {
+            return Err(unknown());
+        }
+        let observation: CommandObservation<ObservedCommandResult> =
+            serde_json::from_value(response.data).map_err(|_| unknown())?;
+        let digest = flare_plugin_protocol::runtime::configuration_digest(&command.payload)
+            .map_err(|_| FlareError::system("plugin command digest"))?;
+        if observation.command_id != command.command_id
+            || observation.capability_id != command.capability_id
+            || observation.request_digest != digest
+        {
+            return Err(unknown());
+        }
+        let Some(result) = observation
+            .result
+            .filter(|_| observation.outcome == CommandOutcome::Committed)
+        else {
+            return Err(unknown());
+        };
+        let observed = CapabilityDispatchResult {
+            request_id: response.request_id,
+            success: result.success,
+            plugin_id: plugin.into(),
+            capability_id: command.capability_id.clone(),
+            data: result.data,
+            error: None,
+        };
+        let raw = serde_json::to_value(&observed)
+            .map_err(|_| FlareError::system("page response encoding"))?;
+        if !command.accepts_response(&raw) {
+            return Err(unknown());
+        }
+        if self.session_guard.capture_user().await?.as_deref() != Some(scope.user_id.as_str()) {
+            return Err(denied());
+        }
+        let saved = self
+            .plugin_commands
+            .as_deref()
+            .ok_or_else(|| FlareError::system("page command store missing"))?
+            .complete(scope, command, raw)
+            .await?;
+        let response = serde_json::from_value(
+            saved
+                .response
+                .ok_or_else(|| FlareError::system("page response missing"))?,
+        )
+        .map_err(|_| FlareError::system("invalid journal response"))?;
+        Ok((response, saved.command.continuation))
+    }
+
     pub(super) async fn page_journal(
         &self,
         plugin: &str,
@@ -63,6 +180,7 @@ impl CapabilityApi {
     ) -> Result<(CapabilityDispatchResult, Option<UiPageTransition>)> {
         let PageCommandCall {
             plugin,
+            catalog,
             viewer,
             operation,
             mut payload,
@@ -85,6 +203,11 @@ impl CapabilityApi {
         })?;
         let pending = store.pending(&scope).await?;
         let command = match policy.mode {
+            UiPageCommandMode::Observe => {
+                return self
+                    .observe_page_command(catalog, plugin, operation, &scope, pending)
+                    .await;
+            }
             UiPageCommandMode::Retry | UiPageCommandMode::Acknowledge => {
                 let r = pending.ok_or_else(|| {
                     FlareError::localized(
@@ -121,8 +244,6 @@ impl CapabilityApi {
                 if payload.get("commandId").is_none() {
                     payload["commandId"] = json!(uuid::Uuid::new_v4().to_string());
                 }
-                let conversation =
-                    conversation.or_else(|| payload.get("conversationId").and_then(Value::as_str));
                 let command:PluginCommand=serde_json::from_value(json!({"commandId":payload["commandId"],"capabilityId":operation,"conversationId":conversation,"payload":payload,"terminalErrorCodes":policy.terminal_error_codes,"continuation":continuation})).map_err(|_|FlareError::system("page command encoding"))?;
                 command.validate()?;
                 if let Some(old) = pending

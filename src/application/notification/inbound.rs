@@ -140,8 +140,7 @@ impl NotificationInboundPipeline {
             return;
         }
 
-        let sound = current_user_id
-            .and_then(|user_id| self.conversations.as_ref().map(|store| (user_id, store)));
+        let sound = current_user_id.zip(self.conversations.as_ref());
         // Let the timeline consume the normal event without waiting on sound-policy reads.
         let candidates = sound.map(|(user_id, _)| {
             received_messages

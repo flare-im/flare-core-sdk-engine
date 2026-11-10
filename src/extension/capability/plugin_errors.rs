@@ -29,6 +29,12 @@ pub const PLUGIN_ERROR_KEYS: &[(&str, u16, ErrorCode, &str)] = &[
         "sdk.plugin.disabled",
     ),
     (
+        "PLUGIN_FEATURE_DISABLED",
+        403,
+        ErrorCode::PermissionDenied,
+        "sdk.plugin.feature_disabled",
+    ),
+    (
         "PLUGIN_NOT_INSTALLED",
         404,
         ErrorCode::OperationNotSupported,
@@ -203,13 +209,15 @@ pub fn localize_plugin_error(error: FlareError) -> FlareError {
     }
 }
 
-/// Failures that mean the viewer's catalog is out of date: the plugin was
-/// disabled, uninstalled, or is no longer allowed here.
+/// Failures that mean the viewer's catalog is out of date: the plugin or the
+/// feature the call belongs to was disabled, the plugin was uninstalled, or is
+/// no longer allowed here.
 pub fn invalidates_catalog(error: &FlareError) -> bool {
     matches!(
         platform_answer(error).map(|(code, _, _, _)| *code),
         Some(
             "PLUGIN_DISABLED"
+                | "PLUGIN_FEATURE_DISABLED"
                 | "PLUGIN_NOT_INSTALLED"
                 | "PLUGIN_PERMISSION_DENIED"
                 | "PLUGIN_UNSUPPORTED_PLATFORM"
@@ -219,8 +227,9 @@ pub fn invalidates_catalog(error: &FlareError) -> bool {
 
 /// Whether a background call (a card's viewer layer) is worth retrying after
 /// a backoff: transport failures, timeouts with an unknown outcome, rate
-/// limits and server errors. A plugin's or Core's definite answer (disabled,
-/// not installed, no permission, unbound card, a business rejection) is not.
+/// limits and server errors. A plugin's or Core's definite answer (a disabled
+/// plugin or feature, not installed, no permission, unbound card, a business
+/// rejection) is not.
 pub fn is_retryable(error: &FlareError) -> bool {
     match platform_answer(error).map(|(code, _, _, _)| *code) {
         Some("CAPABILITY_OUTCOME_UNKNOWN" | "CAPABILITY_RATE_LIMITED") => true,
@@ -245,6 +254,11 @@ mod tests {
     fn plugin_failures_become_localized_keys_and_keep_their_metadata() {
         for (status, machine, key) in [
             (403, "PLUGIN_DISABLED", "sdk.plugin.disabled"),
+            (
+                403,
+                "PLUGIN_FEATURE_DISABLED",
+                "sdk.plugin.feature_disabled",
+            ),
             (404, "PLUGIN_NOT_INSTALLED", "sdk.plugin.not_installed"),
             (
                 403,
@@ -306,6 +320,7 @@ mod tests {
             ))
         };
         assert!(invalidates_catalog(&error(403, "PLUGIN_DISABLED")));
+        assert!(invalidates_catalog(&error(403, "PLUGIN_FEATURE_DISABLED")));
         assert!(invalidates_catalog(&error(404, "PLUGIN_NOT_INSTALLED")));
         assert!(invalidates_catalog(&error(403, "PLUGIN_PERMISSION_DENIED")));
         assert!(invalidates_catalog(&error(
@@ -320,6 +335,7 @@ mod tests {
         assert!(is_retryable(&http_error_from_response_status(502, "")));
         assert!(!is_retryable(&error(409, "PLUGIN_CARD_UNBOUND")));
         assert!(!is_retryable(&error(403, "PLUGIN_DISABLED")));
+        assert!(!is_retryable(&error(403, "PLUGIN_FEATURE_DISABLED")));
         assert!(!is_retryable(&error(422, "POLL_CLOSED")));
     }
 
@@ -336,6 +352,7 @@ mod tests {
         for code in [
             "PLUGIN_CARD_NOT_POSTED",
             "PLUGIN_DISABLED",
+            "PLUGIN_FEATURE_DISABLED",
             "PLUGIN_NOT_INSTALLED",
             "PLUGIN_CARD_UNBOUND",
             "PLUGIN_SOMETHING_NEW",
@@ -351,6 +368,7 @@ mod tests {
         // A platform code under another platform code's status: not interpreted at all.
         for (status, code) in [
             (409, "PLUGIN_DISABLED"),
+            (409, "PLUGIN_FEATURE_DISABLED"),
             (403, "PLUGIN_CARD_NOT_POSTED"),
             (404, "PLUGIN_CARD_UNBOUND"),
             (403, "CAPABILITY_OUTCOME_UNKNOWN"),

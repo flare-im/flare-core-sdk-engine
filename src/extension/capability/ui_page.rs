@@ -31,6 +31,26 @@ fn unavailable() -> FlareError {
         "sdk.plugin.ui_action_unavailable",
     )
 }
+fn admission_unavailable(stage: &'static str, reason: &'static str) -> FlareError {
+    tracing::warn!(target: "flare_sdk.plugin", stage, reason, "plugin_ui_admission");
+    // Native debug hosts may have no tracing subscriber. These two values are
+    // local allowlisted tags, never a protocol error's arbitrary contents.
+    #[cfg(debug_assertions)]
+    eprintln!("plugin_ui_admission stage={stage} reason={reason}");
+    unavailable()
+}
+pub(crate) fn page_admission_unavailable(reason: UiUnavailableReason) -> FlareError {
+    let reason = match reason {
+        UiUnavailableReason::Disabled => "disabled",
+        UiUnavailableReason::NotInstalled => "not_installed",
+        UiUnavailableReason::NoPermission => "no_permission",
+        UiUnavailableReason::UnsupportedPlatform => "unsupported_platform",
+        UiUnavailableReason::IncompatibleVersion => "incompatible_version",
+        UiUnavailableReason::CatalogUnreachable => "catalog_unreachable",
+        UiUnavailableReason::UnboundCopy => "unbound_copy",
+    };
+    admission_unavailable("page", reason)
+}
 pub(crate) fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -60,6 +80,9 @@ pub(crate) struct PageRequest {
     pub plugin_id: String,
     pub page: String,
     pub platform: ClientPlatform,
+    /// Host route context, independent of the source operation's business DTO.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
     #[serde(default)]
     pub locale: String,
     /// The payload of the page target that opened the page; `{}` when absent.
@@ -91,11 +114,29 @@ impl PageRequest {
 
 pub(crate) fn parse_page(request: Value) -> Result<PageRequest> {
     bounded(&request)?;
-    let parsed: PageRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let mut parsed: PageRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    if let Some(previous) = &parsed.previous {
+        let previous_conversation = match previous.get("conversationId") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(id)) if flare_plugin_protocol::resource::valid_resource_id(id) => {
+                Some(id)
+            }
+            _ => return Err(invalid()),
+        };
+        match (parsed.conversation_id.as_ref(), previous_conversation) {
+            (Some(current), Some(previous)) if current != previous => return Err(invalid()),
+            (None, Some(previous)) => parsed.conversation_id = Some(previous.clone()),
+            _ => {}
+        }
+    }
     if !valid_id(&parsed.plugin_id)
         || !valid_id(&parsed.page)
         || !parsed.page.starts_with(&format!("{}.", parsed.plugin_id))
         || parsed.locale.len() > 32
+        || parsed
+            .conversation_id
+            .as_ref()
+            .is_some_and(|id| !flare_plugin_protocol::resource::valid_resource_id(id))
         || parsed.locale.chars().any(char::is_control)
         || parsed.arguments.as_ref().is_some_and(|a| !a.is_object())
         || parsed.filters.as_ref().is_some_and(|f| !f.is_object())
@@ -114,6 +155,7 @@ pub(crate) fn split_previous(previous: Value) -> Result<(ResolvedPluginView, Val
         return Err(invalid());
     };
     let data = object.remove("data").unwrap_or(Value::Null);
+    object.remove("conversationId");
     let view = serde_json::from_value(Value::Object(object)).map_err(|_| invalid())?;
     Ok((view, data))
 }
@@ -198,14 +240,32 @@ pub(crate) fn refresh_continues(
 /// A page view as the bindings return it: the view plus `data`, what it was
 /// resolved against (the first page's source result, or the arguments), which
 /// the host passes back with a page action.
-pub(crate) fn page_view(view: &ResolvedPluginView, data: Option<Value>) -> Result<Value> {
+pub(crate) fn page_view(
+    view: &ResolvedPluginView,
+    data: Option<Value>,
+    conversation: Option<&str>,
+) -> Result<Value> {
     let mut value = serde_json::to_value(view).map_err(|_| invalid())?;
     if view.available
         && let (Some(data), Some(object)) = (data, value.as_object_mut())
     {
         object.insert("data".into(), data);
     }
+    if let Some(conversation) = conversation {
+        value["conversationId"] = conversation.into();
+    }
     Ok(value)
+}
+
+/// Carry host route context alongside navigation, never inside plugin arguments.
+pub(crate) fn page_navigation(mut result: Value, conversation: Option<&str>) -> Value {
+    if result["kind"] == "host"
+        && result["target"]["kind"] == "page"
+        && let Some(conversation) = conversation
+    {
+        result["conversationId"] = conversation.into();
+    }
+    result
 }
 
 /// Why a page whose source call failed with `error` is inert, when the
@@ -215,7 +275,7 @@ pub(crate) fn inert_reason(error: &FlareError) -> Option<UiUnavailableReason> {
         return None;
     };
     Some(match reason.as_str() {
-        "sdk.plugin.disabled" => UiUnavailableReason::Disabled,
+        "sdk.plugin.disabled" | "sdk.plugin.feature_disabled" => UiUnavailableReason::Disabled,
         "sdk.plugin.not_installed" => UiUnavailableReason::NotInstalled,
         "sdk.plugin.permission_denied" => UiUnavailableReason::NoPermission,
         "sdk.plugin.unsupported_platform" => UiUnavailableReason::UnsupportedPlatform,
@@ -297,6 +357,7 @@ pub(crate) fn prepare_page_action(
     catalog: &UiCatalog,
     request: &PageActionRequest,
 ) -> Result<PreparedAction> {
+    let action_now_ms = now_ms();
     let target = catalog
         .action(
             tenant,
@@ -306,9 +367,38 @@ pub(crate) fn prepare_page_action(
             request.platform,
             &request.native_allowlist,
             request.user_gesture,
-            now_ms(),
+            action_now_ms,
         )
-        .map_err(|_| unavailable())?;
+        .map_err(|error| {
+            use flare_plugin_protocol::ProtocolError::Denied;
+            let reason = match error {
+                Denied("UI action unavailable") if tenant != catalog.tenant_id => "tenant_mismatch",
+                Denied("UI action unavailable") if action_now_ms >= catalog.valid_until_ms => {
+                    "catalog_expired"
+                }
+                Denied("UI action unavailable") if !request.user_gesture => "gesture_required",
+                Denied("UI action unavailable") => "action_missing",
+                Denied("UI plugin unavailable") => "plugin_or_platform_unavailable",
+                Denied("UI contribution unavailable") => "contribution_unavailable",
+                Denied("UI operation unavailable") => "operation_unavailable",
+                Denied("UI page unavailable") => "target_page_unavailable",
+                Denied("native capability unavailable") => "native_capability_unavailable",
+                Denied("invalid UI document bounds") => "schema_document_bounds",
+                Denied("invalid UI presentation") => "schema_presentation",
+                Denied("invalid UI translation") => "schema_translation",
+                Denied("invalid UI field") => "schema_field",
+                Denied("invalid UI input") => "schema_input",
+                Denied("invalid UI input condition") => "schema_input_condition",
+                Denied("invalid UI action bindings") => "schema_action_bindings",
+                Denied("invalid UI action condition") => "schema_action_condition",
+                Denied("invalid UI action form") => "schema_action_form",
+                Denied("invalid UI action") => "schema_action",
+                Denied("invalid UI block") => "schema_block",
+                Denied("invalid UI action placement") => "schema_action_placement",
+                _ => "other_protocol_error",
+            };
+            admission_unavailable("action", reason)
+        })?;
     let context = flare_plugin_protocol::ui::UiRenderContext {
         tenant,
         platform: request.platform,

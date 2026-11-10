@@ -25,6 +25,8 @@ struct Fixture {
     business_error: Arc<SyncMutex<Option<String>>>,
     #[cfg_attr(not(feature = "storage-sqlite"), allow(dead_code))]
     observation: Arc<SyncMutex<Option<Value>>>,
+    #[cfg_attr(not(feature = "storage-sqlite"), allow(dead_code))]
+    observation_identity: Arc<SyncMutex<Option<(String, String)>>>,
     /// The next call is refused by the plugin: Core answers HTTP 422 with this code.
     #[cfg_attr(not(feature = "storage-sqlite"), allow(dead_code))]
     rejection: Arc<SyncMutex<Option<String>>>,
@@ -55,6 +57,7 @@ impl Fixture {
                 manifest_digest: format!("sha256:{}", "a".repeat(64)),
                 grant_revision: 1,
                 extensions: manifest.client_extensions,
+                query_operations: Default::default(),
                 operations: ["example.poll.vote".into(), "example.poll.details".into()].into(),
                 configuration: Default::default(),
             }],
@@ -70,6 +73,8 @@ impl Fixture {
         let next_error = business_error.clone();
         let observation = Arc::new(SyncMutex::new(None::<Value>));
         let observed = observation.clone();
+        let observation_identity = Arc::new(SyncMutex::new(None::<(String, String)>));
+        let observed_identity = observation_identity.clone();
         let rejection = Arc::new(SyncMutex::new(None::<String>));
         let refused = rejection.clone();
         let vote_result = Arc::new(SyncMutex::new(json!({"status":"recorded"})));
@@ -158,6 +163,17 @@ impl Fixture {
                             "requestDigest":flare_plugin_protocol::runtime::configuration_digest(&body["payload"]).unwrap(),
                             "outcome":"committed","result":{"status":"recorded"}
                         }))
+                } else if body["capabilityId"] == "example.poll.observe" {
+                    if h.load(Ordering::SeqCst) {
+                        e.notify_one();
+                        r.notified().await;
+                    }
+                    observed.lock().unwrap().clone().unwrap_or_else(|| json!({
+                        "commandId":body["payload"]["commandId"],
+                        "capabilityId":body["payload"]["capabilityId"],
+                        "requestDigest":flare_plugin_protocol::runtime::configuration_digest(&body["payload"]["payload"]).unwrap(),
+                        "outcome":"committed","result":{"success":true,"data":{"status":"recorded"}}
+                    }))
                 } else {
                     assert_eq!(body["capabilityId"], "example.poll.vote");
                     assert_eq!(body["conversationId"], "conversation-1");
@@ -165,11 +181,22 @@ impl Fixture {
                     voted.lock().unwrap().clone()
                 };
                 let error_code = next_error.lock().unwrap().take();
+                let (plugin_id, capability_id) =
+                    if body["capabilityId"] == "example.poll.observe" {
+                        observed_identity.lock().unwrap().take().unwrap_or_else(|| {
+                            ("example.poll".into(), "example.poll.observe".into())
+                        })
+                    } else {
+                        (
+                            "example.poll".into(),
+                            body["capabilityId"].as_str().unwrap().into(),
+                        )
+                    };
                 let result = CapabilityDispatchResult {
                     request_id: body["requestId"].as_str().unwrap().into(),
                     success: error_code.is_none(),
-                    plugin_id: "example.poll".into(),
-                    capability_id: body["capabilityId"].as_str().unwrap().into(),
+                    plugin_id,
+                    capability_id,
                     data: error_code.map_or(data, |code| json!({"errorCode":code})),
                     error: None,
                 };
@@ -202,6 +229,7 @@ impl Fixture {
             drop_next,
             business_error,
             observation,
+            observation_identity,
             rejection,
             vote_result,
             availability,
@@ -209,6 +237,10 @@ impl Fixture {
         }
     }
 }
+
+#[cfg(feature = "storage-sqlite")]
+#[path = "capability_page_observe_tests.rs"]
+mod page_observe;
 #[cfg(feature = "storage-sqlite")]
 #[tokio::test]
 async fn page_acknowledging_a_known_refusal_succeeds_without_repeating_the_command() {
@@ -230,8 +262,10 @@ async fn page_acknowledging_a_known_refusal_succeeds_without_repeating_the_comma
     let ack: UiPageCommand =
         serde_json::from_value(json!({"slot":"example.poll.workflow","mode":"acknowledge"}))
             .unwrap();
+    let catalog = f.catalog.lock().unwrap().clone();
     let call = || PageCommandCall {
         plugin: "example.poll",
+        catalog: &catalog,
         viewer: "u1",
         operation: "example.poll.wallet",
         payload: json!({}),
@@ -1370,4 +1404,160 @@ async fn composer_priority_comes_from_current_client_visible_plugin_configuratio
         .await
         .unwrap();
     assert_eq!(fallback[0].order, 0);
+}
+
+/// The forward-compatibility guard: `plugin_catalog_newer.json` is a catalog
+/// from a server newer than this client, and hosts hand it back raw. What this
+/// client cannot read (an unknown contribution kind, an unknown field) costs
+/// only that contribution or plugin, the same through `parse_catalog` and both
+/// request APIs.
+#[tokio::test]
+async fn a_catalog_from_a_newer_server_costs_only_what_this_client_cannot_read() {
+    use crate::extension::capability::ui;
+    use flare_plugin_protocol::{
+        manifest::UiContribution,
+        ui::{UiUnavailablePlugin, UiUnavailableReason},
+    };
+    use serde_json::from_value;
+
+    let raw: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/vectors/plugin_catalog_newer.json"
+    )))
+    .unwrap();
+    // A strict read refuses every plugin here, so nothing below passes by accident.
+    for plugin in raw["plugins"].as_array().unwrap() {
+        assert!(from_value::<ClientPlugin>(plugin.clone()).is_err());
+    }
+    let readable: Vec<_> = raw["plugins"][0]["extensions"]["contributions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| from_value::<UiContribution>((*c).clone()).is_ok())
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(readable, ["example.poll.card", "example.poll.tally"]);
+
+    let catalog = ui::parse_catalog(&raw).unwrap();
+    assert_eq!(catalog.plugins.len(), 1);
+    assert_eq!(catalog.plugins[0].plugin_id, "example.poll");
+    let contributions: Vec<_> = catalog.plugins[0]
+        .extensions
+        .contributions
+        .iter()
+        .map(|c| c.id.as_str())
+        .collect();
+    assert_eq!(contributions, ["example.poll.card", "example.poll.tally"]);
+    assert_eq!(
+        catalog.unavailable,
+        [
+            UiUnavailablePlugin {
+                plugin_id: "example.off".into(),
+                reason: UiUnavailableReason::Disabled,
+            },
+            UiUnavailablePlugin {
+                plugin_id: "example.newer".into(),
+                reason: UiUnavailableReason::IncompatibleVersion,
+            },
+        ]
+    );
+
+    let f = Fixture::new().await;
+    let resolve_request = |catalog: &Value, plugin: &str, contribution: &str| {
+        json!({
+            "catalog": catalog, "platform": "ios",
+            "message": {"pluginId": plugin, "contributionId": contribution, "schemaVersion": 1,
+                        "summary": "Poll", "payload": {"pollId": "poll-1", "question": "Lunch?"}},
+        })
+    };
+    let action_request = |catalog: &Value, plugin: &str, contribution: &str| {
+        json!({
+            "catalog": catalog, "platform": "ios", "pluginId": plugin,
+            "contributionId": contribution, "actionId": "vote", "nativeAllowlist": [],
+            "userGesture": true, "payload": {"pollId": "poll-1"},
+        })
+    };
+
+    // The contributions around the unreadable ones still work.
+    for (contribution, title) in [
+        ("example.poll.card", "Poll"),
+        ("example.poll.tally", "Tally"),
+    ] {
+        let view = f
+            .api
+            .resolve_plugin_message(resolve_request(&raw, "example.poll", contribution))
+            .await
+            .unwrap();
+        assert_eq!(view["available"], true, "{contribution}");
+        assert_eq!(view["title"], title, "{contribution}");
+        assert_eq!(view["fields"][0]["value"], "Lunch?", "{contribution}");
+        let action = f
+            .api
+            .plugin_ui_action(action_request(&raw, "example.poll", contribution))
+            .await
+            .unwrap();
+        assert_eq!(
+            action["target"]["operation"], "example.poll.vote",
+            "{contribution}"
+        );
+        assert_eq!(
+            action["payload"],
+            json!({"pollId": "poll-1"}),
+            "{contribution}"
+        );
+    }
+
+    // What was dropped is an inert card and an unavailable action, not a failed request.
+    for (plugin, contribution) in [
+        ("example.poll", "example.poll.hologram"),
+        ("example.poll", "example.poll.anchored"),
+        ("example.newer", "example.newer.card"),
+    ] {
+        let view = f
+            .api
+            .resolve_plugin_message(resolve_request(&raw, plugin, contribution))
+            .await
+            .unwrap();
+        assert_eq!(view["available"], false, "{contribution}");
+        assert_eq!(
+            view["unavailableReason"], "incompatible_version",
+            "{contribution}"
+        );
+        let error = f
+            .api
+            .plugin_ui_action(action_request(&raw, plugin, contribution))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("sdk.plugin.ui_action_unavailable"),
+            "{contribution}: {error}"
+        );
+    }
+
+    // Only an unreadable envelope refuses the request.
+    let unreadable = json!({"tenantId": "201", "plugins": []});
+    for refused in [
+        f.api
+            .resolve_plugin_message(resolve_request(
+                &unreadable,
+                "example.poll",
+                "example.poll.card",
+            ))
+            .await,
+        f.api
+            .plugin_ui_action(action_request(
+                &unreadable,
+                "example.poll",
+                "example.poll.card",
+            ))
+            .await,
+    ] {
+        let error = refused.unwrap_err();
+        assert!(
+            error.to_string().contains("sdk.plugin.invalid_ui_request"),
+            "{error}"
+        );
+    }
 }

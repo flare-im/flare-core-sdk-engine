@@ -120,12 +120,18 @@ struct ConversationListViewRegistration {
 
 impl ViewRegistrations {
     /// 同一会话打开两个视图时，后打开的替换先打开的。
-    fn insert_timeline(&mut self, view_id: String, registration: TimelineViewRegistration) {
+    fn insert_timeline(&mut self, view_id: String, registration: TimelineViewRegistration) -> bool {
         let conversation_id = registration.window.conversation_id.clone();
+        if self.timelines.values().any(|view| {
+            view.window.conversation_id == conversation_id && view.order > registration.order
+        }) {
+            return false;
+        }
         self.timelines
             .retain(|_, view| view.window.conversation_id != conversation_id);
-        self.timelines.insert(view_id, registration);
+        self.timelines.insert(view_id.clone(), registration);
         evict_oldest(&mut self.timelines, MAX_TIMELINE_VIEWS);
+        self.timelines.contains_key(&view_id)
     }
 
     fn insert_conversation_list(
@@ -242,22 +248,20 @@ impl ViewApi {
     ) -> Result<ViewOpenResponse> {
         let conversation_id = request.conversation_id.trim().to_string();
         let page_size = normalized_message_limit(request.message_limit);
-        // 注意力信号：打开的会话升为前台，后续收敛优先补齐它（秒展示）。app 打开会话即自动触发。
-        // I5：同时立即定向补拉该会话（P0 中断，不等下一轮收敛）——本地快照仍即时返回不被网络阻塞。
+        // Invocation order, not network completion order, decides which same-conversation view wins.
+        let (view_id, order) = self.next_view_id("timeline");
         if !conversation_id.is_empty() {
             self.inner.attention.open_timeline(&conversation_id);
-            self.spawn_foreground_pull(&conversation_id);
         }
         let window = match request.anchor.filter(anchor_is_set) {
             Some(anchor) => {
                 self.window_around(&conversation_id, page_size, &anchor)
                     .await?
             }
-            None => self.latest_window(&conversation_id, page_size).await?,
+            None => self.open_latest_window(&conversation_id, page_size).await?,
         };
         let snapshot = window.snapshot();
-        let (view_id, order) = self.next_view_id("timeline");
-        self.inner.views.write().await.insert_timeline(
+        let registered = self.inner.views.write().await.insert_timeline(
             view_id.clone(),
             TimelineViewRegistration {
                 page_size,
@@ -266,11 +270,59 @@ impl ViewApi {
                 window,
             },
         );
+        // Register before starting the foreground pull: its events must have a view to refresh.
+        // A known local window still returns without waiting for this background freshness read.
+        if registered && !conversation_id.is_empty() {
+            self.spawn_foreground_pull(&conversation_id);
+        }
         Ok(ViewOpenResponse {
             view_id,
             revision: 1,
             snapshot: ViewSnapshot::Timeline(snapshot),
         })
+    }
+
+    /// An empty latest covered range can contain only non-message events while an older visible
+    /// message sits below a coverage gap. The sync cursor is already past that gap, so a forward
+    /// sync cannot repair this first screen. Read one bounded historical page before declaring the
+    /// conversation empty; pending rows alone are not a materialized history window either.
+    ///
+    /// Existing local history remains local-first. Unknown history uses the same page/fetch budget
+    /// and visibility/coverage rules as load-older, without advancing the synchronization cursor.
+    async fn open_latest_window(
+        &self,
+        conversation_id: &str,
+        page_size: u32,
+    ) -> Result<TimelineWindow> {
+        let window = self.latest_window(conversation_id, page_size).await?;
+        if window.oldest_seq().is_some() || !window.has_older {
+            return Ok(window);
+        }
+        let page = match crate::shared::util::time::timeout(
+            Duration::from_secs(crate::shared::util::REQUEST_TIMEOUT_SECS),
+            self.read_older_page(conversation_id, None, page_size as usize),
+        )
+        .await
+        {
+            Ok(page) => page?,
+            Err(_) => PageRead::older(Vec::new(), true).failed(FlareError::localized(
+                ErrorCode::NetworkTimeout,
+                "sdk.view.timeline_timeout",
+            )),
+        };
+        // A proof-only page can unlock rows already on disk. Re-read instead of relying on a
+        // message-arrival event, and include a live message/pending send that arrived meanwhile.
+        let window = self.latest_window(conversation_id, page_size).await?;
+        if window.oldest_seq().is_none() && window.has_older {
+            if let Some(error) = page.error {
+                return Err(error);
+            }
+            return Err(FlareError::localized(
+                ErrorCode::ServiceUnavailable,
+                "sdk.view.timeline_incomplete",
+            ));
+        }
+        Ok(window)
     }
 
     /// I5：打开会话触发一次该会话定向补拉（fire-and-forget）。best-effort：
@@ -293,9 +345,53 @@ impl ViewApi {
                 );
             }
             if let Some(inner) = inner.upgrade() {
+                // A local write/event may have completed after the initial snapshot was read
+                // but before the view was registered. A completed pull (including a no-op)
+                // closes that opening race without relying on another message arriving.
+                let api = Self {
+                    inner: inner.clone(),
+                };
+                api.repair_empty_foreground_windows(&conversation_id).await;
+                api.reread_windows(&ViewRefreshTarget::conversation(&conversation_id))
+                    .await;
                 inner.foreground_pull.finish(&conversation_id);
             }
         });
+    }
+
+    /// The foreground pull can discover history after an initially true-empty local snapshot.
+    /// Resolve an empty latest window with the same bounded proof read as initial open; never
+    /// replace a located window, a closed/replaced view, or live sent rows received meanwhile.
+    async fn repair_empty_foreground_windows(&self, conversation_id: &str) {
+        let targets = self
+            .timeline_views(|_, view| {
+                (view.window.conversation_id == conversation_id
+                    && view.window.attached_to_latest
+                    && view.window.oldest_seq().is_none())
+                .then_some(view.page_size)
+            })
+            .await;
+        for (view_id, page_size) in targets {
+            let mut latest = match self.open_latest_window(conversation_id, page_size).await {
+                Ok(latest) => latest,
+                Err(error) => {
+                    warn_refresh(&view_id, &error);
+                    continue;
+                }
+            };
+            let update = {
+                let mut views = self.inner.views.write().await;
+                let Some(view) = views.timelines.get_mut(&view_id) else {
+                    continue;
+                };
+                if !view.window.attached_to_latest || view.window.oldest_seq().is_some() {
+                    continue;
+                }
+                merge_live(&mut latest, &view.window.messages);
+                commit_timeline(&view_id, view, latest, CompareRows::All)
+            };
+            self.publish(update);
+        }
     }
 
     /// 最新窗口：比最高已证实 seq 新的行与待发送行照收，其余的行必须落在接着最新的那段区间里。
@@ -807,7 +903,7 @@ impl ViewApi {
         conversation_id: &str,
         page_size: u32,
     ) -> Result<TimelineViewPageResponse> {
-        let latest = self.latest_window(conversation_id, page_size).await?;
+        let latest = self.open_latest_window(conversation_id, page_size).await?;
         let loaded_count = latest.messages.len() as u32;
         let (revision, update) = {
             let mut views = self.inner.views.write().await;
@@ -2268,6 +2364,10 @@ mod harness;
 #[cfg(test)]
 #[path = "view_paging_tests.rs"]
 mod paging_tests;
+
+#[cfg(test)]
+#[path = "view_open_tests.rs"]
+mod open_tests;
 
 #[cfg(test)]
 #[path = "view_window_tests.rs"]

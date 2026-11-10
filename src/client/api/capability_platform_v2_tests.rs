@@ -810,18 +810,24 @@ async fn concurrent_presentations_share_one_catalog_read_and_keep_none() {
     assert!(announced.contains(&"server-1".to_string()), "{announced:?}");
     assert!(announced.contains(&"server-2".to_string()), "{announced:?}");
 
-    // A plugin answering "disabled" does the same for its cards by itself.
-    f.fail("example.poll.vote", 403, "PLUGIN_DISABLED");
-    let error = f
-        .api
-        .invoke_plugin_action(json!({
-            "message": poll(), "platform": "ios", "actionId": "vote", "userGesture": true,
-            "messageId": "server-1", "selection": [0]
-        }))
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("sdk.plugin.disabled"), "{error}");
-    assert!(f.state_changes().iter().any(|(id, _)| id == "server-1"));
+    // A plugin answering "disabled", for itself or for the feature of the call, does the same
+    // for its cards by itself.
+    for (reason, key) in [
+        ("PLUGIN_DISABLED", "sdk.plugin.disabled"),
+        ("PLUGIN_FEATURE_DISABLED", "sdk.plugin.feature_disabled"),
+    ] {
+        f.fail("example.poll.vote", 403, reason);
+        let error = f
+            .api
+            .invoke_plugin_action(json!({
+                "message": poll(), "platform": "ios", "actionId": "vote", "userGesture": true,
+                "messageId": "server-1", "selection": [0]
+            }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(key), "{error}");
+        assert!(f.state_changes().iter().any(|(id, _)| id == "server-1"));
+    }
     // A card that turned inert is still remembered, and announced again on the next change.
     f.fail(CATALOG, 503, "UPSTREAM_DOWN");
     let inert = f

@@ -112,9 +112,8 @@ pub(crate) fn verify_enterprise_compliance_gate(root: &Path) -> Result<()> {
         &[
             "compliance-text-check",
             "require_success = true",
-            "audit-log-sink",
-            "post_send",
-            "recall-audit",
+            "audit-text-tagger",
+            "pre_send",
         ],
     );
 

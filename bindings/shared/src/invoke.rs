@@ -33,6 +33,7 @@ pub async fn invoke_api_id_json(
     api_id: &str,
     request_json: &str,
 ) -> Result<BindingResponse> {
+    crate::dispatch_support::validate_json_request_size(api_id, request_json)?;
     let normalized = normalize_operation_json(api_id, request_json)?;
     invoke_normalized_json(session, &normalized.name, normalized.request.as_ref()).await
 }
@@ -172,29 +173,9 @@ async fn invoke_normalized(
             capability::dispatch_capability(&api, &session.client(), "capability_list", request)
                 .await
         }
-        "capability.list_user" => {
-            let api = session.capability_api().await?;
-            capability::dispatch_capability(
-                &api,
-                &session.client(),
-                "capability_list_user",
-                request,
-            )
-            .await
-        }
         "capability.dispatch" => {
             let api = session.capability_api().await?;
             capability::dispatch_capability(&api, &session.client(), "capability_dispatch", request)
-                .await
-        }
-        "capability.grant" => {
-            let api = session.capability_api().await?;
-            capability::dispatch_capability(&api, &session.client(), "capability_grant", request)
-                .await
-        }
-        "capability.revoke" => {
-            let api = session.capability_api().await?;
-            capability::dispatch_capability(&api, &session.client(), "capability_revoke", request)
                 .await
         }
         name if name.starts_with("capability.") => {
@@ -216,6 +197,7 @@ pub async fn invoke_normalized_json(
     route: &str,
     request_json: &str,
 ) -> Result<BindingResponse> {
+    crate::dispatch_support::validate_json_request_size(route, request_json)?;
     if crate::generated::direct_invoke::is_direct_invoke_route(route) {
         return crate::generated::direct_invoke::dispatch_direct_json(session, route, request_json)
             .await;
@@ -262,42 +244,12 @@ pub async fn invoke_normalized_json(
             )
             .await
         }
-        "capability.list_user" => {
-            let api = session.capability_api().await?;
-            capability::dispatch_capability_json(
-                &api,
-                &session.client(),
-                "capability_list_user",
-                request_json,
-            )
-            .await
-        }
         "capability.dispatch" => {
             let api = session.capability_api().await?;
             capability::dispatch_capability_json(
                 &api,
                 &session.client(),
                 "capability_dispatch",
-                request_json,
-            )
-            .await
-        }
-        "capability.grant" => {
-            let api = session.capability_api().await?;
-            capability::dispatch_capability_json(
-                &api,
-                &session.client(),
-                "capability_grant",
-                request_json,
-            )
-            .await
-        }
-        "capability.revoke" => {
-            let api = session.capability_api().await?;
-            capability::dispatch_capability_json(
-                &api,
-                &session.client(),
-                "capability_revoke",
                 request_json,
             )
             .await

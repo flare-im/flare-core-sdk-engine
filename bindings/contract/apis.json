@@ -1056,6 +1056,12 @@
           "tauri": "sdk_message_dispatch_json"
         },
         {
+          "id": "capability.plugin_file_upload",
+          "core": "CapabilityApi::plugin_file_upload",
+          "c": "flare_capability_dispatch_json:plugin_file_upload",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
           "id": "capability.plugin_account_entries",
           "core": "CapabilityApi::plugin_account_entries",
           "c": "flare_capability_dispatch_json:plugin_account_entries",
@@ -1074,27 +1080,9 @@
           "tauri": "sdk_message_dispatch_json"
         },
         {
-          "id": "capability.list_user",
-          "core": "CapabilityApi::list_user_capabilities",
-          "c": "flare_capability_dispatch_json:capability_list_user",
-          "tauri": "sdk_message_dispatch_json"
-        },
-        {
           "id": "capability.dispatch",
           "core": "CapabilityApi::dispatch",
           "c": "flare_capability_dispatch_json:capability_dispatch",
-          "tauri": "sdk_message_dispatch_json"
-        },
-        {
-          "id": "capability.grant",
-          "core": "CapabilityApi::grant_user_capability",
-          "c": "flare_capability_dispatch_json:capability_grant",
-          "tauri": "sdk_message_dispatch_json"
-        },
-        {
-          "id": "capability.revoke",
-          "core": "CapabilityApi::revoke_user_capability",
-          "c": "flare_capability_dispatch_json:capability_revoke",
           "tauri": "sdk_message_dispatch_json"
         }
       ]

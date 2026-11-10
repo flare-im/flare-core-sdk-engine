@@ -259,7 +259,8 @@ mod tests {
     #[test]
     fn key_cert_validate_stops_what_should_not_be_signed() {
         assert_eq!(cert().validate(), Ok(()));
-        let cases: [(&str, fn(&mut KeyCert)); 8] = [
+        type CertificateMutation = fn(&mut KeyCert);
+        let cases: [(&str, CertificateMutation); 8] = [
             ("keyid", |c| c.key_id = "ok/1".into()),
             ("publicKey", |c| c.public_key = "AQ".into()),
             ("usages", |c| c.usages = vec![]),
