@@ -1399,6 +1399,13 @@ impl Supervisor {
         self.manifest_move_at = None;
         self.resume_after_probe = false;
         let loss = classify_loss(&reason);
+        // 在线连接被升级门槛拒绝：与建连时被拒一样记下最低构建号，再终止。
+        if let DisconnectReason::Rejected(rejection) = &reason
+            && classify_rejection(rejection)
+                == RejectionKind::Terminal(ActionRequiredReason::UpgradeRequired)
+        {
+            self.access.note_upgrade_required(rejection.min_build);
+        }
         match &loss {
             LinkLoss::Failed(class) => self.access.record(
                 &live.access_point_id,

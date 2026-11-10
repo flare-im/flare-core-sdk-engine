@@ -51,10 +51,12 @@ fn updater_target() -> Option<String> {
     Some(format!("{os}-{arch}"))
 }
 
-/// Tauri 宿主的版本号由运行时自带（`tauri.conf.json` 的 `version`），零依赖就能拿到，渠道恒为
-/// `tauri`；CONNECT 时随设备信息上报。桌面目标也在这里补（见 [`updater_target`]）。只补前端没给的
-/// 项，前端显式传入的值优先。构建号与更新通道 Tauri 没有独立来源，需要时由前端经
-/// `sdkConfig.app.build` / `sdkConfig.app.channel` 传入。
+/// Tauri 宿主的版本号由运行时自带（`tauri.conf.json` 的 `version`），零依赖就能拿到；CONNECT 时随
+/// 设备信息上报。桌面目标也在这里补（见 [`updater_target`]）。只补前端没给的项，前端显式传入的值
+/// 优先，唯一的例外是桌面的渠道：服务端门禁和发布清单只认 `distribution = "tauri"` 才把桌面当作
+/// Tauri 外壳（其余取值不设门禁、不查清单），所以桌面上恒为 `tauri`。移动端前端没给时也填 `tauri`。
+/// 构建号与更新通道 Tauri 没有独立来源，需要时由前端经 `sdkConfig.app.build` /
+/// `sdkConfig.app.channel` 传入。
 pub fn with_tauri_app_info(
     sdk_config: Option<SdkConfigOverlay>,
     package_version: String,
@@ -67,11 +69,12 @@ pub fn with_tauri_app_info(
     if is_blank(app.version.as_deref()) && !package_version.trim().is_empty() {
         app.version = Some(package_version);
     }
-    if is_blank(app.distribution.as_deref()) {
+    let desktop = updater_target();
+    if desktop.is_some() || is_blank(app.distribution.as_deref()) {
         app.distribution = Some("tauri".to_string());
     }
     if is_blank(app.target.as_deref()) {
-        app.target = updater_target();
+        app.target = desktop;
     }
     overlay
 }
@@ -107,7 +110,12 @@ mod app_info_tests {
         let app = explicit.app.expect("app info is kept");
         assert_eq!(app.version.as_deref(), Some("2.4.1-hotfix"));
         assert_eq!(app.build, Some(241));
-        assert_eq!(app.distribution.as_deref(), Some("direct"));
+        let expected = if super::updater_target().is_some() {
+            "tauri"
+        } else {
+            "direct"
+        };
+        assert_eq!(app.distribution.as_deref(), Some(expected));
         assert_eq!(app.channel.as_deref(), Some("beta"));
         assert_eq!(app.target.as_deref(), Some("linux-riscv64"));
     }

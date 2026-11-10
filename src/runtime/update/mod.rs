@@ -42,17 +42,14 @@ enum CheckTrigger {
     Pushed,
 }
 
-/// 发布清单路径里的平台段。浏览器是 `web`；桌面是 Tauri 或 Electron 外壳（§8.10）。
+/// 发布清单路径里的平台段：与服务端门禁同一个映射（`flare_access::manifest::release_platform`），
+/// 输入是这台设备在 CONNECT 里报的平台。浏览器是 `web`；桌面按 `distribution` 分 Tauri 与 Electron
+/// 外壳（§8.10），认不出外壳（没给或 `direct` 之类）时与服务端一样不设门禁：返回空段，
+/// `UpdateApp::can_check` 为假，不查发布清单。鸿蒙没有发布清单，同样是空段。
 fn release_platform(distribution: Option<&str>) -> &'static str {
-    if cfg!(target_arch = "wasm32") {
-        return "web";
-    }
-    match std::env::consts::OS {
-        "android" => "android",
-        "ios" => "ios",
-        _ if distribution == Some("electron") => "electron",
-        _ => "tauri",
-    }
+    let device_platform =
+        crate::infrastructure::transport::socket::socket_client::connect_device_platform();
+    flare_access::manifest::release_platform(device_platform.as_str(), distribution).unwrap_or("")
 }
 
 /// 更新中心需要的本机信息。

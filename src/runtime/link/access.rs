@@ -170,6 +170,8 @@ pub struct AccessRuntime {
     changes: broadcast::Sender<DirectoryChange>,
     /// 更新中心。放在这里是因为它和接入运行时一样跨会话，链路、HTTP 路由、租户通知手里都有这份运行时。
     update: Mutex<Option<Arc<UpdateRuntime>>>,
+    /// 最近一次 CONNECT 被 `UPGRADE_REQUIRED` 拒绝的时刻与服务端带来的最低构建号，只进诊断导出。
+    upgrade_refusal: Mutex<Option<(i64, Option<u64>)>>,
     #[cfg(not(target_arch = "wasm32"))]
     dial_rewrite: Option<DialRewrite>,
     /// IM 拨号、REST 与引导拉取共用一份。
@@ -219,6 +221,7 @@ impl AccessRuntime {
             refresher: Mutex::new(None),
             changes: broadcast::channel(CHANGE_CHANNEL_CAPACITY).0,
             update: Mutex::new(None),
+            upgrade_refusal: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
             dial_rewrite: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -668,6 +671,7 @@ impl AccessRuntime {
 
     /// 服务端拒绝了这个版本（网关 `UPGRADE_REQUIRED`、REST 426）：更新中心进 `required` 与只读。
     pub(crate) fn note_upgrade_required(&self, min_build: Option<u64>) {
+        *lock(&self.upgrade_refusal) = Some((now_ms(), min_build));
         if let Some(update) = self.update() {
             update.rejected(min_build);
         }
@@ -858,6 +862,10 @@ impl AccessRuntime {
             "warnings": self.diagnostic_warnings(loaded.as_ref()),
             "udpBlockedUntilMs": self.kernel_now().and_then(|kernel| {
                 kernel.health().udp_blocked_until(self.net(), now_ms())
+            }),
+            // 网关在 CONNECT 拒绝里带来的最低构建号：分辨「被网关拒」与「只从发布清单得知要升级」。
+            "upgradeRefusal": lock(&self.upgrade_refusal).map(|(at_ms, min_build)| {
+                serde_json::json!({ "atMs": at_ms, "minBuild": min_build })
             }),
             "bootstrap": self.kernel_now().map(|kernel| {
                 let snapshot = kernel.directory().snapshot();
@@ -1079,6 +1087,18 @@ mod tests {
         );
         let diagnostics = runtime.export_diagnostics().to_string();
         assert!(!diagnostics.contains("token"));
+    }
+
+    #[test]
+    fn an_upgrade_refusal_is_exported_with_its_minimum_build() {
+        let runtime = AccessRuntime::new(None, AccessStoreSource::memory());
+        assert!(runtime.export_diagnostics()["upgradeRefusal"].is_null());
+        runtime.note_upgrade_required(Some(20302));
+        let refusal = &runtime.export_diagnostics()["upgradeRefusal"];
+        assert_eq!(refusal["minBuild"], 20302);
+        assert!(refusal["atMs"].as_i64().unwrap() > 0);
+        runtime.note_upgrade_required(None);
+        assert!(runtime.export_diagnostics()["upgradeRefusal"]["minBuild"].is_null());
     }
 
     #[tokio::test]

@@ -21,6 +21,6 @@ pub use recovery::{
 };
 pub use release::{
     ArtifactTarget, BlockedBuilds, ReleaseArtifact, ReleaseEntry, ReleaseManifest, ReleasePolicy,
-    ResourcePack, Rollout, is_valid_path_segment,
+    ResourcePack, Rollout, is_valid_path_segment, normalize_device_platform, release_platform,
 };
 pub use schema::{DocType, MAX_DOCUMENT_BYTES};

@@ -281,6 +281,18 @@ mod tests {
         }
     }
 
+    /// 与验收脚本 `scripts/access_acceptance.py` 的 `BUCKET_GOLDEN` 是同一组值：脚本按它断言自己的
+    /// 分桶实现，这里按它断言客户端的，两边不会悄悄分叉。
+    #[test]
+    fn the_bucket_matches_the_acceptance_golden_vector() {
+        for (install_id, salt, expected) in [
+            ("install-00042", "rel_01JC8WGOLDEN", 1274),
+            ("7f3c1e9a-golden", "salt-0001", 8848),
+        ] {
+            assert_eq!(bucket(install_id, salt), expected, "{install_id} / {salt}");
+        }
+    }
+
     #[test]
     fn the_bucket_is_stable_and_in_range() {
         assert_eq!(bucket("install-1", "rel_a"), bucket("install-1", "rel_a"));

@@ -14,6 +14,7 @@ pub use crate::application::{
     LocalConversationVisibility, NotificationDispatchReport, NotificationHandleResult,
     NotificationHandler, ParticipantDisplayProjectionApplier,
 };
+pub use crate::client::connect_platform;
 pub use crate::client::token_broker::HostTokenBroker;
 pub use crate::client::token_provider::ConnectTokenRefresher;
 pub use crate::domain::UserProfile;

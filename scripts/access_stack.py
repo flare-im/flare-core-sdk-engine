@@ -11,6 +11,10 @@ containers and directory, plus what the access control plane needs:
 - one Edge per access point, rendered from the flare-deploy production template, behind an SNI
   router: each access point needs its own address, which a single machine has only by name;
 - RustFS containers: one per simulated cloud mirror (TLS in front, private CA) and the Cell's own.
+  Each mirror's front has a second HTTPS listener (`upload_port`) that is the S3 API itself: release
+  packages are uploaded by presigned URL and copied between mirrors over HTTPS only. The release
+  cases need nothing else from the stack: flare-platform, the Core gateways (build gate on CONNECT)
+  and the Social gateway (426 gate, reads flare_tenant_client_policy) are already part of it.
 
 Every listener binds the loopback address. Names resolve for real: macOS answers *.localhost.
 Clients trust the private CA through the SDK's `tls_ca_cert_path` setting; no system trust store
@@ -24,6 +28,7 @@ FLARE_ACCESS_PROBE_HTTPS_PORT, the test client through AccessLab (examples/acces
   python3 scripts/access_stack.py status
   python3 scripts/access_stack.py ctl stop|start|restart|kill <process>
   python3 scripts/access_stack.py mirror stop|start <a|b|c>   # the mirror's container and TLS front
+  python3 scripts/access_stack.py ap stop|start all|<ap-id>...  # an access point's Edge and gateway
   python3 scripts/access_stack.py down [--destroy]
 
 Secrets stay in ~/.flare-access-lab (mode 0700); nothing secret reaches the repository or the logs.
@@ -118,6 +123,7 @@ class MirrorSite:
     tld: str
     s3_port: int
     tls_port: int
+    upload_port: int
 
     @property
     def id(self):
@@ -144,6 +150,12 @@ class MirrorSite:
         return f"http://127.0.0.1:{self.s3_port}"
 
     @property
+    def upload_endpoint(self):
+        """The HTTPS front of the S3 API (path style, Host passed through so a presigned URL
+        verifies): flare-platform moves release packages over HTTPS only."""
+        return f"https://{self.host}:{self.upload_port}"
+
+    @property
     def front(self):
         return f"mirror-{self.key}"
 
@@ -151,16 +163,27 @@ class MirrorSite:
 # The provider and top-level domain are what the control plane records for a mirror. All of them
 # are simulated here: separate RustFS instances on this machine, not separate clouds.
 MIRRORS = {
-    "a": MirrorSite("a", "sim-aws", "com", ls.port(43901), ls.port(43611)),
-    "b": MirrorSite("b", "sim-aliyun", "cn", ls.port(43902), ls.port(43612)),
-    "c": MirrorSite("c", "sim-tencent", "net", ls.port(43903), ls.port(43613)),
+    "a": MirrorSite("a", "sim-aws", "com", ls.port(43901), ls.port(43611), ls.port(43621)),
+    "b": MirrorSite("b", "sim-aliyun", "cn", ls.port(43902), ls.port(43612), ls.port(43622)),
+    "c": MirrorSite("c", "sim-tencent", "net", ls.port(43903), ls.port(43613), ls.port(43623)),
 }
 CELL_S3_PORT = ls.port(43904)
 CELL_BUCKET = "flare-bootstrap"
+# The third-domain DoH pointer. The resolver and the rescue mirror it points to during an incident
+# are served by access_acceptance.py itself, only while a case needs them; the platform audits the
+# record against this resolver and every manifest lists it as the last source.
+DOH_ZONE = f"boot.{HOST_SUFFIX}"
+DOH_HOST = f"doh.{HOST_SUFFIX}"
+DOH_PORT = ls.port(43630)
+DOH_RESOLVER = f"https://{DOH_HOST}:{DOH_PORT}/dns-query"
+RESCUE_MIRROR_HOST = f"cfg-rescue.sim-rescue.{HOST_SUFFIX}"
+RESCUE_MIRROR_PORT = ls.port(43631)
 EXTRA_PORTS = sorted({PLATFORM_API, PLATFORM_WORKER, PLATFORM_PROBER, SOCIAL_CONTROL, CAPABILITY, CELL_S3_PORT, SNI_PORT,
+                      DOH_PORT, RESCUE_MIRROR_PORT,
                       *(g[0] + 1 for g in ls.GATEWAYS.values()),
                       *(p for g in ls.GATEWAYS.values() for p in g[:3]),
                       *(m.s3_port for m in MIRRORS.values()), *(m.tls_port for m in MIRRORS.values()),
+                      *(m.upload_port for m in MIRRORS.values()),
                       *(s.tls_port for s in SITES.values()), *(s.health_port for s in SITES.values()),
                       *(s.udp_port for s in SITES.values()), *(p for s in SITES.values() for p in s.http_ports)})
 ls.ALL_PORTS = sorted({*ls.ALL_PORTS, *EXTRA_PORTS})
@@ -399,6 +422,22 @@ http {{
         }}
         location / {{ return 404; }}
     }}
+    # Release packages: the S3 API itself over TLS, for presigned uploads and the platform's copies
+    # between mirrors. The Host header is the one the signature covers, so it is passed through.
+    server {{
+        listen 127.0.0.1:{site.upload_port} ssl;
+        server_name {site.host};
+        ssl_certificate {certificate};
+        ssl_certificate_key {key};
+        client_max_body_size 4g;
+        location / {{
+            proxy_pass http://127.0.0.1:{site.s3_port};
+            proxy_set_header Host $http_host;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_request_buffering off;
+        }}
+    }}
 }}
 """
 
@@ -462,9 +501,15 @@ stream {{
 def fronts_up(state):
     ensure_ca()
     for site in MIRRORS.values():
-        if not ls.live(state, site.front):
-            ls.path("nginx", site.front).mkdir(parents=True, exist_ok=True, mode=0o700)
-            nginx_process(state, site.front, mirror_front_source(site))
+        source = mirror_front_source(site)
+        file = ls.path("nginx", site.front, "nginx.conf")
+        if ls.live(state, site.front) and file.exists() and file.read_text() == source:
+            continue
+        if ls.live(state, site.front):
+            # A front rendered by an older `up` (no upload listener): restart it on the new file.
+            ls.signal_process(state, site.front, signal.SIGTERM, wait=10)
+        ls.path("nginx", site.front).mkdir(parents=True, exist_ok=True, mode=0o700)
+        nginx_process(state, site.front, source)
     for site in SITES.values():
         if not ls.live(state, site.edge):
             nginx_process(state, site.edge, edge_source(site))
@@ -496,11 +541,45 @@ def platform_env(lab, role):
         "FLARE_ACCESS_ENVIRONMENT": "production", "FLARE_ACCESS_CREDENTIAL_ENCRYPTION_KEY": lab.access_cipher,
         "FLARE_ACCESS_TRUST_ROOTS": roots, "FLARE_ACCESS_EXTRA_CA_FILE": str(ca_file()),
         "FLARE_ACCESS_PROBE_REGION": REGION, "FLARE_ACCESS_PROBE_HTTPS_PORT": str(SNI_PORT),
+        "FLARE_ACCESS_DOH_ZONE": DOH_ZONE, "FLARE_ACCESS_DOH_RESOLVERS": DOH_RESOLVER,
         "RUST_LOG": "info,sqlx=warn,async_nats=warn",
     }
     if role == "api":
         env["FLARE_PLATFORM_WORKER_DATABASE_URL"] = lab.platform_url("accesslab_platform_worker")
+        # The web-sw case's site is on loopback; production fetches public addresses only.
+        env["FLARE_RELEASE_PRIVATE_FETCH_HOSTS"] = f"web.{HOST_SUFFIX}"
     return env
+
+
+# What flare-platform says when its database was initialized by a build with another initial
+# schema (schema.sql, plugins.sql or seeds.sql changed): it never migrates or adopts that database.
+SCHEMA_DIFFERS = "initial schema differs from this build"
+SCHEMA_REMEDY = (
+    f"the lab's platform database {PG_DATABASE_PLATFORM} was initialized by another flare-platform build: "
+    "its initial schema digest differs and flare-platform refuses it. Re-initialize it with "
+    "`python3 scripts/access_stack.py down --destroy` and then `up` (this drops every lab database and bucket "
+    "and the trust material cached for them), or drop only that database and remove `platformInitialized` from "
+    f"{LAB / 'stack' / 'state.json'} before `up`.")
+
+
+def schema_differs(text):
+    """
+    >>> schema_differs("Error: Platform initial schema differs from this build")
+    True
+    >>> schema_differs("Platform requires its explicit fresh initializer")
+    False
+    """
+    return SCHEMA_DIFFERS in (text or "").lower()
+
+
+def log_tail(file, size=4000):
+    try:
+        with open(file, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - size))
+            return handle.read().decode(errors="replace")
+    except OSError:
+        return ""
 
 
 def platform_process(state, lab, role):
@@ -511,13 +590,22 @@ def platform_process(state, lab, role):
     known = state["processes"][f"platform-{role}"]
 
     def ready():
-        ls.require(ls.process_alive(known["pid"], known["needle"]), f"platform-{role} exited; see {known['log']}")
+        if not ls.process_alive(known["pid"], known["needle"]):
+            ls.require(not schema_differs(log_tail(known["log"])), f"platform-{role} exited: {SCHEMA_REMEDY}")
+            ls.require(False, f"platform-{role} exited; see {known['log']}")
         return ls.port_open(port)
     ls.wait_for(ready, 60, f"platform-{role} :{port}")
 
 
 def platform_database(state, lab):
+    binary = str(ls.TARGET / "flare-platform")
     if state.get("platformInitialized"):
+        # A replay on an initialized database is read-only apart from the permission catalog; it is
+        # what tells a database of another build apart before three processes refuse to start.
+        result = subprocess.run([binary, "initialize"], cwd=str(ls.RUN), text=True, capture_output=True,
+                                env={"PATH": os.defpath, "DATABASE_URL": lab.platform_url("accesslab_platform_migrate")})
+        ls.require(not schema_differs(result.stdout + result.stderr), SCHEMA_REMEDY)
+        ls.require(result.returncode == 0, f"platform initialize: {result.stdout[-500:]} {result.stderr[-800:]}")
         return
     keys = lab.core
     for role, password in lab.db.items():
@@ -525,7 +613,6 @@ def platform_database(state, lab):
         verb = "ALTER" if exists == "1" else "CREATE"
         ls.psql(keys, f"{verb} ROLE \"{role}\" LOGIN PASSWORD '{password}' NOSUPERUSER NOCREATEDB NOCREATEROLE "
                       "NOREPLICATION NOBYPASSRLS;")
-    binary = str(ls.TARGET / "flare-platform")
     roles = ls.run([binary, "db-roles", "--migrator", "accesslab_platform_migrate"], env={"PATH": os.defpath}).stdout
     ls.psql(keys, "SET client_min_messages = warning;\n" + roles)
     ls.psql(keys, "SET client_min_messages = warning;\n"
@@ -647,10 +734,14 @@ def command_ctl(args):
             ls.start_service(state, lab.core, name)
             ls.wait_service(state, name, timeout=120)
         else:
-            file = ls.path("nginx", name, "nginx.conf")
-            ls.require(file.exists(), f"unknown process {name}")
-            directory = file.parent
-            ls.spawn(state, name, [nginx_binary(), "-c", str(file), "-p", str(directory), "-g", "daemon off;"], {})
+            nginx_start(state, name)
+
+
+def nginx_start(state, name):
+    """An nginx process again from the configuration `up` rendered for it."""
+    file = ls.path("nginx", name, "nginx.conf")
+    ls.require(file.exists(), f"unknown process {name}")
+    ls.spawn(state, name, [nginx_binary(), "-c", str(file), "-p", str(file.parent), "-g", "daemon off;"], {})
 
 
 def mirror_stop(state, site):
@@ -661,8 +752,35 @@ def mirror_stop(state, site):
 def mirror_start(state, site):
     ls.run([ls.RUNNER, "start", f"{ls.PREFIX}-{site.container}"])
     ls.wait_for(lambda: ls.http("GET", f"{site.s3_endpoint}/health/ready")[0] == 200, 60, f"RustFS {site.key}")
-    file = ls.path("nginx", site.front, "nginx.conf")
-    ls.spawn(state, site.front, [nginx_binary(), "-c", str(file), "-p", str(file.parent), "-g", "daemon off;"], {})
+    nginx_start(state, site.front)
+
+
+def access_point_stop(state, ap_id):
+    """The access point goes away as a whole: its Edge first, so nothing is proxied to a gateway
+    that is shutting down, then its gateway."""
+    site = SITES[ap_id]
+    ls.signal_process(state, site.edge, signal.SIGTERM, wait=10)
+    ls.signal_process(state, site.gateway, signal.SIGTERM, wait=30)
+
+
+def access_point_start(state, ap_id):
+    """A node that comes up: its gateway, then the Edge in front of it."""
+    site = SITES[ap_id]
+    if not ls.live(state, site.gateway):
+        ls.start_service(state, Lab().core, site.gateway)
+        ls.wait_service(state, site.gateway, timeout=120)
+    if not ls.live(state, site.edge):
+        nginx_start(state, site.edge)
+    ls.wait_for(lambda: ls.port_open(site.tls_port), 20, f"Edge of {ap_id}")
+
+
+def command_ap(args):
+    state = ls.load_state()
+    ids = sorted(SITES) if args.ids == ["all"] else args.ids
+    unknown = [ap_id for ap_id in ids if ap_id not in SITES]
+    ls.require(not unknown, f"unknown access points {unknown}; known: {sorted(SITES)}")
+    for ap_id in ids:
+        (access_point_stop if args.action == "stop" else access_point_start)(state, ap_id)
 
 
 def command_mirror(args):
@@ -701,6 +819,10 @@ def main():
     mirror.add_argument("action", choices=["stop", "start"])
     mirror.add_argument("key", choices=sorted(MIRRORS))
     mirror.set_defaults(func=command_mirror)
+    access_points = sub.add_parser("ap", help="stop or start access points (Edge and gateway)")
+    access_points.add_argument("action", choices=["stop", "start"])
+    access_points.add_argument("ids", nargs="+", metavar="all|ap-id")
+    access_points.set_defaults(func=command_ap)
     down = sub.add_parser("down")
     down.add_argument("--destroy", action="store_true")
     down.set_defaults(func=command_down)

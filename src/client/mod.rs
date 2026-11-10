@@ -47,3 +47,13 @@ pub use lifecycle::{
     resolve_user_db_path, sanitize_user_id_for_dir,
 };
 pub use token_broker::HostTokenBroker;
+
+/// 这台设备在 CONNECT 里报的平台（`web`、`pc`、`ios`、`android`、`harmonyos`）。
+///
+/// 社交等上层 SDK 在宿主没给平台时用它填 `x-flare-platform`，HTTP 门禁与 CONNECT 门禁就按同一个
+/// 平台判定。
+pub fn connect_platform() -> String {
+    crate::infrastructure::transport::socket::socket_client::connect_device_platform()
+        .as_str()
+        .to_string()
+}

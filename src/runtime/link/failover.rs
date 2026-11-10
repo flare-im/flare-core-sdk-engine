@@ -180,6 +180,11 @@ pub fn classify_loss(reason: &DisconnectReason) -> LinkLoss {
                 .map(|(min, max)| (min.as_millis() as u64, max.as_millis() as u64)),
             prefer: close.prefer_ap.clone(),
         },
+        // 在线连接被终止类拒绝（升级门槛抬高）：与建连时被拒同样终止；其余拒绝类别不会以此上报。
+        DisconnectReason::Rejected(rejection) => match classify_rejection(rejection) {
+            RejectionKind::Terminal(reason) => LinkLoss::SessionEnded(reason),
+            _ => LinkLoss::Failed(FailureClass::Unreachable),
+        },
         DisconnectReason::Kicked {
             reason,
             ends_session: true,
@@ -577,6 +582,13 @@ mod tests {
                 detail: "eof".into()
             }),
             LinkLoss::Failed(FailureClass::Unreachable)
+        );
+        assert_eq!(
+            classify_loss(&DisconnectReason::Rejected(rejection(
+                ErrorCode::UpgradeRequired,
+                "UPGRADE_REQUIRED"
+            ))),
+            LinkLoss::SessionEnded(ActionRequiredReason::UpgradeRequired)
         );
         assert_eq!(
             classify_loss(&DisconnectReason::ClientRequested),

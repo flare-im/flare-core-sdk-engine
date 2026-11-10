@@ -1676,6 +1676,36 @@ impl HttpClient {
         content_type: &str,
         max_bytes: usize,
     ) -> Result<()> {
+        self.put_private_bytes_full_url_with_headers(
+            url,
+            data,
+            content_type,
+            &HashMap::new(),
+            max_bytes,
+        )
+        .await
+    }
+
+    /// [`Self::put_private_bytes_full_url`] with caller-supplied, non-identity
+    /// headers (e.g. the app build headers a gateway's version gate reads). They
+    /// pass the same checks as a private read's headers: no session, cookie,
+    /// tenant or forwarding header is accepted.
+    pub async fn put_private_bytes_full_url_with_headers(
+        &self,
+        url: &str,
+        data: &[u8],
+        content_type: &str,
+        explicit_headers: &HashMap<String, String>,
+        max_bytes: usize,
+    ) -> Result<()> {
+        if !explicit_headers.is_empty() {
+            super::private_download::validate(url, explicit_headers, max_bytes).map_err(|_| {
+                FlareError::localized(
+                    crate::shared::error::ErrorCode::InvalidParameter,
+                    "invalid private upload input",
+                )
+            })?;
+        }
         // 带 userinfo 的地址在解析时就被拒绝。
         let target = flare_access::ParsedUrl::parse(url).map_err(|_| {
             FlareError::localized(
@@ -1698,24 +1728,24 @@ impl HttpClient {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let response = self
+            let mut request = self
                 .private_client_for_url(url)?
                 .put(url)
-                .header(reqwest::header::CONTENT_TYPE, content_type)
-                .body(data.to_vec())
-                .send()
-                .await
-                .map_err(|error| {
-                    self.note_send_failure(&error);
-                    FlareError::localized(
-                        if error.is_timeout() {
-                            crate::shared::error::ErrorCode::OperationTimeout
-                        } else {
-                            crate::shared::error::ErrorCode::ServiceUnavailable
-                        },
-                        "private upload transport failed",
-                    )
-                })?;
+                .header(reqwest::header::CONTENT_TYPE, content_type);
+            for (name, value) in explicit_headers {
+                request = request.header(name.as_str(), value.as_str());
+            }
+            let response = request.body(data.to_vec()).send().await.map_err(|error| {
+                self.note_send_failure(&error);
+                FlareError::localized(
+                    if error.is_timeout() {
+                        crate::shared::error::ErrorCode::OperationTimeout
+                    } else {
+                        crate::shared::error::ErrorCode::ServiceUnavailable
+                    },
+                    "private upload transport failed",
+                )
+            })?;
             if !response.status().is_success() {
                 return Err(FlareError::localized(
                     crate::shared::error::ErrorCode::ServiceUnavailable,
@@ -1726,8 +1756,13 @@ impl HttpClient {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            wasm_http::put_private_bytes(url.to_owned(), data.to_vec(), content_type.to_owned())
-                .await
+            wasm_http::put_private_bytes(
+                url.to_owned(),
+                data.to_vec(),
+                content_type.to_owned(),
+                explicit_headers.clone(),
+            )
+            .await
         }
     }
 

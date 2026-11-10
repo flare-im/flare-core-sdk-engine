@@ -15,24 +15,44 @@ use crate::runtime::link::OpenRequest;
 use crate::shared::error::Result;
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_device_platform(target_os: &str) -> DevicePlatform {
+fn native_device_platform(target_os: &str, target_env: &str) -> DevicePlatform {
     // PlatformExclusive compares this value across installations. Classifying mobile
     // builds as PC would kick a different native platform when it signs in.
-    match target_os {
-        "ios" => DevicePlatform::IOS,
-        "android" => DevicePlatform::Android,
+    match (target_os, target_env) {
+        ("ios", _) => DevicePlatform::IOS,
+        ("android", _) => DevicePlatform::Android,
+        // OpenHarmony targets (`*-unknown-linux-ohos`) report `target_os = "linux"`; only the
+        // environment tells them apart from a Linux desktop.
+        (_, "ohos") => DevicePlatform::HarmonyOS,
         _ => DevicePlatform::PC,
     }
 }
 
+/// 编译目标的环境（`target_env`），只用来认出 OpenHarmony。
+#[cfg(not(target_arch = "wasm32"))]
+const TARGET_ENV: &str = if cfg!(target_env = "ohos") {
+    "ohos"
+} else {
+    ""
+};
+
+/// 这台设备在 CONNECT 里报的平台；服务端按它（加上 `distribution`）映射发布清单平台段。
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn connect_device_platform() -> DevicePlatform {
+    native_device_platform(std::env::consts::OS, TARGET_ENV)
+}
+
+/// 浏览器一律报 `web`。
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn connect_device_platform() -> DevicePlatform {
+    DevicePlatform::Web
+}
+
 fn sdk_device_info(config: &SdkConfig) -> DeviceInfo {
     let device_id = config.effective_device_id();
-    #[cfg(not(target_arch = "wasm32"))]
-    let platform = native_device_platform(std::env::consts::OS);
+    let platform = connect_device_platform();
     #[cfg(not(target_arch = "wasm32"))]
     let model = "FlareSDK".to_string();
-    #[cfg(target_arch = "wasm32")]
-    let platform = DevicePlatform::Web;
     #[cfg(target_arch = "wasm32")]
     let model = "FlareSDK-Web".to_string();
 
@@ -374,14 +394,22 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_device_platform_separates_mobile_platforms() {
-        assert_eq!(native_device_platform("ios"), DevicePlatform::IOS);
-        assert_eq!(native_device_platform("android"), DevicePlatform::Android);
+        assert_eq!(native_device_platform("ios", ""), DevicePlatform::IOS);
+        assert_eq!(
+            native_device_platform("android", ""),
+            DevicePlatform::Android
+        );
         for os in ["macos", "windows", "linux", "freebsd"] {
-            assert_eq!(native_device_platform(os), DevicePlatform::PC);
+            assert_eq!(native_device_platform(os, ""), DevicePlatform::PC);
+            assert_eq!(native_device_platform(os, "gnu"), DevicePlatform::PC);
         }
         assert_eq!(
+            native_device_platform("linux", "ohos"),
+            DevicePlatform::HarmonyOS
+        );
+        assert_eq!(
             sdk_device_info(&SdkConfig::default()).platform,
-            native_device_platform(std::env::consts::OS)
+            native_device_platform(std::env::consts::OS, TARGET_ENV)
         );
     }
 
