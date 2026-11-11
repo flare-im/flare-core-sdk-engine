@@ -124,10 +124,12 @@ Event codes and payload fields are authoritative in
 cargo build -p flare-im-core-sdk-ffi --release
 ```
 
-### One-shot artifact sync for the Flutter example (`examples/flare-core-flutter`)
+### Artifact sync for the Flutter reference app
 
-Run `make flutter-sync` in the `bindings/c` directory to sync the C ABI
-artifacts into the corresponding directories of the Flutter example project.
+Check out `flare-core-examples` alongside this repository. From the engine root,
+run `cargo xtask build host`, `cargo xtask build ios-universal`, or
+`cargo xtask build android` to build and sync C ABI artifacts into
+`../flare-core-examples/apps/flare-core-flutter-app` for the selected platform.
 
 For full packaging instructions see [`docs/flutter-packaging.md`](docs/flutter-packaging.md).
 
@@ -141,7 +143,7 @@ For full packaging instructions see [`docs/flutter-packaging.md`](docs/flutter-p
 
 - iOS (Swift/Objective-C)
 - Android (Kotlin/Java)
-- Flutter (Dart): the full example is in the monorepo at **`examples/flare-core-flutter/`**; run **`make flutter-sync`** in **`bindings/c`** to copy the dylib / `.a` / `.so` into that project's corresponding directories (see the section above)
+- Flutter (Dart): the full app is in the sibling **`flare-core-examples/apps/flare-core-flutter-app/`**; use the engine's `cargo xtask build` targets above to sync the dylib / `.a` / `.so` into its platform directories.
 - HarmonyOS (ArkTS/C++)
 - C/C++
 - Node.js (N-API)

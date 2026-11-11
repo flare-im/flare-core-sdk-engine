@@ -10,7 +10,7 @@
   flare-core-sdk:        packages sdk-spec examples
   flare-social-sdk:      src bindings packages
   flare-social-examples: apps
-  flare-core-examples:   apps
+  flare-core-examples:   apps shared
 
 只看各仓 git 认得的文件（已跟踪 + 未忽略的新文件），所以 .gitignore 里的旧克隆、构建产物不在内；
 另外显式跳过 node_modules / build / target / .dart_tool / Pods / .build / .gradle 与二进制文件。
@@ -43,7 +43,7 @@ SCOPES = {
     "flare-core-sdk": ["packages", "sdk-spec", "examples"],
     "flare-social-sdk": ["src", "bindings", "packages"],
     "flare-social-examples": ["apps"],
-    "flare-core-examples": ["apps"],
+    "flare-core-examples": ["apps", "shared"],
 }
 
 EXCLUDED_DIRS = {"node_modules", "build", "target", ".dart_tool", "Pods", ".build", ".gradle"}
@@ -96,6 +96,12 @@ RULES = [
      r"'(wsUrl|quicUrl)':", "开发模式端点对象的键"),
     ("dev", r"flare-social-examples/apps/flare-social-flutter-app/integration_test/", r"'wsUrl'|\['wsUrl'\]",
      "实验台用例读写开发模式端点"),
+    ("dev", r"flare-social-examples/apps/flare-social-flutter-app/integration_test/support/platform_management_fixture\.dart$",
+     r"Uri\.parse\(fixture\.wsUrl\)", "校验受控实验台输入的 loopback 地址；SDK 初始化只使用 developmentEndpoints"),
+    ("dev", r"flare-social-examples/apps/flare-social-flutter-app/test/platform_management_fixture_test\.dart$",
+     r"'wsUrl':|\.\.\['wsUrl'\] =", "受控实验台 fixture 格式及地址隔离测试，不是 SDK 顶层配置"),
+    ("dev", r"flare-social-examples/apps/flare-social-flutter-app/docs/platform-management-regression\.md$",
+     r'^\s*"wsUrl":', "实验台 fixture 的输入文件格式，运行器将其映射到 developmentEndpoints"),
     ("dev", r"flare-core-examples/apps/flare-core-flutter-app/(lib/shared/config/access_config|test/support/dev_access)\.dart$",
      r"'(wsUrl|quicUrl)':", "开发模式端点对象的键"),
     ("dev", r"flare-core-examples/apps/flare-core-tauri-app/tests/access-config\.test\.mjs$", r"wsUrl",

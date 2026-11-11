@@ -120,9 +120,11 @@ int32_t flare_message_dispatch_json(FlareHandle handle, const char* op, const ch
 cargo build -p flare-im-core-sdk-ffi --release
 ```
 
-### Flutter 示例（`examples/flare-core-flutter`）一键同步产物
+### Flutter 参考应用产物同步
 
-在 `bindings/c` 目录执行 `make flutter-sync`，会把 C ABI 产物同步到 Flutter 示例工程对应目录。
+将 `flare-core-examples` 与本仓并列检出。从引擎根目录运行 `cargo xtask build host`、
+`cargo xtask build ios-universal` 或 `cargo xtask build android`，构建并同步对应平台的
+C ABI 产物到 `../flare-core-examples/apps/flare-core-flutter-app`。
 
 完整打包说明见 [`docs/flutter-packaging.md`](docs/flutter-packaging.md)。
 
@@ -136,7 +138,7 @@ cargo build -p flare-im-core-sdk-ffi --release
 
 - iOS (Swift/Objective-C)
 - Android (Kotlin/Java)
-- Flutter (Dart)：完整示例在 monorepo **`examples/flare-core-flutter/`**；在 **`bindings/c`** 执行 **`make flutter-sync`** 将 dylib / `.a` / `.so` 拷入该工程对应目录（见上节）
+- Flutter (Dart)：完整应用在同级 **`flare-core-examples/apps/flare-core-flutter-app/`**；使用上述引擎 `cargo xtask build` 目标将 dylib / `.a` / `.so` 同步到对应平台目录。
 - 鸿蒙 (ArkTS/C++)
 - C/C++
 - Node.js (N-API)

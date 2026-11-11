@@ -18,7 +18,7 @@ Dart 侧通过 `dart:ffi` 加载 `libflare_im_core_sdk_ffi`：
 
 ## 一键同步
 
-在 `flare-im-core-client-sdk` 目录执行：
+在 `flare-core-sdk-engine` 目录执行：
 
 ```bash
 cargo xtask build host wasm ios-universal android
@@ -26,28 +26,28 @@ cargo xtask build host wasm ios-universal android
 
 该命令会执行：
 
-- `host`：构建 host release 产物；macOS 上输出 `arm64+x86_64` universal dylib，并复制到 `examples/flare-core-flutter-app/macos/Runner/`
-- `wasm`：构建 Web 端 WASM 产物并同步到 `native/artifacts/wasm`
-- `ios-universal`：在 macOS 上构建 iOS Simulator `arm64+x86_64` universal 静态库，并复制到 `examples/flare-core-flutter-app/ios/FFI/build/libflare_im_core_sdk_ffi.a`
-- `android`：设置 `ANDROID_NDK_ROOT` 后构建 Android `arm64-v8a`、`armeabi-v7a`、`x86_64` 三 ABI `.so`，并复制到 `examples/flare-core-flutter-app/android/app/src/main/jniLibs/<abi>/`
+- `host`：构建 host release 产物；macOS 上输出 `arm64+x86_64` universal dylib，并复制到 `flare-core-examples/apps/flare-core-flutter-app/macos/Runner/`
+- `wasm`：构建 Web 端 WASM 产物并同步到 `dist/wasm`
+- `ios-universal`：在 macOS 上构建 iOS Simulator `arm64+x86_64` universal 静态库，并复制到 `flare-core-examples/apps/flare-core-flutter-app/ios/FFI/build/libflare_im_core_sdk_ffi.a`
+- `android`：设置 `ANDROID_NDK_ROOT` 后构建 Android `arm64-v8a`、`armeabi-v7a`、`x86_64` 三 ABI `.so`，并复制到 `flare-core-examples/apps/flare-core-flutter-app/android/app/src/main/jniLibs/<abi>/`
 
 ## 按平台打包
 
 macOS 调试：
 
 ```bash
-cd flare-im-core-client-sdk
+cd flare-core-sdk-engine
 cargo xtask build host
-cd examples/flare-core-flutter-app
+cd ../flare-core-examples/apps/flare-core-flutter-app
 flutter run -d macos
 ```
 
 iOS Apple Silicon 模拟器：
 
 ```bash
-cd flare-im-core-client-sdk
+cd flare-core-sdk-engine
 cargo xtask build ios-universal
-cd examples/flare-core-flutter-app
+cd ../flare-core-examples/apps/flare-core-flutter-app
 flutter devices
 flutter run -d "<simulator name or device id>"
 ```
@@ -67,16 +67,16 @@ flutter run -d 96084A9D-1314-4BD5-B6BD-3D867ACE5909
 iOS 真机：
 
 ```bash
-cd flare-im-core-client-sdk
+cd flare-core-sdk-engine
 cargo xtask build ios-device
-cd examples/flare-core-flutter-app
+cd ../flare-core-examples/apps/flare-core-flutter-app
 flutter build ios
 ```
 
 iOS 模拟器 universal 静态库：
 
 ```bash
-cd flare-im-core-client-sdk
+cd flare-core-sdk-engine
 cargo xtask build ios-universal
 ```
 
@@ -84,22 +84,24 @@ Android 全 ABI：
 
 ```bash
 export ANDROID_NDK_ROOT=/path/to/android-ndk
-cd flare-im-core-client-sdk
+cd flare-core-sdk-engine
 cargo xtask build android
-cd examples/flare-core-flutter-app
+cd ../flare-core-examples/apps/flare-core-flutter-app
 flutter run -d android
 ```
 
 ## 产物路径
 
+Rust 产物路径相对 `flare-core-sdk-engine`；Flutter 目标路径相对工作区根。
+
 | 平台 | Rust 产物 | Flutter 目标路径 |
 | --- | --- | --- |
-| macOS universal | `native/artifacts/host/libflare_im_core_sdk_ffi.dylib` | `examples/flare-core-flutter-app/macos/Runner/libflare_im_core_sdk_ffi.dylib` |
-| iOS 模拟器 | `target/aarch64-apple-ios-sim/release/libflare_im_core_sdk_ffi.a` + `target/x86_64-apple-ios/release/libflare_im_core_sdk_ffi.a` | `examples/flare-core-flutter-app/ios/FFI/build/libflare_im_core_sdk_ffi.a` |
-| iOS 真机 | `target/aarch64-apple-ios/release/libflare_im_core_sdk_ffi.a` | `examples/flare-core-flutter-app/ios/FFI/build/libflare_im_core_sdk_ffi.a` |
-| Android arm64 | `target/aarch64-linux-android/release/libflare_im_core_sdk_ffi.so` | `examples/flare-core-flutter-app/android/app/src/main/jniLibs/arm64-v8a/libflare_im_core_sdk_ffi.so` |
-| Android armeabi-v7a | `target/armv7-linux-androideabi/release/libflare_im_core_sdk_ffi.so` | `examples/flare-core-flutter-app/android/app/src/main/jniLibs/armeabi-v7a/libflare_im_core_sdk_ffi.so` |
-| Android x86_64 | `target/x86_64-linux-android/release/libflare_im_core_sdk_ffi.so` | `examples/flare-core-flutter-app/android/app/src/main/jniLibs/x86_64/libflare_im_core_sdk_ffi.so` |
+| macOS universal | `dist/host/libflare_im_core_sdk_ffi.dylib` | `flare-core-examples/apps/flare-core-flutter-app/macos/Runner/libflare_im_core_sdk_ffi.dylib` |
+| iOS 模拟器 | `target/aarch64-apple-ios-sim/release/libflare_im_core_sdk_ffi.a` + `target/x86_64-apple-ios/release/libflare_im_core_sdk_ffi.a` | `flare-core-examples/apps/flare-core-flutter-app/ios/FFI/build/libflare_im_core_sdk_ffi.a` |
+| iOS 真机 | `target/aarch64-apple-ios/release/libflare_im_core_sdk_ffi.a` | `flare-core-examples/apps/flare-core-flutter-app/ios/FFI/build/libflare_im_core_sdk_ffi.a` |
+| Android arm64 | `target/aarch64-linux-android/release/libflare_im_core_sdk_ffi.so` | `flare-core-examples/apps/flare-core-flutter-app/android/app/src/main/jniLibs/arm64-v8a/libflare_im_core_sdk_ffi.so` |
+| Android armeabi-v7a | `target/armv7-linux-androideabi/release/libflare_im_core_sdk_ffi.so` | `flare-core-examples/apps/flare-core-flutter-app/android/app/src/main/jniLibs/armeabi-v7a/libflare_im_core_sdk_ffi.so` |
+| Android x86_64 | `target/x86_64-linux-android/release/libflare_im_core_sdk_ffi.so` | `flare-core-examples/apps/flare-core-flutter-app/android/app/src/main/jniLibs/x86_64/libflare_im_core_sdk_ffi.so` |
 
 ## 依赖和注意事项
 
