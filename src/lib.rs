@@ -5,6 +5,7 @@
 //! mapping, and extension dispatch. Platform bindings adapt this API instead
 //! of duplicating delivery or synchronization rules.
 
+#![recursion_limit = "256"]
 #![cfg_attr(
     not(test),
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
