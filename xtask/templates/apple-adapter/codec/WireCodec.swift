@@ -91,6 +91,72 @@ func setHeartbeatNatTimeoutRequestToMap(_ request: SetHeartbeatNatTimeoutRequest
         "natTimeoutSecs": wrapSendable(request.natTimeoutSecs),
     ]
 }
+/// Unset optional fields are left out (a nil inside the map would make JSONSerialization reject the
+/// whole request); `capabilities` always goes as a list.
+func pushTokenInputToMap(_ request: PushTokenInput) -> [String: AnySendable] {
+    var map: [String: AnySendable] = [
+        "provider": wrapSendable(request.provider),
+        "platform": wrapSendable(request.platform),
+        "token": wrapSendable(request.token),
+    ]
+    if let appBundle = request.appBundle { map["appBundle"] = wrapSendable(appBundle) }
+    if let environment = request.environment { map["environment"] = wrapSendable(environment) }
+    if let locale = request.locale { map["locale"] = wrapSendable(locale) }
+    if let timeZone = request.timeZone { map["timeZone"] = wrapSendable(timeZone) }
+    if let appVersion = request.appVersion { map["appVersion"] = wrapSendable(appVersion) }
+    if let capabilities = request.capabilities { map["capabilities"] = wrapSendable(capabilities) }
+    return map
+}
+/// `payload` goes as a JSON object of strings.
+func handleRemoteMessageRequestToMap(_ request: HandleRemoteMessageRequest) -> [String: AnySendable] {
+    var map: [String: AnySendable] = [
+        "provider": wrapSendable(request.provider),
+        "payload": wrapSendable(request.payload),
+    ]
+    if let budgetMs = request.budgetMs { map["budgetMs"] = wrapSendable(budgetMs) }
+    return map
+}
+func resolveNotificationTapRequestToMap(_ request: ResolveNotificationTapRequest) -> [String: AnySendable] {
+    ["payload": wrapSendable(request.payload)]
+}
+/// No conversation open: the key is left out.
+func setNotificationFocusRequestToMap(_ request: SetNotificationFocusRequest) -> [String: AnySendable] {
+    var map: [String: AnySendable] = [:]
+    if let conversationId = request.conversationId { map["conversationId"] = wrapSendable(conversationId) }
+    return map
+}
+func setBackgroundPresenterRequestToMap(_ request: SetBackgroundPresenterRequest) -> [String: AnySendable] {
+    ["attached": wrapSendable(request.attached)]
+}
+/// No directory: the key is left out (the engine stops writing the snapshot).
+func setNotificationSnapshotDirectoryRequestToMap(_ request: SetNotificationSnapshotDirectoryRequest) -> [String: AnySendable] {
+    var map: [String: AnySendable] = [:]
+    if let directory = request.directory { map["directory"] = wrapSendable(directory) }
+    return map
+}
+func backgroundRefreshRequestToMap(_ request: BackgroundRefreshRequest) -> [String: AnySendable] {
+    ["budgetMs": wrapSendable(request.budgetMs)]
+}
+func quietHoursToMap(_ value: QuietHours) -> [String: AnySendable] {
+    [
+        "startMinute": wrapSendable(value.startMinute),
+        "endMinute": wrapSendable(value.endMinute),
+        "weekdays": wrapSendable(value.weekdays),
+        "allowMentions": wrapSendable(value.allowMentions),
+    ]
+}
+/// Items the update leaves alone are left out (a nil inside the map would make JSONSerialization
+/// reject the whole request).
+func updateUserNotificationSettingsRequestToMap(_ request: UpdateUserNotificationSettingsRequest) -> [String: AnySendable] {
+    var map: [String: AnySendable] = [
+        "clearQuietHours": wrapSendable(request.clearQuietHours),
+        "baseSettingsVersion": wrapSendable(request.baseSettingsVersion),
+    ]
+    if let quietHours = request.quietHours { map["quietHours"] = wrapSendable(plainJsonObject(quietHoursToMap(quietHours))) }
+    if let preview = request.preview { map["preview"] = wrapSendable(preview.rawValue) }
+    if let multiDevice = request.multiDevice { map["multiDevice"] = wrapSendable(multiDevice.rawValue) }
+    return map
+}
 /// Unset fields are left out: a nil inside the map would make JSONSerialization reject the whole
 /// request, and the core treats a missing field as its documented default.
 func networkChangeRequestToMap(_ request: NetworkChangeRequest) -> [String: AnySendable] {
@@ -1363,6 +1429,92 @@ func serverClockResponseFromJson(_ value: [String: AnySendable]) throws -> Serve
     )
 }
 
+func remoteMessageOutcomeFromJson(_ value: [String: AnySendable]) throws -> RemoteMessageOutcome {
+    let context = "RemoteMessageOutcome"
+    let json = plainMap(value)
+    var clearCollapseIds: [String] = []
+    if !isWireNull(json["clearCollapseIds"]) {
+        clearCollapseIds = try requiredStringList(json["clearCollapseIds"], "clearCollapseIds", context)
+    }
+    var presentation: NotificationPresentation?
+    if !isWireNull(json["presentation"]) {
+        presentation = try notificationPresentationFromJson(try requiredObjectField(json, "presentation", context))
+    }
+    return RemoteMessageOutcome(
+        action: try requiredStringField(json, "action", context),
+        badge: try optionalUInt32Field(json, "badge", context),
+        clearCollapseIds: clearCollapseIds,
+        presentation: presentation,
+        reason: try optionalStringField(json, "reason", context)
+    )
+}
+
+func notificationPresentationFromJson(_ json: [String: Any]) throws -> NotificationPresentation {
+    let context = "NotificationPresentation"
+    return NotificationPresentation(
+        body: try requiredStringField(json, "body", context),
+        channel: try requiredStringField(json, "channel", context),
+        collapseId: try requiredStringField(json, "collapseId", context),
+        conversationId: try requiredStringField(json, "conversationId", context),
+        count: try requiredUInt32Field(json, "count", context),
+        messageId: try requiredStringField(json, "messageId", context),
+        seq: try requiredUInt64Field(json, "seq", context),
+        sound: try requiredBoolField(json, "sound", context),
+        surface: try requiredStringField(json, "surface", context),
+        threadId: try requiredStringField(json, "threadId", context),
+        title: try requiredStringField(json, "title", context)
+    )
+}
+
+func userNotificationSettingsFromJson(_ value: [String: AnySendable]) throws -> UserNotificationSettings {
+    let context = "UserNotificationSettings"
+    let json = plainMap(value)
+    var quietHours: QuietHours?
+    if !isWireNull(json["quietHours"]) {
+        quietHours = try quietHoursFromJson(try requiredObjectField(json, "quietHours", context))
+    }
+    guard let preview = NotificationPreview(rawValue: try requiredStringField(json, "preview", context)) else {
+        throw wireFieldError(context, "preview", "full, senderOnly or hidden")
+    }
+    guard let multiDevice = MultiDeviceAlertPolicy(rawValue: try requiredStringField(json, "multiDevice", context)) else {
+        throw wireFieldError(context, "multiDevice", "delay, immediate or badgeOnly")
+    }
+    return UserNotificationSettings(
+        multiDevice: multiDevice,
+        preview: preview,
+        quietHours: quietHours,
+        settingsVersion: try requiredUInt64Field(json, "settingsVersion", context)
+    )
+}
+
+func quietHoursFromJson(_ json: [String: Any]) throws -> QuietHours {
+    let context = "QuietHours"
+    return QuietHours(
+        allowMentions: try requiredBoolField(json, "allowMentions", context),
+        endMinute: try requiredUInt32Field(json, "endMinute", context),
+        startMinute: try requiredUInt32Field(json, "startMinute", context),
+        weekdays: try requiredUInt32Field(json, "weekdays", context)
+    )
+}
+
+func backgroundRefreshResultFromJson(_ value: [String: AnySendable]) throws -> BackgroundRefreshResult {
+    let context = "BackgroundRefreshResult"
+    let json = plainMap(value)
+    return BackgroundRefreshResult(
+        completed: try requiredBoolField(json, "completed", context)
+    )
+}
+
+func notificationTapResultFromJson(_ value: [String: AnySendable]) throws -> NotificationTapResult {
+    let context = "NotificationTapResult"
+    let json = plainMap(value)
+    return NotificationTapResult(
+        conversationId: try optionalStringField(json, "conversationId", context),
+        messageId: try optionalStringField(json, "messageId", context),
+        seq: try optionalUInt64Field(json, "seq", context)
+    )
+}
+
 private func wireFieldError(_ context: String, _ key: String, _ expected: String, missing: Bool = false) -> FlareSdkException {
     FlareSdkException(
         code: SdkErrorCodes.invalidParameter,
@@ -2372,6 +2524,7 @@ public func conversationFromJson(_ json: [String: Any]) throws -> Conversation {
         draft: json["draft"] as? String,
         ext: try requiredStringMap(json["ext"], "ext", "Conversation"),
         isArchived: try requiredBoolField(json, "isArchived", "Conversation"),
+        isMentionOnly: json["isMentionOnly"] as? Bool,
         isMuted: try requiredBoolField(json, "isMuted", "Conversation"),
         isPinned: try requiredBoolField(json, "isPinned", "Conversation"),
         lastMessage: try messagePreviewFromJson(json["lastMessage"]),
@@ -2388,6 +2541,7 @@ public func conversationFromJson(_ json: [String: Any]) throws -> Conversation {
         membersCount: UInt32(try requiredUInt64Field(json, "membersCount", "Conversation")),
         mentionCount: UInt32(try requiredUInt64Field(json, "mentionCount", "Conversation")),
         mentionMe: try requiredBoolField(json, "mentionMe", "Conversation"),
+        notifyAll: (json["notifyAll"] as? Bool) ?? false,
         participantVersion: try requiredUInt64Field(json, "participantVersion", "Conversation"),
         participants: try conversationParticipantList(json["participants"], "participants", "Conversation"),
         peerReadSeq: try requiredUInt64Field(json, "peerReadSeq", "Conversation"),

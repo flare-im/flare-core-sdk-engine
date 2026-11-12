@@ -15,6 +15,8 @@ struct Model {
     hold: bool,
     journal_root: Option<PathBuf>,
     expires_at_ms: Vec<i64>,
+    /// 每次 PUT 登记的请求体。
+    bodies: Vec<Value>,
 }
 struct Fixture {
     base: String,
@@ -95,6 +97,7 @@ impl Fixture {
                         m.active = true;
                         m.puts += 1;
                         m.expires_at_ms.push(value["expiresAtMs"].as_i64().unwrap());
+                        m.bodies.push(value.clone());
                         let lost = std::mem::take(&mut m.lost_reply);
                         (200, json!({"success":true,"bindingId":m.id}), lost, m.hold)
                     } else if method == "GET" {
@@ -217,7 +220,165 @@ fn token(value: &str) -> PushTokenInput {
         provider: "fcm".into(),
         platform: "android".into(),
         token: value.into(),
+        app_bundle: None,
+        environment: None,
+        locale: None,
+        time_zone: None,
+        app_version: None,
+        capabilities: None,
     }
+}
+
+/// 带全套元数据的 APNs 登记。
+fn apns_with_metadata() -> PushTokenInput {
+    PushTokenInput {
+        provider: "apns".into(),
+        platform: "ios".into(),
+        token: "ab12".into(),
+        app_bundle: Some("com.example.app".into()),
+        environment: Some("sandbox".into()),
+        locale: Some("zh-CN".into()),
+        time_zone: Some("Asia/Shanghai".into()),
+        app_version: Some("1.2.3 (45)".into()),
+        capabilities: Some(vec!["serviceExtension".into()]),
+    }
+}
+
+/// 登记附带的元数据原样进 PUT（键名与输入相同）。同样的输入再报不重新登记；任何一项变了都像换了
+/// 令牌一样：下一次对账撤销旧登记、按 CAS 重新登记。能力的先后不算变化。
+#[tokio::test]
+async fn binding_metadata_is_sent_and_a_change_re_registers() {
+    let f = Fixture::new().await;
+    let lifecycle = PushLifecycle::default();
+    f.attach(&lifecycle, "alice", Arc::new(AtomicU64::new(1)))
+        .await
+        .unwrap();
+    lifecycle.permission(true);
+    let mut input = apns_with_metadata();
+    lifecycle.update(input.clone()).unwrap();
+    assert_eq!(lifecycle.reconcile().await.state, "registered");
+    {
+        let m = f.model.lock().unwrap();
+        let body = m.bodies.last().unwrap();
+        assert_eq!(body["appBundle"], "com.example.app");
+        assert_eq!(body["environment"], "sandbox");
+        assert_eq!(body["locale"], "zh-CN");
+        assert_eq!(body["timeZone"], "Asia/Shanghai");
+        assert_eq!(body["appVersion"], "1.2.3 (45)");
+        assert_eq!(body["capabilities"], json!(["serviceExtension"]));
+    }
+
+    lifecycle.update(input.clone()).unwrap();
+    assert_eq!(lifecycle.reconcile().await.state, "registered");
+    assert_eq!(f.model.lock().unwrap().puts, 1, "同样的输入不重新登记");
+
+    input.locale = Some("en-US".into());
+    lifecycle.update(input.clone()).unwrap();
+    assert_eq!(lifecycle.reconcile().await.state, "registered");
+    {
+        let m = f.model.lock().unwrap();
+        assert_eq!(m.puts, 2);
+        assert_eq!(m.revokes, 1, "旧登记先撤销");
+        assert_eq!(m.bodies.last().unwrap()["locale"], "en-US");
+    }
+
+    let mut both = input.clone();
+    both.capabilities = Some(vec!["dataMessages".into(), "serviceExtension".into()]);
+    let mut swapped = input.clone();
+    swapped.capabilities = Some(vec!["serviceExtension".into(), "dataMessages".into()]);
+    assert_eq!(input_digest(&both), input_digest(&swapped));
+    assert_ne!(input_digest(&both), input_digest(&input));
+    let mut none = input.clone();
+    none.app_version = None;
+    assert_ne!(input_digest(&none), input_digest(&input));
+}
+
+/// 不带元数据时请求体与之前一样，没有多余的键。
+#[tokio::test]
+async fn a_binding_without_metadata_sends_no_extra_keys() {
+    let f = Fixture::new().await;
+    let lifecycle = PushLifecycle::default();
+    f.attach(&lifecycle, "alice", Arc::new(AtomicU64::new(1)))
+        .await
+        .unwrap();
+    lifecycle.permission(true);
+    lifecycle.update(token("OS_PRIVATE")).unwrap();
+    assert_eq!(lifecycle.reconcile().await.state, "registered");
+    let m = f.model.lock().unwrap();
+    let body = m.bodies.last().unwrap().as_object().unwrap();
+    let mut keys: Vec<&str> = body.keys().map(String::as_str).collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            "bindingId",
+            "expectedVersion",
+            "expiresAtMs",
+            "platform",
+            "provider",
+            "token"
+        ]
+    );
+}
+
+/// 元数据轻校验：环境只给 APNs、只有 sandbox / production；能力只认已知的、不重复；包名、语言、
+/// 时区只许常见字符；版本不能空。
+#[test]
+fn binding_metadata_is_validated() {
+    assert!(validate(&apns_with_metadata()).is_ok());
+    let rejected = |change: fn(&mut PushTokenInput)| {
+        let mut input = apns_with_metadata();
+        change(&mut input);
+        validate(&input).is_err()
+    };
+    assert!(rejected(
+        |input| input.environment = Some("development".into())
+    ));
+    assert!(rejected(|input| {
+        input.provider = "fcm".into();
+        input.platform = "android".into();
+    }));
+    assert!(rejected(
+        |input| input.capabilities = Some(vec!["pushKit".into()])
+    ));
+    assert!(rejected(|input| {
+        input.capabilities = Some(vec!["serviceExtension".into(), "serviceExtension".into()])
+    }));
+    assert!(rejected(
+        |input| input.app_bundle = Some("com.example app".into())
+    ));
+    assert!(rejected(|input| input.app_bundle = Some(String::new())));
+    assert!(rejected(|input| input.locale = Some("z".repeat(36))));
+    assert!(rejected(
+        |input| input.time_zone = Some("Asia/Shang hai".into())
+    ));
+    assert!(rejected(|input| input.app_version = Some("  ".into())));
+    assert!(rejected(|input| input.app_version = Some("1.0\n".into())));
+
+    let mut fcm = token("OS_PRIVATE");
+    fcm.app_bundle = Some("com.example.app".into());
+    fcm.capabilities = Some(vec!["dataMessages".into()]);
+    fcm.time_zone = Some("Etc/GMT+8".into());
+    assert!(validate(&fcm).is_ok(), "FCM 不带环境");
+
+    let parsed: PushTokenInput = serde_json::from_value(json!({
+        "provider": "fcm",
+        "platform": "android",
+        "token": "t",
+        "appBundle": "com.example.app",
+        "timeZone": "Asia/Shanghai",
+        "capabilities": ["dataMessages"]
+    }))
+    .unwrap();
+    assert_eq!(parsed.app_bundle.as_deref(), Some("com.example.app"));
+    assert_eq!(parsed.time_zone.as_deref(), Some("Asia/Shanghai"));
+    assert!(
+        serde_json::from_value::<PushTokenInput>(json!({
+            "provider": "fcm", "platform": "android", "token": "t", "bundle": "x"
+        }))
+        .is_err(),
+        "不认识的键直接拒绝"
+    );
 }
 
 #[tokio::test]

@@ -5,13 +5,18 @@ use std::time::Duration;
 
 use flare_core::client::link::{ConnectFailure, ConnectReport};
 use flare_core::common::HeartbeatAppState;
+use tokio::sync::watch;
 
-use crate::application::notification::NotificationInboundPipeline;
+use crate::application::notification::{
+    AlertLedger, NotificationHost, NotificationInboundPipeline, NotifyCenter, NotifyCenterParts,
+};
 use crate::application::services::EventDeduper;
 use crate::application::services::MessageDeduper;
+use crate::application::usecases::sync_request::SyncRequestUseCase;
 use crate::extension::middleware::MiddlewareChain;
 use crate::infrastructure::persistence::StoreProvider;
-use crate::infrastructure::protocol::{Codec, PacketSender};
+use crate::infrastructure::protocol::{Codec, DeliveryAcks, PacketSender};
+use crate::infrastructure::transport::socket::socket_client::connect_device_platform;
 use crate::infrastructure::transport::{SocketHandler, SocketTransport};
 use crate::kernel::event::{
     EventBus, EventFilter, EventReceiver, ReadinessStage, SdkEvent, SdkEventType, SyncEventType,
@@ -22,17 +27,31 @@ use crate::kernel::{
     StartupClass, SyncManager, SyncResponseHandler, SyncRunContext, TenantNoticePort,
 };
 use crate::runtime::link::{
-    AccessRuntime, ConnectionStatus, LinkDriver, LinkFuture, LinkHandle, LinkSignals,
-    LinkTokenSource, LinkUp, OpenRequest, boxed,
+    AccessRuntime, ConnectionStatus, DeviceLinkState, DeviceReach, LinkDriver, LinkFuture,
+    LinkHandle, LinkSignals, LinkTokenSource, LinkUp, OpenRequest, ReachProfile, boxed,
+    device_state_report,
 };
 use crate::runtime::{ReliableSendQueue, ReliableSendQueueConfig};
-use crate::shared::util::{BackgroundTask, delay, spawn_background_task, timeout};
+use crate::shared::util::{
+    BackgroundTask, delay, now_millis, spawn_background, spawn_background_task, timeout,
+};
 use crate::spi::metrics::MetricsRecorder;
 
 /// 补同步就绪的等待上限：到点还没就绪也按上线处理（同步在后台继续），不让「正在同步」一直挂着。
 const SYNC_READY_CAP: Duration = Duration::from_secs(10);
 /// 换了新连接后补发断链前多久之内发出的 ACK：覆盖心跳判死（前台 90 s）加验活窗口的时间。
 const ACK_REPLAY_WINDOW_MS: u64 = 120_000;
+/// 托管前冲刷的时限：攒着的送达确认发出去，在途的发送等到回执回来，到点就不再等。
+/// 系统留给进后台的应用的时间只有几秒，不能都花在这里。
+const PARK_FLUSH_CAP: Duration = Duration::from_secs(2);
+/// 冲刷时每隔多久看一次在途的发送有没有收尾。
+const PARK_OUTBOX_POLL: Duration = Duration::from_millis(100);
+/// 等服务端应答 `PARKING` 的时限。
+const PARK_ACK_CAP: Duration = Duration::from_secs(1);
+/// 应答之后送出最后一批送达确认的时限。
+const PARK_LAST_ACKS_CAP: Duration = Duration::from_millis(500);
+/// 读角标（未读总数）的时限：读不出来就报 0，不为它拖住状态上报。
+const BADGE_READ_CAP: Duration = Duration::from_millis(300);
 
 pub struct SdkEngine {
     stores: StoreProvider,
@@ -49,6 +68,12 @@ pub struct SdkEngine {
     tenant_notices: Arc<OnceLock<Arc<dyn TenantNoticePort>>>,
     /// The server clock estimate, fed by the downlink frames of every connection.
     server_clock: ServerClock,
+    /// 设备可达状态：前后台、后台展示方、托管进度，决定到达的消息由不由本进程确认。
+    reach: Arc<DeviceReach>,
+    /// 提示台账：链路确认了的、推送展示过的，按合并键记到哪个 seq。属于这一个登录会话。
+    alerts: Arc<AlertLedger>,
+    /// 链路在线时的提示决策点：应用内横幅、后台系统通知、修正与角标。
+    notify: Arc<NotifyCenter>,
     link_driver: Arc<EngineLinkDriver>,
     /// 唯一的连接生命周期：建连、重连、切换、终止都由它决定。
     link: LinkHandle,
@@ -75,6 +100,10 @@ pub(crate) struct SdkEngineConfig {
     pub access: Arc<AccessRuntime>,
     /// 宿主此前报过的网络可用性（链路状态机的初始值；没报过为 `true`）。
     pub network_available: bool,
+    /// 本设备的 ID：读写用户级通知设置的同步请求带它。
+    pub device_id: String,
+    /// 应用的界面语言（BCP 47）：引擎自己出的通知文案按它选中文或英文。
+    pub locale: Option<String>,
 }
 
 impl SdkEngine {
@@ -99,6 +128,8 @@ impl SdkEngine {
             metrics,
             access,
             network_available,
+            device_id,
+            locale,
         } = config;
         let _ = message_deduper;
         let sender = transport.sender().clone();
@@ -126,6 +157,28 @@ impl SdkEngine {
         let sync_manager = Arc::new(SyncManager::new());
         let tenant_notices = Arc::new(OnceLock::new());
         let server_clock = ServerClock::new();
+        // 进后台后链路怎么办、后台能不能自己提示，都按 CONNECT 里报的那个平台定。
+        let profile = ReachProfile::for_platform(connect_device_platform().as_str());
+        let reach = Arc::new(DeviceReach::new(profile));
+        let alerts = Arc::new(AlertLedger::new());
+        let notify = NotifyCenter::start(NotifyCenterParts {
+            bus: bus.clone(),
+            stores: stores.clone(),
+            reach: reach.clone(),
+            alerts: alerts.clone(),
+            sync: SyncRequestUseCase::new(sender.clone(), device_id),
+            locale,
+        });
+        // 实时到达的消息经各条连接的分发器交给提示决策点；同步拉回的走另一条管道，不提示。
+        let notification_pipeline = notification_pipeline.with_notify_center(notify.clone());
+        let delivery_acks = Arc::new(DeliveryAcks::new(sender.clone()));
+        let (state_reports, pending_reports) = watch::channel(None);
+        spawn_background(run_state_reports(
+            pending_reports,
+            sender.clone(),
+            stores.clone(),
+            reach.clone(),
+        ));
         let link_driver = Arc::new(EngineLinkDriver {
             transport: transport.clone(),
             stores: stores.clone(),
@@ -143,6 +196,11 @@ impl SdkEngine {
             metrics,
             tenant_notices: tenant_notices.clone(),
             server_clock: server_clock.clone(),
+            reach: reach.clone(),
+            alerts: alerts.clone(),
+            notify: notify.clone(),
+            delivery_acks,
+            state_reports,
             anti_entropy_probe: StdMutex::new(None),
             signals: OnceLock::new(),
         });
@@ -151,6 +209,7 @@ impl SdkEngine {
             access,
             bus.clone(),
             network_available,
+            reach.clone(),
         );
         let _ = link_driver.signals.set(link.signals());
         Self {
@@ -166,9 +225,43 @@ impl SdkEngine {
             reliable_queue,
             tenant_notices,
             server_clock,
+            reach,
+            alerts,
+            notify,
             link_driver,
             link,
         }
+    }
+
+    /// 这一个登录会话的提示台账（推送入口按它去重）。
+    pub(crate) fn alert_ledger(&self) -> &Arc<AlertLedger> {
+        &self.alerts
+    }
+
+    /// 链路在线时的提示决策点。
+    pub(crate) fn notify_center(&self) -> &Arc<NotifyCenter> {
+        &self.notify
+    }
+
+    /// 会话开始前带上客户端那份宿主事实：后台展示方接没接上、正在看哪个会话（宿主常在登录前就报过）。
+    pub(crate) fn adopt_notification_host(&self, host: Arc<NotificationHost>) {
+        self.reach
+            .set_background_presenter(host.background_presenter());
+        self.notify.adopt_host(host);
+    }
+
+    /// 后台展示方（平台推送包的本地通知）接上或卸下。接上之后，手机在后台报 `STANDBY`：从链路收到
+    /// 的消息由引擎确认并交给它提示。没接上时报 `DEFERRED`：引擎不确认，提示由服务端直接走推送。
+    /// 应用正在后台时，状态随即重新上报。
+    pub(crate) async fn set_background_presenter(&self, attached: bool) {
+        self.reach.set_background_presenter(attached);
+        self.link.device_state_changed().await;
+    }
+
+    /// 会话开始前带上宿主此前报过的前后台（平台常在登录前就报过，之后对相同状态去重）。链路那边
+    /// 由调用方在锁外另行告知，见 [`LinkHandle::app_state`]。
+    pub(crate) fn adopt_app_state(&self, foreground: bool) {
+        self.reach.set_foreground(foreground);
     }
 
     /// The estimate of the server clock, shared with whatever compares the
@@ -213,6 +306,7 @@ impl SdkEngine {
     }
 
     pub(crate) async fn deactivate_local_session(&self) {
+        self.notify.end_session();
         self.link_driver.abort_anti_entropy_probe();
         self.sync_manager.stop_sync();
         if let Some(queue) = &self.reliable_queue {
@@ -238,12 +332,21 @@ impl SdkEngine {
     }
 
     /// 前后台变化：当前连接的心跳跟着变（回前台时传输层立即验活一次），链路状态机据此调整退避上限、
-    /// 回前台时立即重试与恢复切回。
+    /// 回前台时立即重试与恢复切回，并把设备状态报给服务端（iOS 进后台即托管）。
     pub async fn set_app_state(&self, state: HeartbeatAppState) -> crate::Result<()> {
+        let foreground = matches!(state, HeartbeatAppState::Foreground);
+        // 确认的闸门立刻跟着宿主报的状态走，不等链路状态机处理到这条命令：手机一进后台，之后到的
+        // 消息就不能再由本进程确认。
+        let returned = foreground && !self.reach.is_foreground();
+        self.reach.set_foreground(foreground);
+        if returned {
+            // 回到前台：闸门换代，撤掉已读会话的系统通知，校准角标。不挡生命周期回调。
+            let notify = self.notify.clone();
+            spawn_background(async move { notify.on_foreground().await });
+        }
+        // 先告诉链路：进后台后系统留的时间只有几秒，托管不能排在改心跳后面（那要等连接的锁）。
+        self.link.app_state(foreground).await;
         self.transport.set_heartbeat_app_state(state).await?;
-        self.link
-            .app_state(matches!(state, HeartbeatAppState::Foreground))
-            .await;
         Ok(())
     }
 
@@ -312,6 +415,16 @@ pub(crate) struct EngineLinkDriver {
     metrics: MetricsRecorder,
     tenant_notices: Arc<OnceLock<Arc<dyn TenantNoticePort>>>,
     server_clock: ServerClock,
+    /// 设备可达状态：每条连接的监听器与分发器各带一份，托管交接的进度也记在这里。
+    reach: Arc<DeviceReach>,
+    /// 提示台账：各条连接的分发器把确认了的消息记进去。
+    alerts: Arc<AlertLedger>,
+    /// 提示决策点：每次上线读一次用户级通知设置。
+    notify: Arc<NotifyCenter>,
+    /// 送达确认的合并器：各条连接的分发器往里记，托管前从这里冲刷。
+    delivery_acks: Arc<DeliveryAcks>,
+    /// 待上报的设备状态：只留最新的一个，由 [`run_state_reports`] 送出。
+    state_reports: watch::Sender<Option<DeviceLinkState>>,
     /// 防熵探测循环（低频对账兜底），会话上线时装载、注销/断连时中止。
     anti_entropy_probe: StdMutex<Option<BackgroundTask>>,
     /// 链路状态机的信号出口：状态机启动后立即写入，之后每条连接的监听器都带一份。
@@ -319,6 +432,20 @@ pub(crate) struct EngineLinkDriver {
 }
 
 impl EngineLinkDriver {
+    /// 托管前的冲刷：攒着的送达确认立即发出，在途的发送等到回执回来。已读回执是即时发的，没有
+    /// 攒着的。调用方给它限时。
+    async fn flush_before_parking(&self) {
+        self.delivery_acks.flush().await;
+        let Some(queue) = &self.reliable_queue else {
+            return;
+        };
+        while queue.in_flight().await > 0 {
+            delay(PARK_OUTBOX_POLL).await;
+        }
+        // 等在途发送的这段时间里又处理完的消息。
+        self.delivery_acks.flush().await;
+    }
+
     /// 廉价判定本地是否已有当前用户可展示数据（会话非空即视为热启动）。
     /// 存在性探测（EXISTS），不拉整张带 JOIN 的列表。
     async fn has_local_user_data(&self) -> bool {
@@ -433,6 +560,52 @@ async fn wait_until_synced(mut receiver: EventReceiver, run_id: String) {
     let _ = timeout(SYNC_READY_CAP, ready).await;
 }
 
+/// 设备状态上报的唯一出口：一次送一个，送的时候还没送出的只留最新的那个。
+///
+/// 发送要等连接的锁（同步请求等回包时一直占着），所以不放在链路状态机的执行线上。又必须有先后：
+/// 用户刚进后台又回来时，`PARKING` 若排到 `ACTIVE` 后面送出，服务端就会在用户看着屏幕时把提示交给
+/// 推送，链路上不再有新消息。发送端随引擎销毁，循环随之结束。
+async fn run_state_reports(
+    mut reports: watch::Receiver<Option<DeviceLinkState>>,
+    sender: Arc<PacketSender>,
+    stores: StoreProvider,
+    reach: Arc<DeviceReach>,
+) {
+    while reports.changed().await.is_ok() {
+        let latest = *reports.borrow_and_update();
+        let Some(state) = latest else {
+            continue;
+        };
+        // 已作废的托管（用户回来了、换了连接）不再送出；读角标期间作废的也一样。
+        if state == DeviceLinkState::Parking && !reach.parking_pending() {
+            continue;
+        }
+        let badge = unread_badge(&stores).await;
+        if state == DeviceLinkState::Parking && !reach.parking_pending() {
+            continue;
+        }
+        let report = device_state_report(state, badge, now_millis() as i64);
+        if let Err(error) = sender.send_device_state(&report).await {
+            // 没有连接时属正常：下一次建连会带上当时的状态。
+            tracing::debug!(%error, ?state, "device state report was not sent");
+        }
+    }
+}
+
+/// 角标：未读总数，口径与首页一致。读不出来或太慢就报 0。
+async fn unread_badge(stores: &StoreProvider) -> u32 {
+    match timeout(BADGE_READ_CAP, stores.conversations.list()).await {
+        Ok(Ok(conversations)) => {
+            u32::try_from(crate::domain::total_unread(&conversations)).unwrap_or(u32::MAX)
+        }
+        Ok(Err(error)) => {
+            tracing::debug!(%error, "reading the unread total for the badge failed");
+            0
+        }
+        Err(_) => 0,
+    }
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl LinkDriver for EngineLinkDriver {
@@ -444,6 +617,8 @@ impl LinkDriver for EngineLinkDriver {
                 elapsed: Duration::ZERO,
             });
         };
+        // 新连接没有托管过：上一条连接的托管进度到此为止。
+        self.reach.end_parking();
         let dispatcher = Arc::new(
             Dispatcher::new(
                 self.bus.clone(),
@@ -457,7 +632,9 @@ impl LinkDriver for EngineLinkDriver {
                 self.metrics.clone(),
             )
             .with_tenant_notices(self.tenant_notices.get().cloned())
-            .with_server_clock(self.server_clock.clone()),
+            .with_server_clock(self.server_clock.clone())
+            .with_delivery_confirmation(self.reach.clone(), self.delivery_acks.clone())
+            .with_alert_ledger(self.alerts.clone()),
         );
         // A2 win#2：建连后启动有界串行持久化 worker，使接收热路径的落盘脱离 socket 读循环。
         dispatcher.start_persist_worker();
@@ -467,6 +644,7 @@ impl LinkDriver for EngineLinkDriver {
             self.codec.clone(),
             request.epoch,
             signals,
+            self.reach.clone(),
         ));
         self.transport.open(&request, listener).await
     }
@@ -477,9 +655,62 @@ impl LinkDriver for EngineLinkDriver {
         }
     }
 
+    async fn close_parked(&self) {
+        self.transport.disconnect_parked().await;
+    }
+
+    fn report_device_state(&self, state: DeviceLinkState) {
+        // 报了别的状态，进行中的托管即作废：之后才到的 PARKING 应答不算数，排着还没送出的
+        // PARKING 也不再送。
+        self.reach.end_parking();
+        self.state_reports.send_replace(Some(state));
+    }
+
+    async fn hand_over(&self) -> bool {
+        if timeout(PARK_FLUSH_CAP, self.flush_before_parking())
+            .await
+            .is_err()
+        {
+            tracing::debug!("flushing before parking ran out of time");
+        }
+        // 从这里起等 PARKING 的应答。它之前服务端写出的帧到达时照常处理、照常确认；它之后到的帧
+        // 仍然落库，但不再确认，连接关闭时服务端把它们交给推送。
+        self.reach.begin_parking();
+        self.state_reports
+            .send_replace(Some(DeviceLinkState::Parking));
+        let acked = timeout(PARK_ACK_CAP, self.reach.parking_acked())
+            .await
+            .is_ok();
+        // 应答之前到的帧的确认赶在关连接之前送出。还在处理中的赶不上，由推送去提示。
+        let _ = timeout(PARK_LAST_ACKS_CAP, self.delivery_acks.flush()).await;
+        acked
+    }
+
     fn probe(&self) {
         use crate::infrastructure::transport::socket::LinkProbe;
         self.transport.link_probe().request_probe();
+    }
+
+    async fn retune_heartbeat(
+        &self,
+        heartbeat: crate::runtime::link::LinkHeartbeat,
+        probe_timeout: Duration,
+    ) {
+        let foreground = self.reach.is_foreground();
+        self.transport
+            .retune_heartbeat(heartbeat, probe_timeout, foreground)
+            .await;
+        // 换节奏的同时回到了前台：宿主报的前台在改传输层之前就写进了可达状态，这里补一次，免得刚换上
+        // 的后台配置盖掉前台节奏。
+        if !foreground
+            && self.reach.is_foreground()
+            && let Err(error) = self
+                .transport
+                .set_heartbeat_app_state(HeartbeatAppState::Foreground)
+                .await
+        {
+            tracing::debug!(%error, "restoring the foreground heartbeat failed");
+        }
     }
 
     async fn heartbeat_round_trip(&self) -> Option<Duration> {
@@ -502,6 +733,7 @@ impl LinkDriver for EngineLinkDriver {
         if user_id.is_empty() {
             return boxed(async {});
         }
+        self.notify.on_link_up(matches!(up, LinkUp::First));
         match up {
             LinkUp::First => {
                 // 启动分类：本地已有该用户数据 → 热启动（静默补齐，不阻塞首屏）；本地空 → 冷启动（用户可见 gate）。
@@ -608,6 +840,8 @@ mod tests {
             metrics: MetricsRecorder::disabled(),
             access: Arc::new(AccessRuntime::new(None, AccessStoreSource::memory())),
             network_available: true,
+            device_id: "device-1".to_string(),
+            locale: None,
         })
     }
 

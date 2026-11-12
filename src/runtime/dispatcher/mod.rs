@@ -12,9 +12,11 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
 use tracing::warn;
 
 use self::applied_events::AppliedEventSeqs;
+use self::delivery::{DeliveryConfirmation, arrived_message};
 use self::typing_presence::TypingPresence;
 use crate::application::notification::{
-    NotificationInboundPipeline, partition_notification_durability,
+    AlertLedger, NotificationInboundPipeline, USER_SETTINGS_CHANGED_TYPE,
+    partition_notification_durability,
 };
 use crate::application::projections::ConversationProjectionApplier;
 use crate::application::services::IncomingMessageConverger;
@@ -22,7 +24,7 @@ use crate::application::services::MessageDeduper;
 use crate::application::services::{EventDedupeKey, EventDeduper};
 use crate::domain::{DEFAULT_SYNC_LIMIT, SyncCursorVo, local_cleared_through_seq};
 use crate::infrastructure::persistence::StoreProvider;
-use crate::infrastructure::protocol::DownlinkPayload;
+use crate::infrastructure::protocol::{DeliveryAcks, DownlinkPayload};
 use crate::kernel::event::{
     ConversationEvent, EventBus, ExtensionEvent, MessageEvent, PluginEvent, SdkEvent,
 };
@@ -31,6 +33,7 @@ use crate::kernel::{
 };
 use crate::model::IMMessage;
 use crate::runtime::ReliableSendQueue;
+use crate::runtime::link::DeviceReach;
 use crate::shared::util::spawn_background;
 use crate::shared::util::time::{delay, now_millis};
 use crate::spi::metrics::{MetricLabel, MetricsRecorder};
@@ -112,6 +115,10 @@ pub struct Dispatcher {
     /// The server clock estimate: downlink frames feed it, and deadlines the server issued are
     /// compared against it rather than against the device clock.
     server_clock: ServerClock,
+    /// 送达确认的出口。引擎为每条连接的分发器装上；没装（单测、离线工具）就不确认。
+    delivery: Option<DeliveryConfirmation>,
+    /// 提示台账：本进程确认了的消息记进去，之后同一条的推送不再响。引擎装上；没装就不记。
+    alerts: Option<Arc<AlertLedger>>,
     metrics: MetricsRecorder,
 }
 
@@ -160,8 +167,27 @@ impl Dispatcher {
             typing_presence: Mutex::new(TypingPresence::new()),
             tenant_notices: None,
             server_clock: ServerClock::new(),
+            delivery: None,
+            alerts: None,
             metrics,
         }
+    }
+
+    /// 装上送达确认：这条连接上实时到达的消息处理完后按会话确认，该不该确认由 `reach` 判定。
+    pub(crate) fn with_delivery_confirmation(
+        mut self,
+        reach: Arc<DeviceReach>,
+        acks: Arc<DeliveryAcks>,
+    ) -> Self {
+        self.delivery = Some(DeliveryConfirmation::new(reach, acks));
+        self
+    }
+
+    /// 装上提示台账：确认即承诺由本进程提示，确认过的消息记进去，确认在路上丢了、推送照样到达时
+    /// 不再响第二次。
+    pub(crate) fn with_alert_ledger(mut self, alerts: Arc<AlertLedger>) -> Self {
+        self.alerts = Some(alerts);
+        self
     }
 
     /// Hands the tenant config notices to `notices`.
@@ -566,6 +592,7 @@ fn now_ms() -> u64 {
 }
 
 mod applied_events;
+mod delivery;
 mod dispatch;
 #[cfg(test)]
 mod edit_guard_tests;

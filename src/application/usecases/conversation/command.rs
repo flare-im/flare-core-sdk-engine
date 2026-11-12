@@ -10,7 +10,7 @@ use crate::domain::{
 use crate::kernel::{CurrentUserIdStore, SessionSyncRunner};
 use crate::model::conversation::ConversationType;
 use crate::model::{
-    Conversation, ConversationParticipant, mark_settings_dirty, user_settings_version,
+    Conversation, ConversationParticipant, mark_settings_dirty, notify_all, user_settings_version,
 };
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
@@ -342,6 +342,38 @@ impl ConversationCommandUseCase {
         .await
     }
 
+    /// 大群里打开或关掉「全部消息通知」：先写本地，再同步到服务端；服务端没有收下时本地退回原值，
+    /// 界面不会停在一个服务端没有的选择上。
+    pub async fn set_notify_all(&self, conversation_id: &str, enabled: bool) -> Result<()> {
+        self.current_user_id().await?;
+        let previous = self
+            .store
+            .get(conversation_id)
+            .await?
+            .map(|conversation| notify_all(&conversation));
+        self.store.set_notify_all(conversation_id, enabled).await?;
+        let pushed = self
+            .after_user_settings_write(
+                conversation_id,
+                ConversationUserSettingsPatch {
+                    notify_all: Some(enabled),
+                    ..Default::default()
+                },
+            )
+            .await;
+        if pushed.is_err()
+            && let Some(previous) = previous.filter(|previous| *previous != enabled)
+            && let Err(error) = self.store.set_notify_all(conversation_id, previous).await
+        {
+            tracing::warn!(
+                conversation_id,
+                %error,
+                "failed to restore notify_all after a rejected update"
+            );
+        }
+        pushed
+    }
+
     pub async fn set_archived(&self, conversation_id: &str, archived: bool) -> Result<()> {
         self.current_user_id().await?;
         self.store.set_archived(conversation_id, archived).await?;
@@ -590,5 +622,24 @@ mod tests {
         assert_eq!(named.display_name, "Weekend ride");
         let again = use_case.get_group_by_user_ids(&ids, None).await.unwrap();
         assert_eq!(again.display_name, "Weekend ride", "a given name is kept");
+    }
+
+    /// 「全部消息通知」和其他会话偏好一样先写进本地会话。
+    #[tokio::test]
+    async fn notify_all_is_written_to_the_local_conversation() {
+        let store = Arc::new(MemoryConversationStore::new());
+        save_unread_conversation(&store).await;
+        let use_case = command_use_case(
+            Arc::clone(&store),
+            Arc::new(FakeSessionSyncRunner {
+                fail_read_ack: false,
+            }),
+        );
+
+        use_case.set_notify_all("conv-read", true).await.unwrap();
+        assert!(notify_all(&store.get("conv-read").await.unwrap().unwrap()));
+
+        use_case.set_notify_all("conv-read", false).await.unwrap();
+        assert!(!notify_all(&store.get("conv-read").await.unwrap().unwrap()));
     }
 }

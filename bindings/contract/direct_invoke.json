@@ -346,6 +346,59 @@
       "skip_client": true,
       "body": "\nlet response = session.client().push_status();\n",
       "json_expr": "response"
+    },
+    {
+      "route": "sdk.handle_remote_message",
+      "result": "json",
+      "skip_client": true,
+      "body": "\nlet input = dispatch_support::from_value::<flare_im_core_sdk::client::push_inbox::HandleRemoteMessageRequest>(request.clone(), \"remote message\")?;\nlet response = session.client().handle_remote_message(input).await?;\n",
+      "json_expr": "response"
+    },
+    {
+      "route": "sdk.resolve_notification_tap",
+      "result": "json",
+      "skip_client": true,
+      "body": "\nlet input = dispatch_support::from_value::<flare_im_core_sdk::client::push_inbox::ResolveNotificationTapRequest>(request.clone(), \"notification tap\")?;\nlet response = session.client().resolve_notification_tap(input)?;\n",
+      "json_expr": "response"
+    },
+    {
+      "route": "notification.set_focus",
+      "result": "unit",
+      "skip_client": true,
+      "body": "\nlet input = dispatch_support::from_value::<flare_im_core_sdk::model::notification::SetNotificationFocusRequest>(request.clone(), \"notification focus\")?;\nsession.client().set_notification_focus(input.conversation_id);\n"
+    },
+    {
+      "route": "notification.get_settings",
+      "result": "json",
+      "skip_client": true,
+      "body": "\nlet response = session.client().notification_settings().await?;\n",
+      "json_expr": "response"
+    },
+    {
+      "route": "notification.update_settings",
+      "result": "json",
+      "skip_client": true,
+      "body": "\nlet input = dispatch_support::from_value::<flare_im_core_sdk::model::notification::UpdateUserNotificationSettingsRequest>(request.clone(), \"notification settings update\")?;\nlet response = session.client().update_notification_settings(input).await?;\n",
+      "json_expr": "response"
+    },
+    {
+      "route": "notification.set_background_presenter",
+      "result": "unit",
+      "skip_client": true,
+      "body": "\nlet input = dispatch_support::from_value::<flare_im_core_sdk::model::notification::SetBackgroundPresenterRequest>(request.clone(), \"background presenter\")?;\nsession.client().set_background_presenter(input.attached).await?;\n"
+    },
+    {
+      "route": "notification.set_snapshot_directory",
+      "result": "unit",
+      "skip_client": true,
+      "body": "\nlet input = dispatch_support::from_value::<flare_im_core_sdk::model::notification::SetNotificationSnapshotDirectoryRequest>(request.clone(), \"notification snapshot directory\")?;\nsession.client().set_notification_snapshot_directory(input.directory).await?;\n"
+    },
+    {
+      "route": "notification.background_refresh",
+      "result": "json",
+      "skip_client": true,
+      "body": "\nlet input = dispatch_support::from_value::<flare_im_core_sdk::model::notification::BackgroundRefreshRequest>(request.clone(), \"background refresh\")?;\nlet response = session.client().background_refresh(input.budget_ms).await?;\n",
+      "json_expr": "response"
     }
   ]
 }

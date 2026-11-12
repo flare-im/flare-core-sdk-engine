@@ -17,6 +17,7 @@ import type { CapabilitiesApi } from '../api/modules/capabilities';
 import type { ViewsApi } from '../api/modules/views';
 import type { EventsApi } from '../api/modules/events';
 import type { DiagnosticsApi } from '../api/modules/diagnostics';
+import type { NotificationApi } from '../api/modules/notification';
 import { LifecycleEventName } from '../model';
 import { emitLifecycleEvent, invokeBool, invokeMap, invokeVoid, sdkErrorPayloadFromError, userIdFromRequest } from './codec/NativeInvoke';
 import { setHeartbeatNatTimeoutRequestToMap } from './codec/WireCodec';
@@ -33,14 +34,19 @@ import { DefaultMediaApi } from './module/DefaultMediaApi';
 import { DefaultCapabilitiesApi } from './module/DefaultCapabilitiesApi';
 import { DefaultViewsApi } from './module/DefaultViewsApi';
 import { DefaultDiagnosticsApi } from './module/DefaultDiagnosticsApi';
+import { DefaultNotificationApi } from './module/DefaultNotificationApi';
 import { DefaultMessageBuilderApi } from './module/DefaultMessageBuilderApi';
 import { PlatformLifecycle } from '../lifecycle/PlatformLifecycle';
 
 import {
   ClearPushTokenRequest,
+  HandleRemoteMessageRequest,
   HeartbeatEffectiveIntervalResponse,
+  NotificationTapResult,
   PushLifecycleStatus,
   PushTokenInput,
+  RemoteMessageOutcome,
+  ResolveNotificationTapRequest,
   SetHeartbeatNatTimeoutRequest,
   SetPushPermissionRequest,
 } from '../model';
@@ -60,6 +66,7 @@ export class DefaultFlareImClient implements FlareImClient {
   readonly views: ViewsApi;
   readonly events: EventsApi;
   readonly diagnostics: DiagnosticsApi;
+  readonly notification: NotificationApi;
   private readonly bridge: NativeBridge;
   private platformLifecycle: PlatformLifecycle | null = null;
 
@@ -79,6 +86,7 @@ export class DefaultFlareImClient implements FlareImClient {
     this.views = new DefaultViewsApi(bridge);
     this.events = new DefaultEventsApi(bridge);
     this.diagnostics = new DefaultDiagnosticsApi(bridge);
+    this.notification = new DefaultNotificationApi(bridge);
   }
 
   async create(request: Record<string, Object>): Promise<Record<string, Object>> {
@@ -177,6 +185,24 @@ export class DefaultFlareImClient implements FlareImClient {
   async pushStatus(): Promise<PushLifecycleStatus> {
     const raw = await invokeMap(this.bridge, NativeCallMap.sdkPushStatus);
     return { configuredProviders: raw['configuredProviders'] as number, pendingRevocations: raw['pendingRevocations'] as number, registeredProviders: raw['registeredProviders'] as number, state: raw['state'] as string, lastError: raw['lastError'] as string | undefined };
+  }
+
+  /** HarmonyOS has no platform push module yet: remote pushes are not handed to the core here. */
+  async handleRemoteMessage(request: HandleRemoteMessageRequest): Promise<RemoteMessageOutcome> {
+    throw new FlareSdkException(
+      SdkErrorCodes.capabilityUnavailable,
+      'remote push handling is not available on HarmonyOS yet',
+      'sdk.handle_remote_message',
+    );
+  }
+
+  /** HarmonyOS has no platform push module yet: notification taps are not resolved here. */
+  async resolveNotificationTap(request: ResolveNotificationTapRequest): Promise<NotificationTapResult> {
+    throw new FlareSdkException(
+      SdkErrorCodes.capabilityUnavailable,
+      'remote push handling is not available on HarmonyOS yet',
+      'sdk.resolve_notification_tap',
+    );
   }
 
   async logout(): Promise<void> {

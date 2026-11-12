@@ -78,6 +78,62 @@
   retryable, details }`：服务端拒发时 `machine_reason` 取 `ErrorDetail.reason`（例如 PreSend 拒绝码），
   `code` 为对应的核心错误码名，`details.remoteCode` 为服务端数字码；本地失败给本地 code，`machine_reason`
   为空。绑定层事件 `message.send_failed` 为 `{clientMsgId, reason, error}`；字符串 `reason` 照旧。
+- 链路在线时的提示决策（NotifyCenter）：实时到达的消息（同步拉回的不算）按 `flare-notify-rules` 决策——提示等级、
+  是否点名（解析不出按说不清）、会话的免打扰与仅 @我、超过 1000 人的群没开「全部消息通知」时只提示 @我、用户的
+  勿扰时段（设备当地时间）。本人发的、前台正在看的会话里的不提示。前台出应用内横幅，按会话合并、带条数；后台且
+  本进程能自己提示（桌面、Web、接上了后台展示方的手机）出系统通知，过闸门（一个会话一条通知、响铃阶梯、设备预算、
+  摘要 `d:digest`，吞并的到期补一次静默刷新）；后台提示归推送时不提示。文案与推送服务端同一套规则，用本地会话标题、
+  群里的发送者名与应用语言（`app.locale`），按预览设置露出。提示过的记进提示台账，同一条的推送不再响。之后修正：
+  会话读到提示过的 seq 时撤掉，展示着的消息被撤回就静默替换成「撤回了一条消息」，回到前台时撤掉已读会话的系统通知
+  与摘要；登出、断开时撤掉全部通知、角标归零。
+- 三个通知事件（`SdkEvent::Notification`）：`notification.present`（3503，载荷 `NotificationPresentation`：
+  `collapseId`、`threadId`、`conversationId`、`messageId`、`seq`、`title`、`body`、`count`、`sound`、`channel`、
+  `surface`）、`notification.clear`（3504，`NotificationClearEvent { collapseIds, all }`）、`notification.badge`
+  （3505，`NotificationBadgeEvent { count }`，未读总数变化后约 300 ms 报一次，登录后与回到前台各强制报一次）。
+  sdk-spec 增加对应的监听 `onNotificationPresent`、`onNotificationClear`、`onNotificationBadge` 与事件名枚举
+  `NotificationEventName`。
+- sdk-spec 模块 `notification`（`client.notification`）：`setFocus { conversationId? }`、`getSettings` →
+  `UserNotificationSettings`、`updateSettings`（`UpdateUserNotificationSettingsRequest`，部分更新，带
+  `baseSettingsVersion`）、`setBackgroundPresenter { attached }`；对应 `IMClient::set_notification_focus`、
+  `notification_settings`、`update_notification_settings`、`set_background_presenter`。焦点与后台展示方不依赖登录。
+  鸿蒙两端这四个方法报 `capabilityUnavailable`。
+- 用户级通知设置（`UserNotificationSettings { quietHours?, preview, multiDevice, settingsVersion }`）：上线时经
+  `GetUserNotificationSettingsSync` 读取并缓存，写入走 `UserNotificationSettingsSync`；别的设备改了设置时服务端在
+  `sync:<用户>` 收件箱发 `flare.user_settings_changed` 信号，引擎重新读取，会话级的 `notify_all` 写进本地会话
+  （ext 键 `notify_all`，也随会话摘要与 `ConversationUserSettingsSync` 往返）。
+- 大群「全部消息通知」：`conversation.set_notify_all { conversationId, enabled }`（sdk-spec
+  `setConversationNotifyAll`，`ConversationApi::set_notify_all`）与置顶、免打扰同一条路——先写本地（新的
+  `ConversationWriter::set_notify_all`，SQLite、内存与浏览器存储都改 ext 键 `notify_all`）、标记待同步、经
+  `ConversationUserSettingsSync` 发给服务端；服务端没有收下时本地退回原值并返回错误，两种结果都发
+  `conversation.updated`。待同步的设置补发时一并带上它。对外会话模型新增 `notifyAll`（与 `isMuted`、
+  `isMentionOnly` 并列，读取时由 ext 投影，从没开过为 false）。
+- `notification` 模块新增两个只在原生端可用的方法（浏览器报 `OperationNotSupported`，鸿蒙两端报
+  `capabilityUnavailable`）：`setSnapshotDirectory { directory? }`（`notification.set_snapshot_directory`，
+  `IMClient::set_notification_snapshot_directory`）与 `backgroundRefresh { budgetMs }` →
+  `BackgroundRefreshResult { completed }`（`notification.background_refresh`，`IMClient::background_refresh`）。
+- 给 iOS 通知扩展的通知快照：会话装上期间在宿主给的目录写 `snapshot.json`（最近 500 个会话的本地标题、免打扰、
+  仅 @我、是否多人，联系人显示名，预览设置，按应用语言渲染的五句固定文案），变化后去抖 2 秒、原子替换、内容不变
+  不重写，不超过 256 KiB（先丢名字，再丢最久没动的会话）；登出、断开、换账号时删掉。
+- 推送到达回执：`handleRemoteMessage` 处理的当前账号的推送记路径 `app`，扩展写的 `receipts.log` 在会话装上、
+  回到前台、后台刷新之后读进来记路径 `extension`（每行带推送发给的账号 `u`、`n`，不是当前会话账号的行丢掉）；
+  按（合并键、seq、通道）去重，队列存在数据根下 `push-receipts.json`（最多 500 条），每批用会话当前的 Core
+  凭据（刷新、续期之后的那枚）报给 `POST /api/v1/push/receipts`（每批最多 100 条，凭据过期时续期一次再发，
+  4xx 丢弃，续期失败的 401、5xx 与网络错误留着，平时最多 30 秒一次）。
+- 后台刷新：一次唤醒（与带预算的推送唤醒同一套，已有唤醒在跑时并入），等链路补完同步或预算（最多 25 秒）用完，
+  收尾时读回执、报回执、写出快照，然后回到原来的做法（iOS 交回推送通道并关掉链路）。链路状态机的唤醒新增
+  「等结果」与「提前结束」。
+- 后台心跳学习（保留链路的手机）：按网络指纹，从策略的后台间隔起步，后台连续 3 次心跳得到应答拉长 30 秒，上限为
+  策略允许的后台间隔上限与 540 秒中较小者；后台空闲时在间隔 I 上断了，记下这张网的上限 I − 30 秒（连同学到的
+  时刻）并退回去，上限 7 天后作废，这张网从策略的后台间隔重新探。
+  新间隔立即用到当前连接，前台节奏与判死超时不动；学习表存在数据根下 `link/heartbeat-learning.json`（最多 64
+  张网，最久没用的先淘汰）。
+- 真栈脚本 `scripts/live_stack.py` 加上 Push Proxy、Push Server、Push Worker（离线任务走开发用的 `outbox` 后端，
+  落在推送 Redis 的一条 Stream 里；NATS 改为带口令，满足推送进程的 `broker-isolated` 来源要求），Social 二进制
+  没编时跳过 Social；编排服务与消息接入只认单 Cell 默认地址的那两个下游（会话服务、Storage Reader），默认端口空闲时
+  在回环上桥到本栈端口。`env` 多给 `LIVE_SMOKE_PUSH_REDIS`、`LIVE_SMOKE_PUSH_OUTBOX`。
+- 全栈验收 `tests/reachability_acceptance.rs`（全部 `#[ignore]`，跑法见文件头）：经可开关的 TCP 中继模拟应用被杀，
+  读出 outbox 里的任务信封，断言设计文档完成定义 1、4 到 13 中服务端看得到的条目（时延、合并键、处置、条数、
+  响铃与厂商调用上界、修正、勿扰、大群、登出与被踢、seq 连续、决策链与到达回执）。
 
 ### 修复
 
@@ -224,11 +280,15 @@
 - 未类型化的能力包事件 `MessageEvent::Capability`（事件码 2007，`im://message_capability`）、
   `on_capability` 与注册表的能力包观察者，由上面两个插件事件取代。
 - 上行 `send_capability_packet`：网关丢弃上行能力包，插件上行一律走 HTTP 能力调用。
+- 事件 `notification.message_sound`（`NotificationEvent::MessageSound`，事件码 3502，`im://message_sound`）：
+  由 NotifyCenter 的 `notification.present` 取代，3502 不再使用。`NotificationInboundPipeline::with_conversations`
+  一并删除。
 
 ### 依赖
 
 - `flare-proto` / `flare-grpc-proto` → 2.1.0，`flare-core` → 1.1.1。
   后者含三批 RUSTSEC 修复，**建议一并升级**。
+- 新增 `flare-notify-rules` 0.1.0（路径依赖，与推送服务端共用的提示规则，无 IO、可编进 wasm）。
 
 ## 1.1.0 — 2026-08-03
 

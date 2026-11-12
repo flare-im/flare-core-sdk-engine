@@ -1,9 +1,65 @@
-use super::IMClient;
+use super::{IMClient, IMClientInner};
 use crate::{
+    client::push_inbox::{
+        HandleRemoteMessageRequest, InboxSession, NotificationTapResult, RemoteMessageOutcome,
+        ResolveNotificationTapRequest,
+    },
     client::push_lifecycle::{PushLifecycleStatus, PushTokenInput},
     shared::error::Result,
 };
 impl IMClient {
+    /// 远程推送的无界面入口：平台推送包收到推送（APNs、FCM、个推）时调用，150 ms 内答复该怎么展示，
+    /// 不等网络。按合并键与 seq 去重（链路上已经提示过的不再响），本地已读覆盖了的改为清除；
+    /// `budgetMs` 大于零时顺带唤醒链路做一次增量同步，答复不等它。
+    pub async fn handle_remote_message(
+        &self,
+        request: HandleRemoteMessageRequest,
+    ) -> Result<RemoteMessageOutcome> {
+        self.push_inbox
+            .handle(request, self.is_app_foreground_snapshot())
+            .await
+    }
+
+    /// 点开的通知去哪个会话、哪条消息；载荷不是当前账号的时候什么都不给。
+    pub fn resolve_notification_tap(
+        &self,
+        request: ResolveNotificationTapRequest,
+    ) -> Result<NotificationTapResult> {
+        self.push_inbox.resolve_tap(&request)
+    }
+
+    /// 把这一代会话的事实交给推送入口：用户、租户、本地会话库、提示台账与链路。登录准备好、建连
+    /// 开始时各调一次（用户、租户、引擎都可能刚换）；登出、断开时由 `clear_session_snapshot` 卸下。
+    pub(super) fn attach_push_inbox(&self, g: &IMClientInner) {
+        let (Some(user_id), Some(engine)) = (
+            g.current_user_id
+                .as_ref()
+                .filter(|user_id| !user_id.trim().is_empty()),
+            g.engine.as_ref(),
+        ) else {
+            self.push_inbox.detach();
+            return;
+        };
+        let tenant_id = Self::resolve_tenant_id(g);
+        // 链路确认的消息要按租户算合并键，才能和推送落在同一处。
+        engine.alert_ledger().scope(&tenant_id);
+        // 通知快照按这个账号写到宿主给的目录（目录跨登录保留，在客户端那份宿主事实里）。
+        let notify = engine.notify_center();
+        notify.adopt_host(self.notification_host.clone());
+        notify.attach_session(user_id, &tenant_id);
+        // 到达回执的队列在数据根下，只记、只报这个账号的。
+        if let Some(root) = g.data_root.clone() {
+            self.push_inbox.receipts().set_root(root);
+        }
+        self.push_inbox.receipts().set_owner(user_id, &tenant_id);
+        self.push_inbox.attach(InboxSession {
+            user_id: user_id.clone(),
+            tenant_id,
+            conversations: engine.stores().conversations.clone(),
+            alerts: engine.alert_ledger().clone(),
+            link: engine.link().clone(),
+        });
+    }
     pub(super) async fn configure_push_transport(&self) {
         use crate::client::lifecycle::merge_sdk_config_onto;
         use crate::infrastructure::transport::http::router::HttpRouter;
@@ -46,7 +102,10 @@ impl IMClient {
     }
     /// OS callback, not an IM credential. May arrive before login; permission defaults false.
     pub async fn update_push_token(&self, input: PushTokenInput) -> Result<PushLifecycleStatus> {
+        let app_version = input.app_version.clone();
         self.push_lifecycle.update(input)?;
+        // 到达回执按最近一次登记的应用版本报。
+        self.push_inbox.receipts().set_app_version(app_version);
         self.reconcile_push().await
     }
     pub async fn clear_push_token(&self, provider: &str) -> Result<PushLifecycleStatus> {
@@ -106,6 +165,23 @@ impl IMClient {
             }
         };
         if let Some((epoch, user, app, device, http, token, root, server_clock)) = capture {
+            // 到达回执用同一个设备报，凭据每批从会话共用的请求上下文现取（刷新、续期之后的那枚），
+            // 只在这一代会话还在时用，不会借用下一个账号的。浏览器没有系统推送，也就没有回执。
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.push_inbox
+                    .receipts()
+                    .attach(crate::client::push_receipts::ReceiptSender {
+                        device_id: device.clone(),
+                        http: http.clone(),
+                        user_id: user.clone(),
+                        tenant_id: app.clone(),
+                        epoch,
+                        generation: self.session_generation_snapshot.clone(),
+                    });
+                // 会话装上了：读进通知扩展记下的回执，把排着的报上去。
+                self.sync_push_receipts_in_background();
+            }
             if self
                 .push_lifecycle
                 .attach(crate::client::push_lifecycle::AttachPushSession {
@@ -131,6 +207,24 @@ impl IMClient {
             self.reconcile_push_in_background();
         }
     }
+    /// 读进通知扩展记下的回执，再把排着的回执报上去（会话装上、回到前台时）。不挡调用方。
+    pub(super) fn sync_push_receipts_in_background(&self) {
+        let client = self.clone();
+        super::spawn_im_background(async move {
+            client.sync_push_receipts().await;
+        });
+    }
+
+    /// 读进通知扩展记下的回执，再把排着的回执报上去。没有会话、没有上报通道时只读不报。
+    pub(super) async fn sync_push_receipts(&self) {
+        let receipts = self.push_inbox.receipts().clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(directory) = self.notification_host.snapshot_directory() {
+            receipts.ingest(&directory);
+        }
+        receipts.flush().await;
+    }
+
     pub(super) fn reconcile_push_in_background(&self) {
         let weak = self.downgrade();
         super::spawn_im_background(async move {

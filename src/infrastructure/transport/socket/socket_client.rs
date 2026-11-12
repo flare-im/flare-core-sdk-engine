@@ -3,16 +3,18 @@ use std::time::Duration;
 
 use flare_core::client::builder::flare::{FlareClient, FlareClientBuilder, MessageListener};
 use flare_core::client::link::{ConnectFailure, ConnectReport};
+use flare_core::common::constants::metadata_keys;
 use flare_core::common::device::{DeviceInfo, DevicePlatform};
-use flare_core::common::protocol::SerializationFormat;
+use flare_core::common::protocol::{Reliability, SerializationFormat, builder};
 use flare_core::common::{HeartbeatAppState, HeartbeatConfig};
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::client::config::SdkConfig;
 use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
-use crate::runtime::link::OpenRequest;
+use crate::runtime::link::{DeviceLinkState, OpenRequest};
 use crate::shared::error::Result;
+use crate::shared::util::timeout;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_device_platform(target_os: &str, target_env: &str) -> DevicePlatform {
@@ -48,7 +50,22 @@ pub(crate) fn connect_device_platform() -> DevicePlatform {
     DevicePlatform::Web
 }
 
-fn sdk_device_info(config: &SdkConfig) -> DeviceInfo {
+/// CONNECT 里带的初始设备状态：小写文本，前台 `active`；后台本进程自己提示是 `standby`，提示交给
+/// 推送是 `deferred`（服务端把缺省或别的值当前台）。服务端从第一帧起就按它决定提示归属与要不要等
+/// 送达确认，不必等连上之后的那次上报。
+///
+/// 只带状态本身。CONNECT 元数据是文本字段，中间层可能清洗其中的控制字符，所以不往里放编码后的
+/// 上报；角标、注意力与上报时间由连上之后那次完整的 `DEVICE_STATE` 补上。
+fn connect_device_state(state: DeviceLinkState) -> &'static str {
+    match state {
+        DeviceLinkState::Active => "active",
+        DeviceLinkState::Standby => "standby",
+        // 托管只在一条已经连上的链路上发生，建连时不会是它；真遇到，也是提示归推送。
+        DeviceLinkState::Deferred | DeviceLinkState::Parking => "deferred",
+    }
+}
+
+fn sdk_device_info(config: &SdkConfig, state: DeviceLinkState) -> DeviceInfo {
     let device_id = config.effective_device_id();
     let platform = connect_device_platform();
     #[cfg(not(target_arch = "wasm32"))]
@@ -78,7 +95,10 @@ fn sdk_device_info(config: &SdkConfig) -> DeviceInfo {
     if let Some(distribution) = config.effective_distribution() {
         device = device.with_metadata(CONNECT_META_DISTRIBUTION.to_string(), distribution);
     }
-    device
+    device.with_metadata(
+        metadata_keys::DEVICE_STATE.to_string(),
+        connect_device_state(state).to_string(),
+    )
 }
 
 /// CONNECT 元数据键（经 `DeviceInfo.metadata` 平铺进 CONNECT 帧的 metadata）。
@@ -86,6 +106,11 @@ fn sdk_device_info(config: &SdkConfig) -> DeviceInfo {
 const CONNECT_META_APP_BUILD: &str = "app_build";
 const CONNECT_META_DISTRIBUTION: &str = "distribution";
 const CONNECT_META_SDK_VERSION: &str = "sdk_version";
+
+/// 托管关闭时告诉服务端的原因（CLOSE 的 `message` 与 metadata `reason`）。
+const PARKED_CLOSE_REASON: &str = "PARKED";
+/// 托管关闭前那一帧 CLOSE 的发送时限：只是告知，发不出去也照样关。
+const PARKED_CLOSE_SEND_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// 对当前长连接做一次即时验活：立即发一枚 ping，验活窗口（接入策略 `probeWakeTimeoutMs`，缺省 5 s）
 /// 内收不到 PONG 就按心跳超时断开，之后由链路状态机换线路重连。
@@ -137,6 +162,8 @@ pub struct SocketTransport {
     config: SdkConfig,
     sender: Arc<PacketSender>,
     client: Arc<Mutex<Option<FlareClient>>>,
+    /// 宿主报的 NAT 空闲超时：换心跳节奏时原样带上，不被新的节奏冲掉。
+    nat_timeout: Arc<std::sync::Mutex<Option<Duration>>>,
 }
 
 impl SocketTransport {
@@ -163,6 +190,7 @@ impl SocketTransport {
             config,
             sender,
             client,
+            nat_timeout: Arc::default(),
         }
     }
 
@@ -208,7 +236,7 @@ impl SocketTransport {
             .with_user_id(request.user_id.clone())
             .with_token(request.token.clone())
             .with_listener(listener)
-            .with_device_info(sdk_device_info(&self.config))
+            .with_device_info(sdk_device_info(&self.config, request.device_state))
             .with_format(SerializationFormat::Protobuf)
             .with_tls(tls)
             .with_heartbeat(link_heartbeat_config(
@@ -274,18 +302,82 @@ impl SocketTransport {
         Ok(())
     }
 
+    /// 托管交接完成后关闭连接：先发一帧 CLOSE 说明这是托管，再断开。提示在服务端应答 `PARKING` 时
+    /// 已经交给推送通道，这一帧只是让它不必把这次断开当成掉线。
+    pub(crate) async fn disconnect_parked(&self) {
+        // 先把客户端从槽位里取走再发：之后别处的发送立即得到「未连接」，也不占着槽位的锁等网络。
+        let client = self.client.lock().await.take();
+        let Some(client) = client else {
+            return;
+        };
+        let reason = PARKED_CLOSE_REASON.to_string();
+        let metadata = std::collections::HashMap::from([(
+            metadata_keys::REASON.to_string(),
+            reason.clone().into_bytes(),
+        )]);
+        let close = builder::frame_with_system_command(
+            builder::close(Some(reason), Some(metadata)),
+            Reliability::BestEffort,
+        );
+        match timeout(PARKED_CLOSE_SEND_TIMEOUT, client.send_frame(&close)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => debug!(%error, "the parked CLOSE was not sent"),
+            Err(_) => debug!("the parked CLOSE timed out"),
+        }
+        if let Err(error) = client.disconnect().await {
+            warn!(error = %error, "socket client disconnect failed");
+        }
+        info!("socket disconnected after parking");
+    }
+
     pub async fn set_heartbeat_app_state(&self, state: HeartbeatAppState) -> Result<()> {
-        if let Some(client) = self.client.lock().await.as_ref() {
+        // 只在取快照时拿槽位的锁：改心跳要等客户端自己的锁（发送等回执时一直被占着），占着槽位等的话，
+        // 这期间别处的发送和关连接都得跟着等，进后台的托管交接就在其中。
+        let client = self.client.lock().await.as_ref().cloned();
+        if let Some(client) = client {
             client.set_heartbeat_app_state(state).await;
         }
         Ok(())
     }
 
     pub async fn set_heartbeat_nat_timeout(&self, timeout: Option<Duration>) -> Result<()> {
+        *self
+            .nat_timeout
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = timeout;
         if let Some(client) = self.client.lock().await.as_ref() {
             client.set_heartbeat_nat_timeout(timeout).await;
         }
         Ok(())
+    }
+
+    /// 换当前连接的心跳节奏（后台心跳学到了新的间隔）：按给定的前后台重建整份心跳配置，宿主报过的
+    /// NAT 空闲超时照旧带上。没有连接时什么都不做。
+    pub(crate) async fn retune_heartbeat(
+        &self,
+        heartbeat: crate::runtime::link::LinkHeartbeat,
+        probe_timeout: Duration,
+        foreground: bool,
+    ) {
+        // 同 `set_heartbeat_app_state`：只在取快照时拿槽位的锁。
+        let client = self.client.lock().await.as_ref().cloned();
+        let Some(client) = client else {
+            return;
+        };
+        let app_state = if foreground {
+            HeartbeatAppState::Foreground
+        } else {
+            HeartbeatAppState::Background
+        };
+        let mut config = link_heartbeat_config(heartbeat, probe_timeout, app_state);
+        let nat_timeout = *self
+            .nat_timeout
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(nat_timeout) = nat_timeout {
+            config = config.with_nat_timeout(nat_timeout);
+        }
+        client.update_heartbeat_config(config).await;
     }
 
     pub async fn heartbeat_effective_interval(&self) -> Option<Duration> {
@@ -408,14 +500,14 @@ mod tests {
             DevicePlatform::HarmonyOS
         );
         assert_eq!(
-            sdk_device_info(&SdkConfig::default()).platform,
+            sdk_device_info(&SdkConfig::default(), DeviceLinkState::Active).platform,
             native_device_platform(std::env::consts::OS, TARGET_ENV)
         );
     }
 
     #[test]
     fn sdk_device_info_requests_platform_exclusive_sessions() {
-        let info = sdk_device_info(&SdkConfig::default());
+        let info = sdk_device_info(&SdkConfig::default(), DeviceLinkState::Active);
 
         assert_eq!(
             info.metadata.get("desired_conflict_strategy"),
@@ -426,7 +518,7 @@ mod tests {
     /// 没配应用版本就不报：以前写死的 "1.0.0" 不能再出现；引擎版本始终报。
     #[test]
     fn sdk_device_info_reports_no_app_version_unless_configured() {
-        let info = sdk_device_info(&SdkConfig::default());
+        let info = sdk_device_info(&SdkConfig::default(), DeviceLinkState::Active);
 
         assert_eq!(info.app_version, None);
         assert!(!info.metadata.contains_key("app_build"));
@@ -451,7 +543,7 @@ mod tests {
                 ..Default::default()
             })
             .build();
-        let info = sdk_device_info(&config);
+        let info = sdk_device_info(&config, DeviceLinkState::Active);
 
         assert_eq!(info.app_version.as_deref(), Some("3.2.1"));
         assert_eq!(
@@ -474,11 +566,39 @@ mod tests {
         );
     }
 
+    /// CONNECT 带初始设备状态：小写文本 `active`、`standby` 或 `deferred`。服务端按这三个字面值读取；
+    /// 角标等其余内容留给连上之后的上报。
+    #[test]
+    fn connect_metadata_carries_the_initial_device_state() {
+        for (state, text) in [
+            (DeviceLinkState::Active, "active"),
+            (DeviceLinkState::Standby, "standby"),
+            (DeviceLinkState::Deferred, "deferred"),
+        ] {
+            let info = sdk_device_info(&SdkConfig::default(), state);
+            assert_eq!(
+                info.metadata
+                    .get(metadata_keys::DEVICE_STATE)
+                    .map(String::as_str),
+                Some(text),
+                "{state:?}"
+            );
+        }
+    }
+
     /// 没有在用的连接时验活什么也不做，也不报「探过了」。
     #[tokio::test]
     async fn link_probe_is_a_no_op_without_a_connection() {
         let transport = SocketTransport::new(SdkConfig::default());
         assert!(!transport.probe_link().await);
         transport.link_probe().request_probe();
+    }
+
+    /// 没有连接时托管关闭什么也不做。
+    #[tokio::test]
+    async fn parking_without_a_connection_is_a_no_op() {
+        let transport = SocketTransport::new(SdkConfig::default());
+        transport.disconnect_parked().await;
+        assert!(!transport.is_connected().await);
     }
 }

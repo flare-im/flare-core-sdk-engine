@@ -4,6 +4,8 @@ use super::Conversation;
 
 pub const EXT_USER_SETTINGS_VERSION: &str = "user_settings_version";
 pub const EXT_SETTINGS_DIRTY: &str = "settings_dirty";
+/// 大群里当前用户显式开启了「全部消息通知」（`ConversationUserSettings.notify_all`）。
+pub const EXT_NOTIFY_ALL: &str = "notify_all";
 
 pub fn user_settings_version(conversation: &Conversation) -> u64 {
     conversation
@@ -33,4 +35,27 @@ pub fn apply_remote_settings_version(conversation: &mut Conversation, version: u
     conversation
         .ext
         .insert(EXT_SETTINGS_DIRTY.to_string(), "0".to_string());
+}
+
+/// 大群里是否显式开启了「全部消息通知」；没有记录时为否。
+pub fn notify_all(conversation: &Conversation) -> bool {
+    notify_all_in(&conversation.ext).unwrap_or(false)
+}
+
+/// ext 里记录的「全部消息通知」；没有记录时为 `None`。
+pub fn notify_all_in(ext: &std::collections::HashMap<String, String>) -> Option<bool> {
+    ext.get(EXT_NOTIFY_ALL)
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+pub fn set_notify_all(conversation: &mut Conversation, notify_all: bool) {
+    set_notify_all_in(&mut conversation.ext, notify_all);
+}
+
+/// 把「全部消息通知」记进 ext。
+pub fn set_notify_all_in(ext: &mut std::collections::HashMap<String, String>, notify_all: bool) {
+    ext.insert(
+        EXT_NOTIFY_ALL.to_string(),
+        if notify_all { "1" } else { "0" }.to_string(),
+    );
 }

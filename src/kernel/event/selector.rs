@@ -272,7 +272,9 @@ impl MessageEventType {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum NotificationEventType {
     Received,
-    MessageSound,
+    Present,
+    Clear,
+    Badge,
     NotificationType(String),
 }
 
@@ -284,7 +286,9 @@ impl NotificationEventType {
     fn matches(&self, event: &NotificationEvent) -> bool {
         match (self, event) {
             (Self::Received, NotificationEvent::Received { .. }) => true,
-            (Self::MessageSound, NotificationEvent::MessageSound { .. }) => true,
+            (Self::Present, NotificationEvent::Present(_))
+            | (Self::Clear, NotificationEvent::Clear { .. })
+            | (Self::Badge, NotificationEvent::Badge { .. }) => true,
             (Self::NotificationType(expected), NotificationEvent::Received { message }) => {
                 notification_type_of_message(message)
                     .is_some_and(|actual| actual.trim() == expected.as_str())
@@ -633,8 +637,14 @@ impl SdkEvent {
                     _ => SdkEventType::Notification(NotificationEventType::Received),
                 }
             }
-            Self::Notification(NotificationEvent::MessageSound { .. }) => {
-                SdkEventType::Notification(NotificationEventType::MessageSound)
+            Self::Notification(NotificationEvent::Present(_)) => {
+                SdkEventType::Notification(NotificationEventType::Present)
+            }
+            Self::Notification(NotificationEvent::Clear { .. }) => {
+                SdkEventType::Notification(NotificationEventType::Clear)
+            }
+            Self::Notification(NotificationEvent::Badge { .. }) => {
+                SdkEventType::Notification(NotificationEventType::Badge)
             }
             Self::Conversation(ConversationEvent::Synced { .. }) => {
                 SdkEventType::Conversation(ConversationEventType::Synced)

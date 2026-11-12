@@ -182,6 +182,15 @@ public final class DefaultEventsApi: EventsApiProtocol {
     public func onPluginCatalogChanged(_ listener: @escaping EventCallback<PluginCatalogChangedEvent>) -> any EventSubscription {
         registerTyped(listener)
     }
+    public func onNotificationPresent(_ listener: @escaping EventCallback<NotificationPresentation>) -> any EventSubscription {
+        registerTyped(listener)
+    }
+    public func onNotificationClear(_ listener: @escaping EventCallback<NotificationClearEvent>) -> any EventSubscription {
+        registerTyped(listener)
+    }
+    public func onNotificationBadge(_ listener: @escaping EventCallback<NotificationBadgeEvent>) -> any EventSubscription {
+        registerTyped(listener)
+    }
 
     private func register(handler: Any) -> any EventSubscription {
         let id = nextId
@@ -308,6 +317,15 @@ private func nativeEventFromCode(eventType: Int, payload: Any?) throws -> Any {
         )
     case EventCode.pluginCatalogChanged:
         return PluginCatalogChangedEvent(version: try requiredString(json["version"]?.value, "version"))
+    case EventCode.notificationPresent:
+        return try notificationPresentationFromJson(plainMap(json))
+    case EventCode.notificationClear:
+        return NotificationClearEvent(
+            all: try requiredBool(json["all"]?.value, "all"),
+            collapseIds: try requiredStringList(json["collapseIds"]?.value, "collapseIds", "NotificationClearEvent")
+        )
+    case EventCode.notificationBadge:
+        return NotificationBadgeEvent(count: UInt32(try requiredUInt64(json["count"]?.value, "count")))
     case EventCode.viewUpdated:
         return try viewUpdateFromJson(json)
     default:
@@ -632,6 +650,18 @@ private func dispatchToListener(_ listener: any FlareImEventListener, event: Any
     }
     if let catalog = event as? PluginCatalogChangedEvent {
         listener.onPluginCatalogChanged(catalog)
+        return
+    }
+    if let presentation = event as? NotificationPresentation {
+        listener.onNotificationPresent(presentation)
+        return
+    }
+    if let clear = event as? NotificationClearEvent {
+        listener.onNotificationClear(clear)
+        return
+    }
+    if let badge = event as? NotificationBadgeEvent {
+        listener.onNotificationBadge(badge)
         return
     }
 }

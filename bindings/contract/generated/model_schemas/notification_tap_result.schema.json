@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Where a tapped notification leads; every field is absent when the payload is not for the\ncurrent account.",
+  "properties": {
+    "conversationId": {
+      "description": "Conversation to open.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "messageId": {
+      "description": "Message to scroll to, when the payload named one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "seq": {
+      "description": "Conversation seq of that message.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  },
+  "title": "NotificationTapResult",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "NotificationTapResult"
+}

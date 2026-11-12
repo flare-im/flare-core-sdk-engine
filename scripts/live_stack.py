@@ -2,8 +2,10 @@
 """Isolated local stack for the engine's live link smoke test (tests/live_stack_smoke.rs).
 
 One Cell with two signaling gateways as two access points of the same Cell, the Core
-services a send needs, and the Social gateway + user service for the idempotency checks.
-Everything is owned by this script and isolated from the other local stacks:
+services a send needs, the Push Proxy, Push Server and Push Worker (offline tasks go to
+the development ``outbox`` backend, a Redis Stream the reachability acceptance reads), and
+the Social gateway + user service for the idempotency checks (skipped when their binaries
+are not built). Everything is owned by this script and isolated from the other local stacks:
 
 - its own infrastructure: PostgreSQL (TimescaleDB image) and Consul containers named
   ``flare-livesmoke-*`` (with a named data volume), Redis and NATS host processes;
@@ -98,11 +100,25 @@ CORE_SERVICES = {
     "api-gateway": ("flare-api-gateway", "api-gateway", API),
     "gw-a": ("flare-signaling-gateway", "signaling-gateway", GATEWAYS["gw-a"][0]),
     "gw-b": ("flare-signaling-gateway", "signaling-gateway", GATEWAYS["gw-b"][0]),
+    # Push Server and Push Worker serve no RPC; their metrics endpoint is the readiness port.
+    "push-proxy": ("flare-push-proxy", "push-proxy", port(41091)),
+    "push-server": ("flare-push-server", "push-server", port(43193)),
+    "push-worker": ("flare-push-worker", "push-worker", port(43186)),
 }
 SOCIAL_SERVICES = {
     "social-user": ("flare-user", "social-user", port(41201)),
     "social-gateway": ("flare-gateway", "social-gateway", SOCIAL_API),
 }
+# Offline push tasks of this stack (push-worker `outbox` backend) in the push Redis profile.
+PUSH_REDIS_DB = 5
+OUTBOX_STREAM = "flare:im:push:offline:outbox"
+
+
+def social_enabled():
+    """Social runs when both its binaries are built (LIVE_STACK_SOCIAL=0 turns it off)."""
+    if os.environ.get("LIVE_STACK_SOCIAL", "auto") == "0":
+        return False
+    return all((TARGET / binary).exists() for binary, _, _ in SOCIAL_SERVICES.values())
 ALL_PORTS = sorted({*PORTS.values(), NATS_HTTP, *(g[0] + 1 for g in GATEWAYS.values()),
                     *(p for g in GATEWAYS.values() for p in g[:3])})
 DATABASES = {"core": "flare_livesmoke_core", "social": "flare_livesmoke_social"}
@@ -240,6 +256,12 @@ class Secrets:
         self.pepper = secret("api-key-pepper",
                              lambda: base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("="))
         self.tenant = secret("tenant-id", lambda: "e2e-" + secrets.token_hex(10))
+        # Push processes run only on a broker that admits authenticated clients
+        # (`broker-isolated` provenance), so the stack's NATS requires a password.
+        self.nats = secret("nats-password", lambda: secrets.token_hex(16))
+
+    def nats_url(self):
+        return f"nats://flare:{self.nats}@127.0.0.1:{NATS_PORT}"
 
     def db_url(self, key):
         return f"postgres://flare:{self.pg}@127.0.0.1:{PG_PORT}/{DATABASES[key]}"
@@ -355,6 +377,7 @@ def infrastructure(state, keys):
         config = path("nats", "nats.conf")
         write_private(config, json.dumps({
             "host": "127.0.0.1", "port": NATS_PORT, "http_port": NATS_HTTP,
+            "authorization": {"user": "flare", "password": keys.nats},
             # Streams reserve their max_bytes up front (accounting, not disk); services
             # create their own DLQ streams with deployment-sized limits.
             "jetstream": {"store_dir": str(path("nats", "jetstream")), "max_file_store": 8 << 30,
@@ -388,7 +411,10 @@ def databases(state, keys):
         log("databases already migrated")
         return
     disk_guard("database creation")
+    social = social_enabled()
     for key, name in DATABASES.items():
+        if key == "social" and not social:
+            continue
         if psql(keys, f"SELECT 1 FROM pg_database WHERE datname='{name}'") != "1":
             psql(keys, f"CREATE DATABASE {name} TEMPLATE template0 ENCODING 'UTF8'")
             psql(keys, f"COMMENT ON DATABASE {name} IS '{MARKER}'")
@@ -420,13 +446,16 @@ def databases(state, keys):
     psql(keys, f"""INSERT INTO tenants (tenant_id, name, status, config, quota, version)
         VALUES ('{keys.tenant}', 'm1-live-smoke', 'active', '{{"fixture":"m1-live-smoke"}}', '{{}}', 1)
         ON CONFLICT (tenant_id) DO NOTHING;""", DATABASES["core"])
-    social = run([shutil.which("sqlx") or "sqlx", "migrate", "run", "--source", str(SOCIAL / "social/migrations"),
-                  "--database-url", keys.db_url("social")])
-    lines.append(f"$ sqlx migrate run --source social/migrations\n{social.stdout}{social.stderr}")
-    psql(keys, f"""INSERT INTO flare_tenants (tenant_id, name, status, settings, quota, version)
-        VALUES ('{keys.tenant}', 'm1-live-smoke', 1, '{{"fixture":"m1-live-smoke"}}', '{{}}', 1)
-        ON CONFLICT (tenant_id) DO NOTHING;""", DATABASES["social"])
-    lines.append(f"tenant {keys.tenant} inserted into Core tenants and Social flare_tenants")
+    if social:
+        migrated = run([shutil.which("sqlx") or "sqlx", "migrate", "run", "--source",
+                        str(SOCIAL / "social/migrations"), "--database-url", keys.db_url("social")])
+        lines.append(f"$ sqlx migrate run --source social/migrations\n{migrated.stdout}{migrated.stderr}")
+        psql(keys, f"""INSERT INTO flare_tenants (tenant_id, name, status, settings, quota, version)
+            VALUES ('{keys.tenant}', 'm1-live-smoke', 1, '{{"fixture":"m1-live-smoke"}}', '{{}}', 1)
+            ON CONFLICT (tenant_id) DO NOTHING;""", DATABASES["social"])
+        lines.append(f"tenant {keys.tenant} inserted into Core tenants and Social flare_tenants")
+    else:
+        lines.append(f"tenant {keys.tenant} inserted into Core tenants (Social not built: skipped)")
     write_private(evidence, "\n".join(lines) + "\n")
     print("\n".join(lines))
     state["migrated"] = True
@@ -479,7 +508,7 @@ def core_environment(keys):
     env = {
         "FLARE_CONFIG_PATH": str(path("config")), "FLARE_ENV": "development", "FLARE_MQ_DEFAULT_BACKEND": "nats",
         "FLARE_POSTGRES_URL": keys.db_url("core"), "FLARE_REDIS_URL_BASE": f"redis://127.0.0.1:{REDIS_PORT}",
-        "FLARE_NATS_URL": f"nats://127.0.0.1:{NATS_PORT}", "FLARE_CONSUL_ENDPOINT": f"http://127.0.0.1:{CONSUL_PORT}",
+        "FLARE_NATS_URL": keys.nats_url(), "FLARE_CONSUL_ENDPOINT": f"http://127.0.0.1:{CONSUL_PORT}",
         "SERVICE_ADVERTISE_HOST": "127.0.0.1", "CONSUL_DISCOVERY_REFRESH_INTERVAL": "10",
         "CONSUL_DISCOVER_CACHE_TTL_SECS": "5", "RUST_LOG": "info,async_nats=warn",
         "ACCESS_GATEWAY_TOKEN_SECRET": keys.token, "FLARE_API_GATEWAY_TOKEN_SECRET": keys.token,
@@ -498,6 +527,13 @@ def core_environment(keys):
         "FLARE_API_GATEWAY_GRPC_CONVERSATION_SERVICE_URL": f"http://127.0.0.1:{port(41090)}",
         "FLARE_API_GATEWAY_GRPC_ONLINE_SERVICE_URL": f"http://127.0.0.1:{port(41061)}",
         "FLARE_API_GATEWAY_GRPC_STORAGE_READER_SERVICE_URL": f"http://127.0.0.1:{port(42083)}",
+        "FLARE_API_GATEWAY_GRPC_PUSH_PROXY_URL": f"http://127.0.0.1:{port(41091)}",
+        "SIGNALING_ONLINE_PUSH_PROXY_URL": f"http://127.0.0.1:{port(41091)}",
+        **{f"{role}_EVENT_PROVENANCE_MODE": "broker-isolated" for role in ("PUSH_PROXY", "PUSH_SERVER", "PUSH_WORKER")},
+        # Offline tasks land in a Redis Stream instead of a vendor: what the acceptance asserts.
+        "PUSH_WORKER_OFFLINE_DELIVERY_BACKEND": "outbox",
+        "PUSH_WORKER_OFFLINE_REDIS_URL": f"redis://127.0.0.1:{REDIS_PORT}/{PUSH_REDIS_DB}",
+        "PUSH_WORKER_OFFLINE_OUTBOX_STREAM": OUTBOX_STREAM,
         # Both Core gateways verify Core-signed tokens locally (core_jwt) and fall back to
         # the Social identity hook for Social application tokens (chained validator).
         **{f"{prefix}_AUTH_{name}": value for prefix in ("ACCESS_GATEWAY", "FLARE_API_GATEWAY")
@@ -577,9 +613,12 @@ def wait_service(state, name, timeout=90):
 
 def backends(state, keys):
     configuration()
-    order = ["signaling-online", "signaling-route", "conversation", "storage-reader", "storage-writer",
-             "message-ingest", "orchestrator", "sync-orchestrator", "api-gateway", "social-user",
-             "social-gateway", "gw-a", "gw-b"]
+    order = ["push-proxy", "signaling-online", "signaling-route", "conversation", "storage-reader",
+             "storage-writer", "message-ingest", "orchestrator", "sync-orchestrator", "push-server",
+             "push-worker", "api-gateway", "social-user", "social-gateway", "gw-a", "gw-b"]
+    if not social_enabled():
+        log("Social binaries are not built (or LIVE_STACK_SOCIAL=0): Social services skipped")
+        order = [name for name in order if name not in SOCIAL_SERVICES]
     for name in order:
         if live(state, name):
             log(f"{name} already running")
@@ -592,6 +631,69 @@ def backends(state, keys):
             log("storage-writer refused the Base64 DER write proof key; restarting it with the PEM form")
             start_service(state, keys, name, {"FLARE_WRITE_PROOF_PUBLIC_KEY": "@public-pem:write-proof"})
         wait_service(state, name)
+    default_port_bridge(state)
+
+
+# Some calls go only to the single-Cell default address and never through discovery: the
+# Orchestrator and Message Ingest reach the Conversation service and the Storage Reader at
+# their fixed ports (`default_static_grpc_fallback`). Without these the Orchestrator refuses
+# every read receipt and recall (membership lookup unavailable). Bridged on loopback only,
+# only while the default port is free.
+DEFAULT_PORT_BRIDGES = {50090: port(41090), 60083: port(42083)}
+
+BRIDGE_SCRIPT = """\
+import asyncio, sys
+
+async def pipe(reader, writer):
+    try:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+    except OSError:
+        pass
+    finally:
+        writer.close()
+
+async def handle(target, client_reader, client_writer):
+    try:
+        server_reader, server_writer = await asyncio.open_connection("127.0.0.1", target)
+    except OSError:
+        client_writer.close()
+        return
+    await asyncio.gather(pipe(client_reader, server_writer), pipe(server_reader, client_writer))
+
+async def main():
+    servers = []
+    for pair in sys.argv[1:]:
+        listen, target = map(int, pair.split(":"))
+        servers.append(await asyncio.start_server(
+            lambda r, w, t=target: handle(t, r, w), "127.0.0.1", listen))
+    await asyncio.gather(*(server.serve_forever() for server in servers))
+
+asyncio.run(main())
+"""
+
+
+def default_port_bridge(state):
+    if live(state, "default-bridge"):
+        return
+    pairs = []
+    for default, actual in DEFAULT_PORT_BRIDGES.items():
+        if port_open(default):
+            log(f"default port {default} is in use: calls that only use it stay unanswered here")
+        else:
+            pairs.append(f"{default}:{actual}")
+    if not pairs:
+        return
+    script = path("default_bridge.py")
+    write_private(script, BRIDGE_SCRIPT)
+    spawn(state, "default-bridge", [sys.executable, "-I", str(script), *pairs], {})
+    # A framework Python runs under another executable path than sys.executable: recognise
+    # the bridge by its script, so status and down find it.
+    state["processes"]["default-bridge"]["needle"] = str(script)
+    save_state(state)
+    wait_for(lambda: all(port_open(int(pair.split(":")[0])) for pair in pairs), 10, "default port bridge")
+    log(f"default port bridge {' '.join(pairs)}")
 
 
 def writer_accepts_der(state):
@@ -638,6 +740,10 @@ def command_env(_args):
         "LIVE_SMOKE_DIR": str(RUN),
         "LIVE_SMOKE_CORE_DB": keys.db_url("core"),
         "LIVE_SMOKE_SOCIAL_DB": keys.db_url("social"),
+        # Push Redis (device bindings, decision trace, offline outbox) without credentials:
+        # host process bound to loopback.
+        "LIVE_SMOKE_PUSH_REDIS": f"127.0.0.1:{REDIS_PORT}/{PUSH_REDIS_DB}",
+        "LIVE_SMOKE_PUSH_OUTBOX": OUTBOX_STREAM,
     }
     for key, value in values.items():
         print(f"export {key}='{value}'")

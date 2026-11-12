@@ -33,8 +33,31 @@ pub struct AckLedger {
 }
 
 impl AckLedger {
-    /// 记下一个已发出的回执；同一会话只保留序号最大的那个。其它种类的回执不记（不是取最大值语义）。
+    /// 记下一个已发出的回执；同一会话只保留序号最大的那个。批确认里的已读与送达回执逐条记。
+    /// 其它种类的回执不记（不是取最大值语义）。
     pub fn record(&mut self, ack: &Ack, sent_at_ms: u64) {
+        let Some(AckPayload::Batch(batch)) = ack.payload.as_ref() else {
+            self.keep(ack, sent_at_ms);
+            return;
+        };
+        // 批确认拆开按会话记：补发时各会话仍各取最大值，账本里也不必留整批。
+        let single = |payload: AckPayload| Ack {
+            ack_id: None,
+            ack_at: ack.ack_at,
+            payload: Some(payload),
+        };
+        for delivered in &batch.conversation_acks {
+            self.keep(
+                &single(AckPayload::Conversation(delivered.clone())),
+                sent_at_ms,
+            );
+        }
+        for read in &batch.read_acks {
+            self.keep(&single(AckPayload::Read(read.clone())), sent_at_ms);
+        }
+    }
+
+    fn keep(&mut self, ack: &Ack, sent_at_ms: u64) {
         let (kind, conversation_id, seq) = match ack.payload.as_ref() {
             Some(AckPayload::Read(read)) => (AckKind::Read, &read.conversation_id, read.read_seq),
             Some(AckPayload::Conversation(delivered)) => (
@@ -100,7 +123,26 @@ impl AckLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flare_proto::common::{ConversationAck, PushAck, ReadAck};
+    use flare_proto::common::{AckBatch, ConversationAck, PushAck, ReadAck};
+
+    fn delivered(conversation: &str, seq: u64) -> ConversationAck {
+        ConversationAck {
+            conversation_id: conversation.into(),
+            last_delivered_seq: seq,
+            ..Default::default()
+        }
+    }
+
+    fn batch(conversation_acks: Vec<ConversationAck>) -> Ack {
+        Ack {
+            ack_id: None,
+            ack_at: Some(42),
+            payload: Some(AckPayload::Batch(AckBatch {
+                conversation_acks,
+                ..Default::default()
+            })),
+        }
+    }
 
     fn read(conversation: &str, seq: u64) -> Ack {
         Ack {
@@ -155,6 +197,33 @@ mod tests {
         let due = ledger.since(900);
         assert_eq!(due.iter().map(seq_of).collect::<Vec<_>>(), vec![7, 9]);
         assert_eq!(ledger.len(), 3);
+    }
+
+    /// 批确认拆开按会话记，各自取最大值：补发出来的是一个会话一条，没有整批。
+    #[test]
+    fn a_batch_is_kept_per_conversation() {
+        let mut ledger = AckLedger::default();
+        ledger.record(&batch(vec![delivered("c1", 5), delivered("c2", 8)]), 1_000);
+        ledger.record(&batch(vec![delivered("c1", 4), delivered("", 9)]), 1_100);
+        ledger.record(&read("c1", 2), 1_200);
+        assert_eq!(ledger.len(), 3, "c1 与 c2 的送达确认，外加 c1 的已读");
+
+        let mut kept = Vec::new();
+        for ack in ledger.since(0) {
+            match ack.payload {
+                Some(AckPayload::Conversation(confirmation)) => {
+                    assert_eq!(ack.ack_at, Some(42), "回执时间随批确认");
+                    kept.push((
+                        confirmation.conversation_id,
+                        confirmation.last_delivered_seq,
+                    ));
+                }
+                Some(AckPayload::Read(read)) => assert_eq!(read.read_seq, 2),
+                other => panic!("unexpected ledger entry {other:?}"),
+            }
+        }
+        kept.sort();
+        assert_eq!(kept, vec![("c1".to_owned(), 5), ("c2".to_owned(), 8)]);
     }
 
     #[test]

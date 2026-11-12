@@ -167,6 +167,14 @@ impl IMClient {
             };
             return match provider {
                 Some(provider) => {
+                    // 进程重启后的第一次建连（常是被推送在后台拉起、没有界面）：宿主安全存储里有这个
+                    // 用户的刷新令牌就先凭它换；没有、或服务端已不认它，再签发。
+                    if let Some(resumed) = self
+                        .resume_with_stored_refresh_token(generation, &user_id, &provider)
+                        .await
+                    {
+                        return resumed;
+                    }
                     self.issue_via_gateway(generation, &user_id, &provider)
                         .await
                 }
@@ -216,7 +224,7 @@ impl IMClient {
             has_refresh = issued.refresh_token.is_some(),
             "access token issued by gateway"
         );
-        let (context, tenant_id) = {
+        let (context, tenant_id, vault) = {
             let mut g = self.inner.write().await;
             if g.session_generation != generation {
                 return ConnectToken::Unavailable;
@@ -224,13 +232,78 @@ impl IMClient {
             g.connect_token = Some(issued.token.clone());
             // 长效刷新令牌：接入令牌过期后凭它换新，支撑 7x24 免重登。
             g.refresh_token = issued.refresh_token.clone();
-            (g.http_request_context.clone(), Self::resolve_tenant_id(&g))
+            (
+                g.http_request_context.clone(),
+                Self::resolve_tenant_id(&g),
+                g.refresh_token_vault.clone(),
+            )
         };
+        if let (Some(vault), Some(refresh_token)) = (vault, issued.refresh_token.as_deref()) {
+            vault.save(user_id, refresh_token).await;
+        }
         if let Some(context) = context {
             context.set_auth_context(issued.token.clone(), None).await;
             context.ensure_identity(user_id, &tenant_id).await;
         }
         ConnectToken::Ready(issued.token)
+    }
+
+    /// 凭宿主安全存储里的刷新令牌换出连接令牌（进程重启后的无界面恢复）。
+    ///
+    /// 没有保管处、没存着、或服务端以鉴权原因拒绝了它（同时删掉它）时返回 `None`，由调用方改为签发；
+    /// 网关没答复时按网络失败交给链路退避。
+    async fn resume_with_stored_refresh_token(
+        &self,
+        generation: u64,
+        user_id: &str,
+        provider: &GatewayTokenProvider,
+    ) -> Option<ConnectToken> {
+        let vault = {
+            let g = self.inner.read().await;
+            if g.session_generation != generation {
+                return Some(ConnectToken::Unavailable);
+            }
+            g.refresh_token_vault.clone()?
+        };
+        let stored = vault.load(user_id).await?;
+        {
+            let mut g = self.inner.write().await;
+            if g.session_generation != generation {
+                return Some(ConnectToken::Unavailable);
+            }
+            g.refresh_token = Some(stored);
+        }
+        match self.refresh_tokens_via_gateway(generation, provider).await {
+            Ok(issued) => {
+                tracing::info!(
+                    user_id,
+                    expires_at = issued.expires_at,
+                    "connect token resumed from the stored refresh token"
+                );
+                let (context, tenant_id) = {
+                    let g = self.inner.read().await;
+                    (g.http_request_context.clone(), Self::resolve_tenant_id(&g))
+                };
+                if let Some(context) = context {
+                    context.set_auth_context(issued.token.clone(), None).await;
+                    context.ensure_identity(user_id, &tenant_id).await;
+                }
+                Some(ConnectToken::Ready(issued.token))
+            }
+            Err(err) if is_auth_failure(&err) => {
+                tracing::warn!(%err, "the stored refresh token was refused; issuing a new token");
+                vault.clear(user_id).await;
+                let mut g = self.inner.write().await;
+                if g.session_generation == generation {
+                    g.refresh_token = None;
+                }
+                None
+            }
+            Err(err) => {
+                tracing::warn!(%err, "resuming with the stored refresh token failed; retrying with backoff");
+                Some(ConnectToken::Unreachable(as_network_failure(err)))
+            }
+        }
     }
 
     /// 网关以鉴权原因拒绝了 `rejected`：续期一次。SDK 托管形态走刷新令牌向网关换新；宿主托管形态
@@ -381,7 +454,7 @@ impl IMClient {
             (bearer, Self::resolve_tenant_id(&g))
         };
         let issued = provider.refresh(&bearer).await?;
-        {
+        let rotated = {
             let mut g = self.inner.write().await;
             if g.session_generation == generation {
                 g.connect_token = Some(issued.token.clone());
@@ -389,7 +462,16 @@ impl IMClient {
                 if issued.refresh_token.is_some() {
                     g.refresh_token = issued.refresh_token.clone();
                 }
+                g.refresh_token_vault.clone().zip(g.current_user_id.clone())
+            } else {
+                None
             }
+        };
+        // 刷新令牌是一次性的：轮换后的那一枚立即写回安全存储，否则下次冷启动拿着已作废的去换。
+        if let (Some((vault, user_id)), Some(refresh_token)) =
+            (rotated, issued.refresh_token.as_deref())
+        {
+            vault.save(&user_id, refresh_token).await;
         }
         // 同步 HTTP 侧 bearer（媒体等）。
         let _ = self.sync_core_http_context(Some(&tenant_id)).await;

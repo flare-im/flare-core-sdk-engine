@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The conversation the user is looking at.",
+  "properties": {
+    "conversationId": {
+      "description": "Conversation on screen; absent when no conversation is open.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "SetNotificationFocusRequest",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "SetNotificationFocusRequest"
+}

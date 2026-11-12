@@ -28,20 +28,35 @@ impl IMClient {
 
     /// 应用前后台状态（`lifecycle.set_app_state`）。进入后台拉长心跳、同步降配、健康簿落盘；
     /// 回到前台恢复心跳并立即验活当前连接，停在退避里的链路立即重试，同时做一次前台收敛。
+    ///
+    /// 进后台即托管的平台（iOS）上，进后台的这一次调用等托管交接收尾才返回（交接每一步都有时限，
+    /// 合计约 3.5 秒）：平台包据此恰好持有这么久的后台执行。其它平台立即返回。
     pub async fn set_app_state(&self, state: HeartbeatAppState) -> Result<()> {
         self.store_heartbeat_app_state_snapshot(state);
         let g = self.read_inner_async().await?;
-        if let Some(engine) = g.engine.as_ref() {
-            engine.set_app_state(state).await?;
-            // I9：同步收敛跟随前后台降配（后台批/页减半，让电让带宽）。
-            engine
-                .sync_manager()
-                .attention()
-                .set_app_in_background(matches!(state, HeartbeatAppState::Background));
-        }
+        let link = match g.engine.as_ref() {
+            Some(engine) => {
+                engine.set_app_state(state).await?;
+                // I9：同步收敛跟随前后台降配（后台批/页减半，让电让带宽）。
+                engine
+                    .sync_manager()
+                    .attention()
+                    .set_app_in_background(matches!(state, HeartbeatAppState::Background));
+                Some(engine.link().clone())
+            }
+            None => None,
+        };
         drop(g);
+        if matches!(state, HeartbeatAppState::Background)
+            && let Some(link) = link.as_ref()
+        {
+            // 在锁外等：交接要几秒，期间登出、查询、推送入口都不能被挡住。
+            link.parking_settled().await;
+        }
         if matches!(state, HeartbeatAppState::Foreground) {
             self.reconcile_push_in_background();
+            // 后台期间通知扩展记下的到达回执读进来报上去。
+            self.sync_push_receipts_in_background();
             if let Some(update) = self.update_runtime().await {
                 update.foregrounded();
             }
@@ -151,7 +166,7 @@ impl IMClient {
     pub async fn logout(&self) -> Result<()> {
         self.clear_session_snapshot();
         let lifecycle = self.extension_lifecycle_snapshot(None).await;
-        let (engine, presence_api, presence_user_id, http_request_context) = {
+        let (engine, presence_api, presence_user_id, http_request_context, vault) = {
             let mut g = self.inner.write().await;
             let presence_api = g.presence_api.clone();
             let presence_user_id = g.current_user_id.clone();
@@ -159,6 +174,9 @@ impl IMClient {
             self.store_session_generation_snapshot(g.session_generation);
             g.current_user_id = None;
             g.connect_token = None;
+            // 登出即放弃这个账号的长效凭据：内存里的与宿主安全存储里的都不留。
+            g.refresh_token = None;
+            let vault = g.refresh_token_vault.take();
             g.message_api = None;
             g.media_api = None;
             g.capability_api = None;
@@ -168,11 +186,20 @@ impl IMClient {
             g.conversation_api = None;
             let engine = g.engine.take();
             let http_request_context = g.http_request_context.clone();
-            (engine, presence_api, presence_user_id, http_request_context)
+            (
+                engine,
+                presence_api,
+                presence_user_id,
+                http_request_context,
+                vault,
+            )
         };
         self.clear_session_snapshot();
         self.store_state_snapshot(SdkState::Disconnected);
         self.reconcile_push_in_background();
+        if let (Some(vault), Some(user_id)) = (vault.as_ref(), presence_user_id.as_deref()) {
+            vault.clear(user_id).await;
+        }
         if let Some(engine) = engine.as_ref() {
             engine.deactivate_local_session().await;
         }
@@ -320,8 +347,11 @@ impl IMClient {
                 g.last_network.clone(),
                 // 宿主注入的登录前全局存储（wasm 的 IndexedDB）：属于宿主，跨会话保留，之后的 init 仍用它。
                 g.access_store.clone(),
+                // 上一个会话的刷新令牌保管处：换了账号时用它删掉上一个账号的刷新令牌。
+                g.refresh_token_vault.clone(),
             )
         };
+        let vault = refresh_token_vault_for(&db, snap.1.as_ref());
         self.logout_for_login().await?;
         let data_root = match snap.2.clone() {
             Some(path) => path,
@@ -400,6 +430,7 @@ impl IMClient {
         inner.connect_token_refresher = snap.6;
         inner.last_network = snap.9;
         inner.access_store = snap.10;
+        inner.refresh_token_vault = vault.clone();
         inner.current_user_id = Some(user_id.to_string());
         inner.last_session_user = Some(user_id.to_string());
         let previous_user = match snap.8 {
@@ -413,6 +444,14 @@ impl IMClient {
         let same_user = previous_user
             .as_deref()
             .is_none_or(|previous| previous == user_id);
+        // 换了账号：上一个账号存着的刷新令牌不再留。冷启动时没有上一个会话的保管处，用这一次的
+        // （宿主的安全存储是同一个，按用户分项）。
+        if !same_user
+            && let Some(previous) = previous_user.as_deref()
+            && let Some(previous_vault) = snap.11.as_ref().or(vault.as_ref())
+        {
+            previous_vault.clear(previous).await;
+        }
         // 本地会话身份随 prepare 建立：bootstrap_startup_home / 视图等本地优先
         // 读路径在 connect 之前即可出图（热启动 T0）。
         if let Some(engine) = inner.engine.as_ref() {
@@ -427,6 +466,8 @@ impl IMClient {
             self.store_session_generation_snapshot(current.session_generation);
             self.store_state_snapshot(SdkState::Disconnected);
             self.store_connected_apis_snapshot(Self::connected_apis_from_inner(&current)?);
+            // 准备好就能接推送：被推送冷启动、还没连上的进程也能按本地已读与台账判断。
+            self.attach_push_inbox(&current);
         }
         self.repair_local_conversation_identities_on_login(user_id)
             .await?;
@@ -493,6 +534,9 @@ impl IMClient {
             None if Self::sdk_auth_from_inner(&*self.inner.read().await).is_some() => None,
             None => Some(resolve_connect_token(user_id, None)?),
         };
+        // 宿主此前报过的前后台带进这次会话（平台常在登录前就报过，之后对相同状态去重）。被系统在后台
+        // 拉起的进程若按前台建连，服务端会以为这台设备自己提示新消息，不再转给推送。
+        let foreground = self.is_app_foreground_snapshot();
         // 会话的这一代从这里开始：链路状态机、令牌来源与监视器都认这一代。之后的线路切换、重连
         // 都不再改变它（切换不是重登）。
         let (link_generation, bus, link, user_store, http_request_context, tenant_id) = {
@@ -508,6 +552,9 @@ impl IMClient {
             };
             let bus = engine.bus().clone();
             let (link, user_store) = engine.link_start_parts();
+            engine.adopt_app_state(foreground);
+            // 后台展示方与正在看的会话同样常在登录前就报过：引擎每次登录新建，从客户端那份接过来。
+            engine.adopt_notification_host(self.notification_host.clone());
             // 没经 prepare/login、直接在构建器建好的引擎上 connect 时，引擎用的是构建器那份接入运行时，
             // 而 init 另建了数据根下的一份：以链路实际用的为准，状态、诊断、固定接入点才落在同一份上。
             if g.access
@@ -531,6 +578,8 @@ impl IMClient {
             let tenant_id = Self::resolve_tenant_id(&g);
             let apis = Self::connected_apis_from_inner(&g)?;
             self.store_connected_apis_snapshot(apis);
+            // 建连前就装上：链路确认的第一条消息要按这个用户与租户记进提示台账。
+            self.attach_push_inbox(&g);
             (
                 link_generation,
                 bus,
@@ -563,6 +612,7 @@ impl IMClient {
             self,
             link_generation,
         ));
+        link.app_state(foreground).await;
         // 不持锁等待：建连最长要一个握手时限，期间登出、查询都不能被挡住。
         link.start(user_id, tokens).await?;
         if !self.is_generation_current(link_generation).await {
@@ -606,6 +656,32 @@ impl IMClient {
         }
         Self::notify_extension_disconnect_snapshot(&lifecycle).await;
         Ok(())
+    }
+}
+
+/// 以加密本地库登录时，刷新令牌与库密钥放进同一个宿主安全存储（同一组命名空间与租户，用途不同）。
+/// 其它登录方式宿主没有给安全存储，刷新令牌只在内存里。
+#[cfg_attr(not(feature = "lifecycle-sqlite"), allow(unused_variables))]
+fn refresh_token_vault_for(
+    db: &LoginDbKind,
+    overlay: Option<&crate::client::lifecycle::SdkConfigOverlay>,
+) -> Option<super::refresh_vault::RefreshTokenVault> {
+    match db {
+        #[cfg(feature = "lifecycle-sqlite")]
+        LoginDbKind::EncryptedSqlite {
+            key_store,
+            key_namespace,
+            tenant_id,
+            ..
+        } => Some(super::refresh_vault::RefreshTokenVault::new(
+            key_store.clone(),
+            key_namespace.as_deref().unwrap_or("flare-im-core-sdk"),
+            tenant_id
+                .as_deref()
+                .or_else(|| overlay.and_then(|cfg| cfg.tenant_id.as_deref()))
+                .unwrap_or(crate::shared::util::DEFAULT_TENANT_ID),
+        )),
+        _ => None,
     }
 }
 

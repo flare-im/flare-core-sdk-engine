@@ -315,6 +315,54 @@
           "core": "IMClient::push_status",
           "c": "flare_sdk_invoke_json",
           "tauri": null
+        },
+        {
+          "id": "sdk.handle_remote_message",
+          "core": "IMClient::handle_remote_message",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
+          "id": "sdk.resolve_notification_tap",
+          "core": "IMClient::resolve_notification_tap",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
+          "id": "notification.set_focus",
+          "core": "IMClient::set_notification_focus",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "notification.get_settings",
+          "core": "IMClient::notification_settings",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "notification.update_settings",
+          "core": "IMClient::update_notification_settings",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "notification.set_background_presenter",
+          "core": "IMClient::set_background_presenter",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "notification.set_snapshot_directory",
+          "core": "IMClient::set_notification_snapshot_directory",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "notification.background_refresh",
+          "core": "IMClient::background_refresh",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
         }
       ]
     },
@@ -820,6 +868,12 @@
         {
           "id": "conversation.set_muted",
           "core": "ConversationApi::set_muted",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "conversation.set_notify_all",
+          "core": "ConversationApi::set_notify_all",
           "c": "flare_sdk_invoke_json",
           "tauri": "sdk_invoke_json"
         },

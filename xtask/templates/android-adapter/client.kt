@@ -20,6 +20,7 @@ import com.flare.im.api.capabilities.CapabilitiesApi
 import com.flare.im.api.views.ViewsApi
 import com.flare.im.api.events.EventsApi
 import com.flare.im.api.diagnostics.DiagnosticsApi
+import com.flare.im.api.notification.NotificationApi
 import com.flare.im.contract.ConnectTokenRefresher
 import com.flare.im.contract.NativeBridge
 import com.flare.im.contract.NativeCallMap
@@ -73,6 +74,7 @@ class DefaultFlareImClient(
     override val views: ViewsApi = DefaultViewsApi(bridge)
     override val events: EventsApi = DefaultEventsApi(bridge)
     override val diagnostics: DiagnosticsApi = DefaultDiagnosticsApi(bridge)
+    override val notification: NotificationApi = DefaultNotificationApi(bridge)
 
     override suspend fun create(request: Map<String, Any?>): Map<String, Any?> {
         return invokeMap(bridge, NativeCallMap.SDK_CREATE, request)
@@ -146,7 +148,7 @@ class DefaultFlareImClient(
         return heartbeatEffectiveIntervalResponseFromJson(invokeMap(bridge, NativeCallMap.SDK_HEARTBEAT_EFFECTIVE_INTERVAL))
     }
     override suspend fun updatePushToken(request: PushTokenInput): PushLifecycleStatus {
-        val raw = invokeMap(bridge, NativeCallMap.SDK_UPDATE_PUSH_TOKEN, mapOf("provider" to request.provider, "platform" to request.platform, "token" to request.token))
+        val raw = invokeMap(bridge, NativeCallMap.SDK_UPDATE_PUSH_TOKEN, pushTokenInputToMap(request))
         return PushLifecycleStatus(configuredProviders = java.lang.Math.toIntExact(intValue(raw["configuredProviders"])), pendingRevocations = java.lang.Math.toIntExact(intValue(raw["pendingRevocations"])), registeredProviders = java.lang.Math.toIntExact(intValue(raw["registeredProviders"])), state = raw["state"] as String, lastError = raw["lastError"] as? String)
     }
 
@@ -168,6 +170,14 @@ class DefaultFlareImClient(
     override suspend fun pushStatus(): PushLifecycleStatus {
         val raw = invokeMap(bridge, NativeCallMap.SDK_PUSH_STATUS)
         return PushLifecycleStatus(configuredProviders = java.lang.Math.toIntExact(intValue(raw["configuredProviders"])), pendingRevocations = java.lang.Math.toIntExact(intValue(raw["pendingRevocations"])), registeredProviders = java.lang.Math.toIntExact(intValue(raw["registeredProviders"])), state = raw["state"] as String, lastError = raw["lastError"] as? String)
+    }
+
+    override suspend fun handleRemoteMessage(request: HandleRemoteMessageRequest): RemoteMessageOutcome {
+        return remoteMessageOutcomeFromJson(invokeMap(bridge, NativeCallMap.SDK_HANDLE_REMOTE_MESSAGE, handleRemoteMessageRequestToMap(request)))
+    }
+
+    override suspend fun resolveNotificationTap(request: ResolveNotificationTapRequest): NotificationTapResult {
+        return notificationTapResultFromJson(invokeMap(bridge, NativeCallMap.SDK_RESOLVE_NOTIFICATION_TAP, resolveNotificationTapRequestToMap(request)))
     }
 
     override suspend fun logout(): Unit {

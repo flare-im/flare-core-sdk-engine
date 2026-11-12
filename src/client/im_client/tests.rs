@@ -978,3 +978,118 @@ async fn the_injected_access_store_survives_the_login_rebuild() {
     client.uninit().await.expect("uninit sdk");
     let _ = tokio::fs::remove_dir_all(data_root).await;
 }
+
+/// 推送入口跟着会话走：准备好的会话只认自己账号（用户与租户）的推送，同一条只响一次；登出之后
+/// 一律按未登录忽略，点开的通知也不再指向任何会话。
+#[tokio::test]
+async fn a_prepared_session_handles_remote_messages_for_its_own_account() {
+    use crate::client::lifecycle::LoginDbKind;
+    use crate::client::push_inbox::{HandleRemoteMessageRequest, ResolveNotificationTapRequest};
+    use std::collections::BTreeMap;
+
+    let client = IMClient::new();
+    let root = std::env::temp_dir().join(format!("flare-push-inbox-{}", std::process::id()));
+    client
+        .init(
+            None,
+            Some(SdkConfigOverlay {
+                data_url: Some(format!("file://{}", root.display())),
+                tenant_id: Some("t1".into()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    client
+        .prepare(
+            "alice",
+            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+        )
+        .await
+        .unwrap();
+    let payload = |uid: &str| -> BTreeMap<String, String> {
+        [
+            ("uid", uid),
+            ("tenant_id", "t1"),
+            ("conversation_id", "c1"),
+            ("message_id", "m3"),
+            ("seq", "3"),
+            ("collapse_id", "c:0123456789abcdef0123456789abcdef"),
+            ("disposition", "loud"),
+            ("alert_class", "normal"),
+            ("title", "Bob"),
+            ("body", "hi"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect()
+    };
+    let request = |uid: &str| HandleRemoteMessageRequest {
+        provider: "fcm".into(),
+        payload: payload(uid),
+        budget_ms: None,
+    };
+
+    let shown = client
+        .handle_remote_message(request("alice"))
+        .await
+        .unwrap();
+    assert_eq!(shown.action, "present");
+    assert_eq!(
+        shown.presentation.expect("a presentation").surface,
+        "inApp",
+        "宿主没报过后台，按前台"
+    );
+    let again = client
+        .handle_remote_message(request("alice"))
+        .await
+        .unwrap();
+    assert_eq!(again.reason.as_deref(), Some("alreadyAlerted"));
+    let other = client.handle_remote_message(request("bob")).await.unwrap();
+    assert_eq!(other.reason.as_deref(), Some("otherAccount"));
+    let tap = client
+        .resolve_notification_tap(ResolveNotificationTapRequest {
+            payload: payload("alice"),
+        })
+        .unwrap();
+    assert_eq!(tap.conversation_id.as_deref(), Some("c1"));
+    assert_eq!(tap.seq, Some(3));
+
+    client.logout().await.unwrap();
+    let logged_out = client
+        .handle_remote_message(request("alice"))
+        .await
+        .unwrap();
+    assert_eq!(logged_out.reason.as_deref(), Some("notLoggedIn"));
+    let tap = client
+        .resolve_notification_tap(ResolveNotificationTapRequest {
+            payload: payload("alice"),
+        })
+        .unwrap();
+    assert_eq!(tap.conversation_id, None);
+    let _ = tokio::fs::remove_dir_all(root).await;
+}
+
+/// 登出时删掉宿主安全存储里这个用户的刷新令牌，内存里的也不留。
+#[tokio::test]
+async fn logout_deletes_the_stored_refresh_token() {
+    use crate::platform::ports::storage::VolatileSecureKeyStore;
+
+    let store = Arc::new(VolatileSecureKeyStore::new());
+    let vault = super::refresh_vault::RefreshTokenVault::new(store, "flare-im-core-sdk", "0");
+    vault.save("alice", "refresh-1").await;
+    vault.save("bob", "refresh-2").await;
+    let client = IMClient::new();
+    {
+        let mut inner = client.inner.write().await;
+        inner.current_user_id = Some("alice".into());
+        inner.refresh_token = Some("refresh-1".into());
+        inner.refresh_token_vault = Some(vault.clone());
+    }
+    client.logout().await.unwrap();
+    assert_eq!(vault.load("alice").await, None);
+    assert_eq!(vault.load("bob").await.as_deref(), Some("refresh-2"));
+    let inner = client.inner.read().await;
+    assert!(inner.refresh_token.is_none());
+    assert!(inner.refresh_token_vault.is_none());
+}

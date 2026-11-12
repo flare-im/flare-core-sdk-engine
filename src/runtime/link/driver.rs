@@ -43,7 +43,8 @@ pub struct LinkHeartbeat {
     pub interval: Duration,
     /// 多久收不到任何回应即判死（`timeoutSec`）。
     pub timeout: Duration,
-    /// 后台心跳间隔（`backgroundIntervalSec`）：前后台切换时传输层按它换节奏。
+    /// 后台心跳间隔（`backgroundIntervalSec`）：前后台切换时传输层按它换节奏。保留链路的手机上换成
+    /// 这张网学到的值（见 [`super::heartbeat_learning`]），不低于策略给的值。
     pub background_interval: Duration,
 }
 
@@ -87,6 +88,9 @@ pub struct OpenRequest {
     pub target: LinkTarget,
     /// 新连接的心跳按当前前后台状态启动（后台心跳间隔更长），不必等宿主再报一次。
     pub foreground: bool,
+    /// CONNECT 里带的初始设备状态（[`DeviceLinkState::Active`] / [`DeviceLinkState::Standby`] /
+    /// [`DeviceLinkState::Deferred`]）：服务端从第一帧起就知道提示归谁，不必等连上之后的那次上报。
+    pub device_state: DeviceLinkState,
     /// DoH 备用解析，和 REST、引导拉取共用一份。
     #[cfg(not(target_arch = "wasm32"))]
     pub doh: Option<std::sync::Arc<flare_core::client::dial::DohCache>>,
@@ -103,17 +107,49 @@ pub enum LinkUp {
     Resumed,
 }
 
+/// 报给服务端的设备状态（`DEVICE_STATE`）：新消息的提示由这条链路负责，还是交给推送通道。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceLinkState {
+    /// 前台：引擎在应用内提示。
+    Active,
+    /// 后台、链路保留，本进程自己提示（桌面、Web，或接上了后台展示方的手机）。服务端照常等送达确认。
+    Standby,
+    /// 后台、链路保留，但本进程提示不了用户（手机没有后台展示方）。消息照常从链路到达，提示由
+    /// 服务端在路由时直接交给推送，不等送达确认；引擎这时也不确认。
+    Deferred,
+    /// 即将被系统挂起：服务端应答之后提示归推送通道，随后引擎关掉链路。
+    Parking,
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub(crate) trait LinkDriver: MaybeSendSync {
     /// 建一条新连接（交错竞速）。先关掉旧连接；监听器带 `request.epoch`。返回即已收到 CONNECT_ACK。
+    /// CONNECT 里带上 `request.device_state`。
     async fn open(&self, request: OpenRequest) -> Result<ConnectReport, ConnectFailure>;
 
     /// 关闭当前连接（若有）。
     async fn close(&self);
 
+    /// 托管交接完成后关闭当前连接：先告诉服务端这是托管，再关。
+    async fn close_parked(&self);
+
+    /// 向服务端上报设备状态（[`DeviceLinkState::Active`] / [`DeviceLinkState::Standby`] /
+    /// [`DeviceLinkState::Deferred`]）。立即返回，不等发出：上报按调用顺序送出，连着几次只送最新的；
+    /// 没有连接时丢弃（下一次建连会带上）。正在进行的托管交接随之作废。
+    fn report_device_state(&self, state: DeviceLinkState);
+
+    /// 托管交接：送出攒着的回执、给在途发送一点时间，再上报 [`DeviceLinkState::Parking`] 并等服务端
+    /// 应答。返回是否等到了应答；没等到也照样托管（连接关闭时服务端会把没确认的帧交给推送）。
+    /// 每一步都有时限。丢弃返回的 future 即取消，随后调 [`Self::report_device_state`] 把状态报回去。
+    async fn hand_over(&self) -> bool;
+
     /// 请求对当前连接立即验活（不等结果）：验活窗口内没有 PONG，连接按心跳超时结束。
     fn probe(&self);
+
+    /// 换当前连接的心跳节奏（后台心跳学到了新的间隔）。前台节奏与判死超时不变；没有连接时
+    /// 什么都不做。要等连接的锁，调用方放到后台去等。
+    async fn retune_heartbeat(&self, _heartbeat: LinkHeartbeat, _probe_timeout: Duration) {}
 
     /// 最近一次心跳往返。
     async fn heartbeat_round_trip(&self) -> Option<Duration>;

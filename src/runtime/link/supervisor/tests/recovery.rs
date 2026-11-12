@@ -164,13 +164,21 @@ async fn lab(seed: Option<&Value>) -> Lab {
     let driver = FakeDriver::default();
     let bus = EventBus::new();
     let rx = bus.subscribe_filter(SdkEventKind::Connection);
-    let link = LinkHandle::spawn(Arc::new(driver.clone()), access.clone(), bus.clone(), true);
+    let reach = reach_on("pc");
+    let link = LinkHandle::spawn(
+        Arc::new(driver.clone()),
+        access.clone(),
+        bus.clone(),
+        true,
+        reach.clone(),
+    );
     Lab {
         h: Harness {
             driver,
             link,
             bus,
             rx,
+            reach,
         },
         access,
         mirror,

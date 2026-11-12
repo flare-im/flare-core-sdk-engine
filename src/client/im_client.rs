@@ -42,7 +42,9 @@ mod async_accessors;
 mod extension_lifecycle;
 mod facades;
 mod link_api;
+mod notification_api;
 mod push_api;
+mod refresh_vault;
 mod session_lifecycle;
 mod session_watchers;
 mod sync_api;
@@ -134,6 +136,9 @@ pub(crate) struct IMClientInner {
     pub connect_token: Option<String>,
     /// 长效刷新令牌（SDK 托管形态由网关下发）。接入令牌过期后凭它换新，支撑 7x24。
     pub refresh_token: Option<String>,
+    /// 刷新令牌在宿主安全存储里的保管处（以加密本地库登录时才有）：进程重启后无界面也能凭它
+    /// 换出连接令牌。属于这一次 prepare 的用户。
+    pub refresh_token_vault: Option<refresh_vault::RefreshTokenVault>,
     /// 宿主托管令牌时的续期回调（见 [`crate::client::token_provider::ConnectTokenRefresher`]）。
     pub connect_token_refresher:
         Option<Arc<dyn crate::client::token_provider::ConnectTokenRefresher>>,
@@ -231,6 +236,10 @@ pub struct IMClient {
     startup_convergence_in_flight: Arc<AtomicBool>,
     session_end: Arc<SessionEndSignal>,
     push_lifecycle: Arc<crate::client::push_lifecycle::PushLifecycle>,
+    /// 远程推送的无界面入口（`handleRemoteMessage`）持有的会话事实，不拿客户端的锁就能读。
+    push_inbox: Arc<crate::client::push_inbox::PushInbox>,
+    /// 宿主报的通知事实（正在看的会话、后台展示方），跨登录保留，每次建连交给引擎。
+    notification_host: Arc<crate::application::notification::NotificationHost>,
 }
 
 #[derive(Clone)]
@@ -243,6 +252,8 @@ pub(crate) struct WeakIMClient {
     startup_convergence_in_flight: Weak<AtomicBool>,
     session_end: Weak<SessionEndSignal>,
     push_lifecycle: Weak<crate::client::push_lifecycle::PushLifecycle>,
+    push_inbox: Weak<crate::client::push_inbox::PushInbox>,
+    notification_host: Weak<crate::application::notification::NotificationHost>,
 }
 
 impl WeakIMClient {
@@ -256,6 +267,8 @@ impl WeakIMClient {
             startup_convergence_in_flight: self.startup_convergence_in_flight.upgrade()?,
             session_end: self.session_end.upgrade()?,
             push_lifecycle: self.push_lifecycle.upgrade()?,
+            push_inbox: self.push_inbox.upgrade()?,
+            notification_host: self.notification_host.upgrade()?,
         })
     }
 }
@@ -276,6 +289,8 @@ impl IMClient {
             startup_convergence_in_flight: Arc::new(AtomicBool::new(false)),
             session_end: Arc::new(SessionEndSignal::new()),
             push_lifecycle: Arc::new(crate::client::push_lifecycle::PushLifecycle::default()),
+            push_inbox: Arc::new(crate::client::push_inbox::PushInbox::default()),
+            notification_host: Arc::default(),
         }
     }
 
@@ -300,6 +315,8 @@ impl IMClient {
             startup_convergence_in_flight: Arc::new(AtomicBool::new(false)),
             session_end: Arc::new(SessionEndSignal::new()),
             push_lifecycle: Arc::new(crate::client::push_lifecycle::PushLifecycle::default()),
+            push_inbox: Arc::new(crate::client::push_inbox::PushInbox::default()),
+            notification_host: Arc::default(),
         }
     }
 
@@ -313,6 +330,8 @@ impl IMClient {
             startup_convergence_in_flight: Arc::downgrade(&self.startup_convergence_in_flight),
             session_end: Arc::downgrade(&self.session_end),
             push_lifecycle: Arc::downgrade(&self.push_lifecycle),
+            push_inbox: Arc::downgrade(&self.push_inbox),
+            notification_host: Arc::downgrade(&self.notification_host),
         }
     }
 
@@ -382,13 +401,14 @@ impl IMClient {
         );
     }
 
-    #[cfg(test)]
     fn is_app_foreground_snapshot(&self) -> bool {
         self.heartbeat_app_state_snapshot.load(Ordering::Acquire) == HEARTBEAT_APP_STATE_FOREGROUND
     }
 
     fn clear_session_snapshot(&self) {
         self.push_lifecycle.detach();
+        self.push_inbox.detach();
+        self.push_inbox.receipts().detach();
         self.session_snapshot.store(None);
     }
 
@@ -569,6 +589,9 @@ impl IMClient {
                 network.fingerprint_hint.as_deref(),
             );
         }
+        // 后台心跳按网络学到的间隔存在数据根下，换了进程也接着用。
+        #[cfg(not(target_arch = "wasm32"))]
+        access.persist_heartbeat_learning(&data_root);
         access.warm_up();
         let previous_update = g.access.as_ref().and_then(|previous| previous.update());
         access.install_update(

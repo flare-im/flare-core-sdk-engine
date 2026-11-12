@@ -30,6 +30,7 @@ pub const CONVERSATION_DISPATCH_OPERATIONS: &[&str] = &[
     "delete",
     "set_pinned",
     "set_muted",
+    "set_notify_all",
     "set_archived",
     "mark_unread",
     "update_draft",
@@ -128,6 +129,12 @@ pub async fn dispatch_conversation(
             let conversation_id_s = json_string(&params, "conversationId")?;
             let muted_v = json_bool(&params, "muted")?;
             api.set_muted(&conversation_id_s, muted_v).await?;
+            Ok(BindingResponse::unit())
+        }
+        "set_notify_all" => {
+            let conversation_id_s = json_string(&params, "conversationId")?;
+            let enabled_v = json_bool(&params, "enabled")?;
+            api.set_notify_all(&conversation_id_s, enabled_v).await?;
             Ok(BindingResponse::unit())
         }
         "set_archived" => {

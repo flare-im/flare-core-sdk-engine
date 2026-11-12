@@ -206,6 +206,15 @@ class DefaultEventsApi(
     override fun onPluginCatalogChanged(listener: EventCallback<PluginCatalogChangedEvent>): EventSubscription =
         registerTyped(PluginCatalogChangedEvent::class.java, listener)
 
+    override fun onNotificationPresent(listener: EventCallback<NotificationPresentation>): EventSubscription =
+        registerTyped(NotificationPresentation::class.java, listener)
+
+    override fun onNotificationClear(listener: EventCallback<NotificationClearEvent>): EventSubscription =
+        registerTyped(NotificationClearEvent::class.java, listener)
+
+    override fun onNotificationBadge(listener: EventCallback<NotificationBadgeEvent>): EventSubscription =
+        registerTyped(NotificationBadgeEvent::class.java, listener)
+
     private fun register(handler: Any): EventSubscription {
         val subscriptionId = nextId++
         val subscription = DefaultEventSubscription(
@@ -320,6 +329,9 @@ class DefaultEventsApi(
             is ViewUpdate -> listener.onViewUpdated(event)
             is PluginRealtimeEvent -> listener.onPluginRealtime(event)
             is PluginCatalogChangedEvent -> listener.onPluginCatalogChanged(event)
+            is NotificationPresentation -> listener.onNotificationPresent(event)
+            is NotificationClearEvent -> listener.onNotificationClear(event)
+            is NotificationBadgeEvent -> listener.onNotificationBadge(event)
         }
     }
 }
@@ -408,6 +420,14 @@ private fun nativeEventFromCode(eventType: Int, payload: Map<String, Any?>): Any
         )
         EventCode.PLUGIN_CATALOG_CHANGED -> PluginCatalogChangedEvent(
             version = requiredEventString(payload["version"], "version"),
+        )
+        EventCode.NOTIFICATION_PRESENT -> notificationPresentationFromJson(payload)
+        EventCode.NOTIFICATION_CLEAR -> NotificationClearEvent(
+            all = requiredEventBool(payload["all"], "all"),
+            collapseIds = requiredEventStringList(payload["collapseIds"], "collapseIds"),
+        )
+        EventCode.NOTIFICATION_BADGE -> NotificationBadgeEvent(
+            count = java.lang.Math.toIntExact(requiredEventInt(payload["count"], "count")),
         )
         EventCode.VIEW_UPDATED -> viewUpdateFromJson(payload)
         else -> unknownEventFromCode(eventType, payload)

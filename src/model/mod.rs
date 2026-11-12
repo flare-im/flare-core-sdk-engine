@@ -5,6 +5,7 @@ pub mod conversation_user_settings;
 pub mod event;
 pub mod media;
 pub mod message;
+pub mod notification;
 pub mod receipt;
 pub mod search;
 pub mod sync;
@@ -22,8 +23,9 @@ pub use crate::domain::{
 };
 pub use conversation::{Conversation, ConversationParticipant, ConversationSummary};
 pub use conversation_user_settings::{
-    EXT_SETTINGS_DIRTY, EXT_USER_SETTINGS_VERSION, apply_remote_settings_version,
-    is_settings_dirty, mark_settings_dirty, user_settings_version,
+    EXT_NOTIFY_ALL, EXT_SETTINGS_DIRTY, EXT_USER_SETTINGS_VERSION, apply_remote_settings_version,
+    is_settings_dirty, mark_settings_dirty, notify_all, set_notify_all, set_notify_all_in,
+    user_settings_version,
 };
 pub use event::{Event, EventType};
 pub use media::{

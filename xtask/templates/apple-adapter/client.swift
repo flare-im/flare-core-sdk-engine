@@ -18,6 +18,7 @@ public final class DefaultFlareImClient: FlareImClientProtocol {
     public let views: any ViewsApiProtocol
     public let events: any EventsApiProtocol
     public let diagnostics: any DiagnosticsApiProtocol
+    public let notification: any NotificationApiProtocol
     private let bridge: any NativeBridgeProtocol
     private let platformLifecycleFactory: PlatformLifecycleFactory
     private let platformLifecycleLock = NSLock()
@@ -46,6 +47,7 @@ public final class DefaultFlareImClient: FlareImClientProtocol {
         self.views = DefaultViewsApi(bridge: bridge)
         self.events = DefaultEventsApi(bridge: bridge)
         self.diagnostics = DefaultDiagnosticsApi(bridge: bridge)
+        self.notification = DefaultNotificationApi(bridge: bridge)
     }
 
     public func create(_ request: [String: AnySendable]) async throws -> [String: AnySendable] {
@@ -110,7 +112,7 @@ public final class DefaultFlareImClient: FlareImClientProtocol {
         return try heartbeatEffectiveIntervalResponseFromJson(raw)
     }
     public func updatePushToken(_ request: PushTokenInput) async throws -> PushLifecycleStatus {
-        let raw = try await invokeMap(bridge, descriptor: NativeCallMap.sdkUpdatePushToken, request: ["provider": wrapSendable(request.provider), "platform": wrapSendable(request.platform), "token": wrapSendable(request.token)])
+        let raw = try await invokeMap(bridge, descriptor: NativeCallMap.sdkUpdatePushToken, request: pushTokenInputToMap(request))
         return try JSONDecoder().decode(PushLifecycleStatus.self, from: JSONSerialization.data(withJSONObject: plainMap(raw)))
     }
 
@@ -132,6 +134,16 @@ public final class DefaultFlareImClient: FlareImClientProtocol {
     public func pushStatus() async throws -> PushLifecycleStatus {
         let raw = try await invokeMap(bridge, descriptor: NativeCallMap.sdkPushStatus, request: nil)
         return try JSONDecoder().decode(PushLifecycleStatus.self, from: JSONSerialization.data(withJSONObject: plainMap(raw)))
+    }
+
+    public func handleRemoteMessage(_ request: HandleRemoteMessageRequest) async throws -> RemoteMessageOutcome {
+        let raw = try await invokeMap(bridge, descriptor: NativeCallMap.sdkHandleRemoteMessage, request: handleRemoteMessageRequestToMap(request))
+        return try remoteMessageOutcomeFromJson(raw)
+    }
+
+    public func resolveNotificationTap(_ request: ResolveNotificationTapRequest) async throws -> NotificationTapResult {
+        let raw = try await invokeMap(bridge, descriptor: NativeCallMap.sdkResolveNotificationTap, request: resolveNotificationTapRequestToMap(request))
+        return try notificationTapResultFromJson(raw)
     }
 
     public func logout() async throws -> Void {

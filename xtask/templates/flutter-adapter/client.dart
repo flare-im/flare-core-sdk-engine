@@ -30,7 +30,8 @@ final class DefaultFlareImClient implements FlareImClient {
       media = _DefaultMediaApi(_bridge),
       capabilities = _DefaultCapabilitiesApi(_bridge),
       views = _DefaultViewsApi(_bridge),
-      diagnostics = _DefaultDiagnosticsApi(_bridge);
+      diagnostics = _DefaultDiagnosticsApi(_bridge),
+      notification = _DefaultNotificationApi(_bridge);
 
   final NativeBridge _bridge;
   PlatformLifecycleSource? _platform;
@@ -66,6 +67,8 @@ final class DefaultFlareImClient implements FlareImClient {
   final ViewsApi views;
   @override
   final DiagnosticsApi diagnostics;
+  @override
+  final NotificationApi notification;
 
   @override
   Future<Map<String, Object?>> create(Map<String, Object?> request) {
@@ -227,11 +230,10 @@ final class DefaultFlareImClient implements FlareImClient {
   @override
   Future<PushLifecycleStatus> updatePushToken(PushTokenInput request) async {
     final raw = mapValue(
-      await _bridge.invoke<Object?>(NativeCallMap.sdkUpdatePushToken, {
-        'provider': request.provider,
-        'platform': request.platform,
-        'token': request.token,
-      }),
+      await _bridge.invoke<Object?>(
+        NativeCallMap.sdkUpdatePushToken,
+        pushTokenInputToMap(request),
+      ),
     );
     return PushLifecycleStatus(
       configuredProviders: intValue(raw['configuredProviders']),
@@ -303,6 +305,30 @@ final class DefaultFlareImClient implements FlareImClient {
       registeredProviders: intValue(raw['registeredProviders']),
       state: raw['state'] as String,
       lastError: raw['lastError'] as String?,
+    );
+  }
+
+  @override
+  Future<RemoteMessageOutcome> handleRemoteMessage(
+    HandleRemoteMessageRequest request,
+  ) async {
+    return remoteMessageOutcomeFromJson(
+      await _bridge.invoke<Object?>(
+        NativeCallMap.sdkHandleRemoteMessage,
+        handleRemoteMessageRequestToMap(request),
+      ),
+    );
+  }
+
+  @override
+  Future<NotificationTapResult> resolveNotificationTap(
+    ResolveNotificationTapRequest request,
+  ) async {
+    return notificationTapResultFromJson(
+      await _bridge.invoke<Object?>(
+        NativeCallMap.sdkResolveNotificationTap,
+        resolveNotificationTapRequestToMap(request),
+      ),
     );
   }
 
@@ -535,6 +561,69 @@ final class _DefaultAccessApi implements AccessApi {
   }
 }
 
+final class _DefaultNotificationApi implements NotificationApi {
+  const _DefaultNotificationApi(this._bridge);
+
+  final NativeBridge _bridge;
+
+  @override
+  Future<void> setFocus(SetNotificationFocusRequest request) {
+    return _bridge.invoke<void>(
+      NativeCallMap.notificationSetFocus,
+      setNotificationFocusRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<UserNotificationSettings> getSettings() async {
+    return userNotificationSettingsFromJson(
+      await _bridge.invoke<Object?>(NativeCallMap.notificationGetSettings),
+    );
+  }
+
+  @override
+  Future<UserNotificationSettings> updateSettings(
+    UpdateUserNotificationSettingsRequest request,
+  ) async {
+    return userNotificationSettingsFromJson(
+      await _bridge.invoke<Object?>(
+        NativeCallMap.notificationUpdateSettings,
+        updateUserNotificationSettingsRequestToMap(request),
+      ),
+    );
+  }
+
+  @override
+  Future<void> setBackgroundPresenter(SetBackgroundPresenterRequest request) {
+    return _bridge.invoke<void>(
+      NativeCallMap.notificationSetBackgroundPresenter,
+      setBackgroundPresenterRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<void> setSnapshotDirectory(
+    SetNotificationSnapshotDirectoryRequest request,
+  ) {
+    return _bridge.invoke<void>(
+      NativeCallMap.notificationSetSnapshotDirectory,
+      setNotificationSnapshotDirectoryRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<BackgroundRefreshResult> backgroundRefresh(
+    BackgroundRefreshRequest request,
+  ) async {
+    return backgroundRefreshResultFromJson(
+      await _bridge.invoke<Object?>(
+        NativeCallMap.notificationBackgroundRefresh,
+        backgroundRefreshRequestToMap(request),
+      ),
+    );
+  }
+}
+
 final class _DefaultLifecycleApi implements LifecycleApi {
   const _DefaultLifecycleApi(this._bridge);
 
@@ -730,6 +819,11 @@ final class _DefaultConversationsApi implements ConversationsApi {
   @override
   Future<void> setConversationMuted(Map<String, Object?> request) {
     return _bridge.invoke<void>(NativeCallMap.conversationSetMuted, request);
+  }
+
+  @override
+  Future<void> setConversationNotifyAll(Map<String, Object?> request) {
+    return _bridge.invoke<void>(NativeCallMap.conversationSetNotifyAll, request);
   }
 
   @override

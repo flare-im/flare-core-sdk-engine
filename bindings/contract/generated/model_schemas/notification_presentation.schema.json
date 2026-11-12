@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "One notification to show (or to replace in place).",
+  "properties": {
+    "body": {
+      "description": "Body, already rendered in the app's language.",
+      "type": "string"
+    },
+    "channel": {
+      "description": "messages, quiet, mentions or urgent (Android channel flare.<channel>).",
+      "type": "string"
+    },
+    "collapseId": {
+      "description": "Notification identity: one per conversation. Used as the iOS notification identifier and\nthe Android notification tag, so a later notification for the same conversation replaces it.",
+      "type": "string"
+    },
+    "conversationId": {
+      "description": "Conversation the notification belongs to; empty for the digest notification.",
+      "type": "string"
+    },
+    "count": {
+      "description": "Unread messages the notification stands for, at least 1.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "messageId": {
+      "description": "Server id of the newest message it stands for; empty for a catch-up without a loaded\nmessage and for the digest notification.",
+      "type": "string"
+    },
+    "seq": {
+      "description": "Conversation seq of the newest message it stands for; 0 for the digest notification.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "sound": {
+      "description": "Whether to play a sound; a silent replacement never sounds.",
+      "type": "boolean"
+    },
+    "surface": {
+      "description": "system (an OS notification) or inApp (a banner inside the running app).",
+      "type": "string"
+    },
+    "threadId": {
+      "description": "Grouping key in the notification centre.",
+      "type": "string"
+    },
+    "title": {
+      "description": "Title, already rendered in the app's language.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "collapseId",
+    "threadId",
+    "conversationId",
+    "messageId",
+    "seq",
+    "title",
+    "body",
+    "count",
+    "sound",
+    "channel",
+    "surface"
+  ],
+  "title": "NotificationPresentation",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "NotificationPresentation"
+}

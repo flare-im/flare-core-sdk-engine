@@ -421,6 +421,19 @@ impl ConversationApi {
         Ok(())
     }
 
+    /// In a large group, turns notifications for every message on or off for the current user.
+    /// The choice shows at once; when the server does not take it, it goes back and the error is
+    /// returned. Either way the conversation is announced as updated.
+    pub async fn set_notify_all(&self, conversation_id: &str, enabled: bool) -> Result<()> {
+        self.ensure_session_active().await?;
+        let result = self
+            .command_use_case
+            .set_notify_all(conversation_id, enabled)
+            .await;
+        self.publish_updated(conversation_id);
+        result
+    }
+
     pub async fn set_archived(&self, conversation_id: &str, archived: bool) -> Result<()> {
         self.ensure_session_active().await?;
         self.command_use_case

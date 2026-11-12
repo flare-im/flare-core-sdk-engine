@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "How much of a message a notification shows.",
+  "oneOf": [
+    {
+      "const": "full",
+      "description": "Sender and content.",
+      "type": "string"
+    },
+    {
+      "const": "senderOnly",
+      "description": "Only who sent it; the body says that a message arrived.",
+      "type": "string"
+    },
+    {
+      "const": "hidden",
+      "description": "Neither sender nor content: a generic title and body.",
+      "type": "string"
+    }
+  ],
+  "title": "NotificationPreview",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "NotificationPreview"
+}

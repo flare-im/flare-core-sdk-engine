@@ -102,6 +102,17 @@ impl Breaker {
         }
     }
 
+    /// 提前结束冷却：仍在 Open 的熔断器此刻起即为 half-open，放一次试探。Closed 与已经 half-open 的
+    /// 不变；冷却基值不动，试探再失败照常翻倍重新打开。返回是否真的提前了。
+    pub fn expedite(&mut self, now_ms: i64) -> bool {
+        if self.phase(now_ms) != BreakerPhase::Open {
+            return false;
+        }
+        self.open_until_ms = Some(now_ms);
+        self.trial_claimed_at_ms = None;
+        true
+    }
+
     /// 记一次计入熔断的失败。`trip` 由调用方按连续失败与窗口失败率算出（只在 Closed 时使用）；
     /// `unit` 是 `[0, 1)` 的随机数，用于冷却抖动。
     ///
@@ -167,6 +178,28 @@ fn jittered(cooldown_ms: u64, unit: f64) -> i64 {
 mod tests {
     use super::*;
     use crate::manifest::ClientPolicy;
+
+    /// 提前结束冷却：Open 立即转 half-open 放一次试探，试探失败照常翻倍；Closed 与 half-open 不动。
+    #[test]
+    fn expedite_turns_an_open_breaker_half_open_once() {
+        let policy = ClientPolicy::default().breaker;
+        let mut breaker = Breaker::default();
+        assert!(!breaker.expedite(0), "closed stays closed");
+        breaker.on_failure(0, true, &policy, 0.0);
+        assert_eq!(breaker.phase(1_000), BreakerPhase::Open);
+        assert!(breaker.expedite(1_000));
+        assert_eq!(breaker.phase(1_000), BreakerPhase::HalfOpen);
+        assert!(!breaker.expedite(1_000), "already half-open");
+        assert!(breaker.claim_trial(1_000));
+        assert!(!breaker.claim_trial(1_001), "one trial at a time");
+        assert_eq!(
+            breaker.on_failure(1_000, false, &policy, 0.5),
+            Some(BreakerTransition::Reopened {
+                until_ms: 61_000,
+                cooldown_ms: 60_000
+            })
+        );
+    }
 
     #[test]
     fn cooldown_doubles_to_cap_with_jitter_bounds() {

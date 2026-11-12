@@ -148,7 +148,7 @@ SQLite 表结构（消息本地状态列）：
 | 按 id 查询 | `ConversationStore::get` | 同上 |
 | 列表（置顶+last_message_at 排序） | `ConversationStore::list` | 同上 |
 | 未读更新 | `ConversationStore::update_unread(conversation_id, unread_count, last_read_seq)` | 同上 |
-| 置顶/静音/归档 | `ConversationStore::set_pinned` / `set_muted` / `set_archived` | 同上 |
+| 置顶/静音/大群全部消息通知/归档 | `ConversationStore::set_pinned` / `set_muted` / `set_notify_all` / `set_archived` | 同上 |
 | 草稿 | `ConversationStore::update_draft` | 同上 |
 | 删除 | `ConversationStore::delete` | 同上 |
 | **最后一条消息更新** | **ConversationStore::update_last_message(conversation_id, last_message_id, last_sender_id, last_message_at, preview, max_seq)** | **persistence/sqlite/conversation_repo.rs**（UPDATE 会话表） |

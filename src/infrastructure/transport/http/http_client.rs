@@ -308,6 +308,18 @@ impl HttpRequestContext {
     }
 }
 
+/// Core rejected the bearer as expired (401 with the typed reason `TOKEN_EXPIRED`): the only rejection that
+/// permits one renewal and retry. A revoked or otherwise refused bearer is final.
+pub(crate) fn is_core_bearer_expired(error: &FlareError) -> bool {
+    error
+        .as_localized()
+        .and_then(|error| error.params)
+        .is_some_and(|params| {
+            params.get("httpStatus").map(String::as_str) == Some("401")
+                && params.get("machineReason").map(String::as_str) == Some("TOKEN_EXPIRED")
+        })
+}
+
 /// 请求发送失败时的错误。
 ///
 /// 连接阶段就失败（DNS 解析、拒绝连接、网络不可达、TLS 握手）时请求根本没离开本机，
@@ -2738,20 +2750,27 @@ impl HttpClient {
         let Some(sent) = sent else {
             return false;
         };
-        let expired = error
-            .as_localized()
-            .and_then(|error| error.params)
-            .is_some_and(|params| {
-                params.get("httpStatus").map(String::as_str) == Some("401")
-                    && params.get("machineReason").map(String::as_str) == Some("TOKEN_EXPIRED")
-            });
-        if !expired {
+        if !is_core_bearer_expired(error) {
             return false;
         }
         match &self.context {
             Some(context) => context.renew_core_bearer(sent).await.is_some(),
             None => false,
         }
+    }
+
+    /// The Core bearer the request context holds now: after a refresh (SDK-managed tokens, or the host's
+    /// `update_access_token`) or a renewal it is the new one. `None` without a context or a bearer.
+    pub(crate) async fn current_core_bearer(&self) -> Option<String> {
+        let token = self.context.as_ref()?.auth_token.read().await.clone();
+        (!token.trim().is_empty()).then_some(token)
+    }
+
+    /// After Core rejected `rejected` as expired: the bearer to retry with, renewed through the request
+    /// context the same way as this client's own requests ([`HttpRequestContext::renew_core_bearer`]).
+    /// `None` without a context or when the renewal failed.
+    pub(crate) async fn renew_core_bearer(&self, rejected: &str) -> Option<String> {
+        self.context.as_ref()?.renew_core_bearer(rejected).await
     }
 
     fn core_bearer_in_headers(

@@ -471,6 +471,7 @@ impl SqliteConversationRepo {
             is_pinned: is_pinned != 0,
             is_muted: is_muted != 0,
             is_mention_only: is_mention_only.map(|value| value != 0),
+            notify_all: false,
             is_archived: is_archived != 0,
             version: version.max(0) as u64,
             updated_at: updated_at.max(0) as u64,
@@ -1017,6 +1018,37 @@ impl ConversationWriter for SqliteConversationRepo {
             .bind(if muted { 1i32 } else { 0 })
             .bind(conversation_id)
             .execute(&self.pool)
+            .await
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        Ok(())
+    }
+
+    async fn set_notify_all(&self, conversation_id: &str, enabled: bool) -> Result<()> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        let ext_row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT ext FROM conversations WHERE conversation_id = ?")
+                .bind(conversation_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        let Some((raw_ext,)) = ext_row else {
+            return Ok(());
+        };
+        let mut ext = parse_ext(raw_ext.as_deref());
+        crate::model::set_notify_all_in(&mut ext, enabled);
+        let ext_json = serde_json::to_string(&ext)
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        sqlx::query("UPDATE conversations SET ext = ? WHERE conversation_id = ?")
+            .bind(ext_json)
+            .bind(conversation_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        tx.commit()
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         Ok(())

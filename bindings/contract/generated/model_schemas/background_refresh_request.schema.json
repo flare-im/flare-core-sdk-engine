@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One background refresh the platform granted the app (iOS BGAppRefreshTask).",
+  "properties": {
+    "budgetMs": {
+      "description": "Time the platform grants, in milliseconds; the engine uses at most 25000 of it.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "budgetMs"
+  ],
+  "title": "BackgroundRefreshRequest",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "BackgroundRefreshRequest"
+}

@@ -3,9 +3,10 @@ use std::time::Duration;
 
 use flare_proto::common::{
     ConversationParticipantsSync, ConversationUserSettingsSync, ConversationsSync,
-    ConversationsSyncRes, EnsureConversationSync, Event, GetSyncCursorSync, MultiConversationSync,
-    QueryEventsSync, SingleConversationSync, Sync as SyncWire, SyncRes, SyncSnapshotSync,
-    SyncSnapshotSyncRes, UpdateSyncCursorSync, event::Payload as EventPayload,
+    ConversationsSyncRes, EnsureConversationSync, Event, GetSyncCursorSync,
+    GetUserNotificationSettingsSync, MultiConversationSync, QueryEventsSync,
+    SingleConversationSync, Sync as SyncWire, SyncRes, SyncSnapshotSync, SyncSnapshotSyncRes,
+    UpdateSyncCursorSync, UserNotificationSettingsSync, event::Payload as EventPayload,
     sync::Payload as SyncPayload, sync_res::Payload as SyncResPayload,
     sync_slice_item::Payload as SyncSliceItemPayload,
 };
@@ -18,6 +19,8 @@ use crate::infrastructure::protocol::PacketSender;
 use crate::shared::error::{FlareError, Result};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
+/// 用户级通知设置是一个小对象，读写都不该等太久：设置页上的开关要很快有结果。
+const USER_SETTINGS_TIMEOUT_SECS: u64 = 10;
 
 fn sync_wire(device_id: &str, payload: SyncPayload) -> SyncWire {
     SyncWire {
@@ -154,6 +157,28 @@ impl SyncRequestUseCase {
         let sync_event = sync_wire(&self.device_id, SyncPayload::ConversationUserSettings(req));
         self.sender
             .send_sync_and_wait(&sync_event, Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+            .await
+    }
+
+    /// 读当前用户的用户级通知设置。
+    pub async fn request_user_notification_settings(&self) -> Result<SyncRes> {
+        let sync_event = sync_wire(
+            &self.device_id,
+            SyncPayload::GetUserNotificationSettings(GetUserNotificationSettingsSync {}),
+        );
+        self.sender
+            .send_sync_and_wait(&sync_event, Duration::from_secs(USER_SETTINGS_TIMEOUT_SECS))
+            .await
+    }
+
+    /// 部分更新当前用户的用户级通知设置。
+    pub async fn update_user_notification_settings(
+        &self,
+        req: UserNotificationSettingsSync,
+    ) -> Result<SyncRes> {
+        let sync_event = sync_wire(&self.device_id, SyncPayload::UserNotificationSettings(req));
+        self.sender
+            .send_sync_and_wait(&sync_event, Duration::from_secs(USER_SETTINGS_TIMEOUT_SECS))
             .await
     }
 

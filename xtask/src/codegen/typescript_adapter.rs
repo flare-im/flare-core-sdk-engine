@@ -702,6 +702,15 @@ fn ts_listener_predicate_expr(name: &str) -> Option<&'static str> {
         "onPluginCatalogChanged" => {
             Some("eventEventIs(event, 'plugin', PluginEventName.CatalogChanged)")
         }
+        "onNotificationPresent" => {
+            Some("eventEventIs(event, 'notification', NotificationEventName.Present)")
+        }
+        "onNotificationClear" => {
+            Some("eventEventIs(event, 'notification', NotificationEventName.Clear)")
+        }
+        "onNotificationBadge" => {
+            Some("eventEventIs(event, 'notification', NotificationEventName.Badge)")
+        }
         _ => None,
     }
 }
@@ -791,6 +800,9 @@ fn ts_event_decoder_expr(entry: &TypescriptEventRegistryEntry) -> String {
             "conversationEvent(ConversationEventName.Deleted, \"deleted\", payload)".to_string()
         }
         "notification.received" => "notificationReceivedEvent(payload)".to_string(),
+        "notification.present" => "notificationPresentEvent(payload)".to_string(),
+        "notification.clear" => "notificationClearEvent(payload)".to_string(),
+        "notification.badge" => "notificationBadgeEvent(payload)".to_string(),
         "sync.started" => "syncEvent(SyncEventName.Started, \"started\", payload)".to_string(),
         "sync.finished" => "syncEvent(SyncEventName.Finished, \"finished\", payload)".to_string(),
         "sync.failed" => "syncEvent(SyncEventName.Failed, \"failed\", payload)".to_string(),
@@ -860,6 +872,12 @@ fn emit_typescript_native_event_decoder(
         "function requiredString(value: unknown, field: string): string {".to_string(),
         "  if (typeof value === 'string' && value.length > 0) return value;".to_string(),
         "  return invalidEventField(field, 'non-empty string');".to_string(),
+        "}".to_string(),
+        String::new(),
+        "// 字段必须在且是字符串，但允许为空：摘要通知没有会话与分组，补提示可能没有消息 ID。".to_string(),
+        "function presentString(value: unknown, field: string): string {".to_string(),
+        "  if (typeof value === 'string') return value;".to_string(),
+        "  return invalidEventField(field, 'string');".to_string(),
         "}".to_string(),
         String::new(),
         "function optionalString(value: unknown, field: string): string | undefined {".to_string(),
@@ -1174,6 +1192,35 @@ fn emit_typescript_native_event_decoder(
         "  return { type: 'notification', event: 'received', message: messageFromJson(record) };".to_string(),
         "}".to_string(),
         String::new(),
+        "function notificationPresentEvent(payload: unknown): NotificationPresentation & Record<string, unknown> {".to_string(),
+        "  const record = eventPayloadRecord(payload);".to_string(),
+        "  return {".to_string(),
+        "    type: 'notification',".to_string(),
+        "    event: NotificationEventName.Present,".to_string(),
+        "    collapseId: requiredString(record.collapseId, 'collapseId'),".to_string(),
+        "    threadId: presentString(record.threadId, 'threadId'),".to_string(),
+        "    conversationId: presentString(record.conversationId, 'conversationId'),".to_string(),
+        "    messageId: presentString(record.messageId, 'messageId'),".to_string(),
+        "    seq: requiredNumber(record.seq, 'seq'),".to_string(),
+        "    title: requiredString(record.title, 'title'),".to_string(),
+        "    body: requiredString(record.body, 'body'),".to_string(),
+        "    count: requiredNumber(record.count, 'count'),".to_string(),
+        "    sound: requiredBoolean(record.sound, 'sound'),".to_string(),
+        "    channel: requiredString(record.channel, 'channel'),".to_string(),
+        "    surface: requiredString(record.surface, 'surface'),".to_string(),
+        "  };".to_string(),
+        "}".to_string(),
+        String::new(),
+        "function notificationClearEvent(payload: unknown): NotificationClearEvent & Record<string, unknown> {".to_string(),
+        "  const record = eventPayloadRecord(payload);".to_string(),
+        "  return { type: 'notification', event: NotificationEventName.Clear, collapseIds: requiredStringList(record.collapseIds, 'collapseIds'), all: requiredBoolean(record.all, 'all') };".to_string(),
+        "}".to_string(),
+        String::new(),
+        "function notificationBadgeEvent(payload: unknown): NotificationBadgeEvent & Record<string, unknown> {".to_string(),
+        "  const record = eventPayloadRecord(payload);".to_string(),
+        "  return { type: 'notification', event: NotificationEventName.Badge, count: requiredNumber(record.count, 'count') };".to_string(),
+        "}".to_string(),
+        String::new(),
         "function contractEvent(type: string, event: string, payload: unknown): Record<string, unknown> {".to_string(),
         "  return { ...eventPayloadRecord(payload), type, event };".to_string(),
         "}".to_string(),
@@ -1271,6 +1318,10 @@ fn emit_typescript_adapter_events_api(
         "MessageReceivedEvent",
         "MessageSendAckEvent",
         "MessageSendFailedEvent",
+        "NotificationBadgeEvent",
+        "NotificationClearEvent",
+        "NotificationEventName",
+        "NotificationPresentation",
         "PluginCatalogChangedEvent",
         "PluginEventName",
         "PluginRealtimeEvent",
@@ -1587,6 +1638,21 @@ fn emit_typescript_adapter_events_api(
         "    if (type === 'view') {".to_string(),
         "      listener.onViewUpdated?.(event as ViewUpdate);".to_string(),
         "      return;".to_string(),
+        "    }".to_string(),
+        "    if (type === 'notification') {".to_string(),
+        "      switch (eventName) {".to_string(),
+        "        case NotificationEventName.Present:".to_string(),
+        "          listener.onNotificationPresent?.(event as NotificationPresentation);".to_string(),
+        "          return;".to_string(),
+        "        case NotificationEventName.Clear:".to_string(),
+        "          listener.onNotificationClear?.(event as NotificationClearEvent);".to_string(),
+        "          return;".to_string(),
+        "        case NotificationEventName.Badge:".to_string(),
+        "          listener.onNotificationBadge?.(event as NotificationBadgeEvent);".to_string(),
+        "          return;".to_string(),
+        "        default:".to_string(),
+        "          return;".to_string(),
+        "      }".to_string(),
         "    }".to_string(),
         "    if (type === 'plugin') {".to_string(),
         "      switch (eventName) {".to_string(),
@@ -1918,6 +1984,7 @@ const ADAPTER_FACADE_PROPS: &[(&str, &str, &str)] = &[
     ("views", "ViewsApi", "Views"),
     ("events", "EventsApi", "Events"),
     ("diagnostics", "DiagnosticsApi", "Diagnostics"),
+    ("notification", "NotificationApi", "Notification"),
 ];
 
 fn emit_typescript_adapter_flare_im_client(spec: &Value) -> Result<String> {

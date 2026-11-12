@@ -5,7 +5,7 @@ use crate::application::projections::names::{NameBook, NameRequest};
 use crate::domain::{ConversationStore, MessageReader, UserReader, real_name};
 use crate::kernel::CurrentUserIdStore;
 use crate::model::conversation::ConversationType;
-use crate::model::{Conversation, ConversationListQuery};
+use crate::model::{Conversation, ConversationListQuery, notify_all};
 use crate::shared::error::Result;
 use tracing::warn;
 
@@ -316,7 +316,8 @@ impl ConversationViewAssembler {
 
     /// Projects names onto `conversations`: the profiles of every peer, last sender and
     /// previewed member are read with one `get_many`, the member nicknames with one
-    /// `member_nicknames`, whatever the number of conversations.
+    /// `member_nicknames`, whatever the number of conversations. Also projects the user's
+    /// large-group notification choice (`notify_all`) out of the stored settings.
     pub async fn hydrate_conversations(
         &self,
         mut conversations: Vec<Conversation>,
@@ -344,6 +345,7 @@ impl ConversationViewAssembler {
         for conversation in conversations.iter_mut() {
             book.project_conversation(conversation, &me);
             project_legacy_last_sender(conversation, &book);
+            conversation.notify_all = notify_all(conversation);
         }
         conversations
     }

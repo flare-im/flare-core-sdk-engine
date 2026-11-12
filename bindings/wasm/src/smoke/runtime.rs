@@ -221,7 +221,10 @@ impl FlareImWasmRuntime {
                 }
                 Ok(Value::Null)
             }
-            "conversation.set_pinned" | "conversation.set_muted" | "conversation.set_archived" => {
+            "conversation.set_pinned"
+            | "conversation.set_muted"
+            | "conversation.set_notify_all"
+            | "conversation.set_archived" => {
                 self.update_conversation_flag(operation, &request);
                 Ok(Value::Null)
             }
@@ -789,6 +792,7 @@ impl FlareImWasmRuntime {
         let value = bool_field(request, "pinned")
             .or_else(|| bool_field(request, "muted"))
             .or_else(|| bool_field(request, "archived"))
+            .or_else(|| bool_field(request, "enabled"))
             .unwrap_or(false);
         if let Some(conversation) = self
             .conversations
@@ -798,6 +802,10 @@ impl FlareImWasmRuntime {
             match operation {
                 "conversation.set_pinned" => conversation.is_pinned = value,
                 "conversation.set_muted" => conversation.is_muted = value,
+                "conversation.set_notify_all" => {
+                    flare_im_core_sdk::model::set_notify_all(conversation, value);
+                    conversation.notify_all = value;
+                }
                 "conversation.set_archived" => conversation.is_archived = value,
                 _ => {}
             }

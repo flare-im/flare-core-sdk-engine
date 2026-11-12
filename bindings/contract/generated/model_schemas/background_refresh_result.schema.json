@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "How a background refresh ended.",
+  "properties": {
+    "completed": {
+      "description": "The link came up and the incremental sync finished within the budget. False when the\nbudget ran out or no session could connect.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "completed"
+  ],
+  "title": "BackgroundRefreshResult",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "BackgroundRefreshResult"
+}

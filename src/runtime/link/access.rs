@@ -172,6 +172,8 @@ pub struct AccessRuntime {
     update: Mutex<Option<Arc<UpdateRuntime>>>,
     /// 最近一次 CONNECT 被 `UPGRADE_REQUIRED` 拒绝的时刻与服务端带来的最低构建号，只进诊断导出。
     upgrade_refusal: Mutex<Option<(i64, Option<u64>)>>,
+    /// 按网络学到的后台心跳间隔：与健康簿一样属于设备与网络，跨登录共用。
+    heartbeat_learning: super::heartbeat_learning::HeartbeatLearning,
     #[cfg(not(target_arch = "wasm32"))]
     dial_rewrite: Option<DialRewrite>,
     /// IM 拨号、REST 与引导拉取共用一份。
@@ -222,6 +224,7 @@ impl AccessRuntime {
             changes: broadcast::channel(CHANGE_CHANNEL_CAPACITY).0,
             update: Mutex::new(None),
             upgrade_refusal: Mutex::new(None),
+            heartbeat_learning: super::heartbeat_learning::HeartbeatLearning::default(),
             #[cfg(not(target_arch = "wasm32"))]
             dial_rewrite: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -453,6 +456,17 @@ impl AccessRuntime {
             doh.cache.clear();
         }
         changed
+    }
+
+    /// 按网络学到的后台心跳间隔。
+    pub(crate) fn heartbeat_learning(&self) -> &super::heartbeat_learning::HeartbeatLearning {
+        &self.heartbeat_learning
+    }
+
+    /// 心跳学习表落在数据根下（读出已有的，之后的变化写回去）。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn persist_heartbeat_learning(&self, data_root: &std::path::Path) {
+        self.heartbeat_learning.persist_under(data_root);
     }
 
     pub fn set_net_tags(&self, tags: Vec<String>) {

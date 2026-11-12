@@ -132,6 +132,10 @@ impl ConversationWriter for EmptyConversationStore {
         Ok(())
     }
 
+    async fn set_notify_all(&self, _conversation_id: &str, _enabled: bool) -> Result<()> {
+        Ok(())
+    }
+
     async fn mark_unread(&self, _conversation_id: &str) -> Result<u32> {
         Ok(1)
     }

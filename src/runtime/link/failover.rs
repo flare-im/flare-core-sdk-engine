@@ -19,6 +19,20 @@ use super::status::{ActionRequiredReason, LinkPhase};
 pub const RECOVERING_AFTER_FAILED_ROUNDS: u32 = 2;
 /// Recovering 期间的退避上限（§3.11：引导失败退避，上限 5 分钟）。
 pub const RECOVERING_CAP_MS: u64 = 300_000;
+/// 手机上应用在后台、链路断开之后，引擎最多自己再连这么多轮；用完就停下，等回到前台、网络恢复或
+/// 显式的重连请求。后台没有界面在等，按退避一直空转只是耗电，而提示此时已由推送通道负责。
+pub const BACKGROUND_RECONNECT_ROUNDS: u32 = 3;
+
+/// 没有人在等的时候（应用在后台）还能不能自己再安排一轮。`background_rounds` 是后台里已经发起的
+/// 轮数。前台不受限；后台也只有推送能接手提示的平台（`push_takes_over`，即手机）才受限：桌面与 Web
+/// 没有推送，停止重连就等于收不到消息，所以照常按退避重连。
+pub fn unattended_round_allowed(
+    foreground: bool,
+    push_takes_over: bool,
+    background_rounds: u32,
+) -> bool {
+    foreground || !push_takes_over || background_rounds < BACKGROUND_RECONNECT_ROUNDS
+}
 
 pub fn to_transport(protocol: Protocol) -> TransportProtocol {
     match protocol {
@@ -810,5 +824,24 @@ mod tests {
             0.0,
         );
         assert_eq!(plan.at_ms - now, 60_000);
+    }
+
+    /// 手机在后台最多自己连三轮；前台不限，没有推送可接手的平台（桌面、Web）后台也不限。
+    #[test]
+    fn a_backgrounded_phone_gets_three_unattended_rounds() {
+        for rounds in 0..BACKGROUND_RECONNECT_ROUNDS {
+            assert!(
+                unattended_round_allowed(false, true, rounds),
+                "round {rounds}"
+            );
+        }
+        assert!(!unattended_round_allowed(
+            false,
+            true,
+            BACKGROUND_RECONNECT_ROUNDS
+        ));
+        assert!(!unattended_round_allowed(false, true, u32::MAX));
+        assert!(unattended_round_allowed(true, true, u32::MAX));
+        assert!(unattended_round_allowed(false, false, u32::MAX));
     }
 }

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Whether the platform presents alerts itself while the app is in the background.",
+  "properties": {
+    "attached": {
+      "description": "The platform push module posts local notifications for the engine while the app is in\nthe background.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "attached"
+  ],
+  "title": "SetBackgroundPresenterRequest",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "SetBackgroundPresenterRequest"
+}

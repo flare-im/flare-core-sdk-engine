@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The payload of a notification the user tapped.",
+  "properties": {
+    "payload": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "The push payload flattened to strings, as in handleRemoteMessage.",
+      "type": "object"
+    }
+  },
+  "required": [
+    "payload"
+  ],
+  "title": "ResolveNotificationTapRequest",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "ResolveNotificationTapRequest"
+}

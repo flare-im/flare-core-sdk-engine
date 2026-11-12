@@ -1341,6 +1341,8 @@ export function conversationFromJson(json: Record<string, unknown>): Conversatio
     visibleAfterSeq: requiredIntField(json, 'visibleAfterSeq', 'Conversation'),
     isPinned: boolValue(field(json, 'isPinned')),
     isMuted: boolValue(field(json, 'isMuted')),
+    ...(typeof field(json, 'isMentionOnly') === 'boolean' ? { isMentionOnly: field(json, 'isMentionOnly') as boolean } : {}),
+    notifyAll: field(json, 'notifyAll') === true,
     isArchived: boolValue(field(json, 'isArchived')),
     version: intValue(field(json, 'version')),
     updatedAt: requiredIntField(json, 'updatedAt', 'Conversation'),
