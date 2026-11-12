@@ -236,7 +236,8 @@ pub(crate) fn parse_composer_actions(request: Value) -> Result<ComposerActionsRe
 /// server already trimmed the catalog by grant, capability policy and user
 /// consent, so this only drops what a client cannot render: another tenant's
 /// or an expired catalog, other platforms, unknown schema versions and invalid
-/// documents. An upgrade placeholder is listed with `upgrade` set. An entry declaring an availability the catalog does not offer
+/// documents. An upgrade placeholder is listed with `upgrade` set; an unsupported one
+/// (a native capability this host withholds) is not listed. An entry declaring an availability the catalog does not offer
 /// (a malformed one, or an operation outside the plugin's offered operations)
 /// is dropped too; the others carry it for the SDK to ask before listing.
 pub(crate) fn composer_actions(
@@ -259,6 +260,8 @@ pub(crate) fn composer_actions(
                 .iter()
                 .filter(|c| {
                     c.kind == UiContributionKind::ComposerAction
+                        // No build of this client offers it: not listed at all.
+                        && !c.upgrade.as_ref().is_some_and(|u| u.unsupported)
                         && c.schema_version == 1
                         && c.schema.validate().is_ok()
                         // A malformed audience hides the entry rather than showing it to everyone.
@@ -344,6 +347,8 @@ pub(crate) fn account_entries(
                 .iter()
                 .filter(|c| {
                     c.kind == UiContributionKind::AccountEntry
+                        // No build of this client offers it: not listed at all.
+                        && !c.upgrade.as_ref().is_some_and(|u| u.unsupported)
                         && c.schema_version == 1
                         && c.schema.validate().is_ok()
                 })

@@ -1672,7 +1672,10 @@ fn hot_delivery_catalog() -> Value {
                  "schema": {"title": "Needs a chart", "blocks": [required_chart]}},
                 {"id": "example.poll.core", "kind": "message-content", "schemaVersion": 1,
                  "requiredPermissions": [],
-                 "schema": {"title": "From Core"}, "upgrade": {"minBuild": 41020}}
+                 "schema": {"title": "From Core"}, "upgrade": {"minBuild": 41020}},
+                {"id": "example.poll.unsupported", "kind": "message-content", "schemaVersion": 1,
+                 "requiredPermissions": [],
+                 "schema": {"title": "Copy only"}, "upgrade": {"unsupported": true}}
             ]}
         }]
     })
@@ -1726,6 +1729,16 @@ async fn unknown_blocks_fall_back_and_unreadable_cards_ask_for_an_upgrade() {
     assert_eq!(core["unavailableReason"], "upgrade_required");
     assert_eq!(core["minBuild"], 41020);
 
+    // Only a capability this host withholds stands in the way: no update offer.
+    let unsupported = f
+        .api
+        .resolve_plugin_message(resolve("example.poll.unsupported"))
+        .await
+        .unwrap();
+    assert_eq!(unsupported["available"], false);
+    assert_eq!(unsupported["unavailableReason"], "unsupported_platform");
+    assert!(unsupported.get("minBuild").is_none());
+
     // A kit that draws charts reads both.
     host_allows(&f.api, &[]);
     let full = f
@@ -1751,14 +1764,32 @@ async fn composer_and_account_placeholders_are_listed_with_their_upgrade() {
     {
         let mut catalog = f.catalog.lock().unwrap();
         let plugin = &mut catalog.plugins[0];
-        for (id, kind) in [
-            ("example.poll.compose-next", "composer-action"),
-            ("example.poll.me-next", "account-entry"),
+        for (id, kind, upgrade) in [
+            (
+                "example.poll.compose-next",
+                "composer-action",
+                json!({"minBuild": 7}),
+            ),
+            (
+                "example.poll.me-next",
+                "account-entry",
+                json!({"minBuild": 7}),
+            ),
+            (
+                "example.poll.compose-never",
+                "composer-action",
+                json!({"unsupported": true}),
+            ),
+            (
+                "example.poll.me-never",
+                "account-entry",
+                json!({"unsupported": true}),
+            ),
         ] {
             plugin.extensions.contributions.push(
                 serde_json::from_value(json!({
                     "id": id, "kind": kind, "schemaVersion": 1, "requiredPermissions": [],
-                    "schema": {"title": "Next"}, "upgrade": {"minBuild": 7}
+                    "schema": {"title": "Next"}, "upgrade": upgrade
                 }))
                 .unwrap(),
             );
@@ -1791,4 +1822,15 @@ async fn composer_and_account_placeholders_are_listed_with_their_upgrade() {
         .unwrap();
     assert_eq!(entry.page, "");
     assert_eq!(entry.upgrade.as_ref().unwrap().min_build, Some(7));
+    // An unsupported placeholder is never listed: no build of this client offers it.
+    assert!(
+        !composer
+            .iter()
+            .any(|a| a.contribution_id == "example.poll.compose-never")
+    );
+    assert!(
+        !entries
+            .iter()
+            .any(|e| e.contribution_id == "example.poll.me-never")
+    );
 }
