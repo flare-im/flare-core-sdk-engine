@@ -219,6 +219,14 @@ impl CapabilityApi {
     pub(crate) fn plugin_client(&self) -> host_profile::PluginClient {
         host_profile::PluginClient::of(self.plugin_host.profile().as_ref(), &self.app_identity)
     }
+    /// The host's plugin UI profile (`plugin.set_host_profile` input), for an
+    /// embedder that drives this API without an [`crate::client::IMClient`]
+    /// (acceptance harnesses). Without it views are read with vocabulary 1.
+    pub fn with_plugin_host_profile(self, request: Value) -> Result<Self> {
+        let profile = host_profile::parse_profile(request, &self.app_identity)?;
+        self.plugin_host.set(profile);
+        Ok(self)
+    }
     pub fn with_plugin_command_store(
         mut self,
         store: Option<Arc<dyn crate::domain::PluginCommandStore>>,
