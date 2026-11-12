@@ -1688,7 +1688,8 @@ async fn unknown_blocks_fall_back_and_unreadable_cards_ask_for_an_upgrade() {
         json!({
             "catalog": catalog, "platform": "ios",
             "message": {"pluginId": "example.poll", "contributionId": contribution,
-                        "schemaVersion": 1, "summary": "Poll", "payload": {"days": []}},
+                        "schemaVersion": 1, "summary": "Poll",
+                        "payload": {"days": [{"label": "Mon", "value": 3}]}},
         })
     };
 

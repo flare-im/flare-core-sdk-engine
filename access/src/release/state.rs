@@ -1879,10 +1879,10 @@ mod tests {
 
     #[test]
     fn a_plugin_floor_is_met_only_by_a_release_this_device_is_offered() {
-        let machine = machine("play", verified(serde_json::json!({}), false));
-        assert_eq!(machine.release_at_least(20400, NOW), Some(20400));
-        assert_eq!(machine.release_at_least(20000, NOW), Some(20400));
-        assert_eq!(machine.release_at_least(20401, NOW), None);
+        let offered = machine("play", verified(serde_json::json!({}), false));
+        assert_eq!(offered.release_at_least(20400, NOW), Some(20400));
+        assert_eq!(offered.release_at_least(20000, NOW), Some(20400));
+        assert_eq!(offered.release_at_least(20401, NOW), None);
 
         let halted = machine("play", verified(serde_json::json!({}), true));
         assert_eq!(halted.release_at_least(20400, NOW), None);

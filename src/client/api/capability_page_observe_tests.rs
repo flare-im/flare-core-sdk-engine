@@ -143,18 +143,20 @@ async fn observes_original_payload_through_current_declared_query_without_a_writ
         .unwrap();
     assert_eq!(value["kind"], "host");
     assert_eq!(value["target"]["page"], "example.poll.original-result");
-    let calls = p.f.calls.lock().unwrap();
-    let queries: Vec<_> = calls
-        .iter()
-        .filter(|c| c["capabilityId"] != flare_plugin_protocol::ui::UI_CATALOG_OPERATION)
-        .collect();
+    let queries: Vec<_> =
+        p.f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c["capabilityId"] != flare_plugin_protocol::ui::UI_CATALOG_OPERATION)
+            .cloned()
+            .collect();
     assert_eq!(queries.len(), 1);
     assert_eq!(queries[0]["capabilityId"], QUERY);
     assert_eq!(
         queries[0]["payload"],
         json!({"commandId":p.command.command_id,"capabilityId":p.command.capability_id,"payload":p.command.payload})
     );
-    drop(calls);
     let stored = p.store.pending(&p.scope).await.unwrap().unwrap();
     assert_eq!(stored.command, p.command);
     let response = stored.response.unwrap();
