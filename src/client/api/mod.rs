@@ -20,9 +20,10 @@ mod view;
 
 pub use crate::extension::capability::ui::PluginComposerAction;
 pub(crate) use capability::TenantNotices;
+pub(crate) use capability::host_profile::{AppIdentity, PluginHostSlot};
 pub use capability::{
     CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, PluginFileUploadPage,
-    PluginFileUploadRequest,
+    PluginFileUploadRequest, PluginUpgradeStatus,
 };
 pub use conversation::ConversationApi;
 pub use media::{

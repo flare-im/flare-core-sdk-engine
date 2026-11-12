@@ -7,6 +7,15 @@
 
 ### 新增
 
+- 插件界面按宿主能力下发：新增 `plugin.set_host_profile`（`{platform, kitVocabulary, nativeAllowlist?,
+  bundleRuntime?}`），宿主声明 Kit 词汇、原生能力允许名单与 Web 包运行时，跨会话保留，变化时作废目录读取并重新
+  推出最近展示的卡片。读目录（`flare.plugin.ui.catalog`）的载荷改为 `{descriptor}`：引擎词汇 ∩ Kit 词汇、
+  `native` 再 ∩ 允许名单、构建号与渠道取 `app.build`、`app.distribution`；没有声明时按第 1 版词汇、不带原生能力。
+- 目录按同一词汇宽容读取：不认识的非必需块连同它的动作去掉，读不了的贡献（含 Core 下发的升级占位）显示为
+  `upgrade_required`（带 `minBuild`），整页为升级视图；「+」与「我」页条目带 `upgrade`。
+- `update.plugin_upgrade_status`（`{minBuild?}` → `{available, build?}`）判断本渠道是否已有这台设备能装、不低于
+  `minBuild` 的版本（灰度未命中不算）；`update.open_flow` 打开更新中心现有的更新提示，不受提示频率限制。
+
 - 时间线已证实连续区间：每个会话一组已合并的闭区间 `[from, to]`（seq），区间内每个 seq 本地有行，或已被
   服务端证明没有可见消息。`TimelineCoverageStore`（`StoreProvider::timeline_coverage`）有 SQLite（新表
   `timeline_coverage`）、浏览器（存进同步游标键值 `timeline_coverage:<会话 id>`，经宿主 `saveCursor` 持久化、
@@ -78,6 +87,11 @@
   retryable, details }`：服务端拒发时 `machine_reason` 取 `ErrorDetail.reason`（例如 PreSend 拒绝码），
   `code` 为对应的核心错误码名，`details.remoteCode` 为服务端数字码；本地失败给本地 code，`machine_reason`
   为空。绑定层事件 `message.send_failed` 为 `{clientMsgId, reason, error}`；字符串 `reason` 照旧。
+
+### 变更
+
+- `plugin_ui_invoke`、`plugin_ui_action` 与页面动作不再接受 `nativeAllowlist`，原生能力以宿主资料为准；
+  `plugin_ui_resolve`、`plugin_ui_action` 里宿主交回的目录按宿主资料的词汇读取。
 
 ### 修复
 

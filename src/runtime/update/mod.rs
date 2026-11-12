@@ -582,6 +582,20 @@ impl UpdateRuntime {
         Ok(self.publish())
     }
 
+    /// 本渠道是否已有这台设备能装、不低于 `min_build` 的版本（插件的最低构建），有就是它的构建号。
+    /// 用手里的清单评估，不发网络请求。
+    pub(crate) async fn release_at_least(&self, min_build: u64) -> Option<u64> {
+        self.ready().await;
+        self.machine().release_at_least(min_build, now_ms())
+    }
+
+    /// 用户主动要更新（插件的「去更新」）：打开现有的更新提示，不经频率规则。
+    pub(crate) async fn open_flow(&self) -> UpdateStatus {
+        self.ready().await;
+        self.machine().open_flow();
+        self.publish()
+    }
+
     /// 回到前台：强制提示重新出现，到时间了就检查。
     pub(crate) fn foregrounded(self: &Arc<Self>) {
         self.machine().foregrounded(now_ms());

@@ -690,6 +690,40 @@ impl UpdateMachine {
         }
     }
 
+    /// 本渠道里这台设备能装、构建号不低于 `min_build` 的版本（插件要求的最低构建）：有就返回它的构建号。
+    ///
+    /// 与提示同一个评估（[`evaluate`]），所以灰度没命中的版本不算有，不对外暴露灰度：评估给出的目标版本
+    /// （可选、推荐，或强制更新的目标）够得上 `min_build` 才算。手里还没有清单时为空。
+    pub fn release_at_least(&self, min_build: u64, now_ms: i64) -> Option<u64> {
+        let verified = self.manifest.as_ref()?;
+        let input = self.input(verified.is_stale(now_ms));
+        match evaluate(&verified.manifest, &input) {
+            Decision::Available { release, .. }
+            | Decision::Required {
+                release: Some(release),
+                ..
+            } if release.build >= min_build && self.offered(release).is_some() => {
+                Some(release.build)
+            }
+            _ => None,
+        }
+    }
+
+    /// 用户在别处主动要更新（插件的「去更新」）：马上打开现有的更新提示，不经频率规则。
+    /// 形态按版本类别推导（[`held_form`]），之后与从提示进入的流程一样：宿主 `mark_prompted`，
+    /// 下载、安装、「稍后」照旧。没有可更新的版本时什么也不做，返回假。
+    pub fn open_flow(&mut self) -> bool {
+        let (Some(urgency), Some(build)) = (self.urgency(), self.target_build()) else {
+            return false;
+        };
+        self.error = None;
+        self.shown_prompt = Some((Some(build), held_form(urgency, None)));
+        self.prompt_open = true;
+        self.prompt_released = false;
+        self.prompt_hidden = false;
+        true
+    }
+
     /// 开始下载。`None` 时不用下载：要么已在下载或下好了，要么 `error` 里写了原因。
     pub fn begin_download(&mut self, metered: bool, allow_metered: bool) -> Option<DownloadSpec> {
         if self.busy() || self.phase == Phase::Ready {
@@ -1841,5 +1875,42 @@ mod tests {
             ..app("play")
         };
         assert!(!bad.can_check());
+    }
+
+    #[test]
+    fn a_plugin_floor_is_met_only_by_a_release_this_device_is_offered() {
+        let machine = machine("play", verified(serde_json::json!({}), false));
+        assert_eq!(machine.release_at_least(20400, NOW), Some(20400));
+        assert_eq!(machine.release_at_least(20000, NOW), Some(20400));
+        assert_eq!(machine.release_at_least(20401, NOW), None);
+
+        let halted = machine("play", verified(serde_json::json!({}), true));
+        assert_eq!(halted.release_at_least(20400, NOW), None);
+
+        let unknown_distribution = machine("appgallery", verified(serde_json::json!({}), false));
+        assert_eq!(unknown_distribution.release_at_least(20400, NOW), None);
+
+        let unchecked = UpdateMachine::new(app("play"));
+        assert_eq!(unchecked.release_at_least(1, NOW), None);
+    }
+
+    #[test]
+    fn opening_the_flow_shows_the_prompt_whatever_the_prompt_history() {
+        let mut machine = machine("direct", verified(serde_json::json!({}), false));
+        machine.mark_prompted(Some(20400), UpdatePrompt::Sheet, NOW);
+        machine.defer(NOW);
+        assert_ne!(machine.status(NOW + 1_000).prompt, UpdatePrompt::Sheet);
+        assert!(machine.open_flow());
+        let status = machine.status(NOW + 1_000);
+        assert_eq!(status.prompt, UpdatePrompt::Sheet);
+        assert_eq!(status.release.map(|r| r.build), Some(20400));
+
+        let mut nothing = machine_without_offer();
+        assert!(!nothing.open_flow());
+        assert_eq!(nothing.status(NOW).prompt, UpdatePrompt::None);
+    }
+
+    fn machine_without_offer() -> UpdateMachine {
+        machine("direct", verified(serde_json::json!({}), true))
     }
 }

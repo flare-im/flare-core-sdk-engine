@@ -150,6 +150,9 @@ pub(crate) struct IMClientInner {
     pub conversation_api: Option<Arc<ConversationApi>>,
     pub view_api: Option<Arc<ViewApi>>,
     pub http_request_context: Option<Arc<HttpRequestContext>>,
+    /// 宿主声明的插件界面资料（`plugin.set_host_profile`）。属于宿主，跨会话共用：每个会话的
+    /// [`CapabilityApi`] 拿同一个槽。
+    pub plugin_host: Arc<crate::client::api::PluginHostSlot>,
     pub session_generation: u64,
     pub metrics: MetricsRecorder,
 }

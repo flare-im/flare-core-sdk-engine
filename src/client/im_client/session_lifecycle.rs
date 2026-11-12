@@ -320,6 +320,8 @@ impl IMClient {
                 g.last_network.clone(),
                 // 宿主注入的登录前全局存储（wasm 的 IndexedDB）：属于宿主，跨会话保留，之后的 init 仍用它。
                 g.access_store.clone(),
+                // 宿主的插件界面资料：属于宿主，跨会话保留。
+                g.plugin_host.clone(),
             )
         };
         self.logout_for_login().await?;
@@ -385,6 +387,7 @@ impl IMClient {
             child_builder = child_builder.access_runtime(access);
         }
         // 宿主此前报过的网络状态：新链路从它起步（离线时登录直接显示等网络）。
+        child_builder = child_builder.plugin_host(snap.11.clone());
         let network_available = snap.9.as_ref().is_none_or(|network| network.available);
         child_builder = child_builder.initial_network_available(network_available);
         child_builder = snap.4.apply_to_builder(child_builder);
@@ -400,6 +403,7 @@ impl IMClient {
         inner.connect_token_refresher = snap.6;
         inner.last_network = snap.9;
         inner.access_store = snap.10;
+        inner.plugin_host = snap.11;
         inner.current_user_id = Some(user_id.to_string());
         inner.last_session_user = Some(user_id.to_string());
         let previous_user = match snap.8 {

@@ -41,6 +41,9 @@ pub const DIRECT_INVOKE_ROUTES: &[&str] = &[
     "update.mark_prompted",
     "update.set_locale",
     "update.get_resources",
+    "update.plugin_upgrade_status",
+    "update.open_flow",
+    "plugin.set_host_profile",
     "connection.server_clock",
     "connection.disconnect",
     "sdk.is_connected",
@@ -104,6 +107,9 @@ pub fn is_direct_invoke_route(route: &str) -> bool {
         "update.mark_prompted" => true,
         "update.set_locale" => true,
         "update.get_resources" => true,
+        "update.plugin_upgrade_status" => true,
+        "update.open_flow" => true,
+        "plugin.set_host_profile" => true,
         "connection.server_clock" => true,
         "connection.disconnect" => true,
         "sdk.is_connected" => true,
@@ -360,6 +366,22 @@ pub async fn dispatch_direct(
             let client = session.client();
             let resources = client.update_resources().await?;
             dispatch_support::json(resources)
+        }
+        "update.plugin_upgrade_status" => {
+            let client = session.client();
+            let min_build = dispatch_support::optional_value::<u64>(request, "minBuild")?;
+            let status = client.plugin_upgrade_status(min_build).await?;
+            dispatch_support::json(status)
+        }
+        "update.open_flow" => {
+            let client = session.client();
+            let status = client.open_update_flow().await?;
+            dispatch_support::json(status)
+        }
+        "plugin.set_host_profile" => {
+            let client = session.client();
+            client.set_plugin_host_profile(request.clone()).await?;
+            Ok(BindingResponse::unit())
         }
         "connection.server_clock" => {
             let client = session.client();

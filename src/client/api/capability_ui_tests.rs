@@ -485,7 +485,18 @@ fn message() -> Value {
     json!({"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1,"summary":"Poll history","payload":{"pollId":"poll-1","question":"Question","tenantId":"forged","userId":"forged","permissions":["admin"]}})
 }
 fn invoke(platform: &str) -> Value {
-    json!({"message":message(),"platform":platform,"actionId":"vote","userGesture":true,"conversationId":"conversation-1","nativeAllowlist":[]})
+    json!({"message":message(),"platform":platform,"actionId":"vote","userGesture":true,"conversationId":"conversation-1"})
+}
+/// Declares a host that renders everything this engine knows and allows
+/// `native` ([`super::host_profile`]): the allowlist no request carries.
+fn host_allows(api: &CapabilityApi, native: &[&str]) {
+    let kit = serde_json::to_value(flare_plugin_protocol::ui::engine_vocabulary()).unwrap();
+    let profile = super::host_profile::parse_profile(
+        json!({"platform": "ios", "kitVocabulary": kit, "nativeAllowlist": native}),
+        &super::host_profile::AppIdentity::default(),
+    )
+    .unwrap();
+    api.plugin_host.set(profile);
 }
 #[tokio::test]
 async fn composer_navigation_binds_host_conversation_without_trusting_envelope_config() {
@@ -510,7 +521,7 @@ async fn composer_navigation_binds_host_conversation_without_trusting_envelope_c
         let parsed = serde_json::from_value(request.clone()).unwrap();
         let catalog = f.catalog.lock().unwrap();
         let ui::PreparedAction::Ready { payload, .. } =
-            ui::prepare_action("201", &catalog, &parsed, None).unwrap()
+            ui::prepare_action("201", &catalog, &parsed, None, &Default::default()).unwrap()
         else {
             panic!("composer action should be ready")
         };
@@ -525,7 +536,8 @@ async fn composer_navigation_binds_host_conversation_without_trusting_envelope_c
                 "201",
                 &catalog,
                 &serde_json::from_value(missing).unwrap(),
-                None
+                None,
+                &Default::default(),
             )
             .is_err()
         );
@@ -578,13 +590,16 @@ async fn plugin_ui_native_bridge_needs_current_grant_gesture_and_explicit_allowl
             .extensions
             .native_capabilities
             .push(NativeCapability::ClipboardWrite);
-        plugin.extensions.contributions[0].schema.actions[1].target = UiActionTarget::Native {
-            capability: NativeCapability::ClipboardWrite,
-        };
+        plugin.extensions.contributions[0].schema.actions[1].target =
+            UiActionTarget::native(NativeCapability::ClipboardWrite);
     }
+    // No host profile: no native capability is offered.
     assert!(f.api.invoke_plugin_action(invoke("ios")).await.is_err());
+    // A host that renders the action but does not allow the capability.
+    host_allows(&f.api, &[]);
+    assert!(f.api.invoke_plugin_action(invoke("ios")).await.is_err());
+    host_allows(&f.api, &["clipboardWrite"]);
     let mut input = invoke("ios");
-    input["nativeAllowlist"] = json!(["clipboardWrite"]);
     input["userGesture"] = json!(false);
     assert!(f.api.invoke_plugin_action(input.clone()).await.is_err());
     input["userGesture"] = json!(true);
@@ -596,6 +611,8 @@ async fn plugin_ui_native_bridge_needs_current_grant_gesture_and_explicit_allowl
         ("tenantId", json!("202")),
         ("catalog", json!({})),
         ("conversationId", json!("../other")),
+        // The allowlist is the host profile's; a request never carries one.
+        ("nativeAllowlist", json!(["clipboardWrite"])),
     ] {
         let mut bad = input.clone();
         bad[key] = value;
@@ -1326,7 +1343,7 @@ async fn catalog_validity_is_judged_on_the_server_clock() {
         let action = json!({
             "catalog": host_catalog, "platform": "ios", "pluginId": "example.poll",
             "contributionId": "example.poll.card", "actionId": "vote",
-            "nativeAllowlist": [], "userGesture": true, "payload": {"pollId": "poll-1"},
+            "userGesture": true, "payload": {"pollId": "poll-1"},
         });
         let evaluated = f.api.plugin_ui_action(action.clone()).await;
         assert!(
@@ -1408,9 +1425,10 @@ async fn composer_priority_comes_from_current_client_visible_plugin_configuratio
 
 /// The forward-compatibility guard: `plugin_catalog_newer.json` is a catalog
 /// from a server newer than this client, and hosts hand it back raw. What this
-/// client cannot read (an unknown contribution kind, an unknown field) costs
-/// only that contribution or plugin, the same through `parse_catalog` and both
-/// request APIs.
+/// client cannot read costs only that contribution or plugin, the same through
+/// `parse_catalog` and both request APIs: a contribution of an unknown kind is
+/// dropped, one with an unknown field is shown as needing an upgrade, a plugin
+/// with an unknown field is `incompatible_version`.
 #[tokio::test]
 async fn a_catalog_from_a_newer_server_costs_only_what_this_client_cannot_read() {
     use crate::extension::capability::ui;
@@ -1438,7 +1456,8 @@ async fn a_catalog_from_a_newer_server_costs_only_what_this_client_cannot_read()
         .collect();
     assert_eq!(readable, ["example.poll.card", "example.poll.tally"]);
 
-    let catalog = ui::parse_catalog(&raw).unwrap();
+    let vocabulary = super::host_profile::PluginClient::of(None, &Default::default()).vocabulary;
+    let catalog = ui::parse_catalog(&raw, &vocabulary).unwrap();
     assert_eq!(catalog.plugins.len(), 1);
     assert_eq!(catalog.plugins[0].plugin_id, "example.poll");
     let contributions: Vec<_> = catalog.plugins[0]
@@ -1447,7 +1466,21 @@ async fn a_catalog_from_a_newer_server_costs_only_what_this_client_cannot_read()
         .iter()
         .map(|c| c.id.as_str())
         .collect();
-    assert_eq!(contributions, ["example.poll.card", "example.poll.tally"]);
+    assert_eq!(
+        contributions,
+        [
+            "example.poll.card",
+            "example.poll.anchored",
+            "example.poll.tally"
+        ]
+    );
+    let anchored = &catalog.plugins[0].extensions.contributions[1];
+    assert!(
+        anchored.upgrade.is_some(),
+        "an unreadable contribution becomes a placeholder"
+    );
+    assert_eq!(anchored.schema.title, "Anchored");
+    assert!(anchored.schema.actions.is_empty());
     assert_eq!(
         catalog.unavailable,
         [
@@ -1473,7 +1506,7 @@ async fn a_catalog_from_a_newer_server_costs_only_what_this_client_cannot_read()
     let action_request = |catalog: &Value, plugin: &str, contribution: &str| {
         json!({
             "catalog": catalog, "platform": "ios", "pluginId": plugin,
-            "contributionId": contribution, "actionId": "vote", "nativeAllowlist": [],
+            "contributionId": contribution, "actionId": "vote",
             "userGesture": true, "payload": {"pollId": "poll-1"},
         })
     };
@@ -1507,11 +1540,20 @@ async fn a_catalog_from_a_newer_server_costs_only_what_this_client_cannot_read()
         );
     }
 
-    // What was dropped is an inert card and an unavailable action, not a failed request.
-    for (plugin, contribution) in [
-        ("example.poll", "example.poll.hologram"),
-        ("example.poll", "example.poll.anchored"),
-        ("example.newer", "example.newer.card"),
+    // What was dropped or kept as a placeholder is an inert card and an
+    // unavailable action, not a failed request.
+    for (plugin, contribution, reason) in [
+        (
+            "example.poll",
+            "example.poll.hologram",
+            "incompatible_version",
+        ),
+        ("example.poll", "example.poll.anchored", "upgrade_required"),
+        (
+            "example.newer",
+            "example.newer.card",
+            "incompatible_version",
+        ),
     ] {
         let view = f
             .api
@@ -1519,10 +1561,7 @@ async fn a_catalog_from_a_newer_server_costs_only_what_this_client_cannot_read()
             .await
             .unwrap();
         assert_eq!(view["available"], false, "{contribution}");
-        assert_eq!(
-            view["unavailableReason"], "incompatible_version",
-            "{contribution}"
-        );
+        assert_eq!(view["unavailableReason"], reason, "{contribution}");
         let error = f
             .api
             .plugin_ui_action(action_request(&raw, plugin, contribution))
@@ -1560,4 +1599,195 @@ async fn a_catalog_from_a_newer_server_costs_only_what_this_client_cannot_read()
             "{error}"
         );
     }
+}
+
+/// The catalog request carries the descriptor of the host profile: without
+/// one, vocabulary version 1 and no native capability; with one, the engine
+/// vocabulary within the kit's and the allowlist.
+#[tokio::test]
+async fn the_catalog_read_sends_the_descriptor_of_the_host_profile() {
+    let f = Fixture::new().await;
+    let last_descriptor = |f: &Fixture| {
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|c| c["capabilityId"] == flare_plugin_protocol::ui::UI_CATALOG_OPERATION)
+            .map(|c| c["payload"]["descriptor"].clone())
+            .unwrap()
+    };
+    f.api.plugin_ui_catalog().await.unwrap();
+    let plain = last_descriptor(&f);
+    assert_eq!(
+        plain["vocabulary"],
+        flare_plugin_protocol::ui::UI_VOCABULARY_VERSION
+    );
+    assert_eq!(plain["native"], json!([]));
+    assert_eq!(plain["renderers"], json!([]));
+    assert!(
+        !plain["blocks"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("chart"))
+    );
+    assert!(plain.get("bundle").is_none());
+
+    host_allows(&f.api, &["clipboardWrite", "documentCapture"]);
+    f.api.plugin_ui_catalog().await.unwrap();
+    let declared = last_descriptor(&f);
+    assert_eq!(declared["platform"], "ios");
+    assert_eq!(
+        declared["native"],
+        json!(["clipboardWrite", "documentCapture"])
+    );
+    assert!(
+        declared["blocks"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("chart"))
+    );
+    let parsed: flare_plugin_protocol::ui::ClientUiDescriptor =
+        serde_json::from_value(declared).unwrap();
+    parsed.validate().unwrap();
+}
+
+fn hot_delivery_catalog() -> Value {
+    let chart = json!({"kind": "chart", "chartKind": "bar", "seriesPath": "/days",
+                       "labelPath": "/label", "valuePath": "/value"});
+    let mut required_chart = chart.clone();
+    required_chart["required"] = json!(true);
+    json!({
+        "tenantId": "201", "version": 1, "validUntilMs": 4_102_444_800_000_i64,
+        "plugins": [{
+            "pluginId": "example.poll", "version": "1.0.0",
+            "manifestDigest": format!("sha256:{}", "a".repeat(64)),
+            "grantRevision": 1, "operations": ["example.poll.vote"],
+            "extensions": {"platforms": ["ios"], "contributions": [
+                {"id": "example.poll.chart", "kind": "message-content", "schemaVersion": 1,
+                 "requiredPermissions": [],
+                 "schema": {"title": "Chart", "blocks": [chart, {"kind": "text", "text": "Fallback"}]}},
+                {"id": "example.poll.required", "kind": "message-content", "schemaVersion": 1,
+                 "requiredPermissions": [],
+                 "schema": {"title": "Needs a chart", "blocks": [required_chart]}},
+                {"id": "example.poll.core", "kind": "message-content", "schemaVersion": 1,
+                 "requiredPermissions": [],
+                 "schema": {"title": "From Core"}, "upgrade": {"minBuild": 41020}}
+            ]}
+        }]
+    })
+}
+
+/// A block the host does not render falls back (the rest of the card shows);
+/// a `required` one, and Core's own placeholder, give the upgrade view.
+#[tokio::test]
+async fn unknown_blocks_fall_back_and_unreadable_cards_ask_for_an_upgrade() {
+    let f = Fixture::new().await;
+    let catalog = hot_delivery_catalog();
+    let resolve = |contribution: &str| {
+        json!({
+            "catalog": catalog, "platform": "ios",
+            "message": {"pluginId": "example.poll", "contributionId": contribution,
+                        "schemaVersion": 1, "summary": "Poll", "payload": {"days": []}},
+        })
+    };
+
+    // No profile: vocabulary version 1, no chart.
+    let fallback = f
+        .api
+        .resolve_plugin_message(resolve("example.poll.chart"))
+        .await
+        .unwrap();
+    assert_eq!(fallback["available"], true);
+    let kinds: Vec<_> = fallback["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["kind"].clone())
+        .collect();
+    assert_eq!(kinds, [json!("text")]);
+
+    let required = f
+        .api
+        .resolve_plugin_message(resolve("example.poll.required"))
+        .await
+        .unwrap();
+    assert_eq!(required["available"], false);
+    assert_eq!(required["unavailableReason"], "upgrade_required");
+    assert!(required.get("minBuild").is_none());
+
+    let core = f
+        .api
+        .resolve_plugin_message(resolve("example.poll.core"))
+        .await
+        .unwrap();
+    assert_eq!(core["available"], false);
+    assert_eq!(core["unavailableReason"], "upgrade_required");
+    assert_eq!(core["minBuild"], 41020);
+
+    // A kit that draws charts reads both.
+    host_allows(&f.api, &[]);
+    let full = f
+        .api
+        .resolve_plugin_message(resolve("example.poll.chart"))
+        .await
+        .unwrap();
+    assert_eq!(full["available"], true);
+    assert_eq!(full["blocks"][0]["kind"], "chart");
+    let required = f
+        .api
+        .resolve_plugin_message(resolve("example.poll.required"))
+        .await
+        .unwrap();
+    assert_eq!(required["available"], true);
+}
+
+/// "+" and "Me" list a placeholder with `upgrade`, so hosts mark it.
+#[tokio::test]
+async fn composer_and_account_placeholders_are_listed_with_their_upgrade() {
+    use flare_plugin_protocol::manifest::ClientPlatform;
+    let f = Fixture::new().await;
+    {
+        let mut catalog = f.catalog.lock().unwrap();
+        let plugin = &mut catalog.plugins[0];
+        for (id, kind) in [
+            ("example.poll.compose-next", "composer-action"),
+            ("example.poll.me-next", "account-entry"),
+        ] {
+            plugin.extensions.contributions.push(
+                serde_json::from_value(json!({
+                    "id": id, "kind": kind, "schemaVersion": 1, "requiredPermissions": [],
+                    "schema": {"title": "Next"}, "upgrade": {"minBuild": 7}
+                }))
+                .unwrap(),
+            );
+        }
+    }
+    let composer = f
+        .api
+        .composer_actions(ClientPlatform::Ios, "")
+        .await
+        .unwrap();
+    let placeholder = composer
+        .iter()
+        .find(|a| a.contribution_id == "example.poll.compose-next")
+        .unwrap();
+    assert_eq!(placeholder.upgrade.as_ref().unwrap().min_build, Some(7));
+    assert!(
+        composer
+            .iter()
+            .filter(|a| a.contribution_id != "example.poll.compose-next")
+            .all(|a| a.upgrade.is_none())
+    );
+    let entries = f
+        .api
+        .account_entries(ClientPlatform::Ios, "")
+        .await
+        .unwrap();
+    let entry = entries
+        .iter()
+        .find(|e| e.contribution_id == "example.poll.me-next")
+        .unwrap();
+    assert_eq!(entry.page, "");
+    assert_eq!(entry.upgrade.as_ref().unwrap().min_build, Some(7));
 }

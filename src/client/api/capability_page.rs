@@ -77,6 +77,25 @@ impl CapabilityApi {
                 };
                 let contribution = match catalog.page(&request.plugin_id, &request.page, &context) {
                     Ok((_, contribution)) => contribution,
+                    // A page this client cannot show: the whole-page upgrade
+                    // prompt, with the page's title and `minBuild`.
+                    Err(UiUnavailableReason::UpgradeRequired) if request.degrades() => {
+                        return match ui_page::upgrade_placeholder(
+                            &catalog,
+                            &request.plugin_id,
+                            &request.page,
+                        ) {
+                            Some(placeholder) => ui_page::page_view(
+                                &ResolvedPluginView::upgrade_required_entry(
+                                    placeholder,
+                                    &request.locale,
+                                ),
+                                None,
+                                request.conversation_id.as_deref(),
+                            ),
+                            None => inert(UiUnavailableReason::UpgradeRequired),
+                        };
+                    }
                     Err(reason) if request.degrades() => return inert(reason),
                     Err(_) => {
                         return Err(FlareError::localized(
@@ -231,7 +250,12 @@ impl CapabilityApi {
                         "sdk.plugin_command.session_changed",
                     ));
                 }
-                match ui_page::prepare_page_action(&self.default_tenant_id, &catalog, &request)? {
+                match ui_page::prepare_page_action(
+                    &self.default_tenant_id,
+                    &catalog,
+                    &request,
+                    &self.plugin_client().native,
+                )? {
                     PreparedAction::FormErrors(errors) => {
                         Ok(serde_json::json!({"kind":"formErrors","errors":errors}))
                     }
@@ -319,7 +343,7 @@ impl CapabilityApi {
                                 "actionId":action_id,"userGesture":request.user_gesture,"data":data,
                             }))?;
                             let PreparedAction::Ready {target:UiActionTarget::Operation {operation},mut payload,..} =
-                                ui_page::prepare_page_action(&self.default_tenant_id,&catalog,&call)? else {
+                                ui_page::prepare_page_action(&self.default_tenant_id,&catalog,&call,&self.plugin_client().native)? else {
                                     return Err(FlareError::system("invalid continuation action"));
                                 };
                             // A declared continuation may carry the stable identity of

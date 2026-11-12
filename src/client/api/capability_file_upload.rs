@@ -3,7 +3,7 @@
 use super::CapabilityApi;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_plugin_protocol::manifest::{ClientPlatform, UiContributionKind};
-use flare_plugin_protocol::ui::{UiFileReference, UiInput, UiInputKind, UiRenderContext};
+use flare_plugin_protocol::ui::{UiFileReference, UiInput, UiRenderContext};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -163,7 +163,7 @@ impl CapabilityApi {
                     .schema
                     .inputs
                     .iter()
-                    .find(|input| input.id == request.input_id && input.kind == UiInputKind::File)
+                    .find(|input| input.id == request.input_id && input.kind.is_upload())
                     .ok_or_else(unavailable)?;
                 let file = declaration
                     .file

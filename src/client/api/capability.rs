@@ -27,6 +27,8 @@ use crate::shared::error::{ErrorCode, FlareError, Result};
 mod entry_availability;
 #[path = "capability_file_upload.rs"]
 mod file_upload;
+#[path = "capability_host_profile.rs"]
+pub(crate) mod host_profile;
 #[path = "capability_page.rs"]
 mod page;
 pub use file_upload::{PluginFileUploadPage, PluginFileUploadRequest};
@@ -38,6 +40,9 @@ mod page_tests;
 mod platform_v2_tests;
 #[path = "capability_tenant_notices.rs"]
 mod tenant_notices;
+#[path = "capability_upgrade.rs"]
+mod upgrade;
+pub use upgrade::PluginUpgradeStatus;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_ui_tests.rs"]
 mod ui_tests;
@@ -134,6 +139,12 @@ pub struct CapabilityApi {
     /// Background reads of presented cards' viewer layers (`viewerState`).
     viewer_state: Option<Arc<viewer::ViewerStateDriver>>,
     catalog_flight: Arc<CatalogFlight>,
+    /// The host's plugin UI profile, shared with the client across sessions:
+    /// the vocabulary catalogs are read with, the descriptor sent with every
+    /// catalog read and the native allowlist of every action.
+    plugin_host: Arc<host_profile::PluginHostSlot>,
+    /// The application build and distribution the descriptor carries.
+    app_identity: host_profile::AppIdentity,
     /// Recent answers of composer entries' availability queries.
     entry_availability: Arc<entry_availability::EntryAvailability>,
     /// The server clock estimate: a catalog's `validUntilMs` is the server's clock.
@@ -167,6 +178,8 @@ impl CapabilityApi {
             plugin_state_refetch: None,
             viewer_state: None,
             catalog_flight: Arc::new(CatalogFlight::default()),
+            plugin_host: Arc::default(),
+            app_identity: host_profile::AppIdentity::default(),
             entry_availability: Arc::default(),
             server_clock: crate::kernel::ServerClock::new(),
             http: None,
@@ -188,6 +201,23 @@ impl CapabilityApi {
     pub(crate) fn with_server_clock(mut self, clock: crate::kernel::ServerClock) -> Self {
         self.server_clock = clock;
         self
+    }
+    /// Reads plugin UI with the host's profile kept in `slot`
+    /// ([`host_profile`]) and reports `identity` in the descriptor. Call it
+    /// before [`Self::with_viewer_state`], whose driver keeps a clone of this API.
+    pub(crate) fn with_plugin_host(
+        mut self,
+        slot: Arc<host_profile::PluginHostSlot>,
+        identity: host_profile::AppIdentity,
+    ) -> Self {
+        self.plugin_host = slot;
+        self.app_identity = identity;
+        self
+    }
+    /// What plugin UI is read with now: the vocabulary, the native allowlist
+    /// and the descriptor of the host's current profile.
+    pub(crate) fn plugin_client(&self) -> host_profile::PluginClient {
+        host_profile::PluginClient::of(self.plugin_host.profile().as_ref(), &self.app_identity)
     }
     pub fn with_plugin_command_store(
         mut self,
@@ -341,6 +371,7 @@ impl CapabilityApi {
                     &self.default_tenant_id,
                     request,
                     &self.server_clock,
+                    &self.plugin_client().vocabulary,
                 )
             })
             .await
@@ -348,10 +379,13 @@ impl CapabilityApi {
     pub async fn plugin_ui_action(&self, request: Value) -> Result<Value> {
         self.session_guard
             .run(async {
+                let client = self.plugin_client();
                 crate::extension::capability::ui::action(
                     &self.default_tenant_id,
                     request,
                     &self.server_clock,
+                    &client.vocabulary,
+                    &client.native,
                 )
             })
             .await
@@ -728,6 +762,7 @@ impl CapabilityApi {
                     &catalog,
                     &request,
                     stored.as_ref(),
+                    &self.plugin_client().native,
                 )? {
                     ui::PreparedAction::FormErrors(errors) => {
                         Ok(serde_json::json!({"kind":"formErrors","errors":errors}))
@@ -1009,10 +1044,13 @@ impl CapabilityApi {
         Ok(self.fetch_plugin_ui_catalog().await?.0)
     }
     /// A fresh catalog read; presentations waiting meanwhile share it
-    /// ([`CatalogFlight`]). The catalog is read plugin by plugin
-    /// ([`crate::extension::capability::ui::parse_catalog`]), so a plugin this
-    /// client cannot read costs only that plugin. A catalog that cannot be read
-    /// at all is `sdk.plugin.catalog_unreachable`.
+    /// ([`CatalogFlight`]). The request carries the descriptor of the host's
+    /// profile (`{"descriptor": ...}`, [`Self::plugin_client`]) and the catalog
+    /// is read plugin by plugin with the same vocabulary
+    /// ([`crate::extension::capability::ui::parse_catalog`]): a contribution
+    /// this client cannot read becomes an upgrade placeholder, a plugin it
+    /// cannot read costs only that plugin. A catalog that cannot be read at all
+    /// is `sdk.plugin.catalog_unreachable`.
     async fn fetch_plugin_ui_catalog(
         &self,
     ) -> Result<(Value, flare_plugin_protocol::ui::UiCatalog)> {
@@ -1025,10 +1063,13 @@ impl CapabilityApi {
         };
         let generation = self.catalog_flight.generation();
         let user = self.session_guard.capture_user().await?.unwrap_or_default();
+        // What this client renders: Core selects every contribution's variant
+        // by it, and this read takes out what still does not fit.
+        let client = self.plugin_client();
         let result = self
             .dispatch(
                 flare_plugin_protocol::ui::UI_CATALOG_OPERATION,
-                Value::Null,
+                serde_json::json!({ "descriptor": client.descriptor }),
                 None,
                 None,
                 None,
@@ -1044,8 +1085,9 @@ impl CapabilityApi {
         if !result.success {
             return Err(unreachable());
         }
-        let mut catalog = crate::extension::capability::ui::parse_catalog(&result.data)
-            .ok_or_else(unreachable)?;
+        let mut catalog =
+            crate::extension::capability::ui::parse_catalog(&result.data, &client.vocabulary)
+                .ok_or_else(unreachable)?;
         // Evaluated against the device clock from here on: move the server's deadline onto it.
         crate::extension::capability::ui::localize_validity(&mut catalog, &self.server_clock);
         if catalog.plugins.len() > 128 {

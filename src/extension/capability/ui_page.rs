@@ -48,8 +48,29 @@ pub(crate) fn page_admission_unavailable(reason: UiUnavailableReason) -> FlareEr
         UiUnavailableReason::IncompatibleVersion => "incompatible_version",
         UiUnavailableReason::CatalogUnreachable => "catalog_unreachable",
         UiUnavailableReason::UnboundCopy => "unbound_copy",
+        UiUnavailableReason::UpgradeRequired => "upgrade_required",
     };
     admission_unavailable("page", reason)
+}
+/// The upgrade placeholder standing for `page` of `plugin_id`, if the
+/// catalog has one: what a page this client cannot show is listed as.
+pub(crate) fn upgrade_placeholder<'a>(
+    catalog: &'a UiCatalog,
+    plugin_id: &str,
+    page: &str,
+) -> Option<&'a flare_plugin_protocol::manifest::UiContribution> {
+    catalog
+        .plugins
+        .iter()
+        .find(|p| p.plugin_id == plugin_id)?
+        .extensions
+        .contributions
+        .iter()
+        .find(|c| {
+            c.id == page
+                && c.kind == flare_plugin_protocol::manifest::UiContributionKind::Page
+                && c.upgrade.is_some()
+        })
 }
 pub(crate) fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -309,8 +330,6 @@ pub(crate) struct PageActionRequest {
     pub action_id: String,
     pub user_gesture: bool,
     #[serde(default)]
-    pub native_allowlist: BTreeSet<NativeCapability>,
-    #[serde(default)]
     pub conversation_id: Option<String>,
     #[serde(default)]
     pub data: Option<Value>,
@@ -348,7 +367,7 @@ pub(crate) fn parse_page_action(request: Value) -> Result<PageActionRequest> {
 }
 
 /// Check a page action against the catalog (declaration, platform, gesture,
-/// host consent) and bind its input: a document action over the page `data`
+/// host consent: `native`, the host profile's allowlist) and bind its input: a document action over the page `data`
 /// (form and choices selection as on a card); a row action from the row's
 /// bound input, which must name exactly the action's declared inputs, plus
 /// its form. Nothing is sent from here.
@@ -356,6 +375,7 @@ pub(crate) fn prepare_page_action(
     tenant: &str,
     catalog: &UiCatalog,
     request: &PageActionRequest,
+    native: &BTreeSet<NativeCapability>,
 ) -> Result<PreparedAction> {
     let action_now_ms = now_ms();
     let target = catalog
@@ -365,7 +385,7 @@ pub(crate) fn prepare_page_action(
             &request.page.page,
             &request.action_id,
             request.platform,
-            &request.native_allowlist,
+            native,
             request.user_gesture,
             action_now_ms,
         )
