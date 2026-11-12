@@ -206,6 +206,9 @@ class DefaultEventsApi(
     override fun onPluginCatalogChanged(listener: EventCallback<PluginCatalogChangedEvent>): EventSubscription =
         registerTyped(PluginCatalogChangedEvent::class.java, listener)
 
+    override fun onPluginCapabilityRequest(listener: EventCallback<PluginCapabilityRequestEvent>): EventSubscription =
+        registerTyped(PluginCapabilityRequestEvent::class.java, listener)
+
     private fun register(handler: Any): EventSubscription {
         val subscriptionId = nextId++
         val subscription = DefaultEventSubscription(
@@ -320,6 +323,7 @@ class DefaultEventsApi(
             is ViewUpdate -> listener.onViewUpdated(event)
             is PluginRealtimeEvent -> listener.onPluginRealtime(event)
             is PluginCatalogChangedEvent -> listener.onPluginCatalogChanged(event)
+            is PluginCapabilityRequestEvent -> listener.onPluginCapabilityRequest(event)
         }
     }
 }
@@ -408,6 +412,11 @@ private fun nativeEventFromCode(eventType: Int, payload: Map<String, Any?>): Any
         )
         EventCode.PLUGIN_CATALOG_CHANGED -> PluginCatalogChangedEvent(
             version = requiredEventString(payload["version"], "version"),
+        )
+        EventCode.PLUGIN_CAPABILITY_REQUEST -> PluginCapabilityRequestEvent(
+            requestId = requiredEventInt(payload["requestId"], "requestId"),
+            method = requiredEventString(payload["method"], "method"),
+            request = requiredEventMap(payload["request"], "request"),
         )
         EventCode.VIEW_UPDATED -> viewUpdateFromJson(payload)
         else -> unknownEventFromCode(eventType, payload)

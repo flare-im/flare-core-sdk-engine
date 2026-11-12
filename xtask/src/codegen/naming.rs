@@ -98,7 +98,10 @@ pub(crate) fn model_package_suffix(name: &str) -> &'static str {
         "event.presence"
     } else if matches!(
         name,
-        "PluginEventName" | "PluginRealtimeEvent" | "PluginCatalogChangedEvent"
+        "PluginEventName"
+            | "PluginRealtimeEvent"
+            | "PluginCatalogChangedEvent"
+            | "PluginCapabilityRequestEvent"
     ) {
         "event.plugin"
     } else {

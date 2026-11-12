@@ -183,6 +183,44 @@ Map<String, Object?> updateSetLocaleRequestToMap(
   return {'locale': request.locale};
 }
 
+Map<String, Object?> updatePluginUpgradeStatusRequestToMap(
+  UpdatePluginUpgradeStatusRequest request,
+) {
+  return {if (request.minBuild != null) 'minBuild': request.minBuild};
+}
+
+Map<String, Object?> updateOpenFlowRequestToMap(UpdateOpenFlowRequest request) {
+  return {};
+}
+
+Map<String, Object?> pluginHostProfileToMap(PluginHostProfile request) {
+  return {
+    'platform': request.platform,
+    'kitVocabulary': request.kitVocabulary,
+    if (request.nativeAllowlist != null)
+      'nativeAllowlist': request.nativeAllowlist,
+    if (request.bundleRuntime != null) 'bundleRuntime': request.bundleRuntime,
+  };
+}
+
+PluginUpgradeStatus pluginUpgradeStatusFromJson(Object? value) {
+  const context = 'PluginUpgradeStatus';
+  final json = mapValue(value);
+  return PluginUpgradeStatus(
+    available: _requiredBoolField(json, 'available', context),
+    build: _optionalUnsignedField(json, 'build', context),
+  );
+}
+
+Map<String, Object?> pluginCapabilityCompletionToMap(
+  PluginCapabilityCompletion request,
+) {
+  return {
+    'requestId': request.requestId,
+    if (request.result != null) 'result': request.result,
+  };
+}
+
 Map<String, Object?> updateGetResourcesRequestToMap(
   UpdateGetResourcesRequest request,
 ) {

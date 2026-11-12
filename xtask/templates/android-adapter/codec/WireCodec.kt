@@ -2092,3 +2092,32 @@ fun wireEncodeRequest(value: Any?): Any? = value
 /** The FFI wire contract is canonical camelCase SDK JSON. */
 fun wireDecodeResponse(value: Any?): Any? = value
 // RUST-OWNED WIRE BOUNDARY: END
+
+// Plugin host profile, plugin upgrades and host capabilities.
+
+fun updatePluginUpgradeStatusRequestToMap(request: UpdatePluginUpgradeStatusRequest): Map<String, Any?> = buildMap {
+    request.minBuild?.let { put("minBuild", it) }
+}
+
+fun updateOpenFlowRequestToMap(request: UpdateOpenFlowRequest): Map<String, Any?> = emptyMap()
+
+fun pluginUpgradeStatusFromJson(value: Any?): PluginUpgradeStatus {
+    val json = mapValue(value)
+    val context = "PluginUpgradeStatus"
+    return PluginUpgradeStatus(
+        available = requiredBooleanField(json, "available", context),
+        build = optionalWireUnsigned(json, "build", context),
+    )
+}
+
+fun pluginHostProfileToMap(request: PluginHostProfile): Map<String, Any?> = buildMap {
+    put("platform", request.platform)
+    put("kitVocabulary", request.kitVocabulary)
+    request.nativeAllowlist?.let { put("nativeAllowlist", it) }
+    request.bundleRuntime?.let { put("bundleRuntime", it) }
+}
+
+fun pluginCapabilityCompletionToMap(request: PluginCapabilityCompletion): Map<String, Any?> = buildMap {
+    put("requestId", request.requestId)
+    request.result?.let { put("result", it) }
+}

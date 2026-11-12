@@ -702,6 +702,9 @@ fn ts_listener_predicate_expr(name: &str) -> Option<&'static str> {
         "onPluginCatalogChanged" => {
             Some("eventEventIs(event, 'plugin', PluginEventName.CatalogChanged)")
         }
+        "onPluginCapabilityRequest" => {
+            Some("eventEventIs(event, 'plugin', PluginEventName.CapabilityRequest)")
+        }
         _ => None,
     }
 }
@@ -808,6 +811,7 @@ fn ts_event_decoder_expr(entry: &TypescriptEventRegistryEntry) -> String {
         "extension.event" => "contractEvent(\"extension\", \"event\", payload)".to_string(),
         "plugin.realtime" => "pluginRealtimeEvent(payload)".to_string(),
         "plugin.catalog_changed" => "pluginCatalogChangedEvent(payload)".to_string(),
+        "plugin.capability_request" => "pluginCapabilityRequestEvent(payload)".to_string(),
         _ => "undefined".to_string(),
     }
 }
@@ -1122,6 +1126,17 @@ fn emit_typescript_native_event_decoder(
         "  return { type: 'plugin', event: PluginEventName.CatalogChanged, version: requiredString(record.version, 'version') };".to_string(),
         "}".to_string(),
         String::new(),
+        "function pluginCapabilityRequestEvent(payload: unknown): PluginCapabilityRequestEvent & Record<string, unknown> {".to_string(),
+        "  const record = eventPayloadRecord(payload);".to_string(),
+        "  return {".to_string(),
+        "    type: 'plugin',".to_string(),
+        "    event: PluginEventName.CapabilityRequest,".to_string(),
+        "    requestId: requiredNumber(record.requestId, 'requestId'),".to_string(),
+        "    method: requiredString(record.method, 'method'),".to_string(),
+        "    request: eventPayloadRecord(record.request),".to_string(),
+        "  };".to_string(),
+        "}".to_string(),
+        String::new(),
         "function conversationEvent(name: ConversationEventName, event: string, payload: unknown): ConversationEvent & Record<string, unknown> {".to_string(),
         "  const record = eventPayloadRecord(payload);".to_string(),
         "  const conversationId = optionalString(record.conversationId, 'conversationId');".to_string(),
@@ -1271,6 +1286,7 @@ fn emit_typescript_adapter_events_api(
         "MessageReceivedEvent",
         "MessageSendAckEvent",
         "MessageSendFailedEvent",
+        "PluginCapabilityRequestEvent",
         "PluginCatalogChangedEvent",
         "PluginEventName",
         "PluginRealtimeEvent",
@@ -1595,6 +1611,9 @@ fn emit_typescript_adapter_events_api(
         "          return;".to_string(),
         "        case PluginEventName.CatalogChanged:".to_string(),
         "          listener.onPluginCatalogChanged?.(event as PluginCatalogChangedEvent);".to_string(),
+        "          return;".to_string(),
+        "        case PluginEventName.CapabilityRequest:".to_string(),
+        "          listener.onPluginCapabilityRequest?.(event as PluginCapabilityRequestEvent);".to_string(),
         "          return;".to_string(),
         "        default:".to_string(),
         "          return;".to_string(),
