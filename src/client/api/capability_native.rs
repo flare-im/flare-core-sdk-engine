@@ -79,6 +79,18 @@ pub enum CapabilityHostAnswer<T> {
     Unavailable,
 }
 
+/// The viewer's answer to the consent question (Kit
+/// `FlareCapabilityConsent`), on the wire `{decision: "once" | "always" |
+/// "deny"}`. Only `Always` is kept; `Once` lets this request through and the
+/// next one asks again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConsentDecision {
+    Once,
+    Always,
+    Deny,
+}
+
 /// The consent question (Kit `FlareCapabilityConsent`).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -154,9 +166,9 @@ pub struct LocationFix {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait PluginCapabilityHost: Send + Sync {
-    /// Ask the viewer whether the plugin may use the capability; `true` is
-    /// "allow".
-    async fn consent(&self, prompt: CapabilityConsentPrompt) -> bool;
+    /// Ask the viewer whether the plugin may use the capability: this once,
+    /// always (kept), or not.
+    async fn consent(&self, prompt: CapabilityConsentPrompt) -> ConsentDecision;
     async fn capture_document(
         &self,
         prompt: DocumentCapturePrompt,
@@ -251,7 +263,7 @@ impl Drop for PendingRequest {
 ///
 /// | method | request | result |
 /// |---|---|---|
-/// | `consent` | [`CapabilityConsentPrompt`] | `{granted: bool}` |
+/// | `consent` | [`CapabilityConsentPrompt`] | `{decision: "once" \| "always" \| "deny"}` |
 /// | `captureDocument` | [`DocumentCapturePrompt`] | `{file: {fileName, contentType, bytes}}` |
 /// | `pickFile` | [`FilePickPrompt`] | `{file: {fileName, contentType, bytes}}` |
 /// | `confirmPayment` | [`PaymentConfirmationPrompt`] | `{confirmation: {...}}` |
@@ -298,11 +310,16 @@ pub(crate) fn read_answer<T: DeserializeOwned>(
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl PluginCapabilityHost for EventCapabilityHost {
-    async fn consent(&self, prompt: CapabilityConsentPrompt) -> bool {
-        matches!(
-            self.ask::<bool>("consent", prompt, "granted").await,
-            CapabilityHostAnswer::Done(true)
-        )
+    async fn consent(&self, prompt: CapabilityConsentPrompt) -> ConsentDecision {
+        match self
+            .ask::<ConsentDecision>("consent", prompt, "decision")
+            .await
+        {
+            CapabilityHostAnswer::Done(decision) => decision,
+            CapabilityHostAnswer::Cancelled | CapabilityHostAnswer::Unavailable => {
+                ConsentDecision::Deny
+            }
+        }
     }
     async fn capture_document(
         &self,
@@ -982,19 +999,32 @@ mod tests {
     #[test]
     fn host_results_read_as_done_cancelled_or_unavailable() {
         assert_eq!(
-            read_answer::<bool>(Some(json!({"granted": true})), "granted"),
-            CapabilityHostAnswer::Done(true)
+            read_answer::<ConsentDecision>(Some(json!({"decision": "once"})), "decision"),
+            CapabilityHostAnswer::Done(ConsentDecision::Once)
         );
         assert_eq!(
-            read_answer::<bool>(Some(json!({"cancelled": true})), "granted"),
+            read_answer::<ConsentDecision>(Some(json!({"decision": "always"})), "decision"),
+            CapabilityHostAnswer::Done(ConsentDecision::Always)
+        );
+        assert_eq!(
+            read_answer::<ConsentDecision>(Some(json!({"decision": "deny"})), "decision"),
+            CapabilityHostAnswer::Done(ConsentDecision::Deny)
+        );
+        assert_eq!(
+            read_answer::<ConsentDecision>(Some(json!({"granted": true})), "decision"),
+            CapabilityHostAnswer::Unavailable,
+            "only a decision answers the consent question"
+        );
+        assert_eq!(
+            read_answer::<ConsentDecision>(Some(json!({"cancelled": true})), "decision"),
             CapabilityHostAnswer::Cancelled
         );
         assert_eq!(
-            read_answer::<bool>(Some(json!({"unavailable": true})), "granted"),
+            read_answer::<ConsentDecision>(Some(json!({"unavailable": true})), "decision"),
             CapabilityHostAnswer::Unavailable
         );
         assert_eq!(
-            read_answer::<bool>(None, "granted"),
+            read_answer::<ConsentDecision>(None, "decision"),
             CapabilityHostAnswer::Unavailable
         );
         assert_eq!(

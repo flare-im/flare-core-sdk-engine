@@ -5,8 +5,9 @@
 //! The first time a plugin uses a capability that needs consent
 //! ([`NativeCapability::needs_consent`]: everything but `clipboardWrite`,
 //! `selectImage` and `selectFile`, which are the viewer's own gestures), the
-//! host asks ([`super::PluginCapabilityHost::consent`]). A grant is kept in
-//! the user's store as `(user, plugin, capability, manifestMajor)` with the
+//! host asks ([`super::PluginCapabilityHost::consent`]). The viewer allows it
+//! once (this request only, nothing kept), always, or not at all. An
+//! "always" grant is kept in the user's store as `(user, plugin, capability, manifestMajor)` with the
 //! sensitivity level it was given for. A newer plugin major, or parameters
 //! more sensitive than those granted (a fine location after a coarse one),
 //! ask again; so does every use after a refusal or a revoke.
@@ -17,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::CapabilityApi;
-use super::native::{CapabilityConsentPrompt, PluginCapabilityHost};
+use super::native::{CapabilityConsentPrompt, ConsentDecision, PluginCapabilityHost};
 use crate::domain::{PluginConsent, PluginConsentScope};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
@@ -114,7 +115,8 @@ impl CapabilityApi {
     /// Whether the viewer lets `plugin` use `capability` with `params`: no
     /// question for a capability that needs no consent; otherwise a kept
     /// consent that covers the plugin's current major and the request's
-    /// level, or the host's answer to the question, kept when it is yes.
+    /// level, or the host's answer to the question: "once" lets this request
+    /// through without keeping anything, "always" is kept, "deny" refuses.
     pub(crate) async fn ensure_consent(
         &self,
         host: &dyn PluginCapabilityHost,
@@ -136,7 +138,7 @@ impl CapabilityApi {
         if kept.as_ref().is_some_and(|c| c.covers(&major, level)) {
             return Ok(true);
         }
-        let granted = host
+        let decision = host
             .consent(CapabilityConsentPrompt {
                 plugin_id: plugin.plugin_id.clone(),
                 plugin_version: plugin.version.clone(),
@@ -144,8 +146,10 @@ impl CapabilityApi {
                 params: params.cloned(),
             })
             .await;
-        if !granted {
-            return Ok(false);
+        match decision {
+            ConsentDecision::Deny => return Ok(false),
+            ConsentDecision::Once => return Ok(true),
+            ConsentDecision::Always => {}
         }
         // A consent under the same major keeps the higher level it covered.
         let level = kept

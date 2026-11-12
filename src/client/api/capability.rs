@@ -36,8 +36,8 @@ pub(crate) mod host_profile;
 pub(crate) mod native;
 pub use native::{
     CapabilityConsentPrompt, CapabilityHostAnswer, CapabilityHostRequests, CapturedFile,
-    DocumentCapturePrompt, FilePickPrompt, LocationFix, LocationPrompt, PaymentConfirmationPrompt,
-    PluginCapabilityHost,
+    ConsentDecision, DocumentCapturePrompt, FilePickPrompt, LocationFix, LocationPrompt,
+    PaymentConfirmationPrompt, PluginCapabilityHost,
 };
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_native_tests.rs"]

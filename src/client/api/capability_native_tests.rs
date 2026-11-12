@@ -5,13 +5,14 @@
 //! its input, a location truncated to its precision and written into its
 //! input, and an order confirmed only for a transient operation.
 use std::sync::Mutex as SyncMutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{Map, json};
 
 use super::native::{
-    CapabilityConsentPrompt, CapabilityHostAnswer, CapturedFile, DocumentCapturePrompt,
-    FilePickPrompt, LocationFix, LocationPrompt, PaymentConfirmationPrompt, PluginCapabilityHost,
+    CapabilityConsentPrompt, CapabilityHostAnswer, CapturedFile, ConsentDecision,
+    DocumentCapturePrompt, FilePickPrompt, LocationFix, LocationPrompt, PaymentConfirmationPrompt,
+    PluginCapabilityHost,
 };
 use super::page_tests::Fixture;
 use super::*;
@@ -19,7 +20,7 @@ use flare_plugin_protocol::ui::NativeCapability;
 
 /// The host: records what it was asked and answers as set.
 struct FakeHost {
-    allow: AtomicBool,
+    decision: SyncMutex<ConsentDecision>,
     consents: SyncMutex<Vec<String>>,
     captures: AtomicUsize,
     payments: AtomicUsize,
@@ -31,7 +32,7 @@ struct FakeHost {
 impl FakeHost {
     fn new() -> Arc<Self> {
         Arc::new(Self {
-            allow: AtomicBool::new(true),
+            decision: SyncMutex::new(ConsentDecision::Always),
             consents: SyncMutex::new(Vec::new()),
             captures: AtomicUsize::new(0),
             payments: AtomicUsize::new(0),
@@ -53,6 +54,9 @@ impl FakeHost {
             },
         })
     }
+    fn decide(&self, decision: ConsentDecision) {
+        *self.decision.lock().unwrap() = decision;
+    }
     fn consents(&self) -> Vec<String> {
         self.consents.lock().unwrap().clone()
     }
@@ -60,7 +64,7 @@ impl FakeHost {
 
 #[async_trait::async_trait]
 impl PluginCapabilityHost for FakeHost {
-    async fn consent(&self, prompt: CapabilityConsentPrompt) -> bool {
+    async fn consent(&self, prompt: CapabilityConsentPrompt) -> ConsentDecision {
         let level = match &prompt.params {
             Some(params) => serde_json::to_value(params).unwrap().to_string(),
             None => String::new(),
@@ -69,7 +73,7 @@ impl PluginCapabilityHost for FakeHost {
             .lock()
             .unwrap()
             .push(format!("{}{level}", prompt.capability.name()));
-        self.allow.load(Ordering::SeqCst)
+        *self.decision.lock().unwrap()
     }
     async fn capture_document(
         &self,
@@ -260,7 +264,7 @@ async fn a_capability_runs_only_when_manifest_host_and_viewer_all_allow_it() {
     // Both allow it, the viewer does not: nothing is captured or uploaded.
     let f = Fixture::new().await;
     let host = FakeHost::new();
-    host.allow.store(false, Ordering::SeqCst);
+    host.decide(ConsentDecision::Deny);
     setup(&f, &["documentCapture"], &["documentCapture"], host.clone());
     assert_eq!(
         f.api
@@ -275,7 +279,7 @@ async fn a_capability_runs_only_when_manifest_host_and_viewer_all_allow_it() {
 
     // All three allow it: the document is captured, uploaded privately
     // through the input's declared upload and handed back for the input.
-    host.allow.store(true, Ordering::SeqCst);
+    host.decide(ConsentDecision::Always);
     f.answer("example.poll.material_prepare", vec![ready_upload()]);
     assert_eq!(
         f.api
@@ -518,7 +522,7 @@ async fn consent_is_asked_again_after_a_revoke_a_finer_precision_or_a_new_major(
     assert_eq!(host.consents().len(), 4);
 
     // Refused: not kept, asked again next time.
-    host.allow.store(false, Ordering::SeqCst);
+    host.decide(ConsentDecision::Deny);
     f.api
         .revoke_plugin_capability_consent(json!({"pluginId": "example.poll"}))
         .await
@@ -533,6 +537,43 @@ async fn consent_is_asked_again_after_a_revoke_a_finer_precision_or_a_new_major(
         );
     }
     assert_eq!(host.consents().len(), 6);
+}
+
+#[tokio::test]
+async fn allowed_once_runs_this_request_and_keeps_nothing() {
+    let f = Fixture::new().await;
+    let host = FakeHost::new();
+    host.decide(ConsentDecision::Once);
+    setup(&f, &["locationOnce"], &["locationOnce"], host.clone());
+
+    for asked in 1..=2 {
+        let located = f
+            .api
+            .plugin_capability_invoke(location_request("coarse"))
+            .await
+            .unwrap();
+        assert_eq!(located["kind"], "input");
+        assert_eq!(located["input"], "area");
+        // Nothing was kept: the next request asks again.
+        assert_eq!(host.consents().len(), asked);
+        let listed = f.api.plugin_capability_consents(json!({})).await.unwrap();
+        assert!(listed["consents"].as_array().unwrap().is_empty());
+    }
+
+    // "Always" is kept; a later "once" answer is never asked for.
+    host.decide(ConsentDecision::Always);
+    f.api
+        .plugin_capability_invoke(location_request("coarse"))
+        .await
+        .unwrap();
+    host.decide(ConsentDecision::Once);
+    f.api
+        .plugin_capability_invoke(location_request("coarse"))
+        .await
+        .unwrap();
+    assert_eq!(host.consents().len(), 3);
+    let listed = f.api.plugin_capability_consents(json!({})).await.unwrap();
+    assert_eq!(listed["consents"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]

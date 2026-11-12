@@ -26,7 +26,7 @@
   操作结果带 `data.confirmation` 时，`plugin_ui_invoke` 的结果同时给出 `confirmation`。
 - 同意记录存在用户库（SQLite 迁移 v5 新表 `plugin_capability_consents`、浏览器 IndexedDB、无库时内存），按
   `(用户, 插件, 能力)` 记 Manifest 大版本与敏感级别；新大版本或更敏感的参数（细定位、视频、共享屏幕）重新询问，
-  只记「允许」。`clipboardWrite`、`selectImage`、`selectFile` 免同意。新增 `capability.plugin_capability_consents`
+  宿主答 `{decision: "once" | "always" | "deny"}`，只记「始终允许」，「仅此一次」只放行本次请求。`clipboardWrite`、`selectImage`、`selectFile` 免同意。新增 `capability.plugin_capability_consents`
   与 `capability.plugin_capability_consent_revoke`。
 
 - 时间线已证实连续区间：每个会话一组已合并的闭区间 `[from, to]`（seq），区间内每个 seq 本地有行，或已被
