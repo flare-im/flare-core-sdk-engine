@@ -107,18 +107,36 @@ CORE_SERVICES = {
 }
 SOCIAL_SERVICES = {
     "social-user": ("flare-user", "social-user", port(41201)),
+    # Optional: started when built, so a full Social app (contacts, groups, conversation
+    # bridge) can sign in against this stack. The worker serves no port (None).
+    "social-relation": ("flare-relation", "social-relation", port(41202)),
+    "social-group": ("flare-group", "social-group", port(41203)),
+    "social-moments": ("flare-moments", "social-moments", port(41204)),
+    "social-moderation": ("flare-moderation", "social-moderation", port(41205)),
+    "social-control": ("flare-social-control", "social-control", port(41206)),
+    "social-hook": ("flare-social-hook", "social-hook", port(41210)),
+    "social-worker": ("flare-social-worker", "social-worker", None),
     "social-gateway": ("flare-gateway", "social-gateway", SOCIAL_API),
 }
+SOCIAL_REQUIRED = ("social-user", "social-gateway")
+# LIVE_STACK_LAN_HOST=<this machine's LAN address> relays the client-facing ports (Social API,
+# Core HTTP, the primary gateway's WebSocket) from that address to loopback, for a phone on
+# the same network. QUIC (UDP) is not relayed: clients there use WebSocket.
+LAN_HOST = os.environ.get("LIVE_STACK_LAN_HOST", "")
 # Offline push tasks of this stack (push-worker `outbox` backend) in the push Redis profile.
 PUSH_REDIS_DB = 5
 OUTBOX_STREAM = "flare:im:push:offline:outbox"
 
 
 def social_enabled():
-    """Social runs when both its binaries are built (LIVE_STACK_SOCIAL=0 turns it off)."""
+    """Social runs when its user service and gateway are built (LIVE_STACK_SOCIAL=0 turns it off)."""
     if os.environ.get("LIVE_STACK_SOCIAL", "auto") == "0":
         return False
-    return all((TARGET / binary).exists() for binary, _, _ in SOCIAL_SERVICES.values())
+    return all((TARGET / SOCIAL_SERVICES[name][0]).exists() for name in SOCIAL_REQUIRED)
+
+
+def social_built(name):
+    return (TARGET / SOCIAL_SERVICES[name][0]).exists()
 ALL_PORTS = sorted({*PORTS.values(), NATS_HTTP, *(g[0] + 1 for g in GATEWAYS.values()),
                     *(p for g in GATEWAYS.values() for p in g[:3])})
 DATABASES = {"core": "flare_livesmoke_core", "social": "flare_livesmoke_social"}
@@ -603,11 +621,17 @@ def wait_service(state, name, timeout=90):
     port = (CORE_SERVICES.get(name) or SOCIAL_SERVICES.get(name))[2]
     known = state["processes"][name]
 
-    def ready():
+    def alive():
         require(process_alive(known["pid"], known["needle"]),
                 f"{name} exited during startup; see {known['log']}")
-        return port_open(port)
-    wait_for(ready, timeout, f"{name} :{port}")
+        return True
+    if port is None:
+        # No port to wait for: it counts as started when it is still running a few seconds later.
+        time.sleep(3)
+        alive()
+        log(f"{name} running")
+        return
+    wait_for(lambda: alive() and port_open(port), timeout, f"{name} :{port}")
     log(f"{name} listening on {port}")
 
 
@@ -615,10 +639,15 @@ def backends(state, keys):
     configuration()
     order = ["push-proxy", "signaling-online", "signaling-route", "conversation", "storage-reader",
              "storage-writer", "message-ingest", "orchestrator", "sync-orchestrator", "push-server",
-             "push-worker", "api-gateway", "social-user", "social-gateway", "gw-a", "gw-b"]
+             "push-worker", "api-gateway", *SOCIAL_SERVICES, "gw-a", "gw-b"]
     if not social_enabled():
         log("Social binaries are not built (or LIVE_STACK_SOCIAL=0): Social services skipped")
         order = [name for name in order if name not in SOCIAL_SERVICES]
+    else:
+        skipped = [name for name in SOCIAL_SERVICES if not social_built(name)]
+        if skipped:
+            log(f"Social services not built, skipped: {' '.join(skipped)}")
+        order = [name for name in order if name not in skipped]
     for name in order:
         if live(state, name):
             log(f"{name} already running")
@@ -632,6 +661,7 @@ def backends(state, keys):
             start_service(state, keys, name, {"FLARE_WRITE_PROOF_PUBLIC_KEY": "@public-pem:write-proof"})
         wait_service(state, name)
     default_port_bridge(state)
+    lan_bridge(state)
 
 
 # Some calls go only to the single-Cell default address and never through discovery: the
@@ -664,10 +694,13 @@ async def handle(target, client_reader, client_writer):
 
 async def main():
     servers = []
-    for pair in sys.argv[1:]:
+    host, pairs = "127.0.0.1", sys.argv[1:]
+    if pairs and pairs[0].startswith("--host="):
+        host, pairs = pairs[0].split("=", 1)[1], pairs[1:]
+    for pair in pairs:
         listen, target = map(int, pair.split(":"))
         servers.append(await asyncio.start_server(
-            lambda r, w, t=target: handle(t, r, w), "127.0.0.1", listen))
+            lambda r, w, t=target: handle(t, r, w), host, listen))
     await asyncio.gather(*(server.serve_forever() for server in servers))
 
 asyncio.run(main())
@@ -694,6 +727,28 @@ def default_port_bridge(state):
     save_state(state)
     wait_for(lambda: all(port_open(int(pair.split(":")[0])) for pair in pairs), 10, "default port bridge")
     log(f"default port bridge {' '.join(pairs)}")
+
+
+def lan_bridge(state):
+    if not LAN_HOST or live(state, "lan-bridge"):
+        return
+    ports = [SOCIAL_API, API, GATEWAYS["gw-a"][0]] if social_enabled() else [API, GATEWAYS["gw-a"][0]]
+    script = path("lan_bridge.py")
+    write_private(script, BRIDGE_SCRIPT)
+    spawn(state, "lan-bridge", [sys.executable, "-I", str(script), f"--host={LAN_HOST}",
+                                *(f"{p}:{p}" for p in ports)], {})
+    state["processes"]["lan-bridge"]["needle"] = str(script)
+    save_state(state)
+
+    def reachable():
+        try:
+            for p in ports:
+                socket.create_connection((LAN_HOST, p), timeout=1).close()
+            return True
+        except OSError:
+            return False
+    wait_for(reachable, 10, "LAN bridge")
+    log(f"LAN bridge on {LAN_HOST}: {' '.join(map(str, ports))}")
 
 
 def writer_accepts_der(state):
