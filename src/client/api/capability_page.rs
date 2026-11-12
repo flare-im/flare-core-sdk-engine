@@ -385,7 +385,10 @@ impl CapabilityApi {
                                 return Ok(ui_page::page_navigation(next, conversation));
                             }
                         }
-                        Ok(serde_json::json!({"kind":"operation","response":response}))
+                        Ok(super::native::operation_outcome(
+                            &request.page.plugin_id,
+                            &response,
+                        ))
                     }
                     PreparedAction::Ready {
                         target, payload, ..

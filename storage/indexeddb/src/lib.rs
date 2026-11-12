@@ -4,6 +4,7 @@
 mod access_store;
 mod host;
 mod plugin_command;
+mod plugin_consent;
 mod provider;
 
 pub use access_store::JsGlobalStorageHost;

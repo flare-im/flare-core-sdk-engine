@@ -674,6 +674,7 @@ impl IMClientBuilder {
                 },
             )
             .with_plugin_command_store(store_ref.plugin_commands.clone())
+            .with_plugin_consent_store(store_ref.plugin_consents.clone())
             .with_message_state(store_ref.messages.clone(), bus.clone())
             .with_plugin_state_refetch(Arc::new(PluginStateRefetch::new(
                 plugin_state_lookup,

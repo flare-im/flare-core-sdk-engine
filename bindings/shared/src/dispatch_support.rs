@@ -10,14 +10,16 @@ use flare_im_core_sdk::Result;
 use flare_im_core_sdk::client::HeartbeatAppState;
 
 /// Five MiB of bytes expand to at most twenty MiB as a compact JSON integer
-/// array. Keep the larger transport budget exclusive to this upload API;
-/// the Core implementation still enforces the declaration's raw byte limit.
+/// array. Keep the larger transport budget exclusive to the APIs that carry
+/// file bytes: the upload itself, and the host handing back a captured or
+/// picked file for a plugin capability (`plugin.capability_complete`). The
+/// Core implementation still enforces the declaration's raw byte limit.
 pub const PLUGIN_FILE_UPLOAD_JSON_MAX_BYTES: usize = 24 * 1024 * 1024;
 
 pub fn plugin_file_upload_json_limit(operation: &str) -> Option<usize> {
     matches!(
         operation,
-        "plugin_file_upload" | "capability.plugin_file_upload"
+        "plugin_file_upload" | "capability.plugin_file_upload" | "plugin.capability_complete"
     )
     .then_some(PLUGIN_FILE_UPLOAD_JSON_MAX_BYTES)
 }
@@ -752,6 +754,10 @@ mod tests {
         );
         assert_eq!(
             plugin_file_upload_json_limit("capability.plugin_file_upload"),
+            Some(24 * 1024 * 1024)
+        );
+        assert_eq!(
+            plugin_file_upload_json_limit("plugin.capability_complete"),
             Some(24 * 1024 * 1024)
         );
         for other in [

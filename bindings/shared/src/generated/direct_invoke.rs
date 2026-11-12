@@ -44,6 +44,7 @@ pub const DIRECT_INVOKE_ROUTES: &[&str] = &[
     "update.plugin_upgrade_status",
     "update.open_flow",
     "plugin.set_host_profile",
+    "plugin.capability_complete",
     "connection.server_clock",
     "connection.disconnect",
     "sdk.is_connected",
@@ -110,6 +111,7 @@ pub fn is_direct_invoke_route(route: &str) -> bool {
         "update.plugin_upgrade_status" => true,
         "update.open_flow" => true,
         "plugin.set_host_profile" => true,
+        "plugin.capability_complete" => true,
         "connection.server_clock" => true,
         "connection.disconnect" => true,
         "sdk.is_connected" => true,
@@ -381,6 +383,13 @@ pub async fn dispatch_direct(
         "plugin.set_host_profile" => {
             let client = session.client();
             client.set_plugin_host_profile(request.clone()).await?;
+            Ok(BindingResponse::unit())
+        }
+        "plugin.capability_complete" => {
+            let client = session.client();
+            client
+                .complete_plugin_capability_request(request.clone())
+                .await?;
             Ok(BindingResponse::unit())
         }
         "connection.server_clock" => {

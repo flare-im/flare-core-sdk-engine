@@ -94,14 +94,17 @@ pub mod storage {
     pub use crate::domain::{
         PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,
     };
+    pub use crate::domain::{PluginConsent, PluginConsentScope, PluginConsentStore};
     pub use crate::infrastructure::persistence::memory_im::{
         MemoryConversationStore, MemoryMessageStore,
     };
     #[cfg(feature = "storage-sqlite")]
     pub use crate::infrastructure::persistence::sqlite::SqlitePluginCommandRepo;
+    #[cfg(feature = "storage-sqlite")]
+    pub use crate::infrastructure::persistence::sqlite::SqlitePluginConsentRepo;
     pub use crate::infrastructure::persistence::{
-        CursorBackedTimelineCoverageStore, MemoryPendingSendStore, MemorySyncCursorStore,
-        MemoryTimelineCoverageStore, MemoryUserProfileStore, StoreProvider,
+        CursorBackedTimelineCoverageStore, MemoryPendingSendStore, MemoryPluginConsentStore,
+        MemorySyncCursorStore, MemoryTimelineCoverageStore, MemoryUserProfileStore, StoreProvider,
         in_memory_empty_im_provider, in_memory_im_provider,
     };
     pub use crate::platform::ports::storage::{

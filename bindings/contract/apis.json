@@ -245,6 +245,12 @@
           "tauri": "sdk_invoke_json"
         },
         {
+          "id": "plugin.capability_complete",
+          "core": "IMClient::complete_plugin_capability_request",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
           "id": "diagnostics.sdk_version",
           "core": "crate version",
           "c": "flare_sdk_version",
@@ -1077,6 +1083,24 @@
           "id": "capability.plugin_file_upload",
           "core": "CapabilityApi::plugin_file_upload",
           "c": "flare_capability_dispatch_json:plugin_file_upload",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_capability_invoke",
+          "core": "CapabilityApi::plugin_capability_invoke",
+          "c": "flare_capability_dispatch_json:plugin_capability_invoke",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_capability_consents",
+          "core": "CapabilityApi::plugin_capability_consents",
+          "c": "flare_capability_dispatch_json:plugin_capability_consents",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_capability_consent_revoke",
+          "core": "CapabilityApi::revoke_plugin_capability_consent",
+          "c": "flare_capability_dispatch_json:plugin_capability_consent_revoke",
           "tauri": "sdk_message_dispatch_json"
         },
         {

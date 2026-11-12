@@ -374,6 +374,15 @@ pub const API_OPERATIONS: &[ApiOperation] = &[
         dev_only: false,
     },
     ApiOperation {
+        id: "plugin.capability_complete",
+        module: "session",
+        core: Some("IMClient::complete_plugin_capability_request"),
+        c_symbol: Some("flare_sdk_invoke_json"),
+        c_dispatch_op: None,
+        tauri: Some("sdk_invoke_json"),
+        dev_only: false,
+    },
+    ApiOperation {
         id: "diagnostics.sdk_version",
         module: "session",
         core: Some("crate version"),
@@ -1553,6 +1562,33 @@ pub const API_OPERATIONS: &[ApiOperation] = &[
         dev_only: false,
     },
     ApiOperation {
+        id: "capability.plugin_capability_invoke",
+        module: "capability",
+        core: Some("CapabilityApi::plugin_capability_invoke"),
+        c_symbol: Some("flare_capability_dispatch_json"),
+        c_dispatch_op: Some("plugin_capability_invoke"),
+        tauri: Some("sdk_message_dispatch_json"),
+        dev_only: false,
+    },
+    ApiOperation {
+        id: "capability.plugin_capability_consents",
+        module: "capability",
+        core: Some("CapabilityApi::plugin_capability_consents"),
+        c_symbol: Some("flare_capability_dispatch_json"),
+        c_dispatch_op: Some("plugin_capability_consents"),
+        tauri: Some("sdk_message_dispatch_json"),
+        dev_only: false,
+    },
+    ApiOperation {
+        id: "capability.plugin_capability_consent_revoke",
+        module: "capability",
+        core: Some("CapabilityApi::revoke_plugin_capability_consent"),
+        c_symbol: Some("flare_capability_dispatch_json"),
+        c_dispatch_op: Some("plugin_capability_consent_revoke"),
+        tauri: Some("sdk_message_dispatch_json"),
+        dev_only: false,
+    },
+    ApiOperation {
         id: "capability.plugin_account_entries",
         module: "capability",
         core: Some("CapabilityApi::plugin_account_entries"),
@@ -2046,6 +2082,12 @@ pub const EVENT_DESCRIPTORS: &[EventDescriptor] = &[
         c_code: 7002,
         c_code_name: "FLARE_EVENT_PLUGIN_CATALOG_CHANGED",
         tauri: Some("im://plugin_catalog_changed"),
+    },
+    EventDescriptor {
+        id: "plugin.capability_request",
+        c_code: 7003,
+        c_code_name: "FLARE_EVENT_PLUGIN_CAPABILITY_REQUEST",
+        tauri: Some("im://plugin_capability_request"),
     },
 ];
 

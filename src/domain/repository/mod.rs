@@ -9,6 +9,8 @@ pub use plugin_command_repository::{
     MAX_TERMINAL_ERROR_CODES, PluginCommand, PluginCommandRecord, PluginCommandScope,
     PluginCommandStore,
 };
+pub(crate) mod plugin_consent_repository;
+pub use plugin_consent_repository::{PluginConsent, PluginConsentScope, PluginConsentStore};
 mod sync_cursor_repository;
 mod timeline_coverage_repository;
 mod upload_manifest_repository;

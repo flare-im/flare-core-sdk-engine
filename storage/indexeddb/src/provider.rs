@@ -969,6 +969,11 @@ pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
                 user_id: user_id.to_owned(),
             },
         ));
+        store.plugin_consents = Some(Arc::new(
+            super::plugin_consent::IndexedDbPluginConsentStore {
+                user_id: user_id.to_owned(),
+            },
+        ));
         return store;
     }
 
@@ -1022,6 +1027,11 @@ pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
     StoreProvider {
         plugin_commands: Some(Arc::new(
             super::plugin_command::IndexedDbPluginCommandStore {
+                user_id: user_id.clone(),
+            },
+        )),
+        plugin_consents: Some(Arc::new(
+            super::plugin_consent::IndexedDbPluginConsentStore {
                 user_id: user_id.clone(),
             },
         )),

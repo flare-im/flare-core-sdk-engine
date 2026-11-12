@@ -664,6 +664,7 @@ async fn self_sent_realtime_message_converges_to_send_ack_without_received() {
     let message_store = Arc::new(MemoryMessageStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: message_store.clone(),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -886,6 +887,7 @@ async fn realtime_and_sync_replay_share_event_deduper() {
     let message_store = Arc::new(MemoryMessageStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: message_store,
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -963,6 +965,7 @@ async fn realtime_and_sync_message_replay_share_message_deduper() {
     let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: Arc::new(MemoryMessageStore::new()),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -1071,6 +1074,7 @@ async fn sync_page_cursor_stops_before_failed_event_seq() {
     let message_deduper = MessageDeduper::new(Some(64));
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: Arc::new(MemoryMessageStore::new()),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -1173,6 +1177,7 @@ async fn clamped_cursor_save_proves_only_window_above_prior_cursor() {
     let cursor_store = Arc::new(crate::infrastructure::persistence::MemorySyncCursorStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: message_store.clone(),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -1242,6 +1247,7 @@ async fn cursor_advances_past_seqs_the_server_proved_have_no_message() {
     let message_store = Arc::new(MemoryMessageStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: message_store.clone(),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -1310,6 +1316,7 @@ async fn cursor_still_stops_at_messages_that_failed_to_persist() {
     let message_store = Arc::new(MemoryMessageStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: message_store.clone(),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -1375,6 +1382,7 @@ async fn watermark_cursor_save_persists_pseudo_keys_that_clamped_save_skips() {
     let cursor_store = Arc::new(crate::infrastructure::persistence::MemorySyncCursorStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: Arc::new(MemoryMessageStore::new()),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -1431,6 +1439,7 @@ async fn snapshot_row_apply_persists_messages_and_returns_cutover_seq() {
     let message_store = Arc::new(MemoryMessageStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: message_store.clone(),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -1487,6 +1496,7 @@ async fn message_push_delivers_to_view_even_when_persist_fails() {
     let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: Arc::new(MemoryMessageStore::failing()),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -1573,6 +1583,7 @@ async fn concurrent_message_push_dispatch_is_lossless_for_slow_subscriber() {
     let message_store = Arc::new(MemoryMessageStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: message_store.clone(),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -1681,6 +1692,7 @@ async fn persist_worker_persists_asynchronously_when_started() {
     let message_store = Arc::new(MemoryMessageStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: message_store.clone(),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -1763,6 +1775,7 @@ async fn persist_worker_under_concurrent_dispatch_loses_nothing() {
     let message_store = Arc::new(MemoryMessageStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: message_store.clone(),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -2196,6 +2209,7 @@ fn waterline_fixture() -> (
     let cursor_store = Arc::new(crate::infrastructure::persistence::MemorySyncCursorStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: message_store.clone(),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -2557,6 +2571,7 @@ async fn recall_event_without_outer_conversation_id_publishes_local_message_conv
     message_store.save_one(&message).await.unwrap();
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: message_store,
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -2619,6 +2634,7 @@ async fn recall_event_before_message_arrival_is_forgotten_and_replayable() {
     let message_store = Arc::new(MemoryMessageStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: message_store.clone(),
         conversations: Arc::new(NoopConversationStore),
         conversation_participants: None,
@@ -2714,6 +2730,7 @@ async fn waterline_uses_materialized_message_seq_not_cursor_seq() {
     conversations.save_one(&conversation).await.unwrap();
     let stores = StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: Arc::new(MemoryMessageStore::new()),
         conversations,
         conversation_participants: None,

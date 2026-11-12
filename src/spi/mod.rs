@@ -8,6 +8,7 @@ pub mod metrics;
 pub use crate::domain::{
     PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,
 };
+pub use crate::domain::{PluginConsent, PluginConsentScope, PluginConsentStore};
 
 pub use crate::application::{
     InboundDelivery, InboundNotificationView, LocalConversationClearResult,

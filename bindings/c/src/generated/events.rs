@@ -50,6 +50,7 @@ pub const FLARE_EVENT_VIEW_UPDATED: i32 = 6001;
 pub const FLARE_EVENT_EXTENSION: i32 = 5001;
 pub const FLARE_EVENT_PLUGIN_REALTIME: i32 = 7001;
 pub const FLARE_EVENT_PLUGIN_CATALOG_CHANGED: i32 = 7002;
+pub const FLARE_EVENT_PLUGIN_CAPABILITY_REQUEST: i32 = 7003;
 
 pub fn event_code_by_id(id: &str) -> i32 {
     use crate::generated::contract::EVENT_CODES;

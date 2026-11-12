@@ -22,8 +22,10 @@ pub use crate::extension::capability::ui::PluginComposerAction;
 pub(crate) use capability::TenantNotices;
 pub(crate) use capability::host_profile::{AppIdentity, PluginHostSlot};
 pub use capability::{
-    CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, PluginFileUploadPage,
-    PluginFileUploadRequest, PluginUpgradeStatus,
+    CapabilityApi, CapabilityConsentPrompt, CapabilityDescriptorDto, CapabilityDispatchResult,
+    CapabilityHostAnswer, CapabilityHostRequests, CapturedFile, DocumentCapturePrompt,
+    FilePickPrompt, LocationFix, LocationPrompt, PaymentConfirmationPrompt, PluginCapabilityHost,
+    PluginFileUploadPage, PluginFileUploadRequest, PluginUpgradeStatus, manifest_major,
 };
 pub use conversation::ConversationApi;
 pub use media::{

@@ -76,16 +76,16 @@ fn catalog(plugins: Vec<Value>, unavailable: Value) -> Value {
     })
 }
 
-type Answers = Arc<SyncMutex<HashMap<String, Vec<Value>>>>;
-type Uploads = Arc<SyncMutex<Vec<(String, Vec<(String, String)>, Vec<u8>)>>>;
-struct Fixture {
-    api: CapabilityApi,
-    catalog: Arc<SyncMutex<Value>>,
-    calls: Arc<SyncMutex<Vec<Value>>>,
+pub(super) type Answers = Arc<SyncMutex<HashMap<String, Vec<Value>>>>;
+pub(super) type Uploads = Arc<SyncMutex<Vec<(String, Vec<(String, String)>, Vec<u8>)>>>;
+pub(super) struct Fixture {
+    pub(super) api: CapabilityApi,
+    pub(super) catalog: Arc<SyncMutex<Value>>,
+    pub(super) calls: Arc<SyncMutex<Vec<Value>>>,
     /// Results per capability id, served in turn (the last one repeats).
-    answers: Answers,
-    errors: Arc<SyncMutex<HashMap<String, (u16, String)>>>,
-    uploads: Uploads,
+    pub(super) answers: Answers,
+    pub(super) errors: Arc<SyncMutex<HashMap<String, (u16, String)>>>,
+    pub(super) uploads: Uploads,
     server: tokio::task::JoinHandle<()>,
 }
 impl Drop for Fixture {
@@ -94,7 +94,7 @@ impl Drop for Fixture {
     }
 }
 impl Fixture {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let catalog = Arc::new(SyncMutex::new(catalog(vec![catalog_plugin()], json!([]))));
         let calls = Arc::new(SyncMutex::new(Vec::new()));
         let answers: Answers = Arc::new(SyncMutex::new(HashMap::new()));
@@ -202,7 +202,7 @@ impl Fixture {
             server,
         }
     }
-    fn calls_to(&self, capability: &str) -> Vec<Value> {
+    pub(super) fn calls_to(&self, capability: &str) -> Vec<Value> {
         self.calls
             .lock()
             .unwrap()
@@ -211,7 +211,7 @@ impl Fixture {
             .cloned()
             .collect()
     }
-    fn answer(&self, capability: &str, data: Vec<Value>) {
+    pub(super) fn answer(&self, capability: &str, data: Vec<Value>) {
         self.answers.lock().unwrap().insert(capability.into(), data);
     }
     fn fail(&self, capability: &str, status: u16, reason: &str) {

@@ -198,6 +198,11 @@
       "body": "\n            client.set_plugin_host_profile(request.clone()).await?;\n        "
     },
     {
+      "route": "plugin.capability_complete",
+      "result": "unit",
+      "body": "\n            client.complete_plugin_capability_request(request.clone()).await?;\n        "
+    },
+    {
       "route": "connection.server_clock",
       "result": "json",
       "body": "\n            let clock = client.server_clock().await;\n        ",

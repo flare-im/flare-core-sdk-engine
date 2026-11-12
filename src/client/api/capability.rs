@@ -23,12 +23,25 @@ use crate::infrastructure::transport::http::http_client::HttpRequestContext;
 use crate::infrastructure::transport::http::{HttpApiResponse, HttpClient, unwrap_api_response};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
+#[path = "capability_consent.rs"]
+mod consent;
 #[path = "capability_entry_availability.rs"]
 mod entry_availability;
+pub use consent::manifest_major;
 #[path = "capability_file_upload.rs"]
 mod file_upload;
 #[path = "capability_host_profile.rs"]
 pub(crate) mod host_profile;
+#[path = "capability_native.rs"]
+pub(crate) mod native;
+pub use native::{
+    CapabilityConsentPrompt, CapabilityHostAnswer, CapabilityHostRequests, CapturedFile,
+    DocumentCapturePrompt, FilePickPrompt, LocationFix, LocationPrompt, PaymentConfirmationPrompt,
+    PluginCapabilityHost,
+};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "capability_native_tests.rs"]
+mod native_tests;
 #[path = "capability_page.rs"]
 mod page;
 pub use file_upload::{PluginFileUploadPage, PluginFileUploadRequest};
@@ -131,6 +144,9 @@ impl CatalogFlight {
 #[derive(Clone)]
 pub struct CapabilityApi {
     pub(super) plugin_commands: Option<Arc<dyn crate::domain::PluginCommandStore>>,
+    /// The viewer's consents to plugins using host capabilities
+    /// ([`consent`]); in memory until the user store gives one.
+    plugin_consents: Arc<dyn crate::domain::PluginConsentStore>,
     /// Local message store and bus for plugin card state (`messageId` requests).
     messages: Option<Arc<dyn crate::domain::MessageStore>>,
     bus: Option<crate::kernel::event::EventBus>,
@@ -173,6 +189,9 @@ impl CapabilityApi {
         let _ = (grpc_endpoint.into(), http_request_context);
         Self {
             plugin_commands: None,
+            plugin_consents: Arc::new(
+                crate::infrastructure::persistence::MemoryPluginConsentStore::new(),
+            ),
             messages: None,
             bus: None,
             plugin_state_refetch: None,
@@ -226,6 +245,17 @@ impl CapabilityApi {
         let profile = host_profile::parse_profile(request, &self.app_identity)?;
         self.plugin_host.set(profile);
         Ok(self)
+    }
+    /// Keeps capability consents in `store` (the user database) instead of
+    /// memory. `None` keeps the store as it is.
+    pub fn with_plugin_consent_store(
+        mut self,
+        store: Option<Arc<dyn crate::domain::PluginConsentStore>>,
+    ) -> Self {
+        if let Some(store) = store {
+            self.plugin_consents = store;
+        }
+        self
     }
     pub fn with_plugin_command_store(
         mut self,
@@ -733,6 +763,12 @@ impl CapabilityApi {
     /// re-announces the plugin's recent cards. A create result's `data.posted`
     /// (the card Core posted) is returned as it is.
     ///
+    /// A successful operation whose `data.confirmation` is a valid payment
+    /// order of the same plugin comes back with it as `confirmation`; the
+    /// host passes it to `plugin_capability_invoke` (`paymentConfirmation`).
+    /// A native target comes back as `{kind: "host", target, payload}` for
+    /// `plugin_capability_invoke` too.
+    ///
     /// A page action names `page: {pluginId, page}` instead of `message`
     /// (see [`Self::plugin_page`]): it binds over the page view's `data`, a
     /// row action takes `row: {key, input}` as the view gave it, and it never
@@ -807,7 +843,10 @@ impl CapabilityApi {
                             )
                             .await;
                         }
-                        Ok(serde_json::json!({"kind":"operation","response":response}))
+                        Ok(native::operation_outcome(
+                            &request.message.plugin_id,
+                            &response,
+                        ))
                     }
                     ui::PreparedAction::Ready {
                         target, payload, ..

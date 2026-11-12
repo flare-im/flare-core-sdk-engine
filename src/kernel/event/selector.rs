@@ -362,6 +362,7 @@ impl ViewEventType {
 pub enum PluginEventType {
     Realtime,
     CatalogChanged,
+    CapabilityRequest,
 }
 
 impl PluginEventType {
@@ -370,6 +371,10 @@ impl PluginEventType {
             (self, event),
             (Self::Realtime, PluginEvent::Realtime(_))
                 | (Self::CatalogChanged, PluginEvent::CatalogChanged { .. })
+                | (
+                    Self::CapabilityRequest,
+                    PluginEvent::CapabilityRequest { .. }
+                )
         )
     }
 }
@@ -677,6 +682,9 @@ impl SdkEvent {
             }
             Self::Plugin(PluginEvent::CatalogChanged { .. }) => {
                 SdkEventType::Plugin(PluginEventType::CatalogChanged)
+            }
+            Self::Plugin(PluginEvent::CapabilityRequest { .. }) => {
+                SdkEventType::Plugin(PluginEventType::CapabilityRequest)
             }
         }
     }

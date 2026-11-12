@@ -34,6 +34,7 @@ pub use media_progressive::{MediaProgressiveEvent, MediaProgressiveStage, MediaP
 pub use message::*;
 pub use pending_send::PendingSendVo;
 pub(crate) use repository::plugin_command_repository::{command_error, valid_key};
+pub(crate) use repository::plugin_consent_repository::{consent_error, valid_consent_key};
 pub use repository::*;
 pub use sync::*;
 pub use sync_cursor::SyncCursorVo;

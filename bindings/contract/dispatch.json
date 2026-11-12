@@ -1740,6 +1740,39 @@
           "result": "json"
         },
         {
+          "op": "plugin_capability_invoke",
+          "method": "plugin_capability_invoke",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_capability_consents",
+          "method": "plugin_capability_consents",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_capability_consent_revoke",
+          "method": "revoke_plugin_capability_consent",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
           "op": "plugin_account_entries",
           "method": "plugin_account_entries",
           "args": [

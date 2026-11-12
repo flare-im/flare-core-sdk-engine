@@ -15,6 +15,17 @@
   `upgrade_required`（带 `minBuild`），整页为升级视图；「+」与「我」页条目带 `upgrade`。
 - `update.plugin_upgrade_status`（`{minBuild?}` → `{available, build?}`）判断本渠道是否已有这台设备能装、不低于
   `minBuild` 的版本（灰度未命中不算）；`update.open_flow` 打开更新中心现有的更新提示，不受提示频率限制。
+- 插件宿主能力通用调度 `capability.plugin_capability_invoke`：三重允许名单（Manifest 声明 ∩ 宿主允许名单 ∩ 用户同意），
+  宿主的一步经 `plugin.capability_request` 事件（`{requestId, method, request}`，方法 `consent`、`captureDocument`、
+  `pickFile`、`confirmPayment`、`locateOnce`）交给宿主，宿主用 `plugin.capability_complete`（`{requestId, result}`）
+  交回；Rust 嵌入方可用 `IMClient::set_plugin_capability_host` 装自己的 `PluginCapabilityHost`。证件照与选取的文件经
+  页面输入声明的私有上传写回 `into` 输入（证件 JPEG 带 EXIF 拒收）；一次定位按声明精度截断（粗约 1 公里、细约 1 米）；
+  付款确认校验订单（同插件、目录内、未过期，确认后再查一次）后调用订单的瞬时操作，入参 `{orderId, confirmation}`。
+  操作结果带 `data.confirmation` 时，`plugin_ui_invoke` 的结果同时给出 `confirmation`。
+- 同意记录存在用户库（SQLite 迁移 v5 新表 `plugin_capability_consents`、浏览器 IndexedDB、无库时内存），按
+  `(用户, 插件, 能力)` 记 Manifest 大版本与敏感级别；新大版本或更敏感的参数（细定位、视频、共享屏幕）重新询问，
+  只记「允许」。`clipboardWrite`、`selectImage`、`selectFile` 免同意。新增 `capability.plugin_capability_consents`
+  与 `capability.plugin_capability_consent_revoke`。
 
 - 时间线已证实连续区间：每个会话一组已合并的闭区间 `[from, to]`（seq），区间内每个 seq 本地有行，或已被
   服务端证明没有可见消息。`TimelineCoverageStore`（`StoreProvider::timeline_coverage`）有 SQLite（新表

@@ -11,6 +11,7 @@ pub fn in_memory_empty_im_provider() -> StoreProvider {
     let user_profiles = Arc::new(MemoryUserProfileStore::new());
     StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: Arc::new(EmptyMessageStore),
         conversations: Arc::new(EmptyConversationStore),
         conversation_participants: None,

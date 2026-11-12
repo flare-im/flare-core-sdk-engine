@@ -314,6 +314,18 @@ pub enum PluginEvent {
         /// The authorization projection version Core announced.
         version: String,
     },
+    /// The engine asks the host to do its part of a plugin host capability
+    /// (`plugin_capability_invoke`): ask the viewer's consent, capture a
+    /// document, pick a file, confirm a payment or take a location fix. The
+    /// host answers with `plugin.capability_complete` `{requestId, result}`;
+    /// the methods and result shapes are on
+    /// `crate::client::api::native::EventCapabilityHost`.
+    CapabilityRequest {
+        request_id: u64,
+        /// `consent`, `captureDocument`, `pickFile`, `confirmPayment` or `locateOnce`.
+        method: String,
+        request: serde_json::Value,
+    },
 }
 
 /// Notification 域事件：IM 下行 `NotificationContent`（与聊天 `MessageEvent::Received` 分离）。

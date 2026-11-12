@@ -3,7 +3,7 @@
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use sqlx::{Row, SqlitePool};
 
-const CURRENT_SCHEMA_VERSION: i64 = 4;
+const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 fn db_err(e: sqlx::Error) -> FlareError {
     FlareError::localized(ErrorCode::DatabaseError, e.to_string())
@@ -254,6 +254,11 @@ async fn migrate_to_v4(pool: &SqlitePool) -> Result<()> {
     clear_id_display_names(pool).await.map(|_| ())
 }
 
+/// v5：插件能力同意记录表（`plugin_capability_consents`）。新库也走这一步：表只在迁移里建。
+async fn migrate_to_v5(pool: &SqlitePool) -> Result<()> {
+    super::plugin_consent_repo::create_table(pool).await
+}
+
 pub(crate) async fn clear_id_display_names(pool: &SqlitePool) -> Result<u64> {
     let done = sqlx::query(
         r#"UPDATE conversations SET display_name = ''
@@ -307,6 +312,12 @@ async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         }
         set_user_version(pool, 4).await?;
         version = 4;
+    }
+
+    if version < 5 {
+        migrate_to_v5(pool).await?;
+        set_user_version(pool, 5).await?;
+        version = 5;
     }
 
     debug_assert_eq!(version, CURRENT_SCHEMA_VERSION);
@@ -797,7 +808,7 @@ mod tests {
 
         init_schema(&pool).await.unwrap();
 
-        assert_eq!(current_user_version(&pool).await.unwrap(), 4);
+        assert_eq!(current_user_version(&pool).await.unwrap(), 5);
         assert!(
             column_exists(&pool, "user_profiles", "alias")
                 .await
@@ -848,7 +859,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        assert_eq!(current_user_version(&pool).await.unwrap(), 4);
+        assert_eq!(current_user_version(&pool).await.unwrap(), 5);
 
         sqlx::query(
             r#"INSERT INTO messages (

@@ -403,6 +403,14 @@
       "cCodeName": "FLARE_EVENT_PLUGIN_CATALOG_CHANGED",
       "cJson": { "type": "plugin", "event": "catalog_changed", "fields": ["version"] },
       "tauri": "im://plugin_catalog_changed"
+    },
+    {
+      "id": "plugin.capability_request",
+      "core": "SdkEvent::Plugin(PluginEvent::CapabilityRequest)",
+      "cCode": 7003,
+      "cCodeName": "FLARE_EVENT_PLUGIN_CAPABILITY_REQUEST",
+      "cJson": { "type": "plugin", "event": "capability_request", "fields": ["requestId", "method", "request"] },
+      "tauri": "im://plugin_capability_request"
     }
   ]
 }

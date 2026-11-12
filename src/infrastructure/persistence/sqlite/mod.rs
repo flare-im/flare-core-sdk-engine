@@ -19,6 +19,8 @@ mod message_repo;
 mod pending_send_repo;
 mod plugin_command_repo;
 pub use plugin_command_repo::SqlitePluginCommandRepo;
+mod plugin_consent_repo;
+pub use plugin_consent_repo::SqlitePluginConsentRepo;
 mod schema;
 mod timeline_coverage_repo;
 mod upload_manifest_repo;

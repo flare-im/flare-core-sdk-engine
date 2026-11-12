@@ -251,6 +251,28 @@ impl EventBus {
         )
     }
 
+    /// The engine asks the host to do its part of a plugin host capability:
+    /// `(requestId, method, request)`. Answer with
+    /// `IMClient::complete_plugin_capability_request`.
+    pub fn on_plugin_capability_request<F>(&self, f: F) -> Subscription
+    where
+        F: Fn(u64, &str, &serde_json::Value) + Send + Sync + 'static,
+    {
+        self.on_event_type(
+            SdkEventType::Plugin(PluginEventType::CapabilityRequest),
+            move |event| {
+                if let SdkEvent::Plugin(PluginEvent::CapabilityRequest {
+                    request_id,
+                    method,
+                    request,
+                }) = event.as_ref()
+                {
+                    f(*request_id, method, request);
+                }
+            },
+        )
+    }
+
     // ---------- Conversation ----------
     /// 注册「会话列表同步完成」回调
     pub fn on_conversation_synced<F>(&self, f: F) -> Subscription

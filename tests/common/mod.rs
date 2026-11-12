@@ -524,6 +524,7 @@ fn get_ws_url() -> String {
 fn make_stores() -> StoreProvider {
     StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
         messages: Arc::new(MemoryMessageStore::new()),
         conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,

@@ -56,6 +56,9 @@ pub(crate) struct AppIdentity {
 #[derive(Debug, Default)]
 pub(crate) struct PluginHostSlot {
     profile: RwLock<Option<PluginHostProfile>>,
+    /// The host's part of plugin capabilities: requests waiting for
+    /// `plugin.capability_complete`, and an embedder's own host.
+    pub capability_host: super::native::CapabilityHostSlot,
 }
 
 impl PluginHostSlot {

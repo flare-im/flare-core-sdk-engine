@@ -49,6 +49,7 @@ pub const CONTRACT_EVENT_IDS: &[&str] = &[
     "extension.event",
     "plugin.realtime",
     "plugin.catalog_changed",
+    "plugin.capability_request",
 ];
 
 /// `(contract_event_id, web_event_name)` when a web adapter maps `im://*` names.
@@ -113,4 +114,8 @@ pub const WEB_EVENT_ROUTES: &[(&str, &str)] = &[
     ("extension.event", "im://extension"),
     ("plugin.realtime", "im://plugin_realtime"),
     ("plugin.catalog_changed", "im://plugin_catalog_changed"),
+    (
+        "plugin.capability_request",
+        "im://plugin_capability_request",
+    ),
 ];

@@ -45,6 +45,7 @@ pub const WASM_CANONICAL_OPERATIONS: &[&str] = &[
     "update.plugin_upgrade_status",
     "update.open_flow",
     "plugin.set_host_profile",
+    "plugin.capability_complete",
     "diagnostics.sdk_version",
     "diagnostics.ffi_contract_version",
     "diagnostics.data_root",
@@ -176,6 +177,9 @@ pub const WASM_CANONICAL_OPERATIONS: &[&str] = &[
     "capability.plugin_detail",
     "capability.plugin_page",
     "capability.plugin_file_upload",
+    "capability.plugin_capability_invoke",
+    "capability.plugin_capability_consents",
+    "capability.plugin_capability_consent_revoke",
     "capability.plugin_account_entries",
     "capability.plugin_catalog_invalidate",
     "capability.list",
@@ -232,6 +236,7 @@ pub const EVENT_CODES: &[(&str, i32)] = &[
     ("extension.event", 5001),
     ("plugin.realtime", 7001),
     ("plugin.catalog_changed", 7002),
+    ("plugin.capability_request", 7003),
 ];
 
 pub const ERROR_CODES: &[(&str, i32)] = &[
