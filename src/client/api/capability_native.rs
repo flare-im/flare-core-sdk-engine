@@ -16,12 +16,15 @@
 //!   declared upload ([`CapabilityApi::plugin_file_upload`]) and the
 //!   reference comes back for the `into` input: `{kind: "input", input,
 //!   value: {fileId}}`.
-//! - `locationOnce`: the fix, truncated to the declared precision: `{kind:
-//!   "location", location}`.
+//! - `locationOnce`: the fix, truncated to the declared precision
+//!   ([`UiLocationValue::truncate`]), comes back for the `location` input of
+//!   the same precision its `into` names: `{kind: "input", input, value:
+//!   {latitude, longitude, accuracyM, precision}}`.
 //! - `paymentConfirmation`: the order (an operation's `data.confirmation`,
-//!   returned with that result as `confirmation`) is checked and, once the
-//!   host confirmed it, its transient operation is called with the host's
-//!   proof: `{kind: "operation", response}`.
+//!   returned with that result as `confirmation`) is checked, its operation
+//!   one of the plugin's catalog `transientOperations`, and, once the host
+//!   confirmed it, that operation is called with the host's proof: `{kind:
+//!   "operation", response}`.
 //! - `clipboardWrite`, `microphone`, and a pick without `into`: nothing for
 //!   the engine to do; `{kind: "host", capability}` tells the host to go on.
 //!
@@ -42,7 +45,7 @@ use std::time::Duration;
 use flare_plugin_protocol::manifest::{ClientPlatform, UiContributionKind};
 use flare_plugin_protocol::ui::{
     ClientPlugin, NativeCapability, NativeParams, PaymentConfirmationOrder, UiDocumentSide,
-    UiLocationPrecision, UiRenderContext,
+    UiInput, UiLocationPrecision, UiLocationValue, UiRenderContext,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -434,35 +437,16 @@ pub(crate) fn operation_outcome(plugin_id: &str, response: &CapabilityDispatchRe
     outcome
 }
 
-/// A location fix truncated to `precision`: a coarse fix to two decimals
-/// (about a kilometre) and an accuracy of at least 1 000 m, a fine one to
-/// five decimals (about a metre). `None` for a fix that is not one.
+/// A location fix truncated to `precision` ([`UiLocationValue::truncate`]):
+/// a coarse fix to two decimals (about a kilometre) and an accuracy of at
+/// least 1 000 m, a fine one to five decimals (about a metre). `None` for a
+/// fix that is not one.
 pub(crate) fn truncate_location(
     fix: &LocationFix,
     precision: UiLocationPrecision,
 ) -> Option<Value> {
-    let valid = fix.latitude.is_finite()
-        && fix.longitude.is_finite()
-        && (-90.0..=90.0).contains(&fix.latitude)
-        && (-180.0..=180.0).contains(&fix.longitude)
-        && fix
-            .accuracy_m
-            .is_none_or(|accuracy| accuracy.is_finite() && accuracy >= 0.0);
-    if !valid {
-        return None;
-    }
-    let (scale, floor) = match precision {
-        UiLocationPrecision::Coarse => (100.0, 1000.0),
-        UiLocationPrecision::Fine => (100_000.0, 1.0),
-    };
-    let round = |degrees: f64| (degrees * scale).round() / scale;
-    let accuracy = fix.accuracy_m.map_or(floor, |accuracy| accuracy.max(floor));
-    Some(json!({
-        "latitude": round(fix.latitude),
-        "longitude": round(fix.longitude),
-        "accuracyM": accuracy.round(),
-        "precision": precision,
-    }))
+    UiLocationValue::truncate(fix.latitude, fix.longitude, fix.accuracy_m, precision)
+        .map(|value| json!(value))
 }
 
 /// Whether a JPEG carries an EXIF segment (APP1 `Exif\0\0`) before its
@@ -514,14 +498,15 @@ impl CapabilityApi {
     /// user gesture: the native target a `plugin_ui_invoke` handed back, or
     /// the `confirmation` order an operation result carried.
     ///
-    /// Results: `{kind: "input", input, value: {fileId}}`, `{kind:
-    /// "location", location: {latitude, longitude, accuracyM, precision}}`,
+    /// Results: `{kind: "input", input, value}` (`{fileId}` for an upload,
+    /// `{latitude, longitude, accuracyM, precision}` for a location),
     /// `{kind: "operation", response, confirmation?}`, `{kind: "host",
     /// capability}`, `{kind: "denied"}`, `{kind: "cancelled"}`, `{kind:
     /// "unavailable"}`. Errors: `sdk.plugin.invalid_ui_request` (a broken
     /// request or a host file that does not fit the input),
     /// `sdk.plugin.ui_action_unavailable` (no gesture, plugin or page not in
-    /// the catalog), `sdk.plugin.native_capability_unavailable` (not
+    /// the catalog, an order whose operation is not one of the plugin's
+    /// transient operations), `sdk.plugin.native_capability_unavailable` (not
     /// declared, not allowed by the host, not available yet),
     /// `sdk.plugin.payment_order_expired`, and the plugin's own failures.
     pub async fn plugin_capability_invoke(&self, request: Value) -> Result<Value> {
@@ -595,10 +580,13 @@ impl CapabilityApi {
                 // Everything that needs no viewer is checked before asking.
                 let order = match &request.order {
                     Some(order) => {
+                        // Only a transient operation of the same plugin
+                        // runs behind a confirmation.
                         if !order
                             .operation
                             .starts_with(&format!("{}.", plugin.plugin_id))
                             || !plugin.operations.contains(&order.operation)
+                            || !plugin.transient_operations.contains(&order.operation)
                             || plugin.query_operations.contains(&order.operation)
                         {
                             return Err(unavailable());
@@ -610,11 +598,17 @@ impl CapabilityApi {
                     }
                     None => None,
                 };
-                let upload = match request.into.as_deref() {
-                    Some(into) => {
-                        Some(self.upload_target(&catalog, plugin, &request, &user, into)?)
+                let (upload, location_input) = match request.into.as_deref() {
+                    Some(into) if request.capability == NativeCapability::LocationOnce => {
+                        let (_, input) =
+                            self.into_input(&catalog, plugin, &request, &user, into)?;
+                        (None, Some(input.id))
                     }
-                    None => None,
+                    Some(into) => (
+                        Some(self.upload_target(&catalog, plugin, &request, &user, into)?),
+                        None,
+                    ),
+                    None => (None, None),
                 };
                 let host = self.capability_host().ok_or_else(capability_unavailable)?;
                 // Allowlist 3: the viewer.
@@ -637,7 +631,9 @@ impl CapabilityApi {
                             .await
                     }
                     NativeCapability::LocationOnce => {
-                        let Some(NativeParams::LocationOnce(params)) = &request.params else {
+                        let (Some(NativeParams::LocationOnce(params)), Some(input)) =
+                            (&request.params, location_input)
+                        else {
                             return Err(invalid());
                         };
                         let answer = host
@@ -650,7 +646,7 @@ impl CapabilityApi {
                             CapabilityHostAnswer::Done(fix) => {
                                 match truncate_location(&fix, params.precision) {
                                     Some(location) => {
-                                        json!({"kind": "location", "location": location})
+                                        json!({"kind": "input", "input": input, "value": location})
                                     }
                                     None => json!({"kind": "unavailable"}),
                                 }
@@ -710,16 +706,16 @@ impl CapabilityApi {
     }
 
     /// The page input an `into` names: of a page of the same plugin, of a
-    /// kind the capability writes (the same side for a document), with a
-    /// declared private upload.
-    fn upload_target(
+    /// kind the capability writes, the same side for a document and the same
+    /// precision for a location.
+    fn into_input(
         &self,
         catalog: &flare_plugin_protocol::ui::UiCatalog,
         plugin: &ClientPlugin,
         request: &CapabilityInvokeRequest,
         user: &str,
         into: &str,
-    ) -> Result<UploadTarget> {
+    ) -> Result<(PluginFileUploadPage, UiInput)> {
         let page = request.page.as_ref().ok_or_else(invalid)?;
         if page.plugin_id != plugin.plugin_id {
             return Err(invalid());
@@ -744,18 +740,35 @@ impl CapabilityApi {
         if !request.capability.into_kinds().contains(&input.kind) {
             return Err(invalid());
         }
-        if let Some(NativeParams::DocumentCapture(params)) = &request.params
-            && input.side != Some(params.side)
-        {
+        let fits = match &request.params {
+            Some(NativeParams::DocumentCapture(params)) => input.side == Some(params.side),
+            Some(NativeParams::LocationOnce(params)) => input.precision == Some(params.precision),
+            _ => true,
+        };
+        if !fits {
             return Err(invalid());
         }
+        Ok((page.clone(), input.clone()))
+    }
+
+    /// The page input an `into` names ([`Self::into_input`]), with a
+    /// declared private upload.
+    fn upload_target(
+        &self,
+        catalog: &flare_plugin_protocol::ui::UiCatalog,
+        plugin: &ClientPlugin,
+        request: &CapabilityInvokeRequest,
+        user: &str,
+        into: &str,
+    ) -> Result<UploadTarget> {
+        let (page, input) = self.into_input(catalog, plugin, request, user, into)?;
         let file = input
             .file
             .as_ref()
             .filter(|file| file.is_valid())
             .ok_or_else(invalid)?;
         Ok(UploadTarget {
-            page: page.clone(),
+            page,
             input: into.to_owned(),
             accept: file.accept.clone(),
             max_bytes: file.max_bytes,

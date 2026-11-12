@@ -19,8 +19,10 @@
   宿主的一步经 `plugin.capability_request` 事件（`{requestId, method, request}`，方法 `consent`、`captureDocument`、
   `pickFile`、`confirmPayment`、`locateOnce`）交给宿主，宿主用 `plugin.capability_complete`（`{requestId, result}`）
   交回；Rust 嵌入方可用 `IMClient::set_plugin_capability_host` 装自己的 `PluginCapabilityHost`。证件照与选取的文件经
-  页面输入声明的私有上传写回 `into` 输入（证件 JPEG 带 EXIF 拒收）；一次定位按声明精度截断（粗约 1 公里、细约 1 米）；
-  付款确认校验订单（同插件、目录内、未过期，确认后再查一次）后调用订单的瞬时操作，入参 `{orderId, confirmation}`。
+  页面输入声明的私有上传写回 `into` 输入（证件 JPEG 带 EXIF 拒收）；一次定位按声明精度截断（粗约 1 公里、细约 1 米）后
+  写回 `into` 指向的同精度 `location` 输入（`{kind: input, input, value: {latitude, longitude, accuracyM, precision}}`）；
+  付款确认校验订单（同插件、在目录 `transientOperations` 内、未过期，确认后再查一次）后调用订单的瞬时操作，
+  入参 `{orderId, confirmation}`。
   操作结果带 `data.confirmation` 时，`plugin_ui_invoke` 的结果同时给出 `confirmation`。
 - 同意记录存在用户库（SQLite 迁移 v5 新表 `plugin_capability_consents`、浏览器 IndexedDB、无库时内存），按
   `(用户, 插件, 能力)` 记 Manifest 大版本与敏感级别；新大版本或更敏感的参数（细定位、视频、共享屏幕）重新询问，

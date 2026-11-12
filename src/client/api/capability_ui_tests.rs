@@ -58,6 +58,7 @@ impl Fixture {
                 grant_revision: 1,
                 extensions: manifest.client_extensions,
                 query_operations: Default::default(),
+                transient_operations: Default::default(),
                 operations: ["example.poll.vote".into(), "example.poll.details".into()].into(),
                 configuration: Default::default(),
             }],

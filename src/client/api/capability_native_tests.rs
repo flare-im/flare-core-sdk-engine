@@ -2,7 +2,8 @@
 //! host: the three allowlists (manifest ∩ host profile ∩ consent), the
 //! consent exemptions, a payment order refused once closed, consent asked
 //! again after a revoke or a new major, a captured document uploaded into
-//! its input, and a location truncated to its precision.
+//! its input, a location truncated to its precision and written into its
+//! input, and an order confirmed only for a transient operation.
 use std::sync::Mutex as SyncMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -94,7 +95,9 @@ impl PluginCapabilityHost for FakeHost {
 }
 
 /// The plugin declares `native` in its manifest, a page with a front-side
-/// document input and its private upload, and a transient payment
+/// document input and its private upload (when it declares
+/// `documentCapture`), a check-in page with a coarse and a fine location
+/// input (when it declares `locationOnce`), and a transient payment
 /// operation; the host profile allows `allowed`; `host` does the host's part.
 fn setup(f: &Fixture, declared: &[&str], allowed: &[&str], host: Arc<FakeHost>) {
     {
@@ -111,7 +114,28 @@ fn setup(f: &Fixture, declared: &[&str], allowed: &[&str], host: Arc<FakeHost>) 
                 .unwrap()
                 .push(json!(operation));
         }
-        // Only a plugin that declares the capture holds the page using it.
+        plugin["transientOperations"] = json!(["example.poll.pay_confirm"]);
+        // Only a plugin that declares a capability holds the page using it.
+        if declared.contains(&"locationOnce") {
+            plugin["extensions"]["contributions"].as_array_mut().unwrap().push(json!({
+                "kind": "page", "id": "example.poll.checkin", "schemaVersion": 1,
+                "requiredPermissions": [], "source": {"operation": "example.poll.wallet"},
+                "schema": {"title": "Check in",
+                    "inputs": [
+                        {"id": "area", "kind": "location", "label": "Area", "precision": "coarse"},
+                        {"id": "spot", "kind": "location", "label": "Spot", "precision": "fine"},
+                        {"id": "note", "kind": "text", "label": "Note"}],
+                    "actions": [
+                        {"id": "locate_area", "label": "Locate", "target": {"kind": "native",
+                            "capability": "locationOnce", "params": {"precision": "coarse"},
+                            "into": "area"}},
+                        {"id": "locate_spot", "label": "Locate", "target": {"kind": "native",
+                            "capability": "locationOnce", "params": {"precision": "fine"},
+                            "into": "spot"}},
+                        {"id": "submit", "label": "Submit", "form": ["area", "spot", "note"],
+                         "target": {"kind": "operation", "operation": "example.poll.hide"}}]}
+            }));
+        }
         if !declared.contains(&"documentCapture") {
             drop(catalog);
             return allow(f, allowed, host);
@@ -159,9 +183,21 @@ fn capture_request() -> Value {
         "commandId": "capture-front", "userGesture": true})
 }
 
+/// A fix of `precision` into the check-in input of that precision.
 fn location_request(precision: &str) -> Value {
+    let into = if precision == "coarse" {
+        "area"
+    } else {
+        "spot"
+    };
+    location_into(precision, into)
+}
+
+fn location_into(precision: &str, into: &str) -> Value {
     json!({"pluginId": "example.poll", "capability": "locationOnce",
-        "params": {"precision": precision}, "platform": "web", "userGesture": true})
+        "params": {"precision": precision}, "into": into, "platform": "web", "locale": "en-US",
+        "page": {"pluginId": "example.poll", "page": "example.poll.checkin"},
+        "userGesture": true})
 }
 
 fn order(expires_at_ms: i64) -> Value {
@@ -339,8 +375,13 @@ async fn an_expired_order_is_refused_and_an_open_one_calls_its_transient_operati
     assert_eq!(host.payments.load(Ordering::SeqCst), 0);
     assert!(f.calls_to("example.poll.pay_confirm").is_empty());
 
-    // An operation of another plugin, or one the catalog does not offer.
-    for operation in ["example.other.pay", "example.poll.not_granted"] {
+    // An operation of another plugin, one the catalog does not offer, or one
+    // it offers that is not transient.
+    for operation in [
+        "example.other.pay",
+        "example.poll.not_granted",
+        "example.poll.material_prepare",
+    ] {
         let mut foreign = order(now_ms() + 60_000);
         foreign["operation"] = json!(operation);
         assert!(
@@ -420,8 +461,8 @@ async fn consent_is_asked_again_after_a_revoke_a_finer_precision_or_a_new_major(
         .unwrap();
     assert_eq!(
         coarse,
-        json!({"kind": "location", "location": {"latitude": 31.23, "longitude": 121.47,
-            "accuracyM": 1000.0, "precision": "coarse"}})
+        json!({"kind": "input", "input": "area", "value": {"latitude": 31.23,
+            "longitude": 121.47, "accuracyM": 1000.0, "precision": "coarse"}})
     );
     assert_eq!(host.consents().len(), 1);
     // Kept: not asked again for the same precision.
@@ -436,7 +477,9 @@ async fn consent_is_asked_again_after_a_revoke_a_finer_precision_or_a_new_major(
         .plugin_capability_invoke(location_request("fine"))
         .await
         .unwrap();
-    assert_eq!(fine["location"]["latitude"], 31.23042);
+    assert_eq!(fine["input"], "spot");
+    assert_eq!(fine["value"]["latitude"], 31.23042);
+    assert_eq!(fine["value"]["accuracyM"], 8.0);
     assert_eq!(host.consents().len(), 2);
     f.api
         .plugin_capability_invoke(location_request("coarse"))
@@ -504,4 +547,72 @@ async fn without_a_gesture_or_with_a_media_session_nothing_runs() {
         "params": {"media": ["audio"]}, "platform": "web", "userGesture": true});
     assert!(f.api.plugin_capability_invoke(rtc).await.is_err());
     assert!(host.consents().is_empty());
+}
+
+#[tokio::test]
+async fn a_location_goes_only_into_a_location_input_of_its_precision() {
+    let f = Fixture::new().await;
+    let host = FakeHost::new();
+    setup(&f, &["locationOnce"], &["locationOnce"], host.clone());
+    for request in [
+        // A fine fix into the coarse input, a coarse one into the fine input.
+        location_into("fine", "area"),
+        location_into("coarse", "spot"),
+        // Not a location input, not an input of the page.
+        location_into("coarse", "note"),
+        location_into("coarse", "missing"),
+    ] {
+        assert!(
+            f.api
+                .plugin_capability_invoke(request.clone())
+                .await
+                .is_err(),
+            "{request}"
+        );
+    }
+    // No into, or no page to write into.
+    let mut bare = location_request("coarse");
+    bare.as_object_mut().unwrap().remove("into");
+    assert!(f.api.plugin_capability_invoke(bare).await.is_err());
+    let mut pageless = location_request("coarse");
+    pageless.as_object_mut().unwrap().remove("page");
+    assert!(f.api.plugin_capability_invoke(pageless).await.is_err());
+    // Nothing was asked of the viewer for a broken target.
+    assert!(host.consents().is_empty());
+
+    // The value the engine writes passes the page form's own check.
+    let outcome = f
+        .api
+        .plugin_capability_invoke(location_request("coarse"))
+        .await
+        .unwrap();
+    let value: flare_plugin_protocol::ui::UiLocationValue =
+        serde_json::from_value(outcome["value"].clone()).unwrap();
+    assert!(value.fits(flare_plugin_protocol::ui::UiLocationPrecision::Coarse));
+}
+
+#[tokio::test]
+async fn an_order_is_refused_while_the_catalog_lists_no_transient_operation() {
+    let f = Fixture::new().await;
+    let host = FakeHost::new();
+    setup(
+        &f,
+        &["paymentConfirmation"],
+        &["paymentConfirmation"],
+        host.clone(),
+    );
+    // An older Core lists none.
+    f.catalog.lock().unwrap()["plugins"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("transientOperations");
+    assert!(
+        f.api
+            .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+            .await
+            .is_err()
+    );
+    assert!(host.consents().is_empty());
+    assert_eq!(host.payments.load(Ordering::SeqCst), 0);
+    assert!(f.calls_to("example.poll.pay_confirm").is_empty());
 }
