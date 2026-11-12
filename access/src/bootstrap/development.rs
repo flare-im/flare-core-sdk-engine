@@ -233,6 +233,7 @@ pub fn development_snapshot(
             .clone()
             .unwrap_or(serde_json::Value::Null),
         release: None,
+        links: None,
     };
 
     let entries = checked

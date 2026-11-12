@@ -1,6 +1,7 @@
 //! 接入清单、发布清单的载荷模型与客户端链路参数。
 
 pub mod access;
+pub mod links;
 pub mod policy;
 pub mod recovery;
 pub mod release;
@@ -11,6 +12,7 @@ pub use access::{
     ManifestTimes, PathService, Placement, PortService, Region, ReleaseSection, Services,
     is_valid_bootstrap_id, is_valid_id,
 };
+pub use links::LinksSection;
 pub use policy::{
     BackoffPolicy, Bound, BreakerPolicy, ClientPolicy, FailbackPolicy, HeartbeatPolicy,
     POLICY_BOUNDS, ProbePolicy,

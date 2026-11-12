@@ -7,6 +7,7 @@
 pub mod commands;
 pub mod convert;
 pub mod generated;
+pub mod host_files;
 pub mod state;
 
 pub mod model {
@@ -28,6 +29,19 @@ pub const BINDING_CONTRACT_VERSION: &str =
 pub type SdkConfigOptions = flare_im_core_sdk::client::SdkConfigOverlay;
 
 pub use commands::*;
-pub use generated::handler::im_invoke_handler;
+pub use host_files::{StagedGeneratedFile, sdk_cleanup_generated_file, sdk_stage_generated_file};
 pub use model::SdkInitArgs;
 pub use state::SdkState;
+
+/// Generated IM commands plus handwritten platform file adaptation.
+pub fn im_invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + 'static {
+    let generated = generated::handler::im_invoke_handler();
+    let files: fn(tauri::ipc::Invoke) -> bool = tauri::generate_handler![
+        host_files::sdk_stage_generated_file,
+        host_files::sdk_cleanup_generated_file,
+    ];
+    move |invoke| match invoke.message.command() {
+        "sdk_stage_generated_file" | "sdk_cleanup_generated_file" => files(invoke),
+        _ => generated(invoke),
+    }
+}

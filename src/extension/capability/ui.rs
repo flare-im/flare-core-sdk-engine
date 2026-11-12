@@ -1,5 +1,8 @@
 //! Binding-neutral UI evaluation. Native adapters render the result through the
 //! design kit and execute only a returned target after explicit host consent.
+#[cfg(test)]
+#[path = "ui_scan_tests.rs"]
+mod scan_tests;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_plugin_protocol::{
     manifest::{ClientPlatform, UiContribution, UiContributionKind, is_ui_icon_name},
@@ -306,6 +309,76 @@ pub struct PluginAccountEntry {
     /// the host calls it when it shows the entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<UiEntrySummary>,
+}
+
+/// One approved, exact scan route. This is generic plugin infrastructure;
+/// payload parsing and business decisions remain with the plugin and Social SDK.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginScanHandler {
+    pub plugin_id: String,
+    pub provider_name: String,
+    pub route_key: String,
+    pub resolve: String,
+    pub pages: Vec<String>,
+    pub sources: Vec<flare_plugin_protocol::manifest::UiScanSource>,
+}
+
+pub(crate) fn scan_handlers(
+    tenant: &str,
+    catalog: &UiCatalog,
+    platform: ClientPlatform,
+    locale: &str,
+) -> Vec<PluginScanHandler> {
+    if catalog.tenant_id != tenant || catalog.valid_until_ms <= now_ms() {
+        return Vec::new();
+    }
+    let mut handlers: Vec<_> = catalog
+        .plugins
+        .iter()
+        .filter(|plugin| plugin.extensions.platforms.contains(&platform))
+        .flat_map(|plugin| {
+            plugin.extensions.contributions.iter().filter_map(move |c| {
+                if c.kind != UiContributionKind::ScanHandler
+                    || c.schema_version != 1
+                    || c.schema.validate().is_err()
+                {
+                    return None;
+                }
+                let scan = c.scan.as_ref()?;
+                if scan.validate().is_err()
+                    || !plugin.operations.contains(&scan.resolve)
+                    || !plugin.query_operations.contains(&scan.resolve)
+                    || !scan.pages.iter().all(|id| {
+                        plugin.extensions.contributions.iter().any(|p| {
+                            &p.id == id
+                                && p.kind == UiContributionKind::Page
+                                && p.schema_version == 1
+                        })
+                    })
+                {
+                    return None;
+                }
+                Some(PluginScanHandler {
+                    plugin_id: plugin.plugin_id.clone(),
+                    provider_name: c.schema.localized_title(locale).to_owned(),
+                    route_key: scan.route_key.clone(),
+                    resolve: scan.resolve.clone(),
+                    pages: scan.pages.clone(),
+                    sources: scan.sources.clone(),
+                })
+            })
+        })
+        .collect();
+    // A conflicting catalog is closed instead of letting list order choose who
+    // handles an already-issued link. Registry ownership normally prevents it.
+    let mut seen = std::collections::BTreeMap::new();
+    for handler in &handlers {
+        *seen.entry(handler.route_key.clone()).or_insert(0) += 1;
+    }
+    handlers.retain(|handler| seen[&handler.route_key] == 1);
+    handlers.sort_by(|a, b| a.route_key.cmp(&b.route_key));
+    handlers
 }
 /// Account entries of `catalog` for `platform`, by order then title, with the
 /// same rules as [`composer_actions`]: the server already trimmed the catalog,
@@ -721,13 +794,34 @@ pub(crate) fn prepare_action(
         // A choices action needs a selection; a selection needs a choices action.
         _ => return Err(invalid()),
     }
-    let payload = flare_plugin_protocol::ui::bind_action_input_with(action, &data, extra)
+    let mut payload = flare_plugin_protocol::ui::bind_action_input_with(action, &data, extra)
         .map_err(|_| invalid())?;
+    strip_native_form_inputs(&target, action, &mut payload);
     Ok(PreparedAction::Ready {
         target,
         payload,
         entity,
     })
+}
+
+/// Native authentication consumes form input only through the host's local
+/// one-use closure. Keep it out of the public JSON outcome after validation.
+pub(crate) fn strip_native_form_inputs(
+    target: &flare_plugin_protocol::ui::UiActionTarget,
+    action: &flare_plugin_protocol::ui::UiAction,
+    payload: &mut Value,
+) {
+    if matches!(
+        target,
+        flare_plugin_protocol::ui::UiActionTarget::Native {
+            capability: NativeCapability::Reauthenticate
+        }
+    ) && let Some(object) = payload.as_object_mut()
+    {
+        for input in &action.form {
+            object.remove(input);
+        }
+    }
 }
 
 /// The detail of a card, ready to request page by page.

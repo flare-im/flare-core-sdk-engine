@@ -1,3 +1,4 @@
+use super::credential_scope::HttpCredentialLease;
 use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
@@ -88,23 +89,28 @@ pub trait CoreBearerRenewal: Send + Sync {
     async fn renew(&self) -> Option<String>;
 }
 
+#[derive(Clone, Default)]
+struct CoreAuthState {
+    token: String,
+    epoch: u64,
+    user: String,
+    tenant: String,
+    renewal: Option<Arc<dyn CoreBearerRenewal>>,
+}
+
 #[derive(Default)]
 pub struct HttpRequestContext {
-    /// IM 长连接 / 媒体等 core HTTP 使用的 Bearer
-    auth_token: RwLock<String>,
+    /// Token, owner boundary and renewal authority are installed atomically.
+    core_auth: RwLock<CoreAuthState>,
     /// Social Gateway 等业务 BFF 使用的 Bearer（与 IM token 分离，避免建连时互相覆盖）
     gateway_token: RwLock<String>,
     tenant_id: RwLock<String>,
     user_id: RwLock<String>,
     session_id: RwLock<String>,
-    trace_id: RwLock<String>,
-    language: RwLock<String>,
-    /// Installed with the IM session; absent means an expired bearer fails as before.
-    core_renewal: RwLock<Option<Arc<dyn CoreBearerRenewal>>>,
+    trace_id: Arc<RwLock<String>>,
+    language: Arc<RwLock<String>>,
     /// Concurrent expiries renew once; later waiters reuse the bearer already renewed.
     core_renewal_gate: tokio::sync::Mutex<()>,
-    /// Invalidates a pending renewal when the host replaces or clears its session.
-    core_session_epoch: std::sync::atomic::AtomicU64,
 }
 
 impl HttpRequestContext {
@@ -112,60 +118,83 @@ impl HttpRequestContext {
         Self::default()
     }
 
-    pub async fn set_core_bearer_renewal(&self, renewal: Option<Arc<dyn CoreBearerRenewal>>) {
-        *self.core_renewal.write().await = renewal;
-        self.core_session_epoch
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    /// A separate credential/principal lifecycle, sharing only non-secret metadata.
+    pub fn fork_auth_scope(&self) -> Self {
+        Self {
+            trace_id: self.trace_id.clone(),
+            language: self.language.clone(),
+            ..Self::default()
+        }
     }
 
-    /// After Core rejected `rejected` as expired: the bearer to retry with, if any.
+    pub async fn set_core_bearer_renewal(&self, renewal: Option<Arc<dyn CoreBearerRenewal>>) {
+        let mut core = self.core_auth.write().await;
+        core.renewal = renewal;
+        core.epoch = core.epoch.wrapping_add(1);
+    }
+
+    pub(crate) async fn core_epoch(&self) -> u64 {
+        self.core_auth.read().await.epoch
+    }
+
+    pub(crate) async fn ensure_core_epoch(&self, expected: u64) -> Result<()> {
+        if self.core_auth.read().await.epoch != expected {
+            return Err(FlareError::localized(
+                crate::shared::error::ErrorCode::NotConnected,
+                "Core request cancelled: credential owner changed",
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) async fn renew_core_bearer(&self, rejected: &str) -> Option<String> {
-        let epoch = self
-            .core_session_epoch
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let renewal = self.core_renewal.read().await.clone()?;
+        self.renew_core_bearer_for_epoch(rejected, self.core_epoch().await)
+            .await
+    }
+
+    /// The expected owner was captured before the original request, not after 401.
+    async fn renew_core_bearer_for_epoch(&self, rejected: &str, expected: u64) -> Option<String> {
         let _gate = self.core_renewal_gate.lock().await;
-        if self
-            .core_session_epoch
-            .load(std::sync::atomic::Ordering::SeqCst)
-            != epoch
-        {
-            return None;
-        }
-        let current = self.auth_token.read().await.clone();
-        if current.trim().is_empty() {
-            return None;
-        }
-        if !current.trim().is_empty() && current != rejected {
-            return Some(current);
-        }
+        let renewal = {
+            let core = self.core_auth.read().await;
+            if core.epoch != expected || core.token.trim().is_empty() {
+                return None;
+            }
+            if core.token != rejected {
+                return Some(core.token.clone());
+            }
+            core.renewal.clone()?
+        };
         let fresh = renewal
             .renew()
             .await
             .filter(|token| !token.trim().is_empty() && token != rejected)?;
-        let mut current = self.auth_token.write().await;
-        if self
-            .core_session_epoch
-            .load(std::sync::atomic::Ordering::SeqCst)
-            != epoch
-            || current.trim().is_empty()
-        {
+        let mut core = self.core_auth.write().await;
+        if core.epoch != expected || core.token.trim().is_empty() {
             return None;
         }
-        // The host may already have pushed a newer token while renewal awaited.
-        if *current != rejected {
-            return Some(current.clone());
+        if core.token != rejected {
+            return Some(core.token.clone());
         }
-        *current = fresh.clone();
+        core.token = fresh.clone();
         Some(fresh)
     }
 
     pub async fn set_auth_context(&self, token: String, language: Option<String>) {
-        if token.trim().is_empty() {
-            self.core_session_epoch
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        {
+            let mut core = self.core_auth.write().await;
+            // Clear and the next authenticated installation are separate owner
+            // boundaries. A request born without credentials cannot later borrow them.
+            if token.trim().is_empty() || core.token.trim().is_empty() {
+                core.epoch = core.epoch.wrapping_add(1);
+            }
+            if token.trim().is_empty() {
+                core.user.clear();
+                core.tenant.clear();
+            }
+            core.token = token;
         }
-        *self.auth_token.write().await = token;
         if let Some(language) = language {
             *self.language.write().await = language;
         }
@@ -211,19 +240,36 @@ impl HttpRequestContext {
     /// 补齐或刷新 `x-user-id` / `x-tenant-id`（IM `login` 后 Background 社交同步依赖此字段）。
     pub async fn ensure_identity(&self, user_id: &str, tenant_id: &str) {
         let uid = user_id.trim();
+        let tid = if tenant_id.trim().is_empty() {
+            String::new()
+        } else {
+            crate::shared::util::normalize_tenant_id(tenant_id.trim())
+        };
+        {
+            let mut core = self.core_auth.write().await;
+            if (!uid.is_empty() && core.user != uid) || (!tid.is_empty() && core.tenant != tid) {
+                core.epoch = core.epoch.wrapping_add(1);
+                if !uid.is_empty() {
+                    core.user = uid.to_string();
+                }
+                if !tid.is_empty() {
+                    core.tenant = tid.clone();
+                }
+            }
+        }
+        // Legacy explicitly injected Gateway contexts keep their own identity.
         if !uid.is_empty() {
             *self.user_id.write().await = uid.to_string();
         }
-        let tid = tenant_id.trim();
         if !tid.is_empty() {
-            *self.tenant_id.write().await = crate::shared::util::normalize_tenant_id(tid);
+            *self.tenant_id.write().await = tid;
         }
     }
 
     /// 从当前 Gateway/IM Bearer 解析 `sub` 并写回 `user_id`（JWT 形态：`a.b.c`）。
     pub async fn sync_user_id_from_token(&self) {
         let gateway_token = self.gateway_token.read().await.clone();
-        let im_token = self.auth_token.read().await.clone();
+        let im_token = self.core_auth.read().await.token.clone();
         let token = if !gateway_token.trim().is_empty() {
             gateway_token
         } else {
@@ -246,21 +292,43 @@ impl HttpRequestContext {
     /// Headers for Core HTTP (media, presence): the IM Bearer when set. The
     /// gateway token belongs to the business backend and Core does not accept it.
     pub async fn build_core_headers(&self) -> HashMap<String, String> {
-        self.build_headers_preferring(true).await
+        self.core_headers_for_epoch(None).await.unwrap_or_default()
+    }
+
+    async fn core_headers_for_epoch(
+        &self,
+        expected: Option<u64>,
+    ) -> Result<HashMap<String, String>> {
+        let core = self.core_auth.read().await.clone();
+        if expected.is_some_and(|epoch| epoch != core.epoch) {
+            return Err(FlareError::localized(
+                crate::shared::error::ErrorCode::NotConnected,
+                "Core request cancelled: credential owner changed",
+            ));
+        }
+        let mut headers = self.metadata_headers().await;
+        if !core.token.trim().is_empty() {
+            headers.insert(
+                "Authorization".into(),
+                format!("Bearer {}", core.token.trim()),
+            );
+        }
+        headers.insert(
+            "x-tenant-id".into(),
+            crate::shared::util::normalize_tenant_id(core.tenant),
+        );
+        if !core.user.is_empty() {
+            headers.insert("x-user-id".into(), core.user);
+        }
+        self.ensure_core_epoch(core.epoch).await?;
+        Ok(headers)
     }
 
     async fn build_headers_preferring(&self, im_first: bool) -> HashMap<String, String> {
-        let gateway_token = self.gateway_token.read().await.clone();
-        let im_token = self.auth_token.read().await.clone();
-        let (preferred, fallback) = if im_first {
-            (im_token, gateway_token)
+        let token = if im_first {
+            self.core_auth.read().await.token.clone()
         } else {
-            (gateway_token, im_token)
-        };
-        let token = if !preferred.trim().is_empty() {
-            preferred
-        } else {
-            fallback
+            self.gateway_token.read().await.clone()
         };
         let mut tenant_id =
             crate::shared::util::normalize_tenant_id(self.tenant_id.read().await.trim());
@@ -276,10 +344,8 @@ impl HttpRequestContext {
             tenant_id = "0".to_string();
         }
         *self.tenant_id.write().await = tenant_id.clone();
-        let trace_id = self.trace_id.read().await.clone();
         let session_id = self.session_id.read().await.clone();
-        let language = self.language.read().await.clone();
-        let mut headers = HashMap::new();
+        let mut headers = self.metadata_headers().await;
         if !token.trim().is_empty() {
             headers.insert(
                 "Authorization".to_string(),
@@ -292,9 +358,16 @@ impl HttpRequestContext {
         if !user_id.is_empty() {
             headers.insert("x-user-id".to_string(), user_id);
         }
-        if !session_id.is_empty() {
+        if !im_first && !session_id.is_empty() {
             headers.insert("x-session-id".to_string(), session_id);
         }
+        headers
+    }
+
+    async fn metadata_headers(&self) -> HashMap<String, String> {
+        let trace_id = self.trace_id.read().await.clone();
+        let language = self.language.read().await.clone();
+        let mut headers = HashMap::new();
         if trace_id.is_empty() {
             headers.insert("x-trace-id".to_string(), Uuid::new_v4().to_string());
         } else {
@@ -329,6 +402,47 @@ pub(crate) fn send_failure(error: reqwest::Error) -> FlareError {
 #[cfg(test)]
 mod tests {
     use super::HttpRequestContext;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn a_clear_waiting_for_the_auth_lock_never_exposes_old_bearer_with_a_new_epoch() {
+        use std::sync::Arc;
+        let context = Arc::new(HttpRequestContext::new());
+        context
+            .set_auth_context("old-connect-fixture".into(), None)
+            .await;
+        context.ensure_identity("alice", "app-a").await;
+        context
+            .set_gateway_context(
+                "access-fixture".into(),
+                "app-a".into(),
+                "alice".into(),
+                None,
+            )
+            .await;
+        let held = context.core_auth.read().await;
+        let c = context.clone();
+        let (started, start) = tokio::sync::oneshot::channel();
+        let clearing = tokio::spawn(async move {
+            let _ = started.send(());
+            c.set_auth_context(String::new(), None).await;
+        });
+        start.await.unwrap(); // single-thread test: the clear is queued on the write lock
+        let (url, server) = authorization_of_one_request().await;
+        let http = super::HttpClient::with_context(url, context.clone()).with_core_bearer();
+        let request = tokio::spawn(async move { http.get::<serde_json::Value>("/", None).await });
+        drop(held);
+        clearing.await.unwrap();
+        request.await.unwrap().unwrap();
+        assert_eq!(server.await.unwrap(), None);
+        // A scope captured without credentials cannot adopt the next login.
+        let empty_epoch = context.core_epoch().await;
+        context
+            .set_auth_context("new-connect-fixture".into(), None)
+            .await;
+        context.ensure_identity("bob", "app-b").await;
+        assert!(context.ensure_core_epoch(empty_epoch).await.is_err());
+    }
 
     /// 起一个只收一次 PUT 的本地服务：返回请求头（小写）和请求体。
     #[cfg(not(target_arch = "wasm32"))]
@@ -750,7 +864,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_gateway_context_falls_back_to_im_auth_without_stale_identity() {
+    async fn clearing_gateway_context_never_falls_back_to_im_auth() {
         let context = HttpRequestContext::new();
         context.set_auth_context("im-token".to_string(), None).await;
         context
@@ -780,6 +894,7 @@ mod tests {
             Some("session-a")
         );
 
+        context.ensure_identity("alice", "tenant-a").await;
         // Core HTTP never receives the business gateway's token.
         let core = context.build_core_headers().await;
         assert_eq!(
@@ -794,8 +909,13 @@ mod tests {
         context.clear_gateway_context().await;
 
         let headers = context.build_headers().await;
+        assert!(!headers.contains_key("Authorization"));
         assert_eq!(
-            headers.get("Authorization").map(String::as_str),
+            context
+                .build_core_headers()
+                .await
+                .get("Authorization")
+                .map(String::as_str),
             Some("Bearer im-token")
         );
         assert_eq!(headers.get("x-tenant-id").map(String::as_str), Some("0"));
@@ -987,6 +1107,44 @@ mod tests {
         );
         assert_eq!(server.await.unwrap().len(), 1);
         assert_eq!(renewal.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn one_use_requests_never_retry_or_renew_after_a_real_http_failure() {
+        for (status, body) in [
+            (503, r#"{"reason":"OVERLOADED"}"#),
+            (401, r#"{"code":401,"reason":"TOKEN_EXPIRED","message":""}"#),
+        ] {
+            let context = std::sync::Arc::new(HttpRequestContext::new());
+            context.set_auth_context("expired-token".into(), None).await;
+            let renewal = std::sync::Arc::new(CountingRenewal(Default::default()));
+            context.set_core_bearer_renewal(Some(renewal.clone())).await;
+            let (url, server) = scripted_server(vec![(status, body)]).await;
+            let original = super::HttpClient::with_context(url, context).with_core_bearer();
+            let once = original.without_retries();
+            let error = once
+                .post_idempotent::<_, serde_json::Value>(
+                    "/one-use",
+                    &serde_json::json!({"proof":"memory-only"}),
+                    "test-key",
+                )
+                .await
+                .expect_err("one response is final");
+            assert_eq!(server.await.unwrap(), vec!["Bearer expired-token"]);
+            assert_eq!(renewal.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(
+                error
+                    .as_localized()
+                    .and_then(|e| e.params)
+                    .and_then(|p| p.get("httpStatus").cloned()),
+                Some(status.to_string())
+            );
+            assert!(
+                original.retry_enabled,
+                "clone policy must not alter ordinary callers"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1273,11 +1431,13 @@ mod tests {
 pub struct HttpClient {
     base_url: String,
     context: Option<Arc<HttpRequestContext>>,
+    credential_lease: Option<HttpCredentialLease>,
     /// 按服务路由：每次请求向选路器取接入点（REST 跟随 IM 当前接入点）并按 §3.9 重试。
     /// 没有时 `base_url` 是固定入口（显式端点：令牌签发、测试替身）。
     router: Option<super::router::HttpRouter>,
     /// Core HTTP client: send the IM Bearer rather than the business gateway's.
     core_bearer: bool,
+    retry_enabled: bool,
     #[cfg(not(target_arch = "wasm32"))]
     client: reqwest::Client,
     #[cfg(not(target_arch = "wasm32"))]
@@ -1360,8 +1520,10 @@ impl HttpClient {
         Self {
             base_url: base_url.into(),
             context: None,
+            credential_lease: None,
             router: None,
             core_bearer: false,
+            retry_enabled: true,
             #[cfg(not(target_arch = "wasm32"))]
             client,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1383,8 +1545,10 @@ impl HttpClient {
         Self {
             base_url: base_url.into(),
             context: Some(context),
+            credential_lease: None,
             router: None,
             core_bearer: false,
+            retry_enabled: true,
             #[cfg(not(target_arch = "wasm32"))]
             client,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1408,8 +1572,10 @@ impl HttpClient {
         Self {
             base_url: base_url.into(),
             context: None,
+            credential_lease: None,
             router: None,
             core_bearer: false,
+            retry_enabled: true,
             client,
             tls_config_error,
             tls,
@@ -1429,8 +1595,10 @@ impl HttpClient {
         Self {
             base_url: base_url.into(),
             context: Some(context),
+            credential_lease: None,
             router: None,
             core_bearer: false,
+            retry_enabled: true,
             client,
             tls_config_error,
             tls,
@@ -1454,8 +1622,10 @@ impl HttpClient {
         Self {
             base_url: String::new(),
             context: Some(context),
+            credential_lease: None,
             router: Some(router),
             core_bearer: false,
+            retry_enabled: true,
             client,
             tls_config_error,
             tls,
@@ -1480,7 +1650,16 @@ impl HttpClient {
             .router
             .as_ref()
             .map(|router| router.for_service(service));
-        client
+        match service {
+            flare_access::ServiceClass::CoreApi => client.with_core_bearer(),
+            flare_access::ServiceClass::SocialApi => {
+                client.core_bearer = false;
+                client
+            }
+            flare_access::ServiceClass::Media | flare_access::ServiceClass::Im => {
+                client.anonymous_clone()
+            }
+        }
     }
 
     pub fn is_routed(&self) -> bool {
@@ -1518,7 +1697,31 @@ impl HttpClient {
     /// context with a business gateway client.
     pub fn with_core_bearer(mut self) -> Self {
         self.core_bearer = true;
+        self.credential_lease = None;
         self
+    }
+
+    /// Bind an explicitly owned Gateway session to this request client.
+    pub fn with_gateway_credentials(mut self, lease: HttpCredentialLease) -> Self {
+        self.credential_lease = Some(lease);
+        self.core_bearer = false;
+        self
+    }
+
+    /// Rebind routing without inheriting the transport's authentication lifecycle.
+    pub fn with_gateway_context(mut self, context: Arc<HttpRequestContext>) -> Self {
+        self.context = Some(context);
+        self.credential_lease = None;
+        self.core_bearer = false;
+        self
+    }
+
+    /// Clone the same authenticated route for a one-use input. A failure is final:
+    /// neither access-point retries nor automatic bearer renewal resend its body.
+    pub fn without_retries(&self) -> Self {
+        let mut client = self.clone();
+        client.retry_enabled = false;
+        client
     }
 
     /// A lifecycle operation must never borrow the next account's mutable bearer.
@@ -1529,11 +1732,14 @@ impl HttpClient {
         context.ensure_identity(user, app).await;
         client.context = Some(context);
         client.core_bearer = true;
+        client.credential_lease = None;
         client
     }
     pub(crate) fn anonymous_clone(&self) -> Self {
         let mut client = self.clone();
         client.context = None;
+        client.credential_lease = None;
+        client.core_bearer = false;
         client
     }
 
@@ -1834,12 +2040,85 @@ impl HttpClient {
         }
     }
 
-    async fn context_headers(&self) -> HashMap<String, String> {
-        if let Some(ctx) = &self.context {
-            self.headers_from(ctx).await
+    async fn context_headers(&self, core_epoch: Option<u64>) -> Result<HashMap<String, String>> {
+        if let Some(lease) = &self.credential_lease {
+            let credentials = lease.credentials().await?;
+            let mut headers = match &self.context {
+                Some(context) => context.metadata_headers().await,
+                None => HashMap::new(),
+            };
+            headers.insert(
+                "Authorization".into(),
+                format!("Bearer {}", credentials.bearer),
+            );
+            headers.insert("x-user-id".into(), credentials.owner.user_id);
+            headers.insert("x-tenant-id".into(), credentials.owner.tenant_id);
+            if !credentials.session_id.is_empty() {
+                headers.insert("x-session-id".into(), credentials.session_id);
+            }
+            lease.ensure_current().await?;
+            Ok(headers)
+        } else if let Some(ctx) = &self.context {
+            if self.core_bearer {
+                ctx.core_headers_for_epoch(core_epoch).await
+            } else {
+                Ok(self.headers_from(ctx).await)
+            }
         } else {
-            HashMap::new()
+            Ok(HashMap::new())
         }
+    }
+
+    async fn core_request_epoch(&self) -> Option<u64> {
+        if self.core_bearer
+            && let Some(context) = &self.context
+        {
+            return Some(context.core_epoch().await);
+        }
+        None
+    }
+
+    async fn ensure_request_scope(&self, core_epoch: Option<u64>) -> Result<()> {
+        self.ensure_credential_scope().await?;
+        if let (Some(epoch), Some(context)) = (core_epoch, &self.context) {
+            context.ensure_core_epoch(epoch).await?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(super) async fn decode_scoped_json<T: serde::de::DeserializeOwned>(
+        &self,
+        bytes: &[u8],
+        core_epoch: Option<u64>,
+    ) -> Result<T> {
+        self.ensure_request_scope(core_epoch).await?;
+        serde_json::from_slice(bytes)
+            .map_err(|error| FlareError::system(format!("parse http json failed: {error}")))
+    }
+
+    async fn ensure_credential_scope(&self) -> Result<()> {
+        match &self.credential_lease {
+            Some(lease) => lease.ensure_current().await,
+            None => Ok(()),
+        }
+    }
+
+    fn validate_credential_headers(&self, headers: &HashMap<String, String>) -> Result<()> {
+        if self.credential_lease.is_some()
+            && headers.keys().any(|name| {
+                matches!(
+                    name.to_ascii_lowercase().as_str(),
+                    "authorization" | "cookie" | "x-user-id" | "x-tenant-id" | "x-session-id"
+                )
+            })
+        {
+            return Err(FlareError::localized(
+                crate::shared::error::ErrorCode::InvalidParameter,
+                "request headers cannot override the credential owner",
+            ));
+        }
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2282,12 +2561,14 @@ impl HttpClient {
 
     #[cfg(target_arch = "wasm32")]
     pub async fn send_bytes(&self, path: &str, data: &[u8]) -> Result<Vec<u8>> {
-        let headers = self.context_headers().await;
+        let core_epoch = self.core_request_epoch().await;
+        let headers = self.context_headers(core_epoch).await?;
         let url = self
             .resolve(&RequestTarget::path(path), &[], None)
             .await?
             .url;
-        wasm_http::fetch_bytes(
+        self.ensure_request_scope(core_epoch).await?;
+        let result = wasm_http::fetch_bytes(
             "POST",
             url,
             None,
@@ -2296,7 +2577,9 @@ impl HttpClient {
             headers,
             None,
         )
-        .await
+        .await;
+        self.ensure_request_scope(core_epoch).await?;
+        result
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -2611,6 +2894,7 @@ impl HttpClient {
         body: Option<&str>,
         extra_headers: Option<&HashMap<String, String>>,
     ) -> Result<T> {
+        let core_epoch = self.core_request_epoch().await;
         let client = self.clone();
         let method = method.to_owned();
         let query = query.cloned();
@@ -2619,15 +2903,14 @@ impl HttpClient {
         let (tx, rx) = futures::channel::oneshot::channel();
         wasm_bindgen_futures::spawn_local(async move {
             let result = client
-                .request_wasm_loop(&method, &target, query.as_ref(), body, &extra)
+                .request_wasm_loop(&method, &target, query.as_ref(), body, &extra, core_epoch)
                 .await;
             let _ = tx.send(result);
         });
         let bytes = rx
             .await
             .map_err(|_| FlareError::system("http renewal task dropped"))??;
-        serde_json::from_slice(&bytes)
-            .map_err(|error| FlareError::system(format!("parse http json failed: {error}")))
+        self.decode_scoped_json(&bytes, core_epoch).await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -2638,11 +2921,13 @@ impl HttpClient {
         query: Option<&HashMap<String, String>>,
         body: Option<Vec<u8>>,
         extra: &HashMap<String, String>,
+        core_epoch: Option<u64>,
     ) -> Result<Vec<u8>> {
         use super::router::{
             HttpFailure, HttpRetry, classify_status, has_idempotency_key, method_safety,
             network_uncertain, retry_decision,
         };
+        self.validate_credential_headers(extra)?;
         let safety = method_safety(method, has_idempotency_key(extra));
         let content_type = body.as_ref().map(|_| "application/json");
         let mut excluded: Vec<String> = Vec::new();
@@ -2651,7 +2936,7 @@ impl HttpClient {
         let mut renewed = false;
         loop {
             let resolved = self.resolve(target, &excluded, pinned.as_deref()).await?;
-            let headers = self.context_headers().await;
+            let headers = self.context_headers(core_epoch).await?;
             let sent = self.core_bearer_in_headers(&headers, extra);
             let mut request_headers = extra.clone();
             if let Some(ap) = resolved.access_point.as_deref() {
@@ -2659,6 +2944,7 @@ impl HttpClient {
                     .insert(super::router::ACCESS_POINT_HEADER.to_owned(), ap.to_owned());
             }
             let started = crate::shared::util::now_millis();
+            self.ensure_request_scope(core_epoch).await?;
             let outcome = wasm_http::fetch_bytes(
                 method,
                 resolved.url.clone(),
@@ -2669,6 +2955,7 @@ impl HttpClient {
                 Some(&request_headers),
             )
             .await;
+            self.ensure_request_scope(core_epoch).await?;
             let error = match outcome {
                 Ok(bytes) => {
                     resolved.record_success(started);
@@ -2676,7 +2963,11 @@ impl HttpClient {
                 }
                 Err(error) => error,
             };
-            if !renewed && self.renew_after_core_expiry(&error, sent.as_deref()).await {
+            if !renewed
+                && self
+                    .renew_after_core_expiry(&error, sent.as_deref(), core_epoch)
+                    .await
+            {
                 renewed = true;
                 continue;
             }
@@ -2710,7 +3001,7 @@ impl HttpClient {
                 _ => error,
             };
             resolved.record_failure(failure);
-            if retried {
+            if !self.retry_enabled || retried {
                 return Err(error);
             }
             retried = true;
@@ -2734,7 +3025,15 @@ impl HttpClient {
     }
 
     /// Only an exact typed expiry reason from a Core request permits one retry.
-    async fn renew_after_core_expiry(&self, error: &FlareError, sent: Option<&str>) -> bool {
+    async fn renew_after_core_expiry(
+        &self,
+        error: &FlareError,
+        sent: Option<&str>,
+        core_epoch: Option<u64>,
+    ) -> bool {
+        if !self.retry_enabled {
+            return false;
+        }
         let Some(sent) = sent else {
             return false;
         };
@@ -2749,7 +3048,13 @@ impl HttpClient {
             return false;
         }
         match &self.context {
-            Some(context) => context.renew_core_bearer(sent).await.is_some(),
+            Some(context) => match core_epoch {
+                Some(epoch) => context
+                    .renew_core_bearer_for_epoch(sent, epoch)
+                    .await
+                    .is_some(),
+                None => false,
+            },
             None => false,
         }
     }
@@ -2808,6 +3113,8 @@ impl HttpClient {
             HttpFailure, HttpRetry, classify_status, has_idempotency_key, method_safety,
             network_uncertain, retry_decision,
         };
+        let core_epoch = self.core_request_epoch().await;
+        self.validate_credential_headers(headers)?;
         self.ensure_tls_ready()?;
         let safety = method_safety(method.as_str(), has_idempotency_key(headers));
         let mut excluded: Vec<String> = Vec::new();
@@ -2816,9 +3123,10 @@ impl HttpClient {
         let mut renewed = false;
         loop {
             let resolved = self.resolve(&target, &excluded, pinned.as_deref()).await?;
-            let context_headers = self.context_headers().await;
+            let context_headers = self.context_headers(core_epoch).await?;
             let sent = self.core_bearer_in_headers(&context_headers, headers);
             let started = crate::shared::util::now_millis();
+            self.ensure_request_scope(core_epoch).await?;
             let sent_result = self
                 .send_native(
                     method.clone(),
@@ -2829,15 +3137,18 @@ impl HttpClient {
                     headers,
                 )
                 .await;
+            self.ensure_request_scope(core_epoch).await?;
             let (failure, error) = match sent_result {
                 // 接入点的钉扎本身无效：这个接入点建不起受信连接，按 TLS 失败换下一个。
                 Err(error) => (HttpFailure::Tls, error),
                 Ok(Ok(resp)) if resp.status().is_success() => {
                     resolved.record_success(started);
-                    return resp
+                    let result = resp
                         .json()
                         .await
                         .map_err(|e| FlareError::system(format!("parse http json failed: {e}")));
+                    self.ensure_request_scope(core_epoch).await?;
+                    return result;
                 }
                 Ok(Ok(resp)) => {
                     let status = resp.status().as_u16();
@@ -2848,8 +3159,13 @@ impl HttpClient {
                         .and_then(|value| value.to_str().ok())
                         .map(str::to_owned);
                     let text = resp.text().await.unwrap_or_default();
+                    self.ensure_request_scope(core_epoch).await?;
                     let error = http_error_from_response_status(status, &text);
-                    if !renewed && self.renew_after_core_expiry(&error, sent.as_deref()).await {
+                    if !renewed
+                        && self
+                            .renew_after_core_expiry(&error, sent.as_deref(), core_epoch)
+                            .await
+                    {
                         renewed = true;
                         continue;
                     }
@@ -2884,7 +3200,7 @@ impl HttpClient {
                 }
             };
             resolved.record_failure(failure);
-            if retried {
+            if !self.retry_enabled || retried {
                 return Err(error);
             }
             retried = true;

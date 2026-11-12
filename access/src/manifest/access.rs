@@ -49,6 +49,8 @@ pub struct AccessManifest {
     pub client_policy: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleaseSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<super::links::LinksSection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -270,6 +272,7 @@ impl AccessManifest {
             bootstrap: BootstrapSection::default(),
             client_policy: serde_json::Value::Null,
             release: None,
+            links: None,
         }
     }
 
@@ -299,6 +302,9 @@ impl AccessManifest {
 
     /// 结构校验：ID 合法且唯一、归属 Cell 存在、主机名不是 IP、服务路径合法、时间可解析。
     pub fn validate(&self) -> Result<ManifestTimes, ManifestError> {
+        if let Some(links) = &self.links {
+            links.validate()?;
+        }
         if self.schema != ACCESS_SCHEMA {
             return Err(ManifestError::UnsupportedSchema(self.schema.clone()));
         }
@@ -533,7 +539,7 @@ pub fn is_valid_bootstrap_id(value: &str) -> bool {
 }
 
 /// 生产清单的主机名：至少两级、每级 1–63 字符、不是 IP 字面量。
-fn is_valid_public_host(host: &str) -> bool {
+pub(super) fn is_valid_public_host(host: &str) -> bool {
     if host.is_empty() || host.len() > 253 || host.parse::<IpAddr>().is_ok() {
         return false;
     }

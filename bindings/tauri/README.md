@@ -69,3 +69,39 @@ const response = await invoke("sdk_invoke_json", {
   first wiring it to the current `SdkEvent` and `events.json` contract.
 - Plugin realtime packets and plugin catalog changes reach the app as the
   typed `im://plugin_realtime` and `im://plugin_catalog_changed` events.
+
+## Generated file saves
+
+The handwritten Tauri host adapter exposes `sdk_stage_generated_file({ bytesBase64 })`
+and `sdk_cleanup_generated_file({ token })`. Staging returns `{ token, path, sizeBytes }`:
+an App-owned, randomly named file under the private `generated-files` cache directory.
+Neither command accepts a JavaScript destination or deletion path. Writes and cleanup
+run off the UI thread; files are limited to 8 MiB and 16 outstanding tokens per App.
+Entries older than 15 minutes are reclaimed on a subsequent staging request. Registered
+files are also removed when their App state is dropped; abrupt process termination can
+leave private cache files, so this is not a persistent transfer journal.
+
+For generated PNGs, keep rendering in the UI kit and use the reusable TypeScript adapter:
+
+```ts
+import { createTauriGeneratedFileSaver } from '@flare-im/sdk/tauri';
+
+// Supply the current SDK's existing typed save operation, for example
+// request => social.media.saveToDevice(request).
+const saveFile = createTauriGeneratedFileSaver(saveToDevice);
+await saveFile(pngBlob, 'flare-code.png', { signal });
+```
+
+The adapter stages bytes, passes the controlled `sourcePath` to the existing media save
+operation, validates its actual destination path, and cleans the token in `finally`.
+That existing native operation owns the configured download directory, safe naming,
+collision handling, atomic destination write and saved-file record. Native failures
+are propagated without falling back to a browser anchor. Cleanup failure changes neither
+a validated successful save nor the original save/cancellation failure. It emits only a
+fixed SDK warning, without generated content, paths, tokens or the native error text.
+
+Bind `signal` to the original presentation/session. Cancellation prevents a later stage
+or media save from starting and still releases a returned token. A media operation that
+has already started may finish; the caller must suppress stale UI completion rather than
+automatically retrying it. Browser download behavior belongs in the browser adapter and
+does not establish that a desktop file was saved.

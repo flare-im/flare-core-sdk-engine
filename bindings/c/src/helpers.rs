@@ -73,14 +73,26 @@ pub fn parse_upload_options(options_json: *const c_char) -> Result<Option<Upload
     }
     let value: serde_json::Value =
         serde_json::from_str(&raw).map_err(|_| FLARE_ERR_INVALID_PARAM)?;
-    let Some(chunk_size) = value.get("chunk_size").and_then(|v| v.as_u64()) else {
-        return Ok(None);
+    if !value.is_object() {
+        return Err(FLARE_ERR_INVALID_PARAM);
+    }
+    let chunk_size = match value.get("chunk_size").or_else(|| value.get("chunkSize")) {
+        None | Some(serde_json::Value::Null) => UploadOptions::default().chunk_size,
+        Some(value) => usize::try_from(value.as_u64().ok_or(FLARE_ERR_INVALID_PARAM)?)
+            .map_err(|_| FLARE_ERR_INVALID_PARAM)?,
     };
-    let chunk_size = usize::try_from(chunk_size).map_err(|_| FLARE_ERR_INVALID_PARAM)?;
+    let purpose = match value.get("purpose") {
+        None | Some(serde_json::Value::Null) => Default::default(),
+        Some(serde_json::Value::String(raw)) => raw.parse().map_err(|_| FLARE_ERR_INVALID_PARAM)?,
+        _ => return Err(FLARE_ERR_INVALID_PARAM),
+    };
     if chunk_size == 0 {
         return Err(FLARE_ERR_INVALID_PARAM);
     }
-    Ok(Some(UploadOptions { chunk_size }))
+    Ok(Some(UploadOptions {
+        chunk_size,
+        purpose,
+    }))
 }
 
 // ===== 内存释放函数（C 调用；内部 panic 隔离） =====

@@ -17,9 +17,10 @@ use super::native_download::{
     temp_sibling,
 };
 use super::upload_shared::{
-    build_control_headers as shared_build_control_headers, build_upload_metadata,
-    build_upload_parts, build_upload_parts_from_manifest, compute_bytes_fingerprints,
-    infer_file_type, random_upload_id, single_put_progress, upload_file_to_uploaded_media,
+    bind_upload_purpose, build_control_headers as shared_build_control_headers,
+    build_upload_metadata, build_upload_parts, build_upload_parts_from_manifest,
+    compute_bytes_fingerprints, infer_file_type, random_upload_id, single_put_progress,
+    upload_file_to_uploaded_media,
 };
 use async_trait::async_trait;
 #[cfg(not(target_arch = "wasm32"))]
@@ -403,6 +404,7 @@ impl MediaService {
         let source_locator = path.to_string_lossy().to_string();
         let (file_fingerprint, head_tail_sha256, full_sha256) =
             compute_file_fingerprints(path).await?;
+        let file_fingerprint = bind_upload_purpose(file_fingerprint, options.purpose);
 
         let mut manifest = if let Some(store) = &self.upload_manifest_store {
             if let Some(existing) = store
@@ -457,6 +459,7 @@ impl MediaService {
                     file_type,
                     manifest.local_upload_id.clone(),
                     user_id.clone(),
+                    options.purpose,
                 ),
                 desired_part_size: i64::try_from(options.chunk_size)
                     .map_err(|_| FlareError::general_error("invalid part size"))?,
@@ -822,6 +825,7 @@ impl MediaService {
             .map_err(|_| FlareError::general_error("upload payload too large"))?;
         let file_type = infer_file_type(&mime_type);
         let (file_fingerprint, head_tail_sha256, full_sha256) = compute_bytes_fingerprints(bytes);
+        let file_fingerprint = bind_upload_purpose(file_fingerprint, options.purpose);
         let local_upload_id = random_upload_id("native-bytes");
 
         emit_progress(
@@ -850,6 +854,7 @@ impl MediaService {
                         file_type,
                         local_upload_id.clone(),
                         user_id,
+                        options.purpose,
                     ),
                     desired_part_size: i64::try_from(options.chunk_size)
                         .map_err(|_| FlareError::general_error("invalid part size"))?,

@@ -28,7 +28,7 @@ pub use conversation_user_settings::{
 pub use event::{Event, EventType};
 pub use media::{
     MediaAccessUrl, MediaDestinationDescriptor, MediaDestinationKind, MediaResolvedAccess,
-    RenderableMedia, RenderableMediaKind, UploadOptions, UploadedMedia,
+    RenderableMedia, RenderableMediaKind, UploadOptions, UploadPurpose, UploadedMedia,
 };
 pub use message::{
     ConversationType, DeleteScope, DeleteType, IMMessage, MarkType, Message, MessageSource,

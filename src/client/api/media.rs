@@ -63,7 +63,7 @@ impl MediaApi {
         user_file_download_store: Option<Arc<dyn UserFileDownloadStore>>,
     ) -> Self {
         let handler: Arc<dyn MediaServicePort> = Arc::new(MediaService::new(
-            http,
+            http.with_core_bearer(),
             current_user_id.clone(),
             upload_manifest_store,
             media_cache_store,

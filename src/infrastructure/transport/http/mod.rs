@@ -1,5 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod artifact;
+mod credential_scope;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod doh;
 pub mod fetch;
@@ -13,6 +14,9 @@ mod private_download;
 pub mod probe;
 pub(crate) mod read_receipt_api;
 pub mod router;
+pub use credential_scope::{
+    HttpCredentialLease, HttpCredentialOwner, HttpCredentialSource, HttpCredentials,
+};
 pub use http_client::{CoreBearerRenewal, HttpClient, HttpRequestContext, SentBytesCallback};
 pub use media_dto::{
     AbortDirectUploadHttpRequest, CommitDirectUploadPartsHttpRequest,

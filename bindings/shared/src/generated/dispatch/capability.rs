@@ -27,7 +27,9 @@ pub const CAPABILITY_DISPATCH_OPERATIONS: &[&str] = &[
     "plugin_detail",
     "plugin_page",
     "plugin_file_upload",
+    "plugin_native_invoke",
     "plugin_account_entries",
+    "plugin_scan_handlers",
     "plugin_catalog_invalidate",
     "capability_list",
     "capability_dispatch",
@@ -162,8 +164,26 @@ pub async fn dispatch_capability(
             )
             .await?,
         ),
+        "plugin_native_invoke" => json(
+            api.plugin_native_invoke(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
         "plugin_account_entries" => json(
             api.plugin_account_entries(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_scan_handlers" => json(
+            api.plugin_scan_handlers(
                 params
                     .get("payload")
                     .cloned()

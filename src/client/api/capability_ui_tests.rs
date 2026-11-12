@@ -52,6 +52,7 @@ impl Fixture {
             version: 1,
             valid_until_ms: chrono::Utc::now().timestamp_millis() + 60000,
             plugins: vec![ClientPlugin {
+                transient_operations: Default::default(),
                 plugin_id: manifest.plugin_id,
                 version: manifest.version,
                 manifest_digest: format!("sha256:{}", "a".repeat(64)),
@@ -1560,4 +1561,132 @@ async fn a_catalog_from_a_newer_server_costs_only_what_this_client_cannot_read()
             "{error}"
         );
     }
+}
+
+fn native_reauth_request(fixture: &Fixture) -> Value {
+    let mut catalog = fixture.catalog.lock().unwrap();
+    let plugin = &mut catalog.plugins[0];
+    plugin
+        .extensions
+        .native_capabilities
+        .push(NativeCapability::Reauthenticate);
+    plugin
+        .transient_operations
+        .insert("example.poll.vote".into());
+    let contribution = &mut plugin.extensions.contributions[0];
+    let action = contribution
+        .schema
+        .actions
+        .iter_mut()
+        .find(|action| action.id == "vote")
+        .unwrap();
+    action.target = UiActionTarget::Native {
+        capability: NativeCapability::Reauthenticate,
+    };
+    action.command = None;
+    action.continuation = None;
+    json!({"pluginId":plugin.plugin_id,"contributionId":contribution.id,"actionId":action.id,"platform":"web","expectedUserId":"u1","conversationId":"conversation-1","_session":{"tenantId":"201","userId":"u1"},"operation":"example.poll.vote","payload":{"pollId":"poll-1"}})
+}
+
+#[tokio::test]
+async fn native_reauth_dispatch_rechecks_transient_authority_and_never_uses_a_page_command() {
+    let f = Fixture::new().await;
+    let request = native_reauth_request(&f);
+    let response = f.api.plugin_native_invoke(request.clone()).await.unwrap();
+    assert_eq!(response["success"], true);
+    {
+        let calls = f.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0]["capabilityId"],
+            flare_plugin_protocol::ui::UI_CATALOG_OPERATION
+        );
+        assert_eq!(calls[1]["capabilityId"], "example.poll.vote");
+        assert_eq!(calls[1]["payload"], request["payload"]);
+        assert!(calls[1]["payload"].get("commandId").is_none());
+    }
+    f.catalog.lock().unwrap().plugins[0]
+        .transient_operations
+        .clear();
+    assert!(f.api.plugin_native_invoke(request).await.is_err());
+    assert_eq!(
+        f.calls.lock().unwrap().len(),
+        3,
+        "fresh revoked catalog does not dispatch business input"
+    );
+}
+
+#[tokio::test]
+async fn native_reauth_refuses_cross_identity_command_ids_and_late_logout() {
+    let f = Fixture::new().await;
+    let request = native_reauth_request(&f);
+    let mut invalids = [request.clone(), request.clone(), request.clone()];
+    invalids[0]["expectedUserId"] = json!("other");
+    invalids[1]["_session"]["userId"] = json!("other");
+    invalids[2]["page"] = json!("example.poll.page.other");
+    for invalid in invalids {
+        assert!(f.api.plugin_native_invoke(invalid).await.is_err());
+    }
+    let mut bad = request.clone();
+    bad["_session"]["tenantId"] = json!("other");
+    assert!(f.api.plugin_native_invoke(bad).await.is_err());
+    let mut bad = request.clone();
+    bad["payload"]["nested"] = json!({"commandId":"must-not-journal"});
+    assert!(f.api.plugin_native_invoke(bad).await.is_err());
+    assert!(f.calls.lock().unwrap().is_empty());
+    let mut other = request.clone();
+    other["operation"] = json!("other.provider.set");
+    assert!(f.api.plugin_native_invoke(other).await.is_err());
+    assert_eq!(f.calls.lock().unwrap().len(), 1);
+    f.hold.store(true, Ordering::SeqCst);
+    let api = f.api.clone();
+    let pending = tokio::spawn(async move { api.plugin_native_invoke(request).await });
+    f.entered.notified().await;
+    *f.user.write().await = String::new();
+    f.release.notify_one();
+    assert!(pending.await.unwrap().is_err());
+    assert_eq!(
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call["capabilityId"] == "example.poll.vote")
+            .count(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn native_authentication_validates_but_never_returns_any_form_secret() {
+    let f = Fixture::new().await;
+    let _ = native_reauth_request(&f);
+    {
+        let mut catalog = f.catalog.lock().unwrap();
+        let document = &mut catalog.plugins[0].extensions.contributions[0].schema;
+        document.inputs.push(serde_json::from_value(json!({"id":"arbitrarySecret","kind":"text","label":"Secret","required":true,"maxLength":64})).unwrap());
+        document
+            .actions
+            .iter_mut()
+            .find(|action| action.id == "vote")
+            .unwrap()
+            .form = vec!["arbitrarySecret".into()];
+    }
+    let mut request = invoke("web");
+    request["nativeAllowlist"] = json!(["reauthenticate"]);
+    assert_eq!(
+        f.api.invoke_plugin_action(request.clone()).await.unwrap()["kind"],
+        "formErrors"
+    );
+    request["formValues"] = json!({"arbitrarySecret":"test-secret-do-not-serialize"});
+    let outcome = f.api.invoke_plugin_action(request).await.unwrap();
+    assert_eq!(outcome["kind"], "host");
+    assert!(outcome["payload"].get("arbitrarySecret").is_none());
+    assert!(!outcome.to_string().contains("test-secret-do-not-serialize"));
+    assert!(
+        f.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|call| call["capabilityId"] == flare_plugin_protocol::ui::UI_CATALOG_OPERATION)
+    );
 }

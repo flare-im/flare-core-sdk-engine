@@ -137,6 +137,7 @@ pub(super) fn build_upload_metadata(
     file_type: i32,
     upload_id: String,
     user_id: String,
+    purpose: crate::model::UploadPurpose,
 ) -> UploadFileMetadataHttp {
     UploadFileMetadataHttp {
         file_name,
@@ -144,14 +145,43 @@ pub(super) fn build_upload_metadata(
         file_size,
         file_type,
         upload_id: upload_id.clone(),
-        metadata: HashMap::new(),
+        metadata: if purpose == crate::model::UploadPurpose::Avatar {
+            HashMap::from([("purpose".into(), "avatar".into())])
+        } else {
+            HashMap::new()
+        },
         user_id,
         trace_id: upload_id,
-        namespace: "im.message".to_string(),
-        business_tag: "chat_attachment".to_string(),
+        namespace: if purpose == crate::model::UploadPurpose::Avatar {
+            "profile"
+        } else {
+            "im.message"
+        }
+        .into(),
+        business_tag: if purpose == crate::model::UploadPurpose::Avatar {
+            "avatar"
+        } else {
+            "chat_attachment"
+        }
+        .into(),
         bucket: String::new(),
         object_key: String::new(),
         labels: HashMap::new(),
+    }
+}
+
+pub(super) fn bind_upload_purpose(
+    fingerprint: String,
+    purpose: crate::model::UploadPurpose,
+) -> String {
+    use sha2::{Digest as _, Sha256};
+    if purpose == crate::model::UploadPurpose::General {
+        fingerprint
+    } else {
+        format!(
+            "{:x}",
+            Sha256::digest(format!("avatar|{fingerprint}").as_bytes())
+        )
     }
 }
 
@@ -261,5 +291,41 @@ mod tests {
         assert_eq!(infer_file_type("application/pdf"), 4);
         assert_eq!(infer_file_type("application/octet-stream"), 4);
         assert_eq!(infer_file_type("model/gltf+json"), 5);
+    }
+}
+
+#[cfg(test)]
+mod avatar_publication_tests {
+    use super::*;
+    use crate::model::UploadPurpose;
+    #[test]
+    fn avatar_scope_and_resume_identity_cannot_reuse_a_private_attachment() {
+        let avatar = build_upload_metadata(
+            "a.png".into(),
+            "image/png".into(),
+            10,
+            1,
+            "upload".into(),
+            "u".into(),
+            UploadPurpose::Avatar,
+        );
+        assert_eq!(avatar.namespace, "profile");
+        assert_eq!(avatar.business_tag, "avatar");
+        assert_eq!(avatar.metadata["purpose"], "avatar");
+        assert_ne!(
+            bind_upload_purpose("same-bytes".into(), UploadPurpose::Avatar),
+            bind_upload_purpose("same-bytes".into(), UploadPurpose::General)
+        );
+        let private = build_upload_metadata(
+            "a.png".into(),
+            "image/png".into(),
+            10,
+            1,
+            "upload".into(),
+            "u".into(),
+            UploadPurpose::General,
+        );
+        assert_eq!(private.namespace, "im.message");
+        assert!(private.metadata.is_empty());
     }
 }

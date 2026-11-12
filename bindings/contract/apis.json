@@ -1062,9 +1062,21 @@
           "tauri": "sdk_message_dispatch_json"
         },
         {
+          "id": "capability.plugin_native_invoke",
+          "core": "CapabilityApi::plugin_native_invoke",
+          "c": "flare_capability_dispatch_json:plugin_native_invoke",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
           "id": "capability.plugin_account_entries",
           "core": "CapabilityApi::plugin_account_entries",
           "c": "flare_capability_dispatch_json:plugin_account_entries",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_scan_handlers",
+          "core": "CapabilityApi::plugin_scan_handlers",
+          "c": "flare_capability_dispatch_json:plugin_scan_handlers",
           "tauri": "sdk_message_dispatch_json"
         },
         {

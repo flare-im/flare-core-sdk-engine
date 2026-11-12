@@ -268,18 +268,32 @@ pub fn optional_upload_options(value: &Value, key: &str) -> Result<Option<Upload
     if raw.is_null() {
         return Ok(None);
     }
-    let Some(chunk_size) = raw.get("chunkSize").and_then(|v| v.as_u64()) else {
-        return Ok(None);
-    };
-    let chunk_size = usize::try_from(chunk_size).map_err(|_| {
-        binding_invalid_parameter(format!("invalid upload options field: {key}.chunkSize"))
-    })?;
-    if chunk_size == 0 {
-        return Err(binding_invalid_parameter(format!(
-            "invalid upload options field: {key}.chunkSize"
-        )));
+    if !raw.is_object() {
+        return Err(binding_invalid_parameter("invalid upload options"));
     }
-    Ok(Some(UploadOptions { chunk_size }))
+    let chunk_size = match raw.get("chunkSize") {
+        None | Some(Value::Null) => UploadOptions::default().chunk_size,
+        Some(value) => usize::try_from(
+            value
+                .as_u64()
+                .ok_or_else(|| binding_invalid_parameter("invalid upload chunkSize"))?,
+        )
+        .map_err(|_| binding_invalid_parameter("invalid upload chunkSize"))?,
+    };
+    let purpose = match raw.get("purpose") {
+        None | Some(Value::Null) => Default::default(),
+        Some(Value::String(value)) => value
+            .parse()
+            .map_err(|_| binding_invalid_parameter("invalid upload purpose"))?,
+        _ => return Err(binding_invalid_parameter("invalid upload purpose")),
+    };
+    if chunk_size == 0 {
+        return Err(binding_invalid_parameter("invalid upload chunkSize"));
+    }
+    Ok(Some(UploadOptions {
+        chunk_size,
+        purpose,
+    }))
 }
 
 pub fn json_bytes_vec(value: &Value, key: &str) -> Result<Vec<u8>> {
@@ -1089,5 +1103,35 @@ mod tests {
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].image_id, "img-1");
         assert_eq!(images[0].format, ImageFormat::Png as i32);
+    }
+}
+
+#[cfg(test)]
+mod avatar_upload_option_tests {
+    use super::*;
+    #[test]
+    fn publication_intent_survives_options_without_chunk_size() {
+        let parsed = optional_upload_options(
+            &serde_json::json!({"options":{"purpose":"avatar"}}),
+            "options",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(parsed.purpose.as_str(), "avatar");
+        assert_eq!(parsed.chunk_size, UploadOptions::default().chunk_size);
+        assert!(
+            optional_upload_options(
+                &serde_json::json!({"options":{"purpose":"public"}}),
+                "options"
+            )
+            .is_err()
+        );
+        assert!(
+            optional_upload_options(
+                &serde_json::json!({"options":{"purpose":"avatar","chunkSize":"0"}}),
+                "options"
+            )
+            .is_err()
+        );
     }
 }

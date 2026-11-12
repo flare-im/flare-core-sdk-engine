@@ -541,15 +541,14 @@ impl IMClient {
             )
         };
         if let Some(context) = http_request_context.as_ref() {
-            // Avoid reusing a stale Social Gateway token after a fresh IM login.
-            // Media access resolution can use the IM token fallback until a new
-            // gateway session is explicitly applied.
+            // Clear legacy injected Gateway data. Core HTTP selects only its
+            // Connect scope; Social owns a separate credential lifecycle.
             context.clear_gateway_context().await;
             // SDK 托管时令牌还没签发：先清空，签发后由令牌来源带上。
             context
                 .set_auth_context(token.clone().unwrap_or_default(), None)
                 .await;
-            // IM login 期间 Background 社交同步仍走共享 HTTP，须保留 user/tenant。
+            // Bind the Core principal; Social sync uses its own captured lease.
             context.ensure_identity(user_id, &tenant_id).await;
         }
         if install_watcher {

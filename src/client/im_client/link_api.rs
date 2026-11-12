@@ -26,6 +26,12 @@ impl IMClient {
         self.inner.read().await.access.clone()
     }
 
+    /// Stable link hosts from the current verified access manifest, without
+    /// initiating any network request. Development endpoints never supply it.
+    pub async fn access_links(&self) -> Option<flare_access::manifest::LinksSection> {
+        self.access_runtime().await?.links()
+    }
+
     /// 当前连接状态（`connection://status` 的最新值）。没有会话时为 `idle`。
     pub async fn connection_status(&self) -> ConnectionStatus {
         let g = self.inner.read().await;
@@ -86,7 +92,11 @@ impl IMClient {
             let _ = &config;
             HttpClient::routed(router, context)
         };
-        Ok(http)
+        Ok(if service == flare_access::ServiceClass::CoreApi {
+            http.with_core_bearer()
+        } else {
+            http
+        })
     }
 
     async fn require_access(&self) -> Result<Arc<AccessRuntime>> {

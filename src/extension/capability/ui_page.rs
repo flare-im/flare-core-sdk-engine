@@ -431,7 +431,7 @@ pub(crate) fn prepare_page_action(
     let row_action = document
         .rows()
         .is_some_and(|rows| rows.actions.contains(&action.id));
-    let payload = match (row_action, &request.row) {
+    let mut payload = match (row_action, &request.row) {
         (true, Some(row)) => {
             if request.selection.is_some() {
                 return Err(invalid());
@@ -476,6 +476,7 @@ pub(crate) fn prepare_page_action(
         // A row action needs its row; a row needs a row action.
         _ => return Err(invalid()),
     };
+    super::ui::strip_native_form_inputs(&target, action, &mut payload);
     Ok(PreparedAction::Ready {
         target,
         payload,

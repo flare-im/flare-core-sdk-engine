@@ -158,6 +158,7 @@ impl DirectorySnapshot {
             },
             client_policy: serde_json::Value::Null,
             release: None,
+            links: None,
         };
         Self {
             origin: ManifestOrigin::Unavailable,

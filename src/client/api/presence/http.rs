@@ -111,6 +111,7 @@ impl PresenceApi {
         default_tenant_id: impl Into<String>,
         bus: EventBus,
     ) -> Self {
+        let http = http.with_core_bearer();
         let cache = Arc::new(RwLock::new(HashMap::new()));
         let cache_owner_user_id = Arc::new(RwLock::new(None));
         let cache_for_task = cache.clone();

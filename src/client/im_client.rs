@@ -339,6 +339,12 @@ impl IMClient {
             .as_ref()
             .and_then(|c| c.tenant_id.clone())
             .filter(|t| !t.is_empty())
+            .or_else(|| {
+                g.configured_config
+                    .as_ref()
+                    .and_then(|config| config.tenant_id.clone())
+                    .filter(|tenant| !tenant.is_empty())
+            })
             .or_else(|| std::env::var("FLARE_IM_TENANT_ID").ok())
             .map(crate::shared::util::normalize_tenant_id)
             .unwrap_or_else(|| "0".to_string())

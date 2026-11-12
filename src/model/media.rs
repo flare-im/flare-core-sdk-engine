@@ -139,15 +139,54 @@ pub struct UploadedMedia {
     pub cdn_url: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+/// Explicit publication intent. Only validated avatar images become public.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum UploadPurpose {
+    #[default]
+    General,
+    Avatar,
+}
+impl UploadPurpose {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::General => "general",
+            Self::Avatar => "avatar",
+        }
+    }
+}
+impl std::str::FromStr for UploadPurpose {
+    type Err = ();
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        match raw {
+            "general" => Ok(Self::General),
+            "avatar" => Ok(Self::Avatar),
+            _ => Err(()),
+        }
+    }
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct UploadOptions {
     pub chunk_size: usize,
+    pub purpose: UploadPurpose,
 }
 
 impl Default for UploadOptions {
     fn default() -> Self {
         Self {
             chunk_size: 256 * 1024,
+            purpose: UploadPurpose::General,
         }
     }
 }

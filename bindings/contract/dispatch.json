@@ -1740,8 +1740,30 @@
           "result": "json"
         },
         {
+          "op": "plugin_native_invoke",
+          "method": "plugin_native_invoke",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
           "op": "plugin_account_entries",
           "method": "plugin_account_entries",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_scan_handlers",
+          "method": "plugin_scan_handlers",
           "args": [
             [
               "request",

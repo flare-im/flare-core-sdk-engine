@@ -34,7 +34,7 @@ impl IMClient {
         }
     }
 
-    /// 共享 HTTP 鉴权上下文（媒体 / 能力 / Social Gateway 可共用）。
+    /// Core HTTP 鉴权上下文（媒体 / 能力）；业务 SDK 应使用独立的凭据作用域。
     pub fn http_request_context(&self) -> Option<Arc<HttpRequestContext>> {
         self.inner
             .try_read()
@@ -126,6 +126,51 @@ impl IMClient {
             g.connect_token = Some(token.clone());
         }
         self.sync_core_http_context(tenant_id).await?;
+        self.attach_push_session().await;
+        Ok(())
+    }
+
+    /// An external refresh producer may update only the exact Core session and
+    /// token it previously bound. No token family is inferred from JWT contents.
+    pub async fn update_access_token_for_session(
+        &self,
+        token: String,
+        expected_user: &str,
+        expected_tenant: &str,
+        expected_generation: u64,
+        expected_token_fingerprint: [u8; 32],
+    ) -> Result<()> {
+        use sha2::Digest as _;
+        if token.trim().is_empty() {
+            return Err(Self::not_connected());
+        }
+        {
+            let mut inner = self.inner.write().await;
+            let current = inner
+                .connect_token
+                .as_deref()
+                .ok_or_else(Self::not_connected)?;
+            let fingerprint: [u8; 32] = sha2::Sha256::digest(current.as_bytes()).into();
+            if inner.session_generation != expected_generation
+                || inner.current_user_id.as_deref() != Some(expected_user)
+                || Self::resolve_tenant_id(&inner)
+                    != crate::shared::util::normalize_tenant_id(expected_tenant)
+                || fingerprint != expected_token_fingerprint
+            {
+                return Err(Self::not_connected());
+            }
+            let context = inner
+                .http_request_context
+                .clone()
+                .ok_or_else(Self::not_connected)?;
+            inner.connect_token = Some(token.clone());
+            // Keep the generation lock through the local context writes. A late
+            // refresh cannot write behind the next session's clear/install.
+            context.set_auth_context(token, None).await;
+            context
+                .ensure_identity(expected_user, expected_tenant)
+                .await;
+        }
         self.attach_push_session().await;
         Ok(())
     }

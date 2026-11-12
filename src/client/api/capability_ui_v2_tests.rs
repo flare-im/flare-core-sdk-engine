@@ -49,6 +49,7 @@ impl Fixture {
             version: 1,
             valid_until_ms: chrono::Utc::now().timestamp_millis() + 60000,
             plugins: vec![ClientPlugin {
+                transient_operations: Default::default(),
                 query_operations: Default::default(),
                 plugin_id: manifest.plugin_id,
                 version: manifest.version,

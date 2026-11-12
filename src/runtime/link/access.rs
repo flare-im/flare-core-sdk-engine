@@ -203,6 +203,19 @@ pub fn now_ms() -> i64 {
 }
 
 impl AccessRuntime {
+    /// Routing hints from the accepted signed snapshot only. Reading never
+    /// starts bootstrap, refresh or storage access.
+    pub fn links(&self) -> Option<flare_access::manifest::LinksSection> {
+        let snapshot = self.kernel.get()?.directory().snapshot();
+        if !matches!(
+            snapshot.origin(),
+            flare_access::directory::ManifestOrigin::Signed { .. }
+        ) {
+            return None;
+        }
+        snapshot.manifest().links.clone()
+    }
+
     pub fn new(config: Option<AccessConfig>, store: AccessStoreSource) -> Self {
         Self {
             config,

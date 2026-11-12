@@ -141,6 +141,7 @@ impl RecoveryManifest {
             },
             client_policy: serde_json::Value::Null,
             release: None,
+            links: None,
         };
         let times = manifest.validate()?;
         Ok((manifest, times))

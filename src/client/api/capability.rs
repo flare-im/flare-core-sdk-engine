@@ -27,6 +27,8 @@ use crate::shared::error::{ErrorCode, FlareError, Result};
 mod entry_availability;
 #[path = "capability_file_upload.rs"]
 mod file_upload;
+#[path = "capability_native.rs"]
+mod native;
 #[path = "capability_page.rs"]
 mod page;
 pub use file_upload::{PluginFileUploadPage, PluginFileUploadRequest};
@@ -232,7 +234,7 @@ impl CapabilityApi {
         self
     }
     pub fn with_http_transport(mut self, http: HttpClient) -> Self {
-        self.http = Some(http);
+        self.http = Some(http.with_core_bearer());
         self
     }
     async fn dispatch_http(
@@ -307,7 +309,8 @@ impl CapabilityApi {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn enrich_metadata<T>(&self, req: &mut tonic::Request<T>) -> Result<()> {
+    async fn enrich_metadata<T>(&self, req: &mut tonic::Request<T>, epoch: u64) -> Result<()> {
+        self.http_request_context.ensure_core_epoch(epoch).await?;
         let user_id = self.current_user_id.read().await.clone();
         if !user_id.trim().is_empty() {
             let v = MetadataValue::try_from(user_id.trim())
@@ -324,13 +327,14 @@ impl CapabilityApi {
         if let Ok(v) = MetadataValue::try_from(trace.as_str()) {
             req.metadata_mut().insert("x-trace-id", v);
         }
-        for (k, v) in self.http_request_context.build_headers().await {
+        for (k, v) in self.http_request_context.build_core_headers().await {
             if k.eq_ignore_ascii_case("authorization")
                 && let Ok(mv) = MetadataValue::try_from(v.as_str())
             {
                 req.metadata_mut().insert("authorization", mv);
             }
         }
+        self.http_request_context.ensure_core_epoch(epoch).await?;
         Ok(())
     }
 
@@ -1000,6 +1004,33 @@ impl CapabilityApi {
             .await?;
         Ok(serde_json::json!({ "entries": entries }))
     }
+
+    pub async fn scan_handlers(
+        &self,
+        platform: flare_plugin_protocol::manifest::ClientPlatform,
+        locale: &str,
+    ) -> Result<Vec<crate::extension::capability::ui::PluginScanHandler>> {
+        self.session_guard
+            .run(async {
+                let (_, catalog) = self.fetch_plugin_ui_catalog().await?;
+                Ok(crate::extension::capability::ui::scan_handlers(
+                    &self.default_tenant_id,
+                    &catalog,
+                    platform,
+                    locale,
+                ))
+            })
+            .await
+    }
+
+    /// Binding form: `{platform, locale}` to `{handlers: [...]}`.
+    pub async fn plugin_scan_handlers(&self, request: Value) -> Result<Value> {
+        let request = crate::extension::capability::ui::parse_composer_actions(request)?;
+        let handlers = self
+            .scan_handlers(request.platform, &request.locale)
+            .await?;
+        Ok(serde_json::json!({ "handlers": handlers }))
+    }
     /// Refresh on login, tenant change and plugin state change. The returned
     /// catalog expires; callers must drop it on logout and never persist secrets.
     /// Each plugin carries `configuration`: the client-visible subset of its
@@ -1058,6 +1089,7 @@ impl CapabilityApi {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn list_capabilities(&self) -> Result<Vec<CapabilityDescriptorDto>> {
+        let epoch = self.http_request_context.core_epoch().await;
         let api = self.clone();
         self.session_guard
             .run(async move {
@@ -1065,10 +1097,11 @@ impl CapabilityApi {
                 let mut client = CapabilityServiceClient::new(ch);
                 let mut req =
                     tonic::Request::new(flare_grpc_proto::capability::ListCapabilitiesRequest {});
-                api.enrich_metadata(&mut req).await?;
+                api.enrich_metadata(&mut req, epoch).await?;
                 let resp = client.list_capabilities(req).await.map_err(|s| {
                     FlareError::system(format!("ListCapabilities: {}", s.message()))
                 })?;
+                api.http_request_context.ensure_core_epoch(epoch).await?;
                 let out = resp
                     .into_inner()
                     .capabilities
@@ -1143,6 +1176,7 @@ impl CapabilityApi {
                 )
                 .await;
         }
+        let epoch = self.http_request_context.core_epoch().await;
         let api = self.clone();
         let capability_id = capability_id.to_string();
         let conversation_id = conversation_id.map(str::to_string);
@@ -1181,11 +1215,12 @@ impl CapabilityApi {
                     request_id: uuid::Uuid::new_v4().to_string(),
                     message_id: message_id.unwrap_or_default(),
                 });
-                api.enrich_metadata(&mut req).await?;
+                api.enrich_metadata(&mut req, epoch).await?;
                 let resp = client
                     .dispatch(req)
                     .await
                     .map_err(|s| FlareError::system(format!("Dispatch: {}", s.message())))?;
+                api.http_request_context.ensure_core_epoch(epoch).await?;
                 let r = resp
                     .into_inner()
                     .result
@@ -1302,5 +1337,45 @@ impl CapabilityDispatchResult {
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| "capability service returned failure".to_string());
         Err(FlareError::localized(ErrorCode::ServiceUnavailable, msg))
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod credential_family_tests {
+    use super::*;
+    #[tokio::test]
+    async fn grpc_fallback_metadata_selects_connect_and_does_not_fall_back_to_access() {
+        let context = Arc::new(HttpRequestContext::new());
+        context
+            .set_gateway_context("access-fixture".into(), "app".into(), "alice".into(), None)
+            .await;
+        context
+            .set_auth_context("connect-fixture".into(), None)
+            .await;
+        let api = CapabilityApi::new(
+            "http://127.0.0.1:9",
+            Arc::new(RwLock::new("alice".into())),
+            "app",
+            context.clone(),
+        );
+        let mut request = tonic::Request::new(());
+        api.enrich_metadata(&mut request, context.core_epoch().await)
+            .await
+            .unwrap();
+        assert_eq!(
+            request
+                .metadata()
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "Bearer connect-fixture"
+        );
+        context.set_auth_context(String::new(), None).await;
+        let mut request = tonic::Request::new(());
+        api.enrich_metadata(&mut request, context.core_epoch().await)
+            .await
+            .unwrap();
+        assert!(request.metadata().get("authorization").is_none());
     }
 }
