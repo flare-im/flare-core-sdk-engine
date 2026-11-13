@@ -84,7 +84,7 @@ struct CacheState {
 /// ([`HttpBundleFetcher`]) and in memory by tests.
 #[async_trait::async_trait]
 pub trait BundleFetcher: Send + Sync {
-    /// At most `max_bytes`; more is an error.
+    /// At most `max_bytes`; more is `Rejected("size_mismatch")`.
     async fn fetch(&self, url: &str, max_bytes: u64) -> Result<Vec<u8>, CacheError>;
 }
 
@@ -165,7 +165,11 @@ impl BundleCache {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     tracing::debug!(target: "flare_sdk.plugin", %url, ?error, "web bundle mirror failed");
-                    last = error;
+                    // A refusal seen on an earlier mirror says more than a
+                    // later mirror being unreachable.
+                    if !matches!(last, CacheError::Rejected(_)) {
+                        last = error;
+                    }
                     continue;
                 }
             };
@@ -441,15 +445,16 @@ impl BundleFetcher for HttpBundleFetcher {
         if !response.status().is_success() {
             return Err(CacheError::Unavailable);
         }
+        // More bytes than the catalog declared are not this bundle.
         if response.content_length().is_some_and(|len| len > max_bytes) {
-            return Err(CacheError::Unavailable);
+            return Err(CacheError::Rejected("size_mismatch"));
         }
         let mut body = Vec::new();
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|_| CacheError::Unavailable)?;
             if body.len() as u64 + chunk.len() as u64 > max_bytes {
-                return Err(CacheError::Unavailable);
+                return Err(CacheError::Rejected("size_mismatch"));
             }
             body.extend_from_slice(&chunk);
         }

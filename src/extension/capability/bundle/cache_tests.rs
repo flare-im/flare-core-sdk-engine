@@ -50,7 +50,8 @@ impl BundleFetcher for Mirrors {
         self.fetches.fetch_add(1, Ordering::SeqCst);
         match self.by_url.get(url) {
             Some(bytes) if bytes.len() as u64 <= max_bytes => Ok(bytes.clone()),
-            _ => Err(CacheError::Unavailable),
+            Some(_) => Err(CacheError::Rejected("size_mismatch")),
+            None => Err(CacheError::Unavailable),
         }
     }
 }

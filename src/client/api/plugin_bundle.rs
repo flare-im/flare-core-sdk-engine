@@ -312,7 +312,17 @@ impl CapabilityApi {
             .as_deref()
             .and_then(bundle::https_origin_of)
             .unwrap_or_else(|| "'none'".to_owned());
-        let source = located.source.clone().unwrap_or_else(|| origin.clone());
+        // An opaque web page loads its files from the sandbox domain, so the
+        // policy names that domain; every other host serves its own origin.
+        let source = located
+            .source
+            .clone()
+            .or_else(|| {
+                (origin == "null")
+                    .then(|| entry.files.as_deref().and_then(bundle::https_origin_of))
+                    .flatten()
+            })
+            .unwrap_or_else(|| origin.clone());
         let csp = bundle::content_security_policy(&source, &frame_ancestors);
         let session_id = uuid::Uuid::new_v4().to_string();
         #[cfg(not(target_arch = "wasm32"))]
@@ -1094,7 +1104,10 @@ enum MediaBytes {
 /// cached now (native), or the bytes behind the short-lived address (the
 /// browser).
 #[cfg(not(target_arch = "wasm32"))]
-async fn read_media_bytes(media: &crate::client::api::MediaApi, file_id: &str) -> Result<MediaBytes> {
+async fn read_media_bytes(
+    media: &crate::client::api::MediaApi,
+    file_id: &str,
+) -> Result<MediaBytes> {
     let access = media
         .resolve_media_access_opts(file_id, MEDIA_READ_EXPIRES_SECS, false)
         .await?;
@@ -1122,7 +1135,10 @@ async fn read_media_bytes(media: &crate::client::api::MediaApi, file_id: &str) -
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn read_media_bytes(media: &crate::client::api::MediaApi, file_id: &str) -> Result<MediaBytes> {
+async fn read_media_bytes(
+    media: &crate::client::api::MediaApi,
+    file_id: &str,
+) -> Result<MediaBytes> {
     let access = media
         .resolve_media_access_opts(file_id, MEDIA_READ_EXPIRES_SECS, false)
         .await?;
