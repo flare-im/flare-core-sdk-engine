@@ -3,6 +3,7 @@
 
 mod access_store;
 mod host;
+mod plugin_bundle_storage;
 mod plugin_command;
 mod plugin_consent;
 mod provider;

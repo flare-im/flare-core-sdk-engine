@@ -93,6 +93,12 @@ pub mod storage {
         set_local_cleared_through_seq,
     };
     pub use crate::domain::{MemberKey, ParticipantDisplaySnapshot, stored_name_is_an_id};
+    /// Web bundle storage (`storage.*` of the bridge), for a store adapter
+    /// such as the browser's IndexedDB.
+    pub use crate::domain::{
+        PluginBundleStorage, PluginBundleStorageScope, bundle_storage_cost, bundle_storage_fits,
+        valid_bundle_storage_key,
+    };
     pub use crate::domain::{
         PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,
     };
@@ -113,6 +119,8 @@ pub mod storage {
         LOCAL_DATABASE_KEY_BYTES, SecureKeyDescriptor, SecureKeyStore, SecureSecret,
         VolatileSecureKeyStore, load_or_create_local_database_key, validate_local_database_key,
     };
+    /// A namespace's quota: keys and encoded values together.
+    pub use flare_plugin_protocol::bridge::MAX_BRIDGE_STORAGE_BYTES as MAX_PLUGIN_BUNDLE_STORAGE_BYTES;
 }
 
 pub use client::*;

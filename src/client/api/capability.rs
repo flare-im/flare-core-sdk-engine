@@ -167,6 +167,9 @@ pub struct CapabilityApi {
     /// Who `people.resolve` may name: local profiles, and the members of the
     /// page's conversation when it has one.
     bundle_people: Option<plugin_bundle::BundlePeople>,
+    /// Where `media.read` reads a plugin's private file: the same path hosts
+    /// read image blocks' files with (`resolve_media_access`).
+    bundle_media: Option<Arc<super::MediaApi>>,
     /// Local message store and bus for plugin card state (`messageId` requests).
     messages: Option<Arc<dyn crate::domain::MessageStore>>,
     bus: Option<crate::kernel::event::EventBus>,
@@ -216,6 +219,7 @@ impl CapabilityApi {
                 crate::infrastructure::persistence::MemoryPluginBundleStorage::new(),
             ),
             bundle_people: None,
+            bundle_media: None,
             messages: None,
             bus: None,
             plugin_state_refetch: None,
@@ -314,6 +318,11 @@ impl CapabilityApi {
             profiles,
             participants,
         });
+        self
+    }
+    /// Lets `media.read` read a plugin's private files through `media`.
+    pub fn with_bundle_media(mut self, media: Arc<super::MediaApi>) -> Self {
+        self.bundle_media = Some(media);
         self
     }
     pub fn with_plugin_command_store(

@@ -974,6 +974,11 @@ pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
                 user_id: user_id.to_owned(),
             },
         ));
+        store.plugin_bundle_storage = Some(Arc::new(
+            super::plugin_bundle_storage::IndexedDbPluginBundleStorage {
+                user_id: user_id.to_owned(),
+            },
+        ));
         return store;
     }
 
@@ -1035,8 +1040,12 @@ pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
                 user_id: user_id.clone(),
             },
         )),
-        // The browser keeps bundle storage for the session only (in memory).
-        plugin_bundle_storage: None,
+        // Per (tenant, user, plugin) in IndexedDB, removed on sign-out.
+        plugin_bundle_storage: Some(Arc::new(
+            super::plugin_bundle_storage::IndexedDbPluginBundleStorage {
+                user_id: user_id.clone(),
+            },
+        )),
         messages: Arc::new(PersistingMessageStore::new(
             user_id.clone(),
             messages.clone(),

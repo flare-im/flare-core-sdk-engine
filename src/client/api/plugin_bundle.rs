@@ -490,8 +490,9 @@ impl CapabilityApi {
             BridgeRequest::PeopleResolve(params) => {
                 Outcome::Done(self.bundle_people(context, &params.user_ids).await)
             }
-            // Plugin-private files have no read route for bundles yet.
-            BridgeRequest::MediaRead(_) => fixed(BridgeErrorCode::Unavailable),
+            BridgeRequest::MediaRead(params) => {
+                Outcome::Done(self.bundle_media_read(&params.file_id).await)
+            }
             request @ (BridgeRequest::StorageGet(_)
             | BridgeRequest::StorageSet(_)
             | BridgeRequest::StorageRemove(_)
@@ -691,6 +692,44 @@ impl CapabilityApi {
         }
         serde_json::to_value(PeopleResolveResult { people: out })
             .map_err(|_| BridgeError::new(BridgeErrorCode::Internal))
+    }
+
+    /// `media.read`: a private file read through the path hosts read image
+    /// blocks' files with (`resolve_media_access`), answered as a `data:`
+    /// address, the one form a bundle's policy loads on every platform
+    /// (`img-src` allows `data:`; the page's own origin and the app's
+    /// `blob:` addresses are not the same). The bytes are read by the engine:
+    /// the cached copy on native targets, the short-lived address otherwise.
+    /// Files over [`MAX_BUNDLE_MEDIA_BYTES`] answer `payload_too_large`.
+    async fn bundle_media_read(&self, file_id: &str) -> std::result::Result<Value, BridgeError> {
+        use base64::Engine as _;
+        let media = self
+            .bundle_media
+            .clone()
+            .ok_or_else(|| BridgeError::new(BridgeErrorCode::Unavailable))?;
+        let MediaBytes::Read(bytes, stored_type) = read_media_bytes(&media, file_id)
+            .await
+            .map_err(|e| bundle::broker::bridge_error_of(&e))?
+        else {
+            return Err(BridgeError::new(BridgeErrorCode::PayloadTooLarge));
+        };
+        if bytes.is_empty() {
+            return Err(BridgeError::new(BridgeErrorCode::NotFound));
+        }
+        let content_type = sniff_content_type(&bytes)
+            .map(str::to_owned)
+            .or(stored_type.filter(|t| valid_content_type(t)))
+            .unwrap_or_else(|| "application/octet-stream".to_owned());
+        let url = format!(
+            "data:{content_type};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        );
+        serde_json::to_value(flare_plugin_protocol::bridge::MediaReadResult {
+            url,
+            content_type: Some(content_type),
+            size: Some(bytes.len() as u64),
+        })
+        .map_err(|_| BridgeError::new(BridgeErrorCode::Internal))
     }
 
     async fn offers_page(&self, context: &SessionContext, page: &str) -> bool {
@@ -1004,6 +1043,107 @@ impl CapabilityApi {
     }
 }
 
+/// The largest file `media.read` answers (the bundle file limit, D-05).
+pub(crate) const MAX_BUNDLE_MEDIA_BYTES: usize =
+    flare_plugin_protocol::bundle::MAX_WEB_BUNDLE_FILE_BYTES as usize;
+
+/// How long the short-lived address `media.read` reads through lives, in seconds.
+const MEDIA_READ_EXPIRES_SECS: i32 = 300;
+
+/// What `media.read` read.
+enum MediaBytes {
+    /// The bytes and the type the local cache recorded, if any.
+    Read(Vec<u8>, Option<String>),
+    /// Over [`MAX_BUNDLE_MEDIA_BYTES`]; not read.
+    TooLarge,
+}
+
+/// A private file's bytes: the cached copy when there is one, else the copy
+/// cached now (native), or the bytes behind the short-lived address (the
+/// browser).
+#[cfg(not(target_arch = "wasm32"))]
+async fn read_media_bytes(media: &super::MediaApi, file_id: &str) -> Result<MediaBytes> {
+    let access = media
+        .resolve_media_access_opts(file_id, MEDIA_READ_EXPIRES_SECS, false)
+        .await?;
+    let (path, stored_type) = match access.local_path.filter(|p| !p.is_empty()) {
+        Some(path) => (path, None),
+        None => {
+            let cached = media
+                .cache_remote_media(file_id, MEDIA_READ_EXPIRES_SECS)
+                .await?;
+            let stored = Some(cached.mime_type).filter(|t| !t.is_empty());
+            (cached.local_path, stored)
+        }
+    };
+    let size = tokio::fs::metadata(&path)
+        .await
+        .map_err(|_| bundle_error("unavailable"))?
+        .len();
+    if size > MAX_BUNDLE_MEDIA_BYTES as u64 {
+        return Ok(MediaBytes::TooLarge);
+    }
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|_| bundle_error("unavailable"))?;
+    Ok(MediaBytes::Read(bytes, stored_type))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_media_bytes(media: &super::MediaApi, file_id: &str) -> Result<MediaBytes> {
+    let access = media
+        .resolve_media_access_opts(file_id, MEDIA_READ_EXPIRES_SECS, false)
+        .await?;
+    let url = access
+        .remote
+        .map(|remote| remote.url)
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| bundle_error("unavailable"))?;
+    let bytes = crate::infrastructure::transport::http::http_client_wasm::fetch_bytes(
+        "GET",
+        url,
+        None,
+        None,
+        None,
+        Default::default(),
+        None,
+    )
+    .await?;
+    if bytes.len() > MAX_BUNDLE_MEDIA_BYTES {
+        return Ok(MediaBytes::TooLarge);
+    }
+    Ok(MediaBytes::Read(bytes, None))
+}
+
+/// The type of an image by its first bytes: PNG, JPEG, GIF, WebP.
+fn sniff_content_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
+/// A recorded type usable in a `data:` address: `type/subtype` of
+/// `[a-z0-9.+-]`, at most 64 bytes.
+fn valid_content_type(value: &str) -> bool {
+    let mut parts = value.split('/');
+    let ok = |part: Option<&str>| {
+        part.is_some_and(|p| {
+            !p.is_empty()
+                && p.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b".+-".contains(&b))
+        })
+    };
+    value.len() <= 64 && ok(parts.next()) && ok(parts.next()) && parts.next().is_none()
+}
+
 /// What running a request produced.
 enum Outcome {
     /// The answer.
@@ -1046,4 +1186,39 @@ fn operation_result(
         command_id,
     })
     .map_err(|_| BridgeError::new(BridgeErrorCode::Internal))
+}
+
+#[cfg(test)]
+mod media_read_tests {
+    use super::{sniff_content_type, valid_content_type};
+
+    #[test]
+    fn image_types_are_read_from_the_first_bytes() {
+        assert_eq!(
+            sniff_content_type(b"\x89PNG\r\n\x1a\n\0\0"),
+            Some("image/png")
+        );
+        assert_eq!(
+            sniff_content_type(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some("image/jpeg")
+        );
+        assert_eq!(sniff_content_type(b"GIF89a.."), Some("image/gif"));
+        assert_eq!(
+            sniff_content_type(b"RIFF\0\0\0\0WEBPVP8 "),
+            Some("image/webp")
+        );
+        assert_eq!(sniff_content_type(b"%PDF-1.7"), None);
+        assert_eq!(sniff_content_type(b""), None);
+    }
+
+    #[test]
+    fn only_plain_recorded_types_reach_a_data_address() {
+        assert!(valid_content_type("application/pdf"));
+        assert!(valid_content_type("image/svg+xml"));
+        assert!(!valid_content_type("text/html;charset=utf-8"));
+        assert!(!valid_content_type("image"));
+        assert!(!valid_content_type("a/b/c"));
+        assert!(!valid_content_type("Image/PNG"));
+        assert!(!valid_content_type(&format!("a/{}", "b".repeat(80))));
+    }
 }

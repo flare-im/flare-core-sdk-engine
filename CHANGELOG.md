@@ -15,7 +15,9 @@
   桥的检查全在引擎：信封（≤64 KiB）→ 桥版本 → 握手 → 方法与参数 → 桥权限（`bundle.json` ∩ 租户批准）→ 操作
   （`bundle.json` ∩ 目录授权，`plugin.query` 只能是查询，瞬时操作只能经宿主付款确认）→ 限速（每秒 20、同时 4 个操作）；
   错误一律是固定错误码，不带 Core、插件或引擎的原文。`plugin.command` 每条命令一个日志槽，未知结果用同一 `commandId` 找回。
-  `storage.*` 存在用户库独立表（SQLite 迁移 v6 新表 `plugin_bundle_storage`，每插件每用户 ≤1 MiB，退出登录清空；浏览器在内存）。
+  `storage.*` 存在用户库独立表（SQLite 迁移 v6 新表 `plugin_bundle_storage`，每插件每用户 ≤1 MiB，退出登录清空；浏览器存 IndexedDB `flare-plugin-bundle-storage-v1`，按租户、用户、插件分命名空间，配额检查与写入同一事务）。
+  `media.read` 走宿主读图片块私有文件的同一路径（`resolve_media_access`；原生先读本地缓存、没有就缓存一份，浏览器读短时地址），
+  以 `data:` 地址应答（包的 `img-src` 在各平台都放行 `data:`），文件 ≤4 MiB，超出应答 `payload_too_large`。
   新事件 `plugin.bundle_event`（C 7004，`{sessionId, envelope?, close?}`）：订阅的 `catalog.changed`、`entity.state`，
   目录不再下发时的 `lifecycle.revoked` 与关闭原因（`withdrawn`、`suspended`、`disabled`、`replaced`、`evicted`、`signedOut`）。
 - 插件界面按宿主能力下发：新增 `plugin.set_host_profile`（`{platform, kitVocabulary, nativeAllowlist?,
