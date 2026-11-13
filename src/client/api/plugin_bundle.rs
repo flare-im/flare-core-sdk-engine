@@ -44,10 +44,10 @@ use flare_plugin_protocol::bridge::{
     HelloResult, PeopleResolveResult, PluginOperationResult, RevokeReason, UiConfirmResult,
 };
 use flare_plugin_protocol::bundle::{BundleManifest, WebBundleDecl};
+use flare_plugin_protocol::fields::Fields;
 use flare_plugin_protocol::ui::{
     NativeCapability, UiCatalog, UiPageCommand, UiPageCommandMode, valid_bundle_route,
 };
-use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::{CapabilityApi, PluginCallFuture};
@@ -88,74 +88,121 @@ fn valid_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// Host requests are read with the bridge's one field reader
+// ([`flare_plugin_protocol::fields`]): only the named fields, each as its
+// serde derive would read it.
 struct OpenRequest {
     plugin_id: String,
     contribution_id: String,
-    #[serde(default)]
     route: Option<String>,
-    #[serde(default)]
     arguments: Map<String, Value>,
-    #[serde(default = "page_presentation")]
     presentation: BridgePresentation,
-    #[serde(default)]
     conversation: Option<BridgeConversation>,
-    #[serde(default)]
     locale: String,
     theme: BridgeTheme,
     /// Web: the app's origin, for the policy's `frame-ancestors`.
-    #[serde(default)]
     host_origin: Option<String>,
 }
 
-fn page_presentation() -> BridgePresentation {
-    BridgePresentation::Page
+impl OpenRequest {
+    fn read(value: Value) -> Option<Self> {
+        let mut f = Fields::new(
+            value,
+            &[
+                "pluginId",
+                "contributionId",
+                "route",
+                "arguments",
+                "presentation",
+                "conversation",
+                "locale",
+                "theme",
+                "hostOrigin",
+            ],
+        )?;
+        Some(Self {
+            plugin_id: f.string("pluginId")?,
+            contribution_id: f.string("contributionId")?,
+            route: f.opt_string("route")?,
+            arguments: f.object_or_empty("arguments")?,
+            presentation: f.name_or(
+                "presentation",
+                BridgePresentation::parse,
+                BridgePresentation::Page,
+            )?,
+            conversation: match f.optional("conversation") {
+                None => None,
+                Some(value) => Some(BridgeConversation::read(value)?),
+            },
+            locale: f.string_or_empty("locale")?,
+            theme: BridgeTheme::read(f.take("theme")?)?,
+            host_origin: f.opt_string("hostOrigin")?,
+        })
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BridgeCall {
     session_id: String,
     envelope: String,
-    #[serde(default)]
     user_gesture: bool,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+impl BridgeCall {
+    fn read(value: Value) -> Option<Self> {
+        let mut f = Fields::new(value, &["sessionId", "envelope", "userGesture"])?;
+        Some(Self {
+            session_id: f.string("sessionId")?,
+            envelope: f.string("envelope")?,
+            user_gesture: f.bool_or_false("userGesture")?,
+        })
+    }
+}
+
 struct HostResult {
     session_id: String,
     id: String,
-    #[serde(default)]
     result: Option<Value>,
-    #[serde(default)]
     error: Option<BridgeErrorCode>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+impl HostResult {
+    fn read(value: Value) -> Option<Self> {
+        let mut f = Fields::new(value, &["sessionId", "id", "result", "error"])?;
+        Some(Self {
+            session_id: f.string("sessionId")?,
+            id: f.string("id")?,
+            result: f.optional("result"),
+            error: f.opt_name("error", BridgeErrorCode::parse)?,
+        })
+    }
+}
+
 struct HostEvent {
     event: String,
-    #[serde(default)]
     payload: Value,
-    #[serde(default)]
     session_id: Option<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SessionRef {
-    session_id: String,
+impl HostEvent {
+    fn read(value: Value) -> Option<Self> {
+        let mut f = Fields::new(value, &["event", "payload", "sessionId"])?;
+        Some(Self {
+            event: f.string("event")?,
+            payload: f.value_or("payload", || Value::Null),
+            session_id: f.opt_string("sessionId")?,
+        })
+    }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PrefetchRequest {
-    #[serde(default)]
-    wifi: bool,
-    #[serde(default)]
-    idle: bool,
+/// `{sessionId}`.
+fn session_ref(value: Value) -> Option<String> {
+    Fields::new(value, &["sessionId"])?.string("sessionId")
+}
+
+/// `{wifi, idle}`, both `false` when absent.
+fn prefetch_request(value: Value) -> Option<(bool, bool)> {
+    let mut f = Fields::new(value, &["wifi", "idle"])?;
+    Some((f.bool_or_false("wifi")?, f.bool_or_false("idle")?))
 }
 
 /// The answer of `plugin_bundle_bridge` and `plugin_bundle_host_result`.
@@ -234,8 +281,7 @@ impl CapabilityApi {
     }
 
     async fn plugin_bundle_open_now(&self, request: Value) -> Result<Value> {
-        let request: OpenRequest =
-            crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
+        let request = OpenRequest::read(request).ok_or_else(invalid)?;
         if !valid_id(&request.plugin_id)
             || !valid_id(&request.contribution_id)
             || request.locale.len() > 64
@@ -414,8 +460,7 @@ impl CapabilityApi {
     }
 
     async fn plugin_bundle_bridge_now(&self, request: Value) -> Result<Value> {
-        let call: BridgeCall =
-            crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
+        let call = BridgeCall::read(request).ok_or_else(invalid)?;
         let host_bridge = self
             .plugin_client()
             .descriptor
@@ -446,7 +491,7 @@ impl CapabilityApi {
             )));
         };
         let outcome = self
-            .run_bridge_request(&call.session_id, &context, &id, request, call.user_gesture)
+            .run_bridge_request(&context, request, call.user_gesture)
             .await;
         match outcome {
             Outcome::Host { method, params } => {
@@ -473,72 +518,90 @@ impl CapabilityApi {
         }
     }
 
-    /// Runs a request that passed the broker's checks.
-    async fn run_bridge_request(
-        &self,
-        session_id: &str,
-        context: &SessionContext,
-        id: &str,
+    /// Runs a request that passed the broker's checks. Each kind of request
+    /// runs as its own future, so this is a plain dispatch rather than one
+    /// state machine holding every call a bundle can make.
+    fn run_bridge_request<'a>(
+        &'a self,
+        context: &'a SessionContext,
         request: BridgeRequest,
         user_gesture: bool,
-    ) -> Outcome {
-        let fixed = |code: BridgeErrorCode| Outcome::Done(Err(BridgeError::new(code)));
+    ) -> Running<'a> {
+        let now = |outcome: Outcome| -> Running<'a> { Box::pin(std::future::ready(outcome)) };
+        let fixed = |code: BridgeErrorCode| now(Outcome::Done(Err(BridgeError::new(code))));
         match request {
-            BridgeRequest::PluginQuery(params) => Outcome::Done(
-                self.bundle_query(context, &params.operation, params.input)
+            BridgeRequest::PluginQuery(params) => Box::pin(async move {
+                Outcome::Done(
+                    self.bundle_query(context, &params.operation, params.input)
+                        .await,
+                )
+            }),
+            BridgeRequest::PluginCommand(params) => Box::pin(async move {
+                Outcome::Done(
+                    self.bundle_command(
+                        context,
+                        &params.operation,
+                        params.input,
+                        params.command_id,
+                    )
                     .await,
-            ),
-            BridgeRequest::PluginCommand(params) => Outcome::Done(
-                self.bundle_command(context, &params.operation, params.input, params.command_id)
-                    .await,
-            ),
-            BridgeRequest::UiNavigate(params) => {
-                if let Some(page) = &params.page
-                    && !self.offers_page(context, page).await
-                {
-                    return fixed(BridgeErrorCode::NotFound);
-                }
-                host(BridgeMethod::UiNavigate, &params)
+                )
+            }),
+            BridgeRequest::UiNavigate(params) => match params.page.clone() {
+                Some(page) => Box::pin(async move {
+                    if self.offers_page(context, &page).await {
+                        host(BridgeMethod::UiNavigate, &params)
+                    } else {
+                        Outcome::Done(Err(BridgeError::new(BridgeErrorCode::NotFound)))
+                    }
+                }),
+                None => now(host(BridgeMethod::UiNavigate, &params)),
+            },
+            BridgeRequest::UiClose(params) => now(host(BridgeMethod::UiClose, &params)),
+            BridgeRequest::UiSetTitle(params) => now(host(BridgeMethod::UiSetTitle, &params)),
+            BridgeRequest::UiToast(params) => now(host(BridgeMethod::UiToast, &params)),
+            BridgeRequest::UiConfirm(params) => now(host(BridgeMethod::UiConfirm, &params)),
+            BridgeRequest::UiResize(params) => now(host(BridgeMethod::UiResize, &params)),
+            BridgeRequest::UiOpenExternal(params) => {
+                now(host(BridgeMethod::UiOpenExternal, &params))
             }
-            BridgeRequest::UiClose(params) => host(BridgeMethod::UiClose, &params),
-            BridgeRequest::UiSetTitle(params) => host(BridgeMethod::UiSetTitle, &params),
-            BridgeRequest::UiToast(params) => host(BridgeMethod::UiToast, &params),
-            BridgeRequest::UiConfirm(params) => host(BridgeMethod::UiConfirm, &params),
-            BridgeRequest::UiResize(params) => host(BridgeMethod::UiResize, &params),
-            BridgeRequest::UiOpenExternal(params) => host(BridgeMethod::UiOpenExternal, &params),
             BridgeRequest::ClipboardWrite(params) => {
                 // The host's own record of a touch; the bundle cannot claim one.
                 if !user_gesture {
                     return fixed(BridgeErrorCode::GestureRequired);
                 }
-                host(BridgeMethod::ClipboardWrite, &params)
+                now(host(BridgeMethod::ClipboardWrite, &params))
             }
             BridgeRequest::UiSaveState(params) => {
                 self.plugin_host
                     .bundles
                     .sessions
                     .save_state(context, params.state);
-                Outcome::Done(Ok(json!({})))
+                now(Outcome::Done(Ok(json!({}))))
             }
             BridgeRequest::HostCapability(params) => {
                 if !user_gesture {
                     return fixed(BridgeErrorCode::GestureRequired);
                 }
-                Outcome::Done(
-                    self.bundle_capability(context, params.name, params.params)
-                        .await,
-                )
+                Box::pin(async move {
+                    Outcome::Done(
+                        self.bundle_capability(context, params.name, params.params)
+                            .await,
+                    )
+                })
             }
-            BridgeRequest::PeopleResolve(params) => {
+            BridgeRequest::PeopleResolve(params) => Box::pin(async move {
                 Outcome::Done(self.bundle_people(context, &params.user_ids).await)
-            }
+            }),
             BridgeRequest::MediaRead(params) => {
-                Outcome::Done(self.bundle_media_read(&params.file_id).await)
+                Box::pin(
+                    async move { Outcome::Done(self.bundle_media_read(&params.file_id).await) },
+                )
             }
             request @ (BridgeRequest::StorageGet(_)
             | BridgeRequest::StorageSet(_)
             | BridgeRequest::StorageRemove(_)
-            | BridgeRequest::StorageKeys(_)) => {
+            | BridgeRequest::StorageKeys(_)) => Box::pin(async move {
                 let scope = crate::domain::PluginBundleStorageScope {
                     tenant_id: context.tenant_id.clone(),
                     user_id: context.viewer.clone(),
@@ -553,14 +616,11 @@ impl CapabilityApi {
                     .await
                     .map_err(BridgeError::new),
                 )
-            }
+            }),
             // Answered by the broker itself.
             BridgeRequest::Hello(_)
             | BridgeRequest::EventsSubscribe(_)
-            | BridgeRequest::DiagLog(_) => {
-                let _ = (session_id, id);
-                fixed(BridgeErrorCode::Internal)
-            }
+            | BridgeRequest::DiagLog(_) => fixed(BridgeErrorCode::Internal),
         }
     }
 
@@ -793,8 +853,7 @@ impl CapabilityApi {
     }
 
     async fn plugin_bundle_host_result_now(&self, request: Value) -> Result<Value> {
-        let answer: HostResult =
-            crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
+        let answer = HostResult::read(request).ok_or_else(invalid)?;
         let sessions = &self.plugin_host.bundles.sessions;
         let method = sessions
             .with(&answer.session_id, |s| s.host_call(&answer.id))
@@ -822,8 +881,8 @@ impl CapabilityApi {
             (None, result) => {
                 let result = match method {
                     BridgeMethod::UiConfirm => result
-                        .and_then(|r| serde_json::from_value::<UiConfirmResult>(r).ok())
-                        .and_then(|r| serde_json::to_value(r).ok())
+                        .and_then(UiConfirmResult::read)
+                        .map(|r| json!({ "confirmed": r.confirmed }))
                         .ok_or_else(invalid)?,
                     _ => json!({}),
                 };
@@ -838,8 +897,7 @@ impl CapabilityApi {
     #[inline(never)]
     pub fn plugin_bundle_host_event(&self, request: Value) -> PluginCallFuture<'_> {
         Box::pin(async move {
-            let event: HostEvent =
-                crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
+            let event = HostEvent::read(request).ok_or_else(invalid)?;
             let (topic, payload) =
                 events::host_event(&event.event, &event.payload).ok_or_else(invalid)?;
             let envelope =
@@ -866,13 +924,8 @@ impl CapabilityApi {
     #[inline(never)]
     pub fn plugin_bundle_close(&self, request: Value) -> PluginCallFuture<'_> {
         Box::pin(async move {
-            let request: SessionRef =
-                crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
-            let closed = self
-                .plugin_host
-                .bundles
-                .sessions
-                .remove(&request.session_id);
+            let session_id = session_ref(request).ok_or_else(invalid)?;
+            let closed = self.plugin_host.bundles.sessions.remove(&session_id);
             if let Some(session) = &closed {
                 self.release(session);
             }
@@ -886,9 +939,8 @@ impl CapabilityApi {
     #[inline(never)]
     pub fn plugin_bundle_prefetch(&self, request: Value) -> PluginCallFuture<'_> {
         Box::pin(async move {
-            let request: PrefetchRequest =
-                crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
-            if !request.wifi || !request.idle || self.plugin_client().descriptor.bundle.is_none() {
+            let (wifi, idle) = prefetch_request(request).ok_or_else(invalid)?;
+            if !wifi || !idle || self.plugin_client().descriptor.bundle.is_none() {
                 return Ok(json!({ "fetched": 0 }));
             }
             self.prefetch_entry_bundles().await
@@ -1191,6 +1243,12 @@ fn valid_content_type(value: &str) -> bool {
     };
     value.len() <= 64 && ok(parts.next()) && ok(parts.next()) && parts.next().is_none()
 }
+
+/// A request running ([`CapabilityApi::run_bridge_request`]).
+#[cfg(not(target_arch = "wasm32"))]
+type Running<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Outcome> + Send + 'a>>;
+#[cfg(target_arch = "wasm32")]
+type Running<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Outcome> + 'a>>;
 
 /// What running a request produced.
 enum Outcome {

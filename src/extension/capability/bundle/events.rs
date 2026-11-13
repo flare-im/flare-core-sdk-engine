@@ -24,20 +24,19 @@ pub fn host_event(event: &str, payload: &Value) -> Option<(BridgeEvent, Value)> 
     let topic = BridgeEvent::parse(event)?;
     let payload = match topic {
         BridgeEvent::ThemeChanged => {
-            serde_json::to_value(serde_json::from_value::<BridgeTheme>(payload.clone()).ok()?)
+            serde_json::to_value(BridgeTheme::read(payload.clone())?).ok()?
         }
-        BridgeEvent::LocaleChanged => serde_json::to_value(
-            serde_json::from_value::<LocaleChangedPayload>(payload.clone()).ok()?,
-        ),
-        BridgeEvent::VisibilityChanged => serde_json::to_value(
-            serde_json::from_value::<VisibilityChangedPayload>(payload.clone()).ok()?,
-        ),
+        BridgeEvent::LocaleChanged => {
+            json!({ "locale": LocaleChangedPayload::read(payload.clone())?.locale })
+        }
+        BridgeEvent::VisibilityChanged => {
+            json!({ "visible": VisibilityChangedPayload::read(payload.clone())?.visible })
+        }
         // The engine's own: the catalog, the lifecycle, shared entity state.
         BridgeEvent::CatalogChanged | BridgeEvent::LifecycleRevoked | BridgeEvent::EntityState => {
             return None;
         }
-    }
-    .ok()?;
+    };
     Some((topic, payload))
 }
 

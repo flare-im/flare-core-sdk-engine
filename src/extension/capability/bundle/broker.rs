@@ -16,7 +16,7 @@
 //!
 //! Every failure is a fixed [`BridgeErrorCode`]; no text of Core, the plugin
 //! or the engine reaches the bundle ([`bridge_error_of`]).
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Mutex, PoisonError};
 
 use flare_plugin_protocol::bridge::{
@@ -70,10 +70,12 @@ pub struct BridgeSession {
     topics: BTreeSet<BridgeEvent>,
     /// Admission times within the last second.
     window: VecDeque<i64>,
-    /// Requests running, by id, and whether each counts as an operation.
-    running: BTreeMap<String, bool>,
-    /// Requests the host is drawing (a confirmation, a toast), by id.
-    host_calls: BTreeMap<String, BridgeMethod>,
+    /// Requests running: the id and whether it counts as an operation. A
+    /// handful at most (the rate limit), so a list, not a map.
+    running: Vec<(String, bool)>,
+    /// Requests the host is drawing (a confirmation, a toast): the id and the
+    /// method; at most [`MAX_HOST_CALLS`].
+    host_calls: Vec<(String, BridgeMethod)>,
     revoked: Option<RevokeReason>,
 }
 
@@ -92,8 +94,8 @@ impl BridgeSession {
             greeted: false,
             topics: BTreeSet::new(),
             window: VecDeque::new(),
-            running: BTreeMap::new(),
-            host_calls: BTreeMap::new(),
+            running: Vec::new(),
+            host_calls: Vec::new(),
             revoked: None,
         }
     }
@@ -116,7 +118,9 @@ impl BridgeSession {
         if self.revoked.is_some() {
             return Admission::Answer(failure(Some(id), BridgeErrorCode::Revoked));
         }
-        if self.running.contains_key(&id) || self.host_calls.contains_key(&id) {
+        if self.running.iter().any(|(running, _)| *running == id)
+            || self.host_calls.iter().any(|(call, _)| *call == id)
+        {
             return Admission::Answer(failure(Some(id), BridgeErrorCode::InvalidEnvelope));
         }
         if !self.greeted && envelope.method.as_deref() != Some(BridgeMethod::HostHello.name()) {
@@ -139,7 +143,7 @@ impl BridgeSession {
         }
         if self.window.len() >= BRIDGE_REQUESTS_PER_SECOND as usize
             || (method.is_operation()
-                && self.running.values().filter(|op| **op).count()
+                && self.running.iter().filter(|(_, op)| *op).count()
                     >= BRIDGE_CONCURRENT_OPERATIONS as usize)
         {
             return Admission::Answer(failure(Some(id), BridgeErrorCode::RateLimited));
@@ -171,7 +175,7 @@ impl BridgeSession {
                 Admission::Answer(BridgeEnvelope::success(id, json!({})))
             }
             request => {
-                self.running.insert(id.clone(), method.is_operation());
+                self.running.push((id.clone(), method.is_operation()));
                 Admission::Run { id, request }
             }
         }
@@ -179,8 +183,8 @@ impl BridgeSession {
 
     /// The request `id` finished (answered by the engine or the host).
     pub fn finish(&mut self, id: &str) {
-        self.running.remove(id);
-        self.host_calls.remove(id);
+        self.running.retain(|(running, _)| running != id);
+        self.host_calls.retain(|(call, _)| call != id);
     }
 
     /// Hand a running request to the host. Refused past [`MAX_HOST_CALLS`].
@@ -188,13 +192,17 @@ impl BridgeSession {
         if self.host_calls.len() >= MAX_HOST_CALLS {
             return false;
         }
-        self.host_calls.insert(id.to_owned(), method);
+        self.host_calls.retain(|(call, _)| call != id);
+        self.host_calls.push((id.to_owned(), method));
         true
     }
 
     /// The method of a request the host is drawing.
     pub fn host_call(&self, id: &str) -> Option<BridgeMethod> {
-        self.host_calls.get(id).copied()
+        self.host_calls
+            .iter()
+            .find(|(call, _)| call == id)
+            .map(|(_, method)| *method)
     }
 
     pub fn subscribed(&self, topic: BridgeEvent) -> bool {
@@ -257,7 +265,8 @@ pub struct BundleSessions {
 
 #[derive(Default)]
 struct SessionsInner {
-    sessions: BTreeMap<String, BridgeSession>,
+    /// Sorted by id; [`MAX_LIVE_SESSIONS`] at most, so a list, not a map.
+    sessions: Vec<BridgeSession>,
     /// Opening order, oldest first.
     order: VecDeque<String>,
     /// `ui.saveState` by (tenant, viewer, plugin, contribution), oldest first.
@@ -273,6 +282,17 @@ fn saved_key(context: &SessionContext) -> (String, String, String, String) {
     )
 }
 
+impl SessionsInner {
+    fn position(&self, id: &str) -> Result<usize, usize> {
+        self.sessions
+            .binary_search_by(|session| session.id.as_str().cmp(id))
+    }
+
+    fn take(&mut self, id: &str) -> Option<BridgeSession> {
+        self.position(id).ok().map(|at| self.sessions.remove(at))
+    }
+}
+
 impl BundleSessions {
     fn locked(&self) -> std::sync::MutexGuard<'_, SessionsInner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
@@ -283,11 +303,14 @@ impl BundleSessions {
     pub fn insert(&self, session: BridgeSession) -> Vec<BridgeSession> {
         let mut inner = self.locked();
         inner.order.push_back(session.id.clone());
-        inner.sessions.insert(session.id.clone(), session);
+        match inner.position(&session.id) {
+            Ok(at) => inner.sessions[at] = session,
+            Err(at) => inner.sessions.insert(at, session),
+        }
         let mut evicted = Vec::new();
         while inner.order.len() > MAX_LIVE_SESSIONS {
             if let Some(oldest) = inner.order.pop_front()
-                && let Some(session) = inner.sessions.remove(&oldest)
+                && let Some(session) = inner.take(&oldest)
             {
                 evicted.push(session);
             }
@@ -296,13 +319,15 @@ impl BundleSessions {
     }
 
     pub fn with<T>(&self, id: &str, f: impl FnOnce(&mut BridgeSession) -> T) -> Option<T> {
-        self.locked().sessions.get_mut(id).map(f)
+        let mut inner = self.locked();
+        let at = inner.position(id).ok()?;
+        Some(f(&mut inner.sessions[at]))
     }
 
     pub fn remove(&self, id: &str) -> Option<BridgeSession> {
         let mut inner = self.locked();
         inner.order.retain(|open| open != id);
-        inner.sessions.remove(id)
+        inner.take(id)
     }
 
     /// Every session, removed (signing out).
@@ -310,7 +335,7 @@ impl BundleSessions {
         let mut inner = self.locked();
         inner.order.clear();
         inner.saved.clear();
-        std::mem::take(&mut inner.sessions).into_values().collect()
+        std::mem::take(&mut inner.sessions)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -322,7 +347,7 @@ impl BundleSessions {
         let mut inner = self.locked();
         inner
             .sessions
-            .values_mut()
+            .iter_mut()
             .filter_map(|session| f(session).map(|out| (session.id.clone(), out)))
             .collect()
     }
