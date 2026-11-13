@@ -2085,13 +2085,7 @@ fun closeViewResponseFromJson(value: Any?): CloseViewResponse {
     return CloseViewResponse(closed = requiredBooleanField(json, "closed", "CloseViewResponse"))
 }
 
-// RUST-OWNED WIRE BOUNDARY: BEGIN
-/** The FFI wire contract is canonical camelCase SDK JSON. */
-fun wireEncodeRequest(value: Any?): Any? = value
 
-/** The FFI wire contract is canonical camelCase SDK JSON. */
-fun wireDecodeResponse(value: Any?): Any? = value
-// RUST-OWNED WIRE BOUNDARY: END
 
 // Plugin host profile, plugin upgrades and host capabilities.
 
@@ -2121,3 +2115,11 @@ fun pluginCapabilityCompletionToMap(request: PluginCapabilityCompletion): Map<St
     put("requestId", request.requestId)
     request.result?.let { put("result", it) }
 }
+
+// RUST-OWNED WIRE BOUNDARY: BEGIN
+/** The FFI wire contract is canonical camelCase SDK JSON. */
+fun wireEncodeRequest(value: Any?): Any? = value
+
+/** The FFI wire contract is canonical camelCase SDK JSON. */
+fun wireDecodeResponse(value: Any?): Any? = value
+// RUST-OWNED WIRE BOUNDARY: END
