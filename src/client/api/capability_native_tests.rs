@@ -657,3 +657,196 @@ async fn an_order_is_refused_while_the_catalog_lists_no_transient_operation() {
     assert_eq!(host.payments.load(Ordering::SeqCst), 0);
     assert!(f.calls_to("example.poll.pay_confirm").is_empty());
 }
+
+/// A pay page whose `pay` action's operation answers with an order and
+/// continues to the history page with the currency of its result.
+fn declare_pay_page(f: &Fixture) {
+    let mut catalog = f.catalog.lock().unwrap();
+    catalog["plugins"][0]["extensions"]["contributions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "kind": "page", "id": "example.poll.pay", "schemaVersion": 1,
+            "requiredPermissions": [], "source": {"operation": "example.poll.wallet"},
+            "schema": {"title": "Pay",
+                "actions": [{"id": "pay", "label": "Pay", "style": "primary",
+                    "target": {"kind": "operation", "operation": "example.poll.hide"},
+                    "continuation": {"page": "example.poll.history",
+                        "input": {"currency": "/currency"}}}]}
+        }));
+}
+
+async fn press_pay(f: &Fixture) -> Value {
+    f.answer(
+        "example.poll.wallet",
+        vec![json!({"balanceText": "¥1.00", "currency": "CNY"})],
+    );
+    let page = f
+        .api
+        .plugin_page(
+            json!({"pluginId": "example.poll", "page": "example.poll.pay",
+            "platform": "web"}),
+        )
+        .await
+        .unwrap();
+    f.api
+        .invoke_plugin_action(json!({
+            "page": {"pluginId": "example.poll", "page": "example.poll.pay"},
+            "platform": "web", "actionId": "pay", "userGesture": true, "data": page["data"]
+        }))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_pay_actions_continuation_runs_only_after_its_order_is_confirmed() {
+    let f = Fixture::new().await;
+    let host = FakeHost::new();
+    setup(
+        &f,
+        &["paymentConfirmation"],
+        &["paymentConfirmation"],
+        host.clone(),
+    );
+    declare_pay_page(&f);
+    f.answer(
+        "example.poll.hide",
+        vec![json!({"confirmation": order(now_ms() + 60_000)})],
+    );
+    // The action's operation answered with an order: the host gets it to
+    // confirm, and the continuation does not run yet.
+    let outcome = press_pay(&f).await;
+    assert_eq!(outcome["kind"], "operation", "{outcome}");
+    assert_eq!(outcome["confirmation"]["orderId"], "order-1");
+    assert_eq!(
+        f.api.plugin_host.capability_host.payments.len(),
+        1,
+        "the continuation is held for the order"
+    );
+
+    // Refused: nothing is paid and nothing continues.
+    host.decide(ConsentDecision::Deny);
+    assert_eq!(
+        f.api
+            .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+            .await
+            .unwrap(),
+        json!({"kind": "denied"})
+    );
+    // Cancelled: the same.
+    host.decide(ConsentDecision::Always);
+    *host.proof.lock().unwrap() = CapabilityHostAnswer::Cancelled;
+    assert_eq!(
+        f.api
+            .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+            .await
+            .unwrap(),
+        json!({"kind": "cancelled"})
+    );
+    assert!(f.calls_to("example.poll.pay_confirm").is_empty());
+
+    // The transient operation fails (a wrong password): no continuation,
+    // and it is still held for another try of the same order.
+    *host.proof.lock().unwrap() = CapabilityHostAnswer::Done(
+        json!({"method": "paymentPassword", "password": "000000"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    f.errors.lock().unwrap().insert(
+        "example.poll.pay_confirm".into(),
+        (409, "BUSINESS_CONFLICT".into()),
+    );
+    assert!(
+        f.api
+            .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+            .await
+            .is_err()
+    );
+    assert_eq!(f.calls_to("example.poll.pay_confirm").len(), 1);
+    assert_eq!(f.api.plugin_host.capability_host.payments.len(), 1);
+
+    // Confirmed and accepted: the continuation runs against the transient
+    // operation's result, as it would have after the action's own.
+    f.errors.lock().unwrap().remove("example.poll.pay_confirm");
+    f.answer(
+        "example.poll.pay_confirm",
+        vec![json!({"currency": "USD", "commandId": "cmd-1"})],
+    );
+    let continued = f
+        .api
+        .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+        .await
+        .unwrap();
+    assert_eq!(continued["kind"], "host", "{continued}");
+    assert_eq!(
+        continued["target"],
+        json!({"kind": "page", "page": "example.poll.history"})
+    );
+    assert_eq!(continued["payload"], json!({"currency": "USD"}));
+    let calls = f.calls_to("example.poll.pay_confirm");
+    assert_eq!(
+        calls[1]["payload"],
+        json!({"orderId": "order-1",
+            "confirmation": {"method": "paymentPassword", "password": "000000"}})
+    );
+
+    // It runs once: confirming the same order again continues no more.
+    assert_eq!(f.api.plugin_host.capability_host.payments.len(), 0);
+    let again = f
+        .api
+        .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+        .await
+        .unwrap();
+    assert_eq!(again["kind"], "operation", "{again}");
+}
+
+#[tokio::test]
+async fn a_held_continuation_belongs_to_its_viewer_and_order_only() {
+    use super::native::{HeldPaymentKey, PaymentContinuations};
+    use super::page::PageContinuationOrigin;
+    let held = PaymentContinuations::default();
+    let origin = PageContinuationOrigin {
+        plugin_id: "example.poll".into(),
+        platform: flare_plugin_protocol::manifest::ClientPlatform::Web,
+        conversation_id: None,
+        user_gesture: true,
+    };
+    let transition: flare_plugin_protocol::ui::UiPageTransition =
+        serde_json::from_value(json!({"page": "example.poll.history", "input": {}})).unwrap();
+    let key = |viewer: &str, order: &str| HeldPaymentKey::new("201", viewer, "example.poll", order);
+    held.hold(
+        key("u1", "order-1"),
+        origin.clone(),
+        transition.clone(),
+        1_000,
+        0,
+    );
+    // Another viewer or another order takes nothing.
+    assert!(held.take(&key("u2", "order-1"), 0).is_none());
+    assert!(held.take(&key("u1", "order-2"), 0).is_none());
+    // Shortly after the order ran out it is still there (grace), once.
+    assert!(held.take(&key("u1", "order-1"), 2_000).is_some());
+    assert!(held.take(&key("u1", "order-1"), 2_000).is_none());
+    // Long run-out entries are dropped when another is held.
+    held.hold(key("u1", "old"), origin.clone(), transition.clone(), 0, 0);
+    held.hold(
+        key("u1", "new"),
+        origin.clone(),
+        transition.clone(),
+        i64::MAX,
+        3_600_000,
+    );
+    assert_eq!(held.len(), 1);
+    // At most a bounded number are held.
+    for i in 0..100 {
+        held.hold(
+            key("u1", &format!("o{i}")),
+            origin.clone(),
+            transition.clone(),
+            i64::MAX,
+            0,
+        );
+    }
+    assert!(held.len() <= 32);
+}

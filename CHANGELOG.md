@@ -24,6 +24,8 @@
   付款确认校验订单（同插件、在目录 `transientOperations` 内、未过期，确认后再查一次）后调用订单的瞬时操作，
   入参 `{orderId, confirmation}`。
   操作结果带 `data.confirmation` 时，`plugin_ui_invoke` 的结果同时给出 `confirmation`。
+  页面动作的操作结果带付款订单时，动作声明的后续（下一页或下一个持久动作）先挂在这张订单上，宿主确认、订单的瞬时操作
+  成功后才以瞬时操作的结果继续；拒绝、取消或失败都不继续（失败后同一订单再试仍可继续）。
 - 同意记录存在用户库（SQLite 迁移 v5 新表 `plugin_capability_consents`、浏览器 IndexedDB、无库时内存），按
   `(用户, 插件, 能力)` 记 Manifest 大版本与敏感级别；新大版本或更敏感的参数（细定位、视频、共享屏幕）重新询问，
   宿主答 `{decision: "once" | "always" | "deny"}`，只记「始终允许」，「仅此一次」只放行本次请求。`clipboardWrite`、`selectImage`、`selectFile` 免同意。新增 `capability.plugin_capability_consents`

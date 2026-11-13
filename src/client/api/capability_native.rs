@@ -45,7 +45,7 @@ use std::time::Duration;
 use flare_plugin_protocol::manifest::{ClientPlatform, UiContributionKind};
 use flare_plugin_protocol::ui::{
     ClientPlugin, NativeCapability, NativeParams, PaymentConfirmationOrder, UiDocumentSide,
-    UiInput, UiLocationPrecision, UiLocationValue, UiRenderContext,
+    UiInput, UiLocationPrecision, UiLocationValue, UiPageTransition, UiRenderContext,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -65,6 +65,11 @@ const HOST_ANSWER_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_PENDING_HOST_REQUESTS: usize = 8;
 /// Largest payment proof the host may hand back (serialized).
 const MAX_PAYMENT_PROOF_BYTES: usize = 4096;
+/// Page action continuations held for payment orders at once.
+const MAX_HELD_PAYMENT_CONTINUATIONS: usize = 32;
+/// How long after its order runs out a held continuation is still kept: the
+/// transient operation may have been accepted just before the expiry.
+const HELD_CONTINUATION_GRACE_MS: i64 = 10 * 60 * 1000;
 
 // ---------- The host's part ----------
 
@@ -348,6 +353,101 @@ impl PluginCapabilityHost for EventCapabilityHost {
 pub(crate) struct CapabilityHostSlot {
     pub requests: Arc<CapabilityHostRequests>,
     custom: RwLock<Option<Arc<dyn PluginCapabilityHost>>>,
+    /// Page action continuations waiting for their payment confirmation.
+    pub payments: PaymentContinuations,
+}
+
+/// Which payment order a held continuation belongs to: the tenant and viewer
+/// it was asked for and the plugin and order id it names.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct HeldPaymentKey {
+    tenant: String,
+    viewer: String,
+    plugin_id: String,
+    order_id: String,
+}
+
+impl HeldPaymentKey {
+    pub fn new(tenant: &str, viewer: &str, plugin_id: &str, order_id: &str) -> Self {
+        Self {
+            tenant: tenant.to_owned(),
+            viewer: viewer.to_owned(),
+            plugin_id: plugin_id.to_owned(),
+            order_id: order_id.to_owned(),
+        }
+    }
+}
+
+struct HeldPaymentContinuation {
+    origin: super::page::PageContinuationOrigin,
+    continuation: UiPageTransition,
+    /// The order's expiry plus [`HELD_CONTINUATION_GRACE_MS`]: a payment
+    /// confirmed just before its order ran out still continues.
+    keep_until_ms: i64,
+}
+
+/// A page action's continuation (the page it opens next, or the durable
+/// action it runs next) held while the payment order its operation answered
+/// with waits for the viewer. It runs after that order's transient
+/// operation succeeded, never on a refusal, a cancel or a failure; a failed
+/// confirmation keeps it for another try of the same order.
+#[derive(Default)]
+pub(crate) struct PaymentContinuations {
+    held: Mutex<HashMap<HeldPaymentKey, HeldPaymentContinuation>>,
+}
+
+impl PaymentContinuations {
+    /// Hold `continuation` for the order `key` names until a little after
+    /// `expires_at_ms`. Run-out entries are dropped; past
+    /// [`MAX_HELD_PAYMENT_CONTINUATIONS`] the one running out first goes.
+    pub fn hold(
+        &self,
+        key: HeldPaymentKey,
+        origin: super::page::PageContinuationOrigin,
+        continuation: UiPageTransition,
+        expires_at_ms: i64,
+        now_ms: i64,
+    ) {
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        held.retain(|_, entry| entry.keep_until_ms > now_ms);
+        if held.len() >= MAX_HELD_PAYMENT_CONTINUATIONS && !held.contains_key(&key) {
+            let first = held
+                .iter()
+                .min_by_key(|(_, entry)| entry.keep_until_ms)
+                .map(|(key, _)| key.clone());
+            if let Some(first) = first {
+                held.remove(&first);
+            }
+        }
+        held.insert(
+            key,
+            HeldPaymentContinuation {
+                origin,
+                continuation,
+                keep_until_ms: expires_at_ms.saturating_add(HELD_CONTINUATION_GRACE_MS),
+            },
+        );
+    }
+
+    /// Take the continuation held for `key`, once.
+    pub fn take(
+        &self,
+        key: &HeldPaymentKey,
+        now_ms: i64,
+    ) -> Option<(super::page::PageContinuationOrigin, UiPageTransition)> {
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = held.remove(key)?;
+        held.retain(|_, entry| entry.keep_until_ms > now_ms);
+        Some((entry.origin, entry.continuation))
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
 }
 
 impl std::fmt::Debug for CapabilityHostSlot {
@@ -644,8 +744,15 @@ impl CapabilityApi {
                 match request.capability {
                     NativeCapability::PaymentConfirmation => {
                         let order = order.ok_or_else(invalid)?;
-                        self.confirm_payment(host.as_ref(), plugin, order, &request, &user)
-                            .await
+                        self.confirm_payment(
+                            host.as_ref(),
+                            &catalog,
+                            plugin,
+                            order,
+                            &request,
+                            &user,
+                        )
+                        .await
                     }
                     NativeCapability::LocationOnce => {
                         let (Some(NativeParams::LocationOnce(params)), Some(input)) =
@@ -845,10 +952,14 @@ impl CapabilityApi {
     }
 
     /// Show the order, take the host's proof, and call the order's transient
-    /// operation with it while the order is still open.
+    /// operation with it while the order is still open. When the order came
+    /// from a page action with a continuation, that continuation runs once
+    /// the transient operation succeeded, against its result, as it would
+    /// have after the action's own operation.
     async fn confirm_payment(
         &self,
         host: &dyn PluginCapabilityHost,
+        catalog: &flare_plugin_protocol::ui::UiCatalog,
         plugin: &ClientPlugin,
         order: PaymentConfirmationOrder,
         request: &CapabilityInvokeRequest,
@@ -889,6 +1000,30 @@ impl CapabilityApi {
                 return Err(error);
             }
         };
+        if response.success {
+            let key = HeldPaymentKey::new(
+                &self.default_tenant_id,
+                user,
+                &plugin.plugin_id,
+                &order.order_id,
+            );
+            if let Some((origin, continuation)) = self
+                .plugin_host
+                .capability_host
+                .payments
+                .take(&key, self.server_clock.now_ms())
+            {
+                return self
+                    .continue_page_action(
+                        catalog,
+                        &origin,
+                        Some(user),
+                        response,
+                        Some(continuation),
+                    )
+                    .await;
+            }
+        }
         Ok(operation_outcome(&plugin.plugin_id, &response))
     }
 }
