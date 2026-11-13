@@ -52,7 +52,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tokio::sync::oneshot;
 
-use super::{CapabilityApi, CapabilityDispatchResult, PluginFileUploadPage};
+use super::{CapabilityApi, CapabilityDispatchResult, PluginCallFuture, PluginFileUploadPage};
 use crate::client::IMClient;
 use crate::kernel::event::{EventBus, PluginEvent, PublishOutcome, SdkEvent};
 use crate::shared::error::{ErrorCode, FlareError, Result};
@@ -306,7 +306,11 @@ pub(crate) fn read_answer<T: DeserializeOwned>(
     if result.get("cancelled") == Some(&Value::Bool(true)) {
         return CapabilityHostAnswer::Cancelled;
     }
-    match result.get(key).cloned().map(serde_json::from_value::<T>) {
+    match result
+        .get(key)
+        .cloned()
+        .map(crate::shared::util::json::from_value::<T>)
+    {
         Some(Ok(value)) => CapabilityHostAnswer::Done(value),
         _ => CapabilityHostAnswer::Unavailable,
     }
@@ -626,9 +630,15 @@ impl CapabilityApi {
     /// transient operations), `sdk.plugin.native_capability_unavailable` (not
     /// declared, not allowed by the host, not available yet),
     /// `sdk.plugin.payment_order_expired`, and the plugin's own failures.
-    pub async fn plugin_capability_invoke(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_capability_invoke(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_capability_invoke_now(request))
+    }
+    async fn plugin_capability_invoke_now(&self, request: Value) -> Result<Value> {
         let request: CapabilityInvokeRequest =
-            serde_json::from_value(request).map_err(|_| invalid())?;
+            crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
         if !valid_id(&request.plugin_id)
             || request.locale.len() > 64
             || request.into.as_deref().is_some_and(|id| !valid_id(id))
@@ -1053,7 +1063,7 @@ impl IMClient {
     /// longer waiting (answered, timed out, or its session ended).
     pub async fn complete_plugin_capability_request(&self, request: Value) -> Result<()> {
         let completion: CapabilityCompletion =
-            serde_json::from_value(request).map_err(|_| invalid())?;
+            crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
         let slot = self.inner.read().await.plugin_host.clone();
         if slot
             .capability_host

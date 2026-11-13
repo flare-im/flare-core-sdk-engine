@@ -1,6 +1,6 @@
 //! Session-scoped orchestration. Storage commits before any network call. Only
 //! an explicit submit replays; the server must enforce command idempotency.
-use super::capability::{CapabilityApi, CapabilityDispatchResult};
+use super::capability::{CapabilityApi, CapabilityDispatchResult, PluginCallFuture};
 use crate::domain::{PluginCommand, PluginCommandScope};
 use crate::extension::capability::plugin_errors::plugin_rejection_code;
 use crate::{ErrorCode, FlareError, Result};
@@ -31,7 +31,7 @@ struct Submit {
     expected_tenant_id: Option<String>,
 }
 fn parse<T: serde::de::DeserializeOwned>(v: Value) -> Result<T> {
-    serde_json::from_value(v).map_err(|_| {
+    crate::shared::util::json::from_value(v).map_err(|_| {
         FlareError::localized(
             ErrorCode::InvalidParameter,
             "sdk.plugin_command.invalid_request",
@@ -76,7 +76,13 @@ impl CapabilityApi {
             )
         })
     }
-    pub async fn prepare_plugin_command(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn prepare_plugin_command(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.prepare_plugin_command_now(request))
+    }
+    async fn prepare_plugin_command_now(&self, request: Value) -> Result<Value> {
         let request: Prepare = parse(request)?;
         self.session_guard
             .run_with_user(|user_id| async {
@@ -95,7 +101,13 @@ impl CapabilityApi {
             })
             .await
     }
-    pub async fn pending_plugin_command(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn pending_plugin_command(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.pending_plugin_command_now(request))
+    }
+    async fn pending_plugin_command_now(&self, request: Value) -> Result<Value> {
         let request: Slot = parse(request)?;
         self.session_guard
             .run_with_user(|user_id| async {
@@ -113,7 +125,13 @@ impl CapabilityApi {
     /// Observe the stored command through its immutable query capability. Only
     /// a verified committed observation can complete the durable journal. Apps
     /// cannot inject responses, clear unknown outcomes or mutate the intent.
-    pub async fn reconcile_plugin_command(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn reconcile_plugin_command(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.reconcile_plugin_command_now(request))
+    }
+    async fn reconcile_plugin_command_now(&self, request: Value) -> Result<Value> {
         use flare_plugin_protocol::{
             command::{CommandObservation, CommandOutcome},
             runtime::configuration_digest,
@@ -166,8 +184,8 @@ impl CapabilityApi {
                         "sdk.plugin_command.outcome_unconfirmed",
                     ));
                 }
-                let observation: CommandObservation = serde_json::from_value(response.data)
-                    .map_err(|_| {
+                let observation: CommandObservation =
+                    crate::shared::util::json::from_value(response.data).map_err(|_| {
                         FlareError::localized(
                             ErrorCode::ServiceUnavailable,
                             "sdk.plugin_command.invalid_observation",
@@ -216,7 +234,13 @@ impl CapabilityApi {
             })
             .await
     }
-    pub async fn submit_plugin_command(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn submit_plugin_command(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.submit_plugin_command_now(request))
+    }
+    async fn submit_plugin_command_now(&self, request: Value) -> Result<Value> {
         let request: Submit = parse(request)?;
         self.session_guard
             .run_with_user(|user_id| async {
@@ -286,7 +310,13 @@ impl CapabilityApi {
             })
             .await
     }
-    pub async fn acknowledge_plugin_command(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn acknowledge_plugin_command(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.acknowledge_plugin_command_now(request))
+    }
+    async fn acknowledge_plugin_command_now(&self, request: Value) -> Result<Value> {
         let request: Submit = parse(request)?;
         self.session_guard
             .run_with_user(|user_id| async {

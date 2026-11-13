@@ -2626,7 +2626,7 @@ impl HttpClient {
         let bytes = rx
             .await
             .map_err(|_| FlareError::system("http renewal task dropped"))??;
-        serde_json::from_slice(&bytes)
+        crate::shared::util::json::from_slice(&bytes)
             .map_err(|error| FlareError::system(format!("parse http json failed: {error}")))
     }
 

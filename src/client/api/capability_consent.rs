@@ -17,8 +17,8 @@ use flare_plugin_protocol::ui::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::CapabilityApi;
 use super::native::{CapabilityConsentPrompt, ConsentDecision, PluginCapabilityHost};
+use super::{CapabilityApi, PluginCallFuture};
 use crate::domain::{PluginConsent, PluginConsentScope};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
@@ -175,11 +175,17 @@ impl CapabilityApi {
     /// capability, manifestMajor, level, grantedAtMs}]}`, the consents the
     /// signed-in viewer gave on this device, of one plugin or of all, for a
     /// settings screen.
-    pub async fn plugin_capability_consents(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_capability_consents(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_capability_consents_now(request))
+    }
+    async fn plugin_capability_consents_now(&self, request: Value) -> Result<Value> {
         let request: ConsentListRequest = if request.is_null() {
             ConsentListRequest { plugin_id: None }
         } else {
-            serde_json::from_value(request).map_err(|_| invalid())?
+            crate::shared::util::json::from_value(request).map_err(|_| invalid())?
         };
         self.session_guard
             .run_with_user(|user| async move {
@@ -196,9 +202,15 @@ impl CapabilityApi {
     /// `plugin_capability_consent_revoke`: `{pluginId, capability?}` →
     /// `{revoked}`. Drops the viewer's consent to one capability of the
     /// plugin, or to all of them; the next use asks again.
-    pub async fn revoke_plugin_capability_consent(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn revoke_plugin_capability_consent(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.revoke_plugin_capability_consent_now(request))
+    }
+    async fn revoke_plugin_capability_consent_now(&self, request: Value) -> Result<Value> {
         let request: ConsentRevokeRequest =
-            serde_json::from_value(request).map_err(|_| invalid())?;
+            crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
         self.session_guard
             .run_with_user(|user| async move {
                 let user = user.ok_or_else(session_required)?;

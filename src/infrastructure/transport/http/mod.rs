@@ -64,7 +64,8 @@ impl<T> HttpApiResponse<T> {
 /// 机器元数据仅包含状态码、远端数字码和有界的 reason 标识，不携带响应正文、
 /// message 或 HTTP headers。跨语言调用方不能凭“发生了异常”推断权限拒绝。
 pub fn http_error_from_response_status(status: u16, body: &str) -> FlareError {
-    let parsed = serde_json::from_str::<HttpApiResponse<serde_json::Value>>(body).ok();
+    let parsed =
+        crate::shared::util::json::from_str::<HttpApiResponse<serde_json::Value>>(body).ok();
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("httpStatus".to_string(), status.to_string());
     let detail = if let Some(parsed) = parsed {

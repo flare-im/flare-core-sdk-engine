@@ -63,7 +63,7 @@ impl IndexedDbPluginCommandStore {
 }
 fn decode(value: Value) -> Result<PluginCommandRecord> {
     let record: PluginCommandRecord =
-        serde_json::from_value(value).map_err(|_| invalid("corrupt_journal"))?;
+        flare_im_core_sdk::json::from_value(value).map_err(|_| invalid("corrupt_journal"))?;
     record.command.validate()?;
     if record
         .response

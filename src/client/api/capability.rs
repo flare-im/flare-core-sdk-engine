@@ -23,6 +23,15 @@ use crate::infrastructure::transport::http::http_client::HttpRequestContext;
 use crate::infrastructure::transport::http::{HttpApiResponse, HttpClient, unwrap_api_response};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
+/// The future of a plugin call the bindings await (not `Send` in the
+/// browser, where the storage futures are not).
+#[cfg(not(target_arch = "wasm32"))]
+pub type PluginCallFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 'a>>;
+#[cfg(target_arch = "wasm32")]
+pub type PluginCallFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + 'a>>;
+
 #[path = "capability_consent.rs"]
 mod consent;
 #[path = "capability_entry_availability.rs"]
@@ -413,7 +422,13 @@ impl CapabilityApi {
         Ok(())
     }
 
-    pub async fn resolve_plugin_message(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn resolve_plugin_message(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.resolve_plugin_message_now(request))
+    }
+    async fn resolve_plugin_message_now(&self, request: Value) -> Result<Value> {
         self.session_guard
             .run(async {
                 crate::extension::capability::ui::resolve(
@@ -425,7 +440,13 @@ impl CapabilityApi {
             })
             .await
     }
-    pub async fn plugin_ui_action(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_ui_action(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_ui_action_now(request))
+    }
+    async fn plugin_ui_action_now(&self, request: Value) -> Result<Value> {
         self.session_guard
             .run(async {
                 let client = self.plugin_client();
@@ -468,7 +489,13 @@ impl CapabilityApi {
     /// instead of an error, and a card Core marked as an unbound copy is
     /// read-only (`unbound_copy`). Concurrent presentations share one catalog
     /// read; none is kept after it.
-    pub async fn present_plugin_message(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn present_plugin_message(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.present_plugin_message_now(request))
+    }
+    async fn present_plugin_message_now(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         let request = ui::parse_present(request)?;
         self.session_guard
@@ -658,22 +685,22 @@ impl CapabilityApi {
         if !response.success {
             return;
         }
-        let local =
-            response.data.get("messageState").and_then(|raw| {
-                match serde_json::from_value::<flare_plugin_protocol::ui::PluginMessageState>(
-                    raw.clone(),
-                ) {
-                    Ok(state) if state.validate().is_ok() => Some(state),
-                    _ => {
-                        tracing::warn!(
-                            target = "flare_sdk.plugin",
-                            plugin_id = %message.plugin_id,
-                            "plugin returned an invalid message state"
-                        );
-                        None
-                    }
+        let local = response.data.get("messageState").and_then(|raw| {
+            match crate::shared::util::json::from_value::<
+                flare_plugin_protocol::ui::PluginMessageState,
+            >(raw.clone())
+            {
+                Ok(state) if state.validate().is_ok() => Some(state),
+                _ => {
+                    tracing::warn!(
+                        target = "flare_sdk.plugin",
+                        plugin_id = %message.plugin_id,
+                        "plugin returned an invalid message state"
+                    );
+                    None
                 }
-            });
+            }
+        });
         let shared = match flare_plugin_protocol::state::SharedState::from_result(&response.data) {
             Ok(Some(state)) if entity == Some(state.entity.as_str()) => Some(state),
             Ok(None) => None,
@@ -784,7 +811,13 @@ impl CapabilityApi {
     /// (see [`Self::plugin_page`]): it binds over the page view's `data`, a
     /// row action takes `row: {key, input}` as the view gave it, and it never
     /// carries `messageId`.
-    pub async fn invoke_plugin_action(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn invoke_plugin_action(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.invoke_plugin_action_now(request))
+    }
+    async fn invoke_plugin_action_now(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         use flare_plugin_protocol::ui::UiActionTarget;
         if crate::extension::capability::ui_page::is_page_action(&request) {
@@ -896,10 +929,23 @@ impl CapabilityApi {
     /// re-reads a sheet after a state change keeps the pages it had loaded.
     /// The merged view replaces `previous`; any page failing fails the call,
     /// and the host keeps showing `previous`.
-    pub async fn plugin_detail(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_detail(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_detail_now(request))
+    }
+    async fn plugin_detail_now(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         let mut request = ui::parse_detail(request)?;
-        let previous = request.previous.take();
+        let previous = request
+            .previous
+            .take()
+            .map(|previous| {
+                flare_plugin_protocol::ui::ShownPluginView::from_value(previous)
+                    .ok_or_else(ui::invalid)
+            })
+            .transpose()?;
         self.session_guard
             .run_with_user(|user_id| async move {
                 let (_, catalog) = self.fetch_plugin_ui_catalog().await?;
@@ -936,7 +982,7 @@ impl CapabilityApi {
                     .await?;
                 match previous {
                     Some(previous) if request.refresh => {
-                        let wanted = ui::detail_entries(&previous);
+                        let wanted = previous.entries();
                         let mut pages = 1;
                         while let Some(cursor) =
                             ui::detail_refresh_continues(&view, wanted, pages).map(str::to_owned)
@@ -951,7 +997,7 @@ impl CapabilityApi {
                     }
                     Some(mut previous) => {
                         previous.append_page(view);
-                        view = previous;
+                        return Ok(previous.into_value());
                     }
                     None => {}
                 }
@@ -1052,7 +1098,13 @@ impl CapabilityApi {
     /// `{actions: [{pluginId, contributionId, title, icon?, order, audience?}]}`
     /// out. `audience` (`{conversationTypes?, groupRoles?}`) is for the host to
     /// filter by the open conversation and the viewer's role in it.
-    pub async fn plugin_composer_actions(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_composer_actions(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_composer_actions_now(request))
+    }
+    async fn plugin_composer_actions_now(&self, request: Value) -> Result<Value> {
         let request = crate::extension::capability::ui::parse_composer_actions(request)?;
         let actions = self
             .composer_actions(request.platform, &request.locale)
@@ -1086,7 +1138,13 @@ impl CapabilityApi {
     /// `{entries: [{pluginId, contributionId, title, icon?, order, page,
     /// summary?: {operation, path}}]}` out. `page` is the plugin's page
     /// contribution the entry opens.
-    pub async fn plugin_account_entries(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_account_entries(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_account_entries_now(request))
+    }
+    async fn plugin_account_entries_now(&self, request: Value) -> Result<Value> {
         let request = crate::extension::capability::ui::parse_composer_actions(request)?;
         let entries = self
             .account_entries(request.platform, &request.locale)
@@ -1098,7 +1156,13 @@ impl CapabilityApi {
     /// Each plugin carries `configuration`: the client-visible subset of its
     /// tenant configuration (keys marked `x-flare-client-visible`), absent when
     /// empty.
-    pub async fn plugin_ui_catalog(&self) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_ui_catalog(&self) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_ui_catalog_now())
+    }
+    async fn plugin_ui_catalog_now(&self) -> Result<Value> {
         Ok(self.fetch_plugin_ui_catalog().await?.0)
     }
     /// A fresh catalog read; presentations waiting meanwhile share it

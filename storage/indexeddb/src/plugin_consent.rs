@@ -64,7 +64,7 @@ impl IndexedDbPluginConsentStore {
 
 fn decode(value: Value) -> Result<PluginConsent> {
     let consent: PluginConsent =
-        serde_json::from_value(value).map_err(|_| invalid("corrupt_consent"))?;
+        flare_im_core_sdk::json::from_value(value).map_err(|_| invalid("corrupt_consent"))?;
     consent.validate().map_err(|_| invalid("corrupt_consent"))?;
     Ok(consent)
 }

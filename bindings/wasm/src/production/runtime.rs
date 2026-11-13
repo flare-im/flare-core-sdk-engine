@@ -207,13 +207,13 @@ async fn invoke_impl(
                 .map(str::to_string);
             let sdk_config = if request.get("sdkConfig").is_some() {
                 Some(
-                    serde_json::from_value(
+                    flare_im_core_sdk::json::from_value(
                         request.get("sdkConfig").cloned().unwrap_or(Value::Null),
                     )
                     .map_err(|e| js_error("invalidParameter", operation, e))?,
                 )
             } else {
-                serde_json::from_value(request.clone()).ok()
+                flare_im_core_sdk::json::from_value(request.clone()).ok()
             };
             state
                 .set_config(environment, sdk_config)

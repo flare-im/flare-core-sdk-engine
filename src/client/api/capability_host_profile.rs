@@ -177,7 +177,7 @@ fn invalid_profile() -> FlareError {
 /// and a descriptor Core accepts ([`ClientUiDescriptor::validate`]).
 pub(crate) fn parse_profile(request: Value, identity: &AppIdentity) -> Result<PluginHostProfile> {
     let profile: PluginHostProfile =
-        serde_json::from_value(request).map_err(|_| invalid_profile())?;
+        crate::shared::util::json::from_value(request).map_err(|_| invalid_profile())?;
     profile
         .kit_vocabulary
         .validate()

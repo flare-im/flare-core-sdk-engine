@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn storage_config_deserializes_without_encryption_for_existing_json() {
-        let config: StorageConfig = serde_json::from_value(serde_json::json!({
+        let config: StorageConfig = crate::shared::util::json::from_value(serde_json::json!({
             "kind": "sqlite",
             "namespace": "flare",
             "tenant_id": "0",

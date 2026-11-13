@@ -90,7 +90,7 @@ pub fn optional_media_reference(
         conversation_id: Option<String>,
         message_seq: Option<i64>,
     }
-    let fields: Fields = serde_json::from_value(params.clone())
+    let fields: Fields = flare_im_core_sdk::json::from_value(params.clone())
         .map_err(|_| binding_invalid_parameter("invalid message media reference"))?;
     match (fields.conversation_id, fields.message_seq) {
         (None, None) => Ok(None),
@@ -532,12 +532,12 @@ pub fn message_from_json_str(params_json: &str) -> Result<IMMessage> {
 }
 
 pub fn from_value<T: for<'de> Deserialize<'de>>(value: Value, label: &str) -> Result<T> {
-    serde_json::from_value(value)
+    flare_im_core_sdk::json::from_value(value)
         .map_err(|e| binding_invalid_parameter(format!("invalid {label}: {e}")))
 }
 
 pub fn from_json_str<T: for<'de> Deserialize<'de>>(json: &str, label: &str) -> Result<T> {
-    serde_json::from_str(json)
+    flare_im_core_sdk::json::from_str(json)
         .map_err(|e| binding_invalid_parameter(format!("invalid {label}: {e}")))
 }
 
@@ -547,7 +547,7 @@ pub fn dispatch_params_from_json(json: &str) -> Result<Value> {
 }
 
 pub fn dispatch_operation_from_json(json: &str) -> Result<String> {
-    serde_json::from_str::<DispatchOperationRequest>(json)
+    flare_im_core_sdk::json::from_str::<DispatchOperationRequest>(json)
         .map(|request| request.op)
         .map_err(|e| binding_invalid_parameter(format!("invalid dispatch op: {e}")))
 }

@@ -39,6 +39,8 @@ pub mod spi;
 pub use schemars;
 pub use serde;
 pub use serde_json;
+/// Reading JSON text the way the browser bundle keeps small ([`shared::util::json`]).
+pub use shared::util::json;
 
 /// Event subscription and SDK event payload facade.
 /// 客户端链路：接入配置、接入运行时与诊断数据、HTTP 路由（社交 SDK 等经它按服务路由与带幂等键重试）。

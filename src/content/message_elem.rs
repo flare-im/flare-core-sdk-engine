@@ -32,7 +32,8 @@ pub(crate) const MAX_PLUGIN_CARD_ENVELOPE_BYTES: usize = 65536;
 /// Every other plugin message reaches the SDK as a `serde_json::Value` (a presentation request,
 /// an operation result), so the envelope is read into one too and only then into its type: the
 /// type keeps one deserializer in the binary instead of one per input form. The read refuses
-/// what reading the bytes straight into the type refused, an object that repeats a key.
+/// what reading the bytes straight into the type refused, an object that repeats a key, and
+/// like every value the SDK reads ([`crate::json`]) it reads the envelope from an object only.
 pub(crate) fn plugin_card_envelope(
     payload: &[u8],
 ) -> Option<flare_plugin_protocol::ui::PluginMessage> {
@@ -40,7 +41,7 @@ pub(crate) fn plugin_card_envelope(
         return None;
     }
     let EnvelopeJson(value) = serde_json::from_slice(payload).ok()?;
-    serde_json::from_value::<flare_plugin_protocol::ui::PluginMessage>(value)
+    crate::shared::util::json::from_value::<flare_plugin_protocol::ui::PluginMessage>(value)
         .ok()
         .filter(|message| message.validate().is_ok())
 }
@@ -70,17 +71,6 @@ impl<'de> Deserialize<'de> for EnvelopeJson {
                     }
                 }
                 Ok(Value::Object(object))
-            }
-            // A struct reads from a JSON array too (its fields in order); so does the envelope.
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                self,
-                mut seq: A,
-            ) -> Result<Value, A::Error> {
-                let mut items = Vec::new();
-                while let Some(item) = seq.next_element::<Value>()? {
-                    items.push(item);
-                }
-                Ok(Value::Array(items))
             }
         }
         deserializer.deserialize_any(Envelope).map(EnvelopeJson)
@@ -784,14 +774,14 @@ pub enum Elem {
 }
 
 impl Elem {
-    /// Reads message content from a JSON value, exactly as `serde_json::from_value` does.
+    /// Reads message content from a JSON value, through [`crate::json`].
     ///
     /// The SDK's entry point for reading content on its own; content inside a message is read
     /// with the message ([`IMMessage::from_json_str`](crate::model::IMMessage::from_json_str),
     /// [`IMMessage::from_json_value`](crate::model::IMMessage::from_json_value)), which explains
     /// why these readers are compiled in this crate.
     pub fn from_json_value(value: Value) -> serde_json::Result<Self> {
-        serde_json::from_value(value)
+        crate::shared::util::json::from_value(value)
     }
 }
 
@@ -1575,10 +1565,12 @@ mod tests {
     #[test]
     fn a_card_envelope_reads_as_its_bytes_read_straight_into_the_type() {
         use flare_plugin_protocol::ui::PluginMessage;
+        // Straight into the type, except that the SDK reads a struct from an object only.
         let typed = |bytes: &[u8]| {
             serde_json::from_slice::<PluginMessage>(bytes)
                 .ok()
                 .filter(|message| message.validate().is_ok())
+                .filter(|_| bytes.first() != Some(&b'['))
         };
         let valid = r#"{"pluginId":"example.poll","contributionId":"example.poll.card","schemaVersion":1,"summary":"投票","payload":{"a":1,"a":2},"displayName":"投票"}"#;
         let pad = |len: usize| {
@@ -1621,7 +1613,10 @@ mod tests {
             );
         }
         assert!(plugin_card_envelope(valid.as_bytes()).is_some());
-        assert!(plugin_card_envelope(cases[3].as_bytes()).is_some());
+        assert!(
+            plugin_card_envelope(cases[3].as_bytes()).is_none(),
+            "fields in order as an array are refused"
+        );
         assert!(plugin_card_envelope(pad(MAX_PLUGIN_CARD_ENVELOPE_BYTES).as_bytes()).is_some());
         // Bytes over the cap are not read, though the envelope in them would pass.
         let over = format!(

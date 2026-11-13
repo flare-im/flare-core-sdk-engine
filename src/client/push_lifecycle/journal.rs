@@ -98,7 +98,8 @@ impl Journal {
             let entries: Vec<Intent> = if data.is_empty() {
                 vec![]
             } else {
-                serde_json::from_slice(&data).map_err(|_| failure(ErrorCode::DatabaseError))?
+                crate::shared::util::json::from_slice(&data)
+                    .map_err(|_| failure(ErrorCode::DatabaseError))?
             };
             if entries.len() > 64
                 || entries.iter().any(|e| {

@@ -1,6 +1,6 @@
 //! Private plugin form uploads. Grants stay in memory and never enter the
 //! durable plugin command journal; business ownership remains with the plugin.
-use super::CapabilityApi;
+use super::{CapabilityApi, PluginCallFuture};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_plugin_protocol::manifest::{ClientPlatform, UiContributionKind};
 use flare_plugin_protocol::ui::{UiFileReference, UiInput, UiRenderContext};
@@ -108,9 +108,15 @@ impl CapabilityApi {
     /// Upload one file of a real, visible page form. Prepare and complete are
     /// direct declared plugin commands, with the caller's stable commandId.
     /// No upload grant, bytes or intermediate reply is stored in a journal.
-    pub async fn plugin_file_upload(&self, value: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_file_upload(&self, value: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_file_upload_now(value))
+    }
+    async fn plugin_file_upload_now(&self, value: Value) -> Result<Value> {
         let request: PluginFileUploadRequest =
-            serde_json::from_value(value).map_err(|_| invalid())?;
+            crate::shared::util::json::from_value(value).map_err(|_| invalid())?;
         if !valid_id(&request.page.plugin_id)
             || !valid_id(&request.page.page)
             || !valid_id(&request.input_id)
@@ -205,7 +211,8 @@ impl CapabilityApi {
                     return Err(unavailable());
                 }
                 let resolved: Vec<UiInput> =
-                    serde_json::from_value(view["inputs"].clone()).map_err(|_| unavailable())?;
+                    crate::shared::util::json::from_value(view["inputs"].clone())
+                        .map_err(|_| unavailable())?;
                 let form_values = request.form_values.as_ref().unwrap_or(&Value::Null);
                 if form_values.as_object().is_some_and(|values| {
                     values
@@ -266,7 +273,7 @@ impl CapabilityApi {
                     return Err(unavailable());
                 }
                 let prepared: PreparedFile =
-                    serde_json::from_value(prepared.data).map_err(|_| invalid())?;
+                    crate::shared::util::json::from_value(prepared.data).map_err(|_| invalid())?;
                 let reference = UiFileReference {
                     file_id: prepared.file_id,
                 };
@@ -324,7 +331,7 @@ impl CapabilityApi {
                     return Err(unavailable());
                 }
                 let completed: UiFileReference =
-                    serde_json::from_value(complete.data).map_err(|_| invalid())?;
+                    crate::shared::util::json::from_value(complete.data).map_err(|_| invalid())?;
                 if completed != reference || !completed.is_valid() {
                     return Err(invalid());
                 }
@@ -428,23 +435,29 @@ mod tests {
         let good = json!({"page":{"pluginId":"example.plugin","page":"example.plugin.form"},
             "inputId":"attachment","platform":"web","fileName":"receipt.png","contentType":"image/png",
             "bytes":[0,128,255],"commandId":"upload-1"});
-        assert!(serde_json::from_value::<PluginFileUploadRequest>(good.clone()).is_ok());
+        assert!(
+            crate::shared::util::json::from_value::<PluginFileUploadRequest>(good.clone()).is_ok()
+        );
         for bytes in [json!([-1]), json!([256]), json!([1.5]), json!("base64")] {
             let mut bad = good.clone();
             bad["bytes"] = bytes;
-            assert!(serde_json::from_value::<PluginFileUploadRequest>(bad).is_err());
+            assert!(crate::shared::util::json::from_value::<PluginFileUploadRequest>(bad).is_err());
         }
         let mut bad = good;
         bad["uploadUrl"] = json!("/private/attacker?grant=x");
-        assert!(serde_json::from_value::<PluginFileUploadRequest>(bad).is_err());
+        assert!(crate::shared::util::json::from_value::<PluginFileUploadRequest>(bad).is_err());
         assert!(
-            serde_json::from_value::<PreparedFile>(json!({"fileId":"file-1","ready":true,
-            "contentType":"image/png","sizeBytes":3,"sha256":"x"}))
+            crate::shared::util::json::from_value::<PreparedFile>(
+                json!({"fileId":"file-1","ready":true,
+            "contentType":"image/png","sizeBytes":3,"sha256":"x"})
+            )
             .is_ok()
         );
         assert!(
-            serde_json::from_value::<PreparedFile>(json!({"fileId":"file-1","ready":"true",
-            "contentType":"image/png","sizeBytes":3,"sha256":"x"}))
+            crate::shared::util::json::from_value::<PreparedFile>(
+                json!({"fileId":"file-1","ready":"true",
+            "contentType":"image/png","sizeBytes":3,"sha256":"x"})
+            )
             .is_err()
         );
     }

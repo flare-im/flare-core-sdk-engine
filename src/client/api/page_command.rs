@@ -63,7 +63,7 @@ impl CapabilityApi {
             return Err(denied());
         }
         if let Some(response) = record.response {
-            let response = serde_json::from_value(response)
+            let response = crate::shared::util::json::from_value(response)
                 .map_err(|_| FlareError::system("invalid journal response"))?;
             return Ok((response, record.command.continuation));
         }
@@ -88,7 +88,7 @@ impl CapabilityApi {
             return Err(unknown());
         }
         let observation: CommandObservation<ObservedCommandResult> =
-            serde_json::from_value(response.data).map_err(|_| unknown())?;
+            crate::shared::util::json::from_value(response.data).map_err(|_| unknown())?;
         let digest = flare_plugin_protocol::runtime::configuration_digest(&command.payload)
             .map_err(|_| FlareError::system("plugin command digest"))?;
         if observation.command_id != command.command_id
@@ -125,7 +125,7 @@ impl CapabilityApi {
             .ok_or_else(|| FlareError::system("page command store missing"))?
             .complete(scope, command, raw)
             .await?;
-        let response = serde_json::from_value(
+        let response = crate::shared::util::json::from_value(
             saved
                 .response
                 .ok_or_else(|| FlareError::system("page response missing"))?,
@@ -244,7 +244,7 @@ impl CapabilityApi {
                 if payload.get("commandId").is_none() {
                     payload["commandId"] = json!(uuid::Uuid::new_v4().to_string());
                 }
-                let command:PluginCommand=serde_json::from_value(json!({"commandId":payload["commandId"],"capabilityId":operation,"conversationId":conversation,"payload":payload,"terminalErrorCodes":policy.terminal_error_codes,"continuation":continuation})).map_err(|_|FlareError::system("page command encoding"))?;
+                let command:PluginCommand=crate::shared::util::json::from_value(json!({"commandId":payload["commandId"],"capabilityId":operation,"conversationId":conversation,"payload":payload,"terminalErrorCodes":policy.terminal_error_codes,"continuation":continuation})).map_err(|_|FlareError::system("page command encoding"))?;
                 command.validate()?;
                 if let Some(old) = pending
                     && old.command != command
@@ -277,7 +277,8 @@ impl CapabilityApi {
             .await?
             .ok_or_else(|| FlareError::system("page command missing"))?;
         let response = if let Some(v) = existing.response {
-            serde_json::from_value(v).map_err(|_| FlareError::system("invalid journal response"))?
+            crate::shared::util::json::from_value(v)
+                .map_err(|_| FlareError::system("invalid journal response"))?
         } else {
             let response = match self
                 .dispatch_with(
@@ -323,7 +324,7 @@ impl CapabilityApi {
                 ));
             }
             let saved = store.complete(&scope, &command, raw).await?;
-            serde_json::from_value(
+            crate::shared::util::json::from_value(
                 saved
                     .response
                     .ok_or_else(|| FlareError::system("page response missing"))?,

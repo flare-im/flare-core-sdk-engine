@@ -42,7 +42,7 @@ struct ActionRequest {
     user_gesture: bool,
     payload: Value,
 }
-fn invalid() -> FlareError {
+pub(crate) fn invalid() -> FlareError {
     FlareError::localized(ErrorCode::InvalidParameter, "sdk.plugin.invalid_ui_request")
 }
 /// The device clock. Every catalog evaluated here has had its validity moved
@@ -125,9 +125,10 @@ pub(crate) struct DetailRequest {
     pub cursor: Option<String>,
     /// The view shown so far, exactly as an earlier call returned it. With
     /// `cursor` the page is appended to it; with `refresh` it is the view to
-    /// bring up to date. Without either only the page comes back.
+    /// bring up to date. Without either only the page comes back. Kept as
+    /// JSON ([`flare_plugin_protocol::ui::ShownPluginView`]).
     #[serde(default)]
-    pub previous: Option<ResolvedPluginView>,
+    pub previous: Option<Value>,
     /// Re-read `previous` (required) from the first page, following the
     /// cursors until the entries are at least as many as `previous` showed,
     /// the detail has no next page, or [`MAX_DETAIL_REFRESH_PAGES`] pages were
@@ -150,7 +151,8 @@ fn valid_message_id(id: &Option<String>) -> bool {
 }
 pub(crate) fn parse_present(request: Value) -> Result<PresentRequest> {
     bounded(&request)?;
-    let parsed: PresentRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let parsed: PresentRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     parsed.message.validate().map_err(|_| invalid())?;
     if !valid_message_id(&parsed.message_id) || !valid_locale(&parsed.locale) {
         return Err(invalid());
@@ -159,7 +161,8 @@ pub(crate) fn parse_present(request: Value) -> Result<PresentRequest> {
 }
 pub(crate) fn parse_detail(request: Value) -> Result<DetailRequest> {
     bounded(&request)?;
-    let parsed: DetailRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let parsed: DetailRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     parsed.message.validate().map_err(|_| invalid())?;
     if !valid_message_id(&parsed.message_id)
         || !valid_locale(&parsed.locale)
@@ -178,7 +181,8 @@ pub(crate) fn parse_detail(request: Value) -> Result<DetailRequest> {
 }
 pub(crate) fn parse_invoke(request: Value) -> Result<InvokeRequest> {
     bounded(&request)?;
-    let parsed: InvokeRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let parsed: InvokeRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     parsed.message.validate().map_err(|_| invalid())?;
     if parsed
         .conversation_id
@@ -226,7 +230,8 @@ pub(crate) struct ComposerActionsRequest {
 }
 pub(crate) fn parse_composer_actions(request: Value) -> Result<ComposerActionsRequest> {
     bounded(&request)?;
-    let parsed: ComposerActionsRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let parsed: ComposerActionsRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     if !valid_locale(&parsed.locale) {
         return Err(invalid());
     }
@@ -431,7 +436,7 @@ pub(crate) fn parse_catalog(data: &Value, vocabulary: &UiVocabulary) -> Option<U
             .map(|items| {
                 items
                     .iter()
-                    .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                    .filter_map(|item| crate::shared::util::json::from_value(item.clone()).ok())
                     .collect()
             })
             .unwrap_or_default(),
@@ -444,7 +449,7 @@ pub(crate) fn parse_catalog(data: &Value, vocabulary: &UiVocabulary) -> Option<U
             .and_then(Value::as_array_mut)
             .map(std::mem::take)
             .unwrap_or_default();
-        match serde_json::from_value::<ClientPlugin>(shell) {
+        match crate::shared::util::json::from_value::<ClientPlugin>(shell) {
             Ok(mut plugin) => {
                 let (mut upgrades, mut dropped) = (0usize, 0usize);
                 for contribution in &contributions {
@@ -523,7 +528,8 @@ pub(crate) fn resolve(
     vocabulary: &UiVocabulary,
 ) -> Result<Value> {
     bounded(&request)?;
-    let request: ResolveRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let request: ResolveRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     let catalog = host_catalog(&request.catalog, vocabulary, clock)?;
     serde_json::to_value(catalog.resolve_with_context(
         &request.message,
@@ -549,7 +555,8 @@ pub(crate) fn action(
     native: &BTreeSet<NativeCapability>,
 ) -> Result<Value> {
     bounded(&request)?;
-    let request: ActionRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let request: ActionRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     let catalog = host_catalog(&request.catalog, vocabulary, clock)?;
     let target = catalog
         .action(

@@ -1,7 +1,7 @@
 //! Plugin pages: `CapabilityApi::plugin_page` and page actions.
 use serde_json::Value;
 
-use super::{CapabilityApi, CapabilityDispatchResult};
+use super::{CapabilityApi, CapabilityDispatchResult, PluginCallFuture};
 use crate::extension::capability::ui_page;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_plugin_protocol::{
@@ -40,7 +40,13 @@ impl CapabilityApi {
     ///   fails instead, and any other failure of the source is an error.
     ///
     /// A page is no card: its calls carry no `messageId` and bind no entity.
-    pub async fn plugin_page(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_page(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_page_now(request))
+    }
+    async fn plugin_page_now(&self, request: Value) -> Result<Value> {
         let mut request = ui_page::parse_page(request)?;
         let previous = request
             .previous
@@ -132,10 +138,10 @@ impl CapabilityApi {
                     );
                 }
                 let mut view = resolve(&first)?;
-                let mut data = first;
+                let data = first;
                 match previous {
                     Some((previous, _)) if request.refresh => {
-                        let wanted = ui_page::page_items(&previous);
+                        let wanted = previous.entries() + previous.rows();
                         let mut pages = 1;
                         while let Some(cursor) =
                             ui_page::refresh_continues(&view, wanted, pages).map(str::to_owned)
@@ -148,8 +154,11 @@ impl CapabilityApi {
                     }
                     Some((mut previous, previous_data)) => {
                         previous.append_page(view);
-                        view = previous;
-                        data = previous_data;
+                        return Ok(ui_page::shown_page_view(
+                            previous,
+                            previous_data,
+                            request.conversation_id.as_deref(),
+                        ));
                     }
                     None => {}
                 }

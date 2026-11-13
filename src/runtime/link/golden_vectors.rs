@@ -151,13 +151,13 @@ fn outcome_name(outcome: Outcome) -> String {
 }
 
 fn action_reason(name: &str) -> ActionRequiredReason {
-    serde_json::from_value(Value::from(name)).unwrap()
+    crate::shared::util::json::from_value(Value::from(name)).unwrap()
 }
 
 fn switch_reason(value: &Value) -> Option<SwitchReason> {
     value
         .as_str()
-        .map(|name| serde_json::from_value(Value::from(name)).unwrap())
+        .map(|name| crate::shared::util::json::from_value(Value::from(name)).unwrap())
 }
 
 const INTERNAL_PHASES: [(&str, LinkPhase); 11] = [
@@ -662,7 +662,7 @@ fn status_vectors_are_current() {
     }
     let external: HashSet<ConnectionPhase> = expected
         .iter()
-        .map(|status| serde_json::from_value(status["phase"].clone()).unwrap())
+        .map(|status| crate::shared::util::json::from_value(status["phase"].clone()).unwrap())
         .collect();
     for phase in [
         ConnectionPhase::Idle,

@@ -354,8 +354,9 @@ impl Serialize for IMMessage {
 /// Reading a message from JSON.
 ///
 /// The SDK's entry points for reading an [`IMMessage`] from JSON: read messages through them
-/// rather than with a `serde_json` call of your own. They read exactly as `serde_json::from_str`
-/// and `serde_json::from_value` do, with the same rules and the same errors.
+/// rather than with a `serde_json` call of your own. They read through [`crate::json`]: as
+/// `serde_json::from_str` and `serde_json::from_value` do, except that a struct is read from an
+/// object only, and that in the browser text is read through a value.
 ///
 /// Why they live here: the reader of a message, together with the reader of its [`Elem`]
 /// content, is generic code, and every crate that instantiates it compiles a copy of its own.
@@ -367,12 +368,12 @@ impl Serialize for IMMessage {
 impl IMMessage {
     /// Reads a message from JSON text.
     pub fn from_json_str(json: &str) -> serde_json::Result<Self> {
-        serde_json::from_str(json)
+        crate::shared::util::json::from_str(json)
     }
 
     /// Reads a message from a JSON value.
     pub fn from_json_value(value: serde_json::Value) -> serde_json::Result<Self> {
-        serde_json::from_value(value)
+        crate::shared::util::json::from_value(value)
     }
 }
 

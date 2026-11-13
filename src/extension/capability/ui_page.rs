@@ -13,7 +13,7 @@ use flare_plugin_protocol::{
     manifest::{ClientPlatform, UiContribution, UiContributionKind},
     ui::{
         DETAIL_CURSOR_INPUT, MAX_UI_ACTION_INPUT_BYTES, NativeCapability, ResolvedPluginView,
-        ResolvedUiBlock, UiCatalog, UiUnavailableReason,
+        ResolvedUiBlock, ShownPluginView, UiCatalog, UiUnavailableReason,
     },
 };
 use serde::Deserialize;
@@ -135,7 +135,8 @@ impl PageRequest {
 
 pub(crate) fn parse_page(request: Value) -> Result<PageRequest> {
     bounded(&request)?;
-    let mut parsed: PageRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let mut parsed: PageRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     if let Some(previous) = &parsed.previous {
         let previous_conversation = match previous.get("conversationId") {
             None | Some(Value::Null) => None,
@@ -170,14 +171,15 @@ pub(crate) fn parse_page(request: Value) -> Result<PageRequest> {
 }
 
 /// A view a host passes back (`previous`): the view and the `data` it was
-/// returned with.
-pub(crate) fn split_previous(previous: Value) -> Result<(ResolvedPluginView, Value)> {
+/// returned with. The view stays JSON ([`ShownPluginView`]): paging only
+/// appends to its entries and rows.
+pub(crate) fn split_previous(previous: Value) -> Result<(ShownPluginView, Value)> {
     let Value::Object(mut object) = previous else {
         return Err(invalid());
     };
     let data = object.remove("data").unwrap_or(Value::Null);
     object.remove("conversationId");
-    let view = serde_json::from_value(Value::Object(object)).map_err(|_| invalid())?;
+    let view = ShownPluginView::from_value(Value::Object(object)).ok_or_else(invalid)?;
     Ok((view, data))
 }
 
@@ -266,16 +268,33 @@ pub(crate) fn page_view(
     data: Option<Value>,
     conversation: Option<&str>,
 ) -> Result<Value> {
-    let mut value = serde_json::to_value(view).map_err(|_| invalid())?;
-    if view.available
-        && let (Some(data), Some(object)) = (data, value.as_object_mut())
-    {
+    let value = serde_json::to_value(view).map_err(|_| invalid())?;
+    Ok(page_value(value, view.available, data, conversation))
+}
+
+/// [`page_view`] of a shown view a page was appended to.
+pub(crate) fn shown_page_view(
+    view: ShownPluginView,
+    data: Value,
+    conversation: Option<&str>,
+) -> Value {
+    let available = view.available();
+    page_value(view.into_value(), available, Some(data), conversation)
+}
+
+fn page_value(
+    mut value: Value,
+    available: bool,
+    data: Option<Value>,
+    conversation: Option<&str>,
+) -> Value {
+    if available && let (Some(data), Some(object)) = (data, value.as_object_mut()) {
         object.insert("data".into(), data);
     }
     if let Some(conversation) = conversation {
         value["conversationId"] = conversation.into();
     }
-    Ok(value)
+    value
 }
 
 /// Carry host route context alongside navigation, never inside plugin arguments.
@@ -348,7 +367,8 @@ pub(crate) fn is_page_action(request: &Value) -> bool {
 
 pub(crate) fn parse_page_action(request: Value) -> Result<PageActionRequest> {
     bounded(&request)?;
-    let parsed: PageActionRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let parsed: PageActionRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     if !valid_id(&parsed.page.plugin_id)
         || !valid_id(&parsed.page.page)
         || parsed.data.as_ref().is_some_and(|d| !d.is_object())

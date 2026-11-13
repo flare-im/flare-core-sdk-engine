@@ -178,7 +178,7 @@ impl UpdateRuntime {
             .get(&keys::update_state(kernel.bootstrap_id()))
             .await
         {
-            Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or_default(),
+            Ok(Some(bytes)) => crate::shared::util::json::from_slice(&bytes).unwrap_or_default(),
             _ => PersistedUpdate::default(),
         };
         let now = now_ms();

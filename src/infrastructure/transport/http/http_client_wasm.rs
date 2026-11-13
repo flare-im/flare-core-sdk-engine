@@ -671,6 +671,6 @@ where
         extra_headers,
     )
     .await?;
-    serde_json::from_slice(&bytes)
+    crate::shared::util::json::from_slice(&bytes)
         .map_err(|e| FlareError::system(format!("parse http json failed: {e}")))
 }
