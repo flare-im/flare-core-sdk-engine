@@ -12,6 +12,7 @@ pub mod empty_stores;
 pub mod memory;
 pub mod memory_im;
 pub mod minimal_provider;
+pub mod plugin_bundle_storage_memory;
 pub mod plugin_consent_memory;
 pub mod timeline_coverage;
 
@@ -31,6 +32,7 @@ pub use layered::LayeredPendingSendStore;
 pub use memory::{MemoryPendingSendStore, MemoryUserProfileStore};
 pub use memory_im::in_memory_im_provider;
 pub use minimal_provider::in_memory_empty_im_provider;
+pub use plugin_bundle_storage_memory::MemoryPluginBundleStorage;
 pub use plugin_consent_memory::MemoryPluginConsentStore;
 pub use timeline_coverage::{
     CursorBackedTimelineCoverageStore, MemoryTimelineCoverageStore, timeline_coverage_cursor_key,

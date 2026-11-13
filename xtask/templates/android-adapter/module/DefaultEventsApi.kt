@@ -209,6 +209,9 @@ class DefaultEventsApi(
     override fun onPluginCapabilityRequest(listener: EventCallback<PluginCapabilityRequestEvent>): EventSubscription =
         registerTyped(PluginCapabilityRequestEvent::class.java, listener)
 
+    override fun onPluginBundleEvent(listener: EventCallback<PluginBundleEvent>): EventSubscription =
+        registerTyped(PluginBundleEvent::class.java, listener)
+
     private fun register(handler: Any): EventSubscription {
         val subscriptionId = nextId++
         val subscription = DefaultEventSubscription(
@@ -324,6 +327,7 @@ class DefaultEventsApi(
             is PluginRealtimeEvent -> listener.onPluginRealtime(event)
             is PluginCatalogChangedEvent -> listener.onPluginCatalogChanged(event)
             is PluginCapabilityRequestEvent -> listener.onPluginCapabilityRequest(event)
+            is PluginBundleEvent -> listener.onPluginBundleEvent(event)
         }
     }
 }
@@ -417,6 +421,11 @@ private fun nativeEventFromCode(eventType: Int, payload: Map<String, Any?>): Any
             requestId = requiredEventInt(payload["requestId"], "requestId"),
             method = requiredEventString(payload["method"], "method"),
             request = requiredEventMap(payload["request"], "request"),
+        )
+        EventCode.PLUGIN_BUNDLE_EVENT -> PluginBundleEvent(
+            sessionId = requiredEventString(payload["sessionId"], "sessionId"),
+            envelope = optionalEventString(payload["envelope"], "envelope"),
+            close = optionalEventString(payload["close"], "close"),
         )
         EventCode.VIEW_UPDATED -> viewUpdateFromJson(payload)
         else -> unknownEventFromCode(eventType, payload)

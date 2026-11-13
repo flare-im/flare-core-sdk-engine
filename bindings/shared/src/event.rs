@@ -391,6 +391,14 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
             "plugin.capability_request",
             json!({ "requestId": request_id, "method": method, "request": request }),
         ),
+        SdkEvent::Plugin(PluginEvent::Bundle {
+            session_id,
+            envelope,
+            close,
+        }) => (
+            "plugin.bundle_event",
+            json!({ "sessionId": session_id, "envelope": envelope, "close": close }),
+        ),
         _ => return None,
     };
 
@@ -649,6 +657,22 @@ mod tests {
             json!({"requestId": 7, "method": "captureDocument",
                    "request": {"pluginId": "example.identity", "side": "front"}})
         );
+    }
+
+    #[test]
+    fn plugin_bundle_events_reach_hosts_with_their_session() {
+        let event = SdkEvent::Plugin(PluginEvent::Bundle {
+            session_id: "s1".to_string(),
+            envelope: Some(r#"{"bridge":1,"type":"event","event":"catalog.changed"}"#.into()),
+            close: None,
+        });
+        let (channel, payload) =
+            sdk_event_channel_payload(&event).expect("bundle event should map to channel");
+
+        assert_eq!(channel, "im://plugin_bundle_event");
+        assert_eq!(sdk_event_code(&event), 7004);
+        assert_eq!(payload["sessionId"], "s1");
+        assert_eq!(payload["close"], json!(null));
     }
 
     #[test]

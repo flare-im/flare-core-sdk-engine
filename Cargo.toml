@@ -139,6 +139,9 @@ pulldown-cmark = "0.12"
 # 这里的 `url` 只留给原生专属代码：`file:` 转路径，以及必须和 reqwest 同样解析的钉扎。
 unicode-normalization = "0.1"
 url = "2.5"
+# Web bundle archives are unpacked into the native cache only; the browser reads the
+# sandbox domain's unpacked copy, so wasm builds keep the zip reader out.
+flare-plugin-protocol = { version = "0.1.0", path = "../flare-protocol/flare-plugin-protocol", features = ["bundle-archive"] }
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

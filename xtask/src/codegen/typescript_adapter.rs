@@ -705,6 +705,7 @@ fn ts_listener_predicate_expr(name: &str) -> Option<&'static str> {
         "onPluginCapabilityRequest" => {
             Some("eventEventIs(event, 'plugin', PluginEventName.CapabilityRequest)")
         }
+        "onPluginBundleEvent" => Some("eventEventIs(event, 'plugin', PluginEventName.BundleEvent)"),
         _ => None,
     }
 }
@@ -812,6 +813,7 @@ fn ts_event_decoder_expr(entry: &TypescriptEventRegistryEntry) -> String {
         "plugin.realtime" => "pluginRealtimeEvent(payload)".to_string(),
         "plugin.catalog_changed" => "pluginCatalogChangedEvent(payload)".to_string(),
         "plugin.capability_request" => "pluginCapabilityRequestEvent(payload)".to_string(),
+        "plugin.bundle_event" => "pluginBundleEvent(payload)".to_string(),
         _ => "undefined".to_string(),
     }
 }
@@ -1137,6 +1139,17 @@ fn emit_typescript_native_event_decoder(
         "  };".to_string(),
         "}".to_string(),
         String::new(),
+        "function pluginBundleEvent(payload: unknown): PluginBundleEvent & Record<string, unknown> {".to_string(),
+        "  const record = eventPayloadRecord(payload);".to_string(),
+        "  return {".to_string(),
+        "    type: 'plugin',".to_string(),
+        "    event: PluginEventName.BundleEvent,".to_string(),
+        "    sessionId: requiredString(record.sessionId, 'sessionId'),".to_string(),
+        "    envelope: optionalString(record.envelope, 'envelope'),".to_string(),
+        "    close: optionalString(record.close, 'close'),".to_string(),
+        "  };".to_string(),
+        "}".to_string(),
+        String::new(),
         "function conversationEvent(name: ConversationEventName, event: string, payload: unknown): ConversationEvent & Record<string, unknown> {".to_string(),
         "  const record = eventPayloadRecord(payload);".to_string(),
         "  const conversationId = optionalString(record.conversationId, 'conversationId');".to_string(),
@@ -1286,6 +1299,7 @@ fn emit_typescript_adapter_events_api(
         "MessageReceivedEvent",
         "MessageSendAckEvent",
         "MessageSendFailedEvent",
+        "PluginBundleEvent",
         "PluginCapabilityRequestEvent",
         "PluginCatalogChangedEvent",
         "PluginEventName",
@@ -1614,6 +1628,9 @@ fn emit_typescript_adapter_events_api(
         "          return;".to_string(),
         "        case PluginEventName.CapabilityRequest:".to_string(),
         "          listener.onPluginCapabilityRequest?.(event as PluginCapabilityRequestEvent);".to_string(),
+        "          return;".to_string(),
+        "        case PluginEventName.BundleEvent:".to_string(),
+        "          listener.onPluginBundleEvent?.(event as PluginBundleEvent);".to_string(),
         "          return;".to_string(),
         "        default:".to_string(),
         "          return;".to_string(),

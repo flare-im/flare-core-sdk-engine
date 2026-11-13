@@ -1035,6 +1035,8 @@ pub async fn build_web_store_provider(user_id: &str) -> StoreProvider {
                 user_id: user_id.clone(),
             },
         )),
+        // The browser keeps bundle storage for the session only (in memory).
+        plugin_bundle_storage: None,
         messages: Arc::new(PersistingMessageStore::new(
             user_id.clone(),
             messages.clone(),

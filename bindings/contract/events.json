@@ -411,6 +411,14 @@
       "cCodeName": "FLARE_EVENT_PLUGIN_CAPABILITY_REQUEST",
       "cJson": { "type": "plugin", "event": "capability_request", "fields": ["requestId", "method", "request"] },
       "tauri": "im://plugin_capability_request"
+    },
+    {
+      "id": "plugin.bundle_event",
+      "core": "SdkEvent::Plugin(PluginEvent::Bundle)",
+      "cCode": 7004,
+      "cCodeName": "FLARE_EVENT_PLUGIN_BUNDLE_EVENT",
+      "cJson": { "type": "plugin", "event": "bundle_event", "fields": ["sessionId", "envelope", "close"] },
+      "tauri": "im://plugin_bundle_event"
     }
   ]
 }

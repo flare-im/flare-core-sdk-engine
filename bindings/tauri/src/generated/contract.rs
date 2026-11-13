@@ -87,6 +87,7 @@ pub const EVENT_CODES: &[(&str, i32)] = &[
     ("plugin.realtime", 7001),
     ("plugin.catalog_changed", 7002),
     ("plugin.capability_request", 7003),
+    ("plugin.bundle_event", 7004),
 ];
 
 pub const ERROR_CODES: &[(&str, i32)] = &[

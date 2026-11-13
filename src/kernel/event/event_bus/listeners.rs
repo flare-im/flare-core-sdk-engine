@@ -273,6 +273,27 @@ impl EventBus {
         )
     }
 
+    /// Something for an open web bundle page: `(sessionId, envelope, close)`;
+    /// see `PluginEvent::Bundle`.
+    pub fn on_plugin_bundle_event<F>(&self, f: F) -> Subscription
+    where
+        F: Fn(&str, Option<&str>, Option<&str>) + Send + Sync + 'static,
+    {
+        self.on_event_type(
+            SdkEventType::Plugin(PluginEventType::Bundle),
+            move |event| {
+                if let SdkEvent::Plugin(PluginEvent::Bundle {
+                    session_id,
+                    envelope,
+                    close,
+                }) = event.as_ref()
+                {
+                    f(session_id, envelope.as_deref(), close.as_deref());
+                }
+            },
+        )
+    }
+
     // ---------- Conversation ----------
     /// 注册「会话列表同步完成」回调
     pub fn on_conversation_synced<F>(&self, f: F) -> Subscription

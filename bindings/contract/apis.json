@@ -1104,6 +1104,42 @@
           "tauri": "sdk_message_dispatch_json"
         },
         {
+          "id": "capability.plugin_bundle_open",
+          "core": "CapabilityApi::plugin_bundle_open",
+          "c": "flare_capability_dispatch_json:plugin_bundle_open",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_bundle_bridge",
+          "core": "CapabilityApi::plugin_bundle_bridge",
+          "c": "flare_capability_dispatch_json:plugin_bundle_bridge",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_bundle_host_result",
+          "core": "CapabilityApi::plugin_bundle_host_result",
+          "c": "flare_capability_dispatch_json:plugin_bundle_host_result",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_bundle_host_event",
+          "core": "CapabilityApi::plugin_bundle_host_event",
+          "c": "flare_capability_dispatch_json:plugin_bundle_host_event",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_bundle_close",
+          "core": "CapabilityApi::plugin_bundle_close",
+          "c": "flare_capability_dispatch_json:plugin_bundle_close",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "capability.plugin_bundle_prefetch",
+          "core": "CapabilityApi::plugin_bundle_prefetch",
+          "c": "flare_capability_dispatch_json:plugin_bundle_prefetch",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
           "id": "capability.plugin_account_entries",
           "core": "CapabilityApi::plugin_account_entries",
           "c": "flare_capability_dispatch_json:plugin_account_entries",

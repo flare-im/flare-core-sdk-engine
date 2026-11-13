@@ -102,6 +102,7 @@ pub(crate) fn model_package_suffix(name: &str) -> &'static str {
             | "PluginRealtimeEvent"
             | "PluginCatalogChangedEvent"
             | "PluginCapabilityRequestEvent"
+            | "PluginBundleEvent"
     ) {
         "event.plugin"
     } else {

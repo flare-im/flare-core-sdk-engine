@@ -185,6 +185,9 @@ public final class DefaultEventsApi: EventsApiProtocol {
     public func onPluginCapabilityRequest(_ listener: @escaping EventCallback<PluginCapabilityRequestEvent>) -> any EventSubscription {
         registerTyped(listener)
     }
+    public func onPluginBundleEvent(_ listener: @escaping EventCallback<PluginBundleEvent>) -> any EventSubscription {
+        registerTyped(listener)
+    }
 
     private func register(handler: Any) -> any EventSubscription {
         let id = nextId
@@ -316,6 +319,12 @@ private func nativeEventFromCode(eventType: Int, payload: Any?) throws -> Any {
             requestId: try requiredUInt64(json["requestId"]?.value, "requestId"),
             method: try requiredString(json["method"]?.value, "method"),
             request: try requiredJsonObject(json["request"]?.value, "request")
+        )
+    case EventCode.pluginBundleEvent:
+        return PluginBundleEvent(
+            sessionId: try requiredString(json["sessionId"]?.value, "sessionId"),
+            envelope: try optionalString(json["envelope"]?.value, "envelope"),
+            close: try optionalString(json["close"]?.value, "close")
         )
     case EventCode.viewUpdated:
         return try viewUpdateFromJson(json)
@@ -645,6 +654,10 @@ private func dispatchToListener(_ listener: any FlareImEventListener, event: Any
     }
     if let request = event as? PluginCapabilityRequestEvent {
         listener.onPluginCapabilityRequest(request)
+        return
+    }
+    if let bundle = event as? PluginBundleEvent {
+        listener.onPluginBundleEvent(bundle)
         return
     }
 }

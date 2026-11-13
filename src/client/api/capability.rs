@@ -60,6 +60,11 @@ mod page_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_platform_v2_tests.rs"]
 mod platform_v2_tests;
+#[path = "plugin_bundle.rs"]
+mod plugin_bundle;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "plugin_bundle_tests.rs"]
+mod plugin_bundle_tests;
 #[path = "capability_tenant_notices.rs"]
 mod tenant_notices;
 #[path = "capability_upgrade.rs"]
@@ -156,6 +161,12 @@ pub struct CapabilityApi {
     /// The viewer's consents to plugins using host capabilities
     /// ([`consent`]); in memory until the user store gives one.
     plugin_consents: Arc<dyn crate::domain::PluginConsentStore>,
+    /// What web bundles keep through the bridge (`storage.*`); in memory
+    /// until the user store gives one.
+    plugin_bundle_storage: Arc<dyn crate::domain::PluginBundleStorage>,
+    /// Who `people.resolve` may name: local profiles, and the members of the
+    /// page's conversation when it has one.
+    bundle_people: Option<plugin_bundle::BundlePeople>,
     /// Local message store and bus for plugin card state (`messageId` requests).
     messages: Option<Arc<dyn crate::domain::MessageStore>>,
     bus: Option<crate::kernel::event::EventBus>,
@@ -201,6 +212,10 @@ impl CapabilityApi {
             plugin_consents: Arc::new(
                 crate::infrastructure::persistence::MemoryPluginConsentStore::new(),
             ),
+            plugin_bundle_storage: Arc::new(
+                crate::infrastructure::persistence::MemoryPluginBundleStorage::new(),
+            ),
+            bundle_people: None,
             messages: None,
             bus: None,
             plugin_state_refetch: None,
@@ -275,6 +290,30 @@ impl CapabilityApi {
         if let Some(store) = store {
             self.plugin_consents = store;
         }
+        self
+    }
+    /// Keeps web bundle storage in `store` (the user database) instead of
+    /// memory. `None` keeps the store as it is.
+    pub fn with_plugin_bundle_storage(
+        mut self,
+        store: Option<Arc<dyn crate::domain::PluginBundleStorage>>,
+    ) -> Self {
+        if let Some(store) = store {
+            self.plugin_bundle_storage = store;
+        }
+        self
+    }
+    /// Lets `people.resolve` answer from local profiles, limited to the
+    /// page's conversation members when it has a conversation.
+    pub fn with_bundle_people(
+        mut self,
+        profiles: Arc<dyn crate::domain::UserReader>,
+        participants: Option<Arc<dyn crate::domain::ConversationParticipantStore>>,
+    ) -> Self {
+        self.bundle_people = Some(plugin_bundle::BundlePeople {
+            profiles,
+            participants,
+        });
         self
     }
     pub fn with_plugin_command_store(
@@ -1217,6 +1256,8 @@ impl CapabilityApi {
         }
         self.catalog_flight
             .completed(user, generation, catalog.clone());
+        // Open web bundle pages the catalog no longer serves close here.
+        self.reconcile_bundle_sessions(&catalog);
         Ok((result.data, catalog))
     }
 

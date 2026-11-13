@@ -1012,6 +1012,7 @@ pub fn in_memory_im_provider() -> StoreProvider {
     StoreProvider {
         plugin_commands: None,
         plugin_consents: None,
+        plugin_bundle_storage: None,
         messages: Arc::new(MemoryMessageStore::new()),
         conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,

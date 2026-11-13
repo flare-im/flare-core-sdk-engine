@@ -326,6 +326,17 @@ pub enum PluginEvent {
         method: String,
         request: serde_json::Value,
     },
+    /// Something for an open web bundle page (`plugin_bundle_open`): a bridge
+    /// event `envelope` the host posts to the bundle as it is (a subscribed
+    /// topic, or `lifecycle.revoked`), and/or `close` when the host must close
+    /// the page: `withdrawn`, `suspended`, `disabled`, `replaced` (the catalog
+    /// stopped serving it), `evicted` (a newer page took its place) or
+    /// `signedOut`.
+    Bundle {
+        session_id: String,
+        envelope: Option<String>,
+        close: Option<String>,
+    },
 }
 
 /// Notification 域事件：IM 下行 `NotificationContent`（与聊天 `MessageEvent::Received` 分离）。

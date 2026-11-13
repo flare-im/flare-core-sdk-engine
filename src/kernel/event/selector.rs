@@ -363,6 +363,7 @@ pub enum PluginEventType {
     Realtime,
     CatalogChanged,
     CapabilityRequest,
+    Bundle,
 }
 
 impl PluginEventType {
@@ -375,6 +376,7 @@ impl PluginEventType {
                     Self::CapabilityRequest,
                     PluginEvent::CapabilityRequest { .. }
                 )
+                | (Self::Bundle, PluginEvent::Bundle { .. })
         )
     }
 }
@@ -685,6 +687,9 @@ impl SdkEvent {
             }
             Self::Plugin(PluginEvent::CapabilityRequest { .. }) => {
                 SdkEventType::Plugin(PluginEventType::CapabilityRequest)
+            }
+            Self::Plugin(PluginEvent::Bundle { .. }) => {
+                SdkEventType::Plugin(PluginEventType::Bundle)
             }
         }
     }

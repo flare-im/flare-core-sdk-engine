@@ -12,6 +12,7 @@ pub fn in_memory_empty_im_provider() -> StoreProvider {
     StoreProvider {
         plugin_commands: None,
         plugin_consents: None,
+        plugin_bundle_storage: None,
         messages: Arc::new(EmptyMessageStore),
         conversations: Arc::new(EmptyConversationStore),
         conversation_participants: None,

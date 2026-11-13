@@ -73,4 +73,5 @@ pub enum BindingEventId {
     PluginRealtime,
     PluginCatalogChanged,
     PluginCapabilityRequest,
+    PluginBundleEvent,
 }

@@ -59,6 +59,8 @@ pub(crate) struct PluginHostSlot {
     /// The host's part of plugin capabilities: requests waiting for
     /// `plugin.capability_complete`, and an embedder's own host.
     pub capability_host: super::native::CapabilityHostSlot,
+    /// Open web bundle pages and the bundle cache.
+    pub bundles: crate::extension::capability::bundle::BundleSlot,
 }
 
 impl PluginHostSlot {

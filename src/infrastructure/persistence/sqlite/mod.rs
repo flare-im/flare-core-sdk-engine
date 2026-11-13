@@ -21,6 +21,8 @@ mod plugin_command_repo;
 pub use plugin_command_repo::SqlitePluginCommandRepo;
 mod plugin_consent_repo;
 pub use plugin_consent_repo::SqlitePluginConsentRepo;
+mod plugin_bundle_storage_repo;
+pub use plugin_bundle_storage_repo::SqlitePluginBundleStorageRepo;
 mod schema;
 mod timeline_coverage_repo;
 mod upload_manifest_repo;

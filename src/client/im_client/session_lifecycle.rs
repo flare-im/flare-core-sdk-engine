@@ -151,7 +151,7 @@ impl IMClient {
     pub async fn logout(&self) -> Result<()> {
         self.clear_session_snapshot();
         let lifecycle = self.extension_lifecycle_snapshot(None).await;
-        let (engine, presence_api, presence_user_id, http_request_context) = {
+        let (engine, presence_api, presence_user_id, http_request_context, capability_api) = {
             let mut g = self.inner.write().await;
             let presence_api = g.presence_api.clone();
             let presence_user_id = g.current_user_id.clone();
@@ -161,15 +161,25 @@ impl IMClient {
             g.connect_token = None;
             g.message_api = None;
             g.media_api = None;
-            g.capability_api = None;
+            let capability_api = g.capability_api.take();
             g.presence_api = None;
             g.capability_registry = None;
             g.message_build_api = None;
             g.conversation_api = None;
             let engine = g.engine.take();
             let http_request_context = g.http_request_context.clone();
-            (engine, presence_api, presence_user_id, http_request_context)
+            (
+                engine,
+                presence_api,
+                presence_user_id,
+                http_request_context,
+                capability_api,
+            )
         };
+        // Open web bundle pages end with the session; what bundles stored goes.
+        if let Some(api) = capability_api.as_ref() {
+            api.end_bundle_sessions(presence_user_id.as_deref()).await;
+        }
         self.clear_session_snapshot();
         self.store_state_snapshot(SdkState::Disconnected);
         self.reconcile_push_in_background();
@@ -226,7 +236,7 @@ impl IMClient {
 
         self.clear_session_snapshot();
         let lifecycle = self.extension_lifecycle_snapshot(None).await;
-        let (engine, presence_api, presence_user_id, http_request_context) = {
+        let (engine, presence_api, presence_user_id, http_request_context, capability_api) = {
             let mut g = self.inner.write().await;
             let presence_api = g.presence_api.clone();
             let presence_user_id = g.current_user_id.clone();
@@ -236,15 +246,25 @@ impl IMClient {
             g.connect_token = None;
             g.message_api = None;
             g.media_api = None;
-            g.capability_api = None;
+            let capability_api = g.capability_api.take();
             g.presence_api = None;
             g.capability_registry = None;
             g.message_build_api = None;
             g.conversation_api = None;
             let engine = g.engine.take();
             let http_request_context = g.http_request_context.clone();
-            (engine, presence_api, presence_user_id, http_request_context)
+            (
+                engine,
+                presence_api,
+                presence_user_id,
+                http_request_context,
+                capability_api,
+            )
         };
+        // A new sign-in ends the open bundle pages; what bundles stored stays.
+        if let Some(api) = capability_api.as_ref() {
+            api.end_bundle_sessions(None).await;
+        }
         self.clear_session_snapshot();
         self.store_state_snapshot(SdkState::Disconnected);
         self.reconcile_push_in_background();
@@ -395,6 +415,8 @@ impl IMClient {
         let mut inner = child.into_inner()?;
         inner.environment = snap.0;
         inner.sdk_config = snap.1;
+        #[cfg(not(target_arch = "wasm32"))]
+        let data_root_for_bundles = data_root.clone();
         inner.data_root = Some(data_root);
         if inner.http_request_context.is_none() {
             inner.http_request_context = snap.3;
@@ -404,6 +426,11 @@ impl IMClient {
         inner.last_network = snap.9;
         inner.access_store = snap.10;
         inner.plugin_host = snap.11;
+        #[cfg(not(target_arch = "wasm32"))]
+        inner
+            .plugin_host
+            .bundles
+            .set_cache_root(data_root_for_bundles.join("plugin_bundles"));
         inner.current_user_id = Some(user_id.to_string());
         inner.last_session_user = Some(user_id.to_string());
         let previous_user = match snap.8 {
