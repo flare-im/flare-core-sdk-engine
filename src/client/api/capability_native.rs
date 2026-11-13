@@ -718,7 +718,7 @@ impl CapabilityApi {
                 let (upload, location_input) = match request.into.as_deref() {
                     Some(into) if request.capability == NativeCapability::LocationOnce => {
                         let (_, input) =
-                            self.into_input(&catalog, plugin, &request, &user, into)?;
+                            self.resolve_into_input(&catalog, plugin, &request, &user, into)?;
                         (None, Some(input.id))
                     }
                     Some(into) => (
@@ -832,7 +832,7 @@ impl CapabilityApi {
     /// The page input an `into` names: of a page of the same plugin, of a
     /// kind the capability writes, the same side for a document and the same
     /// precision for a location.
-    fn into_input(
+    fn resolve_into_input(
         &self,
         catalog: &flare_plugin_protocol::ui::UiCatalog,
         plugin: &ClientPlugin,
@@ -875,7 +875,7 @@ impl CapabilityApi {
         Ok((page.clone(), input.clone()))
     }
 
-    /// The page input an `into` names ([`Self::into_input`]), with a
+    /// The page input an `into` names ([`Self::resolve_into_input`]), with a
     /// declared private upload.
     fn upload_target(
         &self,
@@ -885,7 +885,7 @@ impl CapabilityApi {
         user: &str,
         into: &str,
     ) -> Result<UploadTarget> {
-        let (page, input) = self.into_input(catalog, plugin, request, user, into)?;
+        let (page, input) = self.resolve_into_input(catalog, plugin, request, user, into)?;
         let file = input
             .file
             .as_ref()
