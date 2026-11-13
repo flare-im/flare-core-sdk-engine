@@ -71,6 +71,7 @@ impl Fixture {
                     .clone(),
             }],
             unavailable: vec![],
+            payment_provider: None,
         }));
         let calls = Arc::new(SyncMutex::new(Vec::new()));
         let results = Arc::new(SyncMutex::new(HashMap::<String, Value>::new()));

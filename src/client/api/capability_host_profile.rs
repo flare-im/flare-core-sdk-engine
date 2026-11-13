@@ -61,6 +61,8 @@ pub(crate) struct PluginHostSlot {
     pub capability_host: super::native::CapabilityHostSlot,
     /// Open web bundle pages and the bundle cache.
     pub bundles: crate::extension::capability::bundle::BundleSlot,
+    /// The private files plugins uploaded through this engine.
+    pub uploads: super::file_upload::PluginUploads,
 }
 
 impl PluginHostSlot {

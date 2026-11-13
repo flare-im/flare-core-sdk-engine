@@ -20,11 +20,14 @@
 //!   ([`UiLocationValue::truncate`]), comes back for the `location` input of
 //!   the same precision its `into` names: `{kind: "input", input, value:
 //!   {latitude, longitude, accuracyM, precision}}`.
-//! - `paymentConfirmation`: the order (an operation's `data.confirmation`,
-//!   returned with that result as `confirmation`) is checked, its operation
-//!   one of the plugin's catalog `transientOperations`, and, once the host
-//!   confirmed it, that operation is called with the host's proof: `{kind:
-//!   "operation", response}`.
+//! - `paymentConfirmation`: the order is one the engine recorded from an
+//!   operation result of the same plugin and viewer (`data.confirmation`,
+//!   returned with that result as `confirmation`); the host or bundle names
+//!   it by `orderId` and the host draws the recorded order. Its operation is
+//!   one of the plugin's catalog `transientOperations`. The credential the
+//!   host collects goes only to the catalog's payment provider, which
+//!   answers with a one-time ticket; the order's operation is then called
+//!   with `{orderId, ticket}`: `{kind: "operation", response}`.
 //! - `clipboardWrite`, `microphone`, and a pick without `into`: nothing for
 //!   the engine to do; `{kind: "host", capability}` tells the host to go on.
 //!
@@ -67,6 +70,8 @@ const MAX_PENDING_HOST_REQUESTS: usize = 8;
 const MAX_PAYMENT_PROOF_BYTES: usize = 4096;
 /// Page action continuations held for payment orders at once.
 const MAX_HELD_PAYMENT_CONTINUATIONS: usize = 32;
+/// Payment orders recorded at once.
+const MAX_RECORDED_PAYMENT_ORDERS: usize = 32;
 /// How long after its order runs out a held continuation is still kept: the
 /// transient operation may have been accepted just before the expiry.
 const HELD_CONTINUATION_GRACE_MS: i64 = 10 * 60 * 1000;
@@ -131,8 +136,9 @@ pub struct FilePickPrompt {
 }
 
 /// Show the order (Kit `FlarePaymentConfirmation`, from the order's fields
-/// only), verify the viewer the way `reauthenticate` does, and hand back
-/// the proof the plugin's transient operation takes.
+/// only: the order as the engine recorded it), collect the viewer's payment
+/// credential, and hand it back. The engine gives it to the payment
+/// provider only, never to the plugin whose order it is.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentConfirmationPrompt {
@@ -179,8 +185,8 @@ pub trait PluginCapabilityHost: Send + Sync {
         prompt: DocumentCapturePrompt,
     ) -> CapabilityHostAnswer<CapturedFile>;
     async fn pick_file(&self, prompt: FilePickPrompt) -> CapabilityHostAnswer<CapturedFile>;
-    /// `Done` carries the proof (a JSON object, at most 4 KiB) the order's
-    /// operation receives as `confirmation`.
+    /// `Done` carries the proof (a JSON object, at most 4 KiB) the payment
+    /// provider checks.
     async fn confirm_payment(
         &self,
         prompt: PaymentConfirmationPrompt,
@@ -359,6 +365,52 @@ pub(crate) struct CapabilityHostSlot {
     custom: RwLock<Option<Arc<dyn PluginCapabilityHost>>>,
     /// Page action continuations waiting for their payment confirmation.
     pub payments: PaymentContinuations,
+    /// Payment orders as operation results brought them through Core.
+    pub orders: PaymentOrders,
+}
+
+/// The payment orders the engine received in operation results, the only
+/// orders it confirms: a host or a bundle names one by id, never supplies
+/// one. Kept per tenant, viewer, plugin and order id while open.
+#[derive(Default)]
+pub(crate) struct PaymentOrders {
+    recorded: Mutex<HashMap<HeldPaymentKey, PaymentConfirmationOrder>>,
+}
+
+impl PaymentOrders {
+    /// Record `order`; run-out orders are dropped, and past
+    /// [`MAX_RECORDED_PAYMENT_ORDERS`] the one running out first goes.
+    pub fn record(&self, key: HeldPaymentKey, order: PaymentConfirmationOrder, now_ms: i64) {
+        let mut recorded = self.recorded.lock().unwrap_or_else(PoisonError::into_inner);
+        recorded.retain(|_, order| order.is_open(now_ms));
+        if recorded.len() >= MAX_RECORDED_PAYMENT_ORDERS && !recorded.contains_key(&key) {
+            let first = recorded
+                .iter()
+                .min_by_key(|(_, order)| order.expires_at_ms)
+                .map(|(key, _)| key.clone());
+            if let Some(first) = first {
+                recorded.remove(&first);
+            }
+        }
+        recorded.insert(key, order);
+    }
+
+    /// The order recorded for `key`.
+    pub fn get(&self, key: &HeldPaymentKey) -> Option<PaymentConfirmationOrder> {
+        self.recorded
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+
+    /// Forget the order for `key` (paid).
+    pub fn remove(&self, key: &HeldPaymentKey) {
+        self.recorded
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(key);
+    }
 }
 
 /// Which payment order a held continuation belongs to: the tenant and viewer
@@ -478,7 +530,8 @@ impl CapabilityHostSlot {
 
 /// `plugin_capability_invoke` input. `capability`, `params` and `into` are
 /// the native target a `plugin_ui_invoke` handed back (`{kind: "host",
-/// target}`); `order` is the `confirmation` an operation result carried.
+/// target}`); `orderId` names the `confirmation` an operation result
+/// carried.
 /// For an `into`, the page form it belongs to: `page`, `arguments`, `data`
 /// and `formValues` as the host shows them, like `plugin_file_upload`.
 #[derive(Deserialize)]
@@ -491,7 +544,7 @@ struct CapabilityInvokeRequest {
     #[serde(default)]
     into: Option<String>,
     #[serde(default)]
-    order: Option<PaymentConfirmationOrder>,
+    order_id: Option<String>,
     platform: ClientPlatform,
     #[serde(default)]
     locale: String,
@@ -542,20 +595,6 @@ fn valid_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b))
-}
-
-/// The outcome of a plugin operation an action ran: `{kind: "operation",
-/// response}`, plus `confirmation` when the successful result asks the host
-/// to confirm a payment ([`PaymentConfirmationOrder::from_result`]); the
-/// host then passes it to `plugin_capability_invoke` as `order`.
-pub(crate) fn operation_outcome(plugin_id: &str, response: &CapabilityDispatchResult) -> Value {
-    let mut outcome = json!({"kind": "operation", "response": response});
-    if response.success
-        && let Some(order) = PaymentConfirmationOrder::from_result(plugin_id, &response.data)
-    {
-        outcome["confirmation"] = json!(order);
-    }
-    outcome
 }
 
 /// A location fix truncated to `precision` ([`UiLocationValue::truncate`]):
@@ -618,6 +657,46 @@ pub(crate) fn jpeg_is_stripped(bytes: &[u8]) -> bool {
 }
 
 impl CapabilityApi {
+    /// Record the payment order in a successful result `data` of `plugin_id`
+    /// for `user` ([`PaymentConfirmationOrder::from_result`]), the only way an
+    /// order becomes one the engine confirms.
+    pub(crate) fn record_payment_order(
+        &self,
+        user: Option<&str>,
+        plugin_id: &str,
+        data: &Value,
+    ) -> Option<PaymentConfirmationOrder> {
+        let order = PaymentConfirmationOrder::from_result(plugin_id, data)?;
+        if let Some(user) = user.filter(|user| !user.is_empty()) {
+            self.plugin_host.capability_host.orders.record(
+                HeldPaymentKey::new(&self.default_tenant_id, user, plugin_id, &order.order_id),
+                order.clone(),
+                self.server_clock.now_ms(),
+            );
+        }
+        Some(order)
+    }
+
+    /// The outcome of a plugin operation an action ran: `{kind: "operation",
+    /// response}`, plus `confirmation` when the successful result asks the
+    /// host to confirm a payment; the order is recorded for `user`
+    /// ([`Self::record_payment_order`]) and the host passes its `orderId` to
+    /// `plugin_capability_invoke`.
+    pub(crate) fn operation_outcome(
+        &self,
+        user: Option<&str>,
+        plugin_id: &str,
+        response: &CapabilityDispatchResult,
+    ) -> Value {
+        let mut outcome = json!({"kind": "operation", "response": response});
+        if response.success
+            && let Some(order) = self.record_payment_order(user, plugin_id, &response.data)
+        {
+            outcome["confirmation"] = json!(order);
+        }
+        outcome
+    }
+
     /// The host's part: an embedder's own host, else the event host on this
     /// session's bus. `None` without either.
     pub(crate) fn capability_host(&self) -> Option<Arc<dyn PluginCapabilityHost>> {
@@ -636,7 +715,7 @@ impl CapabilityApi {
     /// three allowlists (manifest, host profile, consent), the host's part
     /// and the engine's handling of its result (module docs). Called with a
     /// user gesture: the native target a `plugin_ui_invoke` handed back, or
-    /// the `confirmation` order an operation result carried.
+    /// the `orderId` of the `confirmation` an operation result carried.
     ///
     /// Results: `{kind: "input", input, value}` (`{fileId}` for an upload,
     /// `{latitude, longitude, accuracyM, precision}` for a location),
@@ -645,22 +724,34 @@ impl CapabilityApi {
     /// "unavailable"}`. Errors: `sdk.plugin.invalid_ui_request` (a broken
     /// request or a host file that does not fit the input),
     /// `sdk.plugin.ui_action_unavailable` (no gesture, plugin or page not in
-    /// the catalog, an order whose operation is not one of the plugin's
-    /// transient operations), `sdk.plugin.native_capability_unavailable` (not
-    /// declared, not allowed by the host, not available yet),
+    /// the catalog, an order the engine did not record for this viewer and
+    /// plugin, or whose operation is not one of the plugin's transient
+    /// operations), `sdk.plugin.native_capability_unavailable` (not declared,
+    /// not allowed by the host, not available yet, no payment provider),
     /// `sdk.plugin.payment_order_expired`, and the plugin's own failures.
     // Boxed so that its future is compiled once, here, and not again in
     // each crate that awaits it.
     #[inline(never)]
     pub fn plugin_capability_invoke(&self, request: Value) -> PluginCallFuture<'_> {
-        Box::pin(self.plugin_capability_invoke_now(request))
+        Box::pin(self.plugin_capability_invoke_now(request, false))
     }
-    async fn plugin_capability_invoke_now(&self, request: Value) -> Result<Value> {
+
+    /// `plugin_capability_invoke` for a web bundle's `host.capability`: a
+    /// location fix needs no page input and comes back as `{kind:
+    /// "location", location}`, and a confirmed payment answers with the
+    /// order's operation result, never a page action's continuation.
+    #[inline(never)]
+    pub(crate) fn bundle_capability_invoke(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_capability_invoke_now(request, true))
+    }
+
+    async fn plugin_capability_invoke_now(&self, request: Value, bundle: bool) -> Result<Value> {
         let request: CapabilityInvokeRequest =
             crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
         if !valid_id(&request.plugin_id)
             || request.locale.len() > 64
             || request.into.as_deref().is_some_and(|id| !valid_id(id))
+            || request.order_id.as_deref().is_some_and(|id| !valid_id(id))
             || request
                 .command_id
                 .as_deref()
@@ -675,27 +766,24 @@ impl CapabilityApi {
         if !request.user_gesture {
             return Err(unavailable());
         }
-        // The shape of the request: an order for a payment confirmation and
-        // nothing else; the declared target shape for everything else.
-        match request.capability {
+        // The shape of the request: an order id for a payment confirmation
+        // and nothing else; the declared target shape for everything else,
+        // except that a bundle's location fix writes into no page input.
+        let valid = match request.capability {
             NativeCapability::PaymentConfirmation => {
-                let valid = request.params.is_none()
-                    && request.into.is_none()
-                    && request
-                        .order
-                        .as_ref()
-                        .is_some_and(|order| order.validate().is_ok());
-                if !valid {
-                    return Err(invalid());
-                }
+                request.params.is_none() && request.into.is_none() && request.order_id.is_some()
+            }
+            NativeCapability::LocationOnce if bundle => {
+                request.into.is_none()
+                    && matches!(request.params, Some(NativeParams::LocationOnce(_)))
             }
             capability => {
-                if request.order.is_some()
-                    || !capability.accepts(request.params.as_ref(), request.into.as_deref())
-                {
-                    return Err(invalid());
-                }
+                request.order_id.is_none()
+                    && capability.accepts(request.params.as_ref(), request.into.as_deref())
             }
+        };
+        if !valid {
+            return Err(invalid());
         }
         // A host-held media session is the second phase (rtcSession).
         if request.capability == NativeCapability::RtcSession {
@@ -724,10 +812,22 @@ impl CapabilityApi {
                     return Err(capability_unavailable());
                 }
                 // Everything that needs no viewer is checked before asking.
-                let order = match &request.order {
-                    Some(order) => {
-                        // Only a transient operation of the same plugin
-                        // runs behind a confirmation.
+                let order = match &request.order_id {
+                    Some(order_id) => {
+                        // Only an order this viewer received from this
+                        // plugin through Core, and only behind a transient
+                        // operation of the same plugin.
+                        let order = self
+                            .plugin_host
+                            .capability_host
+                            .orders
+                            .get(&HeldPaymentKey::new(
+                                &self.default_tenant_id,
+                                &user,
+                                &plugin.plugin_id,
+                                order_id,
+                            ))
+                            .ok_or_else(unavailable)?;
                         if !order
                             .operation
                             .starts_with(&format!("{}.", plugin.plugin_id))
@@ -740,7 +840,23 @@ impl CapabilityApi {
                         if !order.is_open(self.server_clock.now_ms()) {
                             return Err(order_expired());
                         }
-                        Some(order.clone())
+                        // The credential goes to the deployment's payment
+                        // provider; without one nothing is confirmed.
+                        let provider = catalog
+                            .payment_provider
+                            .as_ref()
+                            .filter(|provider| {
+                                catalog.plugins.iter().any(|p| {
+                                    p.plugin_id == provider.plugin_id
+                                        && p.transient_operations.contains(&provider.operation)
+                                        && provider
+                                            .operation
+                                            .starts_with(&format!("{}.", p.plugin_id))
+                                })
+                            })
+                            .cloned()
+                            .ok_or_else(capability_unavailable)?;
+                        Some((order, provider))
                     }
                     None => None,
                 };
@@ -772,23 +888,28 @@ impl CapabilityApi {
                 }
                 match request.capability {
                     NativeCapability::PaymentConfirmation => {
-                        let order = order.ok_or_else(invalid)?;
+                        let (order, provider) = order.ok_or_else(invalid)?;
                         self.confirm_payment(
                             host.as_ref(),
                             &catalog,
                             plugin,
-                            order,
-                            &request,
-                            &user,
+                            PaymentCall {
+                                order,
+                                provider: &provider,
+                                request: &request,
+                                user: &user,
+                                bundle,
+                            },
                         )
                         .await
                     }
                     NativeCapability::LocationOnce => {
-                        let (Some(NativeParams::LocationOnce(params)), Some(input)) =
-                            (&request.params, location_input)
-                        else {
+                        let Some(NativeParams::LocationOnce(params)) = &request.params else {
                             return Err(invalid());
                         };
+                        if !bundle && location_input.is_none() {
+                            return Err(invalid());
+                        }
                         let answer = host
                             .locate_once(LocationPrompt {
                                 plugin_id: plugin.plugin_id.clone(),
@@ -797,11 +918,14 @@ impl CapabilityApi {
                             .await;
                         Ok(match answer {
                             CapabilityHostAnswer::Done(fix) => {
-                                match truncate_location(&fix, params.precision) {
-                                    Some(location) => {
+                                match (truncate_location(&fix, params.precision), location_input) {
+                                    (Some(location), Some(input)) => {
                                         json!({"kind": "input", "input": input, "value": location})
                                     }
-                                    None => json!({"kind": "unavailable"}),
+                                    (Some(location), None) => {
+                                        json!({"kind": "location", "location": location})
+                                    }
+                                    (None, _) => json!({"kind": "unavailable"}),
                                 }
                             }
                             CapabilityHostAnswer::Cancelled => json!({"kind": "cancelled"}),
@@ -980,20 +1104,28 @@ impl CapabilityApi {
         Ok(json!({"kind": "input", "input": target.input, "value": reference}))
     }
 
-    /// Show the order, take the host's proof, and call the order's transient
-    /// operation with it while the order is still open. When the order came
-    /// from a page action with a continuation, that continuation runs once
-    /// the transient operation succeeded, against its result, as it would
-    /// have after the action's own operation.
+    /// Show the recorded order and take the host's proof; hand the proof to
+    /// the payment provider, which answers with a one-time ticket bound to
+    /// the order, the viewer and the plugin; and call the order's transient
+    /// operation with `{orderId, ticket}` while the order is still open. When
+    /// the order came from a page action with a continuation, that
+    /// continuation runs once the transient operation succeeded, against its
+    /// result, as it would have after the action's own operation (never for a
+    /// bundle, which gets the operation's result).
     async fn confirm_payment(
         &self,
         host: &dyn PluginCapabilityHost,
         catalog: &flare_plugin_protocol::ui::UiCatalog,
         plugin: &ClientPlugin,
-        order: PaymentConfirmationOrder,
-        request: &CapabilityInvokeRequest,
-        user: &str,
+        call: PaymentCall<'_>,
     ) -> Result<Value> {
+        let PaymentCall {
+            order,
+            provider,
+            request,
+            user,
+            bundle,
+        } = call;
         let answer = host
             .confirm_payment(PaymentConfirmationPrompt {
                 plugin_id: plugin.plugin_id.clone(),
@@ -1012,12 +1144,46 @@ impl CapabilityApi {
         if !order.is_open(self.server_clock.now_ms()) {
             return Err(order_expired());
         }
+        let conversation = request.conversation_id.as_deref();
+        let tenant = Some(self.default_tenant_id.as_str());
+        // The credential reaches the provider only (`PaymentTicketRequest`).
+        let ticket = match self
+            .dispatch_with(
+                &provider.operation,
+                json!({
+                    "pluginId": plugin.plugin_id, "orderId": order.order_id,
+                    "amount": order.amount, "currency": order.currency, "payee": order.payee,
+                    "expiresAtMs": order.expires_at_ms, "confirmation": proof,
+                }),
+                conversation,
+                tenant,
+                Some(user),
+                None,
+            )
+            .await
+        {
+            // A wrong credential: the host shows the provider's answer.
+            Ok(response) if !response.success => {
+                return Ok(json!({"kind": "operation", "response": response}));
+            }
+            Ok(response) => response
+                .data
+                .get("ticket")
+                .and_then(Value::as_str)
+                .filter(|ticket| flare_plugin_protocol::ui::PaymentTicket::is_valid(ticket))
+                .map(str::to_owned)
+                .ok_or_else(unavailable)?,
+            Err(error) => {
+                self.after_plugin_error(&error, &provider.plugin_id).await;
+                return Err(error);
+            }
+        };
         let response = match self
             .dispatch_with(
                 &order.operation,
-                json!({"orderId": order.order_id, "confirmation": proof}),
-                request.conversation_id.as_deref(),
-                Some(&self.default_tenant_id),
+                json!({"orderId": order.order_id, "ticket": ticket}),
+                conversation,
+                tenant,
                 Some(user),
                 None,
             )
@@ -1036,11 +1202,13 @@ impl CapabilityApi {
                 &plugin.plugin_id,
                 &order.order_id,
             );
-            if let Some((origin, continuation)) = self
-                .plugin_host
-                .capability_host
-                .payments
-                .take(&key, self.server_clock.now_ms())
+            self.plugin_host.capability_host.orders.remove(&key);
+            if !bundle
+                && let Some((origin, continuation)) = self
+                    .plugin_host
+                    .capability_host
+                    .payments
+                    .take(&key, self.server_clock.now_ms())
             {
                 return self
                     .continue_page_action(
@@ -1053,8 +1221,17 @@ impl CapabilityApi {
                     .await;
             }
         }
-        Ok(operation_outcome(&plugin.plugin_id, &response))
+        Ok(self.operation_outcome(Some(user), &plugin.plugin_id, &response))
     }
+}
+
+/// A payment confirmation's recorded order and where its credential goes.
+struct PaymentCall<'a> {
+    order: PaymentConfirmationOrder,
+    provider: &'a flare_plugin_protocol::ui::UiPaymentProvider,
+    request: &'a CapabilityInvokeRequest,
+    user: &'a str,
+    bundle: bool,
 }
 
 /// Where a captured file goes: a page input and its upload declaration.

@@ -307,8 +307,9 @@ impl CapabilityApi {
         }
         self
     }
-    /// Lets `people.resolve` answer from local profiles, limited to the
-    /// page's conversation members when it has a conversation.
+    /// Lets `people.resolve` answer from local profiles: the page's
+    /// conversation members when it has a conversation, otherwise people
+    /// sharing a conversation with the viewer.
     pub fn with_bundle_people(
         mut self,
         profiles: Arc<dyn crate::domain::UserReader>,
@@ -588,7 +589,7 @@ impl CapabilityApi {
                 {
                     refetch.on_present(stored, entity, &viewer);
                 }
-                let view = ui::present_card(
+                let mut view = ui::present_card(
                     &catalog,
                     &request.message,
                     &state,
@@ -606,6 +607,16 @@ impl CapabilityApi {
                     let interactive =
                         !state.unbound && view.get("available") == Some(&Value::Bool(true));
                     driver.on_present(stored, contribution, &viewer, interactive);
+                }
+                // A "+" form or a card's "view all" with a web bundle offered to this
+                // client says so, so the host opens the bundle only then.
+                if self.bundle_offered(
+                    &catalog,
+                    &request.message.plugin_id,
+                    &request.message.contribution_id,
+                ) && let Some(object) = view.as_object_mut()
+                {
+                    object.insert("bundle".into(), Value::Bool(true));
                 }
                 card_view_value(view, &state)
             })
@@ -850,8 +861,9 @@ impl CapabilityApi {
     /// (the card Core posted) is returned as it is.
     ///
     /// A successful operation whose `data.confirmation` is a valid payment
-    /// order of the same plugin comes back with it as `confirmation`; the
-    /// host passes it to `plugin_capability_invoke` (`paymentConfirmation`).
+    /// order of the same plugin comes back with it as `confirmation`, and the
+    /// engine records it; the host passes its `orderId` to
+    /// `plugin_capability_invoke` (`paymentConfirmation`).
     /// A native target comes back as `{kind: "host", target, payload}` for
     /// `plugin_capability_invoke` too.
     ///
@@ -935,7 +947,8 @@ impl CapabilityApi {
                             )
                             .await;
                         }
-                        Ok(native::operation_outcome(
+                        Ok(self.operation_outcome(
+                            user_id.as_deref(),
                             &request.message.plugin_id,
                             &response,
                         ))

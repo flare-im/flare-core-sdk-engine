@@ -355,7 +355,8 @@ impl CapabilityApi {
                                 order.expires_at_ms,
                                 self.server_clock.now_ms(),
                             );
-                            return Ok(super::native::operation_outcome(
+                            return Ok(self.operation_outcome(
+                                user_id.as_deref(),
                                 &request.page.plugin_id,
                                 &response,
                             ));
@@ -554,9 +555,6 @@ impl CapabilityApi {
                 return Ok(ui_page::page_navigation(next, conversation));
             }
         }
-        Ok(super::native::operation_outcome(
-            &origin.plugin_id,
-            &response,
-        ))
+        Ok(self.operation_outcome(Some(viewer), &origin.plugin_id, &response))
     }
 }

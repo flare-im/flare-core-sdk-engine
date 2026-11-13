@@ -440,6 +440,10 @@ pub(crate) fn parse_catalog(data: &Value, vocabulary: &UiVocabulary) -> Option<U
                     .collect()
             })
             .unwrap_or_default(),
+        // Unreadable: no provider, so no payment is confirmed.
+        payment_provider: object
+            .get("paymentProvider")
+            .and_then(|value| crate::shared::util::json::from_value(value.clone()).ok()),
     };
     for raw in object.get("plugins")?.as_array()? {
         // The plugin is read without its contributions, which are read one by one.

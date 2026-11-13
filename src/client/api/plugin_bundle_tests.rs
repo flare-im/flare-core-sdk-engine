@@ -76,6 +76,11 @@ fn catalog(entry: Option<&WebBundleDecl>, version: &str) -> Value {
 /// A web host with a bundle runtime, a cache under a temporary root holding
 /// `bytes`, and a catalog serving it.
 async fn fixture(bytes: &[u8]) -> (Fixture, std::path::PathBuf) {
+    fixture_with(bytes, entry(bytes)).await
+}
+
+/// [`fixture`] serving `served` (the catalog entry of `bytes`).
+async fn fixture_with(bytes: &[u8], served: WebBundleDecl) -> (Fixture, std::path::PathBuf) {
     let f = Fixture::new().await;
     let kit = serde_json::to_value(flare_plugin_protocol::ui::engine_vocabulary()).unwrap();
     let profile = super::host_profile::parse_profile(
@@ -95,9 +100,9 @@ async fn fixture(bytes: &[u8]) -> (Fixture, std::path::PathBuf) {
         .plugin_host
         .bundles
         .cache()
-        .install(&entry(bytes), bytes)
+        .install(&served, bytes)
         .unwrap();
-    *f.catalog.lock().unwrap() = catalog(Some(&entry(bytes)), "0.2.0");
+    *f.catalog.lock().unwrap() = catalog(Some(&served), "0.2.0");
     (f, root)
 }
 
@@ -352,7 +357,7 @@ async fn a_host_capability_needs_the_hosts_gesture_and_a_transient_operation_nee
                 "p",
                 "host.capability",
                 json!({"name": "paymentConfirmation",
-                "params": {"order": {}}}),
+                "params": {"orderId": "order-1"}}),
             ),
             true,
         )
@@ -470,4 +475,243 @@ async fn a_page_with_an_offered_bundle_says_so_and_a_declarative_one_does_not() 
 
 fn ui_page_split_accepts(view: Value) -> bool {
     crate::extension::capability::ui_page::split_previous(view).is_ok()
+}
+
+/// A bundle asking for `media.read`, `people.resolve` and the payment
+/// confirmation, approved for all three, on a host that offers it.
+async fn reading_fixture() -> (Fixture, std::path::PathBuf) {
+    let manifest: BundleManifest = serde_json::from_value(json!({
+        "id": "board", "entry": "index.html", "bridge": 1,
+        "permissions": ["plugin.command", "media.read", "people.resolve"],
+        "operations": ["example.poll.move"],
+        "capabilities": ["paymentConfirmation"], "locales": ["en"]
+    }))
+    .unwrap();
+    let mut files = BTreeMap::new();
+    files.insert("index.html".to_owned(), b"<!doctype html>".to_vec());
+    let bytes = write_archive(&manifest, &files).unwrap();
+    let mut approved = entry(&bytes);
+    approved.permissions =
+        serde_json::from_value(json!(["plugin.command", "media.read", "people.resolve"])).unwrap();
+    let (f, root) = fixture_with(&bytes, approved).await;
+    {
+        let mut catalog = f.catalog.lock().unwrap();
+        catalog["paymentProvider"] =
+            json!({"pluginId": "example.pay", "operation": "example.pay.ticket"});
+        let mut provider = catalog["plugins"][0].clone();
+        provider["pluginId"] = json!("example.pay");
+        provider["extensions"] = json!({"platforms": ["web"], "contributions": []});
+        provider["operations"] = json!(["example.pay.ticket"]);
+        provider["queryOperations"] = json!([]);
+        provider["transientOperations"] = json!(["example.pay.ticket"]);
+        catalog["plugins"].as_array_mut().unwrap().push(provider);
+    }
+    (f, root)
+}
+
+#[tokio::test]
+async fn media_read_answers_only_the_plugins_own_uploads_of_this_viewer() {
+    let (f, root) = reading_fixture().await;
+    let session = greeted(&f).await;
+    let read = |id: &str, file: &str| request(id, "media.read", json!({"fileId": file}));
+    // A chat file (or another plugin's upload) whose id the bundle learned.
+    let chat = answer(&bridge(&f, &session, read("m1", "file:chat-photo"), false).await);
+    assert_eq!(chat["error"]["code"], "not_found", "{chat}");
+    f.api
+        .plugin_host
+        .uploads
+        .record("201", "u1", "example.other", "file:theirs");
+    let theirs = answer(&bridge(&f, &session, read("m2", "file:theirs"), false).await);
+    assert_eq!(theirs["error"]["code"], "not_found", "{theirs}");
+    // Its own upload passes the ownership check (and, with no media reader
+    // in this fixture, is then unavailable rather than not found).
+    f.api
+        .plugin_host
+        .uploads
+        .record("201", "u1", PLUGIN, "file:mine");
+    let mine = answer(&bridge(&f, &session, read("m3", "file:mine"), false).await);
+    assert_eq!(mine["error"]["code"], "unavailable", "{mine}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+struct Profiles;
+#[async_trait::async_trait]
+impl crate::domain::UserReader for Profiles {
+    async fn get(
+        &self,
+        user_id: &str,
+    ) -> crate::shared::error::Result<Option<crate::domain::UserProfile>> {
+        let mut profile =
+            crate::domain::UserProfile::new(user_id).with_nickname(format!("{user_id} nick"));
+        profile.alias = format!("{user_id} private remark");
+        Ok(Some(profile))
+    }
+}
+
+#[tokio::test]
+async fn people_resolve_never_gives_the_private_remark_or_a_stranger() {
+    let (f, root) = reading_fixture().await;
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+    crate::infrastructure::persistence::sqlite::init_schema(&pool)
+        .await
+        .unwrap();
+    let members = Arc::new(
+        crate::infrastructure::persistence::sqlite::SqliteConversationParticipantRepo::new(pool),
+    );
+    use crate::domain::ConversationParticipantStore as _;
+    members
+        .save_page(
+            "conversation-1",
+            &[crate::model::ConversationParticipant {
+                user_id: "u_member".into(),
+                nickname: "Group name".into(),
+                ..Default::default()
+            }],
+            1,
+            true,
+        )
+        .await
+        .unwrap();
+    let api = f.api.clone().with_bundle_people(
+        Arc::new(Profiles),
+        Some(members as Arc<dyn crate::domain::ConversationParticipantStore>),
+    );
+    let session = {
+        let opened = api
+            .plugin_bundle_open(json!({
+                "pluginId": PLUGIN, "contributionId": "example.poll.board",
+                "locale": "en", "theme": {"mode": "light", "tokens": {}}
+            }))
+            .await
+            .unwrap();
+        opened["sessionId"].as_str().unwrap().to_owned()
+    };
+    let resolve = |ids: Value| request("p", "people.resolve", json!({"userIds": ids}));
+    let reply = api
+        .plugin_bundle_bridge(json!({"sessionId": session,
+            "envelope": resolve(json!(["u_member", "u_stranger", "u1"])).to_string()}))
+        .await
+        .unwrap();
+    let people = answer(&reply)["result"]["people"].clone();
+    // No conversation: people sharing one with the viewer, and the viewer;
+    // named by their own nickname, never the viewer's private remark.
+    assert_eq!(
+        people,
+        json!([
+            {"userId": "u_member", "displayName": "u_member nick"},
+            {"userId": "u1", "displayName": "u1 nick"}
+        ]),
+        "{reply}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn a_bundle_confirms_only_an_order_its_own_command_returned() {
+    let (f, root) = reading_fixture().await;
+    let session = greeted(&f).await;
+    let pay = |id: &str, order_id: &str| {
+        request(
+            id,
+            "host.capability",
+            json!({"name": "paymentConfirmation", "params": {"orderId": order_id}}),
+        )
+    };
+    // No command returned it: refused before any host is asked.
+    let refused = answer(&bridge(&f, &session, pay("c1", "order-1"), true).await);
+    assert!(refused["error"].is_object(), "{refused}");
+    assert!(f.calls_to("example.pay.ticket").is_empty());
+    // An order the bundle writes itself is not accepted either.
+    let written = answer(
+        &bridge(
+            &f,
+            &session,
+            request(
+                "c2",
+                "host.capability",
+                json!({"name": "paymentConfirmation", "params": {"order": {"orderId": "x",
+                    "amount": "0.01", "currency": "CNY", "payee": "钱包", "title": "t",
+                    "expiresAtMs": i64::MAX, "operation": "example.poll.pay"}}}),
+            ),
+            true,
+        )
+        .await,
+    );
+    assert_eq!(written["error"]["code"], "invalid_params", "{written}");
+    // Its command's result carries the order: now the engine holds it.
+    f.answer(
+        "example.poll.move",
+        vec![
+            json!({"confirmation": {"orderId": "order-1", "amount": "1.00",
+            "currency": "CNY", "payee": "Board", "title": "Boost",
+            "expiresAtMs": chrono::Utc::now().timestamp_millis() + 60_000,
+            "operation": "example.poll.pay"}}),
+        ],
+    );
+    let moved = answer(
+        &bridge(
+            &f,
+            &session,
+            request(
+                "c3",
+                "plugin.command",
+                json!({"operation": "example.poll.move",
+                "input": {}}),
+            ),
+            false,
+        )
+        .await,
+    );
+    assert!(
+        moved["result"]["data"]["confirmation"].is_object(),
+        "{moved}"
+    );
+    assert!(
+        f.api
+            .plugin_host
+            .capability_host
+            .orders
+            .get(&super::native::HeldPaymentKey::new(
+                "201", "u1", PLUGIN, "order-1"
+            ))
+            .is_some()
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn a_form_or_card_with_an_offered_bundle_says_so_and_others_do_not() {
+    let bytes = archive(16);
+    let (f, root) = fixture(&bytes).await;
+    let declare = |bundle: bool| {
+        let mut card = json!({"kind": "message-content", "id": "example.poll.card",
+            "schemaVersion": 1, "requiredPermissions": [],
+            "schema": {"title": "Card", "fields": [], "actions": []}});
+        if bundle {
+            card["bundle"] = json!({"id": "board", "route": "/"});
+            card["variant"] = json!("board");
+        }
+        let mut catalog = f.catalog.lock().unwrap();
+        let contributions = catalog["plugins"][0]["extensions"]["contributions"]
+            .as_array_mut()
+            .unwrap();
+        contributions.retain(|c| c["id"] != "example.poll.card");
+        contributions.push(card);
+    };
+    let present = || {
+        f.api
+            .present_plugin_message(json!({"message": {"pluginId": PLUGIN,
+            "contributionId": "example.poll.card", "schemaVersion": 1, "summary": "Card",
+            "payload": {}}, "platform": "web", "locale": "en"}))
+    };
+    declare(true);
+    f.api.plugin_ui_catalog().await.unwrap();
+    let offered = present().await.unwrap();
+    assert_eq!(offered["bundle"], true, "{offered}");
+    // A plugin without one: the host draws its document and never asks for a bundle.
+    declare(false);
+    f.api.plugin_ui_catalog().await.unwrap();
+    let declarative = present().await.unwrap();
+    assert!(declarative.get("bundle").is_none(), "{declarative}");
+    let _ = std::fs::remove_dir_all(root);
 }

@@ -16,12 +16,15 @@
   （`bundle.json` ∩ 目录授权，`plugin.query` 只能是查询，瞬时操作只能经宿主付款确认）→ 限速（每秒 20、同时 4 个操作）；
   错误一律是固定错误码，不带 Core、插件或引擎的原文。`plugin.command` 每条命令一个日志槽，未知结果用同一 `commandId` 找回。
   `storage.*` 存在用户库独立表（SQLite 迁移 v6 新表 `plugin_bundle_storage`，每插件每用户 ≤1 MiB，退出登录清空；浏览器存 IndexedDB `flare-plugin-bundle-storage-v1`，按租户、用户、插件分命名空间，配额检查与写入同一事务）。
-  `media.read` 走宿主读图片块私有文件的同一路径（`resolve_media_access`；原生先读本地缓存、没有就缓存一份，浏览器读短时地址），
+  `media.read` 只读本插件经引擎为当前用户私有上传过的文件（其他文件一律 `not_found`），走宿主读图片块私有文件的同一路径（`resolve_media_access`；原生先读本地缓存、没有就缓存一份，浏览器读短时地址），
   以 `data:` 地址应答（包的 `img-src` 在各平台都放行 `data:`），文件 ≤4 MiB，超出应答 `payload_too_large`。
   新事件 `plugin.bundle_event`（C 7004，`{sessionId, envelope?, close?}`）：订阅的 `catalog.changed`、`entity.state`，
   目录不再下发时的 `lifecycle.revoked` 与关闭原因（`withdrawn`、`suspended`、`disabled`、`replaced`、`evicted`、`signedOut`）。
   `plugin_page` 的结果在该页有提供给本客户端的 Web 包时带 `bundle: true`（宿主报了运行时、目录下发了所选变体的包、桥版本
   可用；不下载、不建会话），宿主据此只对 Web 包页面调 `plugin_bundle_open`，声明式页面不再先显示「打开中」。
+  `present_plugin_message` 对「+」表单与卡片同样带 `bundle: true`，宿主只对标了的表单和卡片「查看全部」试包。
+  `people.resolve` 只给会话内昵称或本人昵称（不给当前用户的私人备注）；页面不属于会话时只解析与当前用户同在某个会话里的人。
+  `host.capability` 的 `locationOnce` 不需要页面输入，回 `{location}`；Web 包确认付款时回订单瞬时操作的结果，不跑页面动作的后续。
 - 插件界面按宿主能力下发：新增 `plugin.set_host_profile`（`{platform, kitVocabulary, nativeAllowlist?,
   bundleRuntime?}`），宿主声明 Kit 词汇、原生能力允许名单与 Web 包运行时，跨会话保留，变化时作废目录读取并重新
   推出最近展示的卡片。读目录（`flare.plugin.ui.catalog`）的载荷改为 `{descriptor}`：引擎词汇 ∩ Kit 词汇、
@@ -36,9 +39,11 @@
   交回；Rust 嵌入方可用 `IMClient::set_plugin_capability_host` 装自己的 `PluginCapabilityHost`。证件照与选取的文件经
   页面输入声明的私有上传写回 `into` 输入（证件 JPEG 带 EXIF 拒收）；一次定位按声明精度截断（粗约 1 公里、细约 1 米）后
   写回 `into` 指向的同精度 `location` 输入（`{kind: input, input, value: {latitude, longitude, accuracyM, precision}}`）；
-  付款确认校验订单（同插件、在目录 `transientOperations` 内、未过期，确认后再查一次）后调用订单的瞬时操作，
-  入参 `{orderId, confirmation}`。
-  操作结果带 `data.confirmation` 时，`plugin_ui_invoke` 的结果同时给出 `confirmation`。
+  付款确认只认引擎从经 Core 返回的操作结果里记下的订单（按租户、用户、插件、订单号），宿主与 Web 包只传 `orderId`；
+  校验订单（同插件、在目录 `transientOperations` 内、未过期，确认后再查一次）后，宿主收的支付凭证只交给目录
+  `paymentProvider`（Core 配置的付款方，例如钱包的 `payments.ticket`），付款方回一次性票据，订单的瞬时操作的入参是
+  `{orderId, ticket}`，凭证本身到不了发起付款的插件；目录没有付款方时不询问凭证、直接不可用。
+  操作结果带 `data.confirmation` 时，`plugin_ui_invoke` 的结果同时给出 `confirmation`，引擎同时记下这张订单。
   页面动作的操作结果带付款订单时，动作声明的后续（下一页或下一个持久动作）先挂在这张订单上，宿主确认、订单的瞬时操作
   成功后才以瞬时操作的结果继续；拒绝、取消或失败都不继续（失败后同一订单再试仍可继续）。
 - 同意记录存在用户库（SQLite 迁移 v5 新表 `plugin_capability_consents`、浏览器 IndexedDB、无库时内存），按

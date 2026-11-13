@@ -63,6 +63,7 @@ impl Fixture {
                 configuration: Default::default(),
             }],
             unavailable: vec![],
+            payment_provider: None,
         }));
         let calls = Arc::new(SyncMutex::new(Vec::new()));
         let hold = Arc::new(AtomicBool::new(false));

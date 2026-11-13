@@ -37,7 +37,7 @@ impl FakeHost {
             captures: AtomicUsize::new(0),
             payments: AtomicUsize::new(0),
             proof: SyncMutex::new(CapabilityHostAnswer::Done(
-                json!({"ticket": "core-ticket-1"})
+                json!({"method": "paymentPassword", "password": "123456"})
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -101,11 +101,22 @@ impl PluginCapabilityHost for FakeHost {
 /// The plugin declares `native` in its manifest, a page with a front-side
 /// document input and its private upload (when it declares
 /// `documentCapture`), a check-in page with a coarse and a fine location
-/// input (when it declares `locationOnce`), and a transient payment
-/// operation; the host profile allows `allowed`; `host` does the host's part.
+/// input (when it declares `locationOnce`), a transient payment operation
+/// and a pay page whose operation answers with an order; the deployment's
+/// payment provider is another plugin's transient `example.pay.ticket`; the
+/// host profile allows `allowed`; `host` does the host's part.
 fn setup(f: &Fixture, declared: &[&str], allowed: &[&str], host: Arc<FakeHost>) {
+    declare_pay_page(f);
     {
         let mut catalog = f.catalog.lock().unwrap();
+        catalog["paymentProvider"] =
+            json!({"pluginId": "example.pay", "operation": "example.pay.ticket"});
+        let mut provider = catalog["plugins"][0].clone();
+        provider["pluginId"] = json!("example.pay");
+        provider["extensions"]["contributions"] = json!([]);
+        provider["operations"] = json!(["example.pay.ticket"]);
+        provider["transientOperations"] = json!(["example.pay.ticket"]);
+        catalog["plugins"].as_array_mut().unwrap().push(provider);
         let plugin = &mut catalog["plugins"][0];
         plugin["extensions"]["nativeCapabilities"] = json!(declared);
         for operation in [
@@ -209,9 +220,22 @@ fn order(expires_at_ms: i64) -> Value {
         "title": "Red packet", "expiresAtMs": expires_at_ms, "operation": "example.poll.pay_confirm"})
 }
 
-fn payment_request(order: Value) -> Value {
-    json!({"pluginId": "example.poll", "capability": "paymentConfirmation", "order": order,
+/// The host names an order by its id only.
+fn payment_request(order_id: &str) -> Value {
+    json!({"pluginId": "example.poll", "capability": "paymentConfirmation", "orderId": order_id,
         "platform": "web", "userGesture": true})
+}
+
+/// The pay page's `order` action runs an operation that answers with
+/// `order`: the engine records it from that result.
+async fn receive_order(f: &Fixture, order: Value) -> Value {
+    f.answer("example.poll.hide", vec![json!({"confirmation": order})]);
+    press(f, "order").await
+}
+
+/// The provider's ticket for a password it accepted.
+fn ticket() -> Value {
+    json!({"ticket": "ticket_1-a", "expiresAtMs": now_ms() + 60_000})
 }
 
 fn ready_upload() -> Value {
@@ -364,9 +388,10 @@ async fn an_expired_order_is_refused_and_an_open_one_calls_its_transient_operati
     );
 
     // Closed: refused before the viewer is asked anything.
+    receive_order(&f, order(now_ms() - 1)).await;
     let error = f
         .api
-        .plugin_capability_invoke(payment_request(order(now_ms() - 1)))
+        .plugin_capability_invoke(payment_request("order-1"))
         .await
         .unwrap_err();
     assert!(
@@ -379,60 +404,261 @@ async fn an_expired_order_is_refused_and_an_open_one_calls_its_transient_operati
     assert_eq!(host.payments.load(Ordering::SeqCst), 0);
     assert!(f.calls_to("example.poll.pay_confirm").is_empty());
 
-    // An operation of another plugin, one the catalog does not offer, or one
-    // it offers that is not transient.
-    for operation in [
-        "example.other.pay",
-        "example.poll.not_granted",
-        "example.poll.material_prepare",
+    // An operation of another plugin (never recorded), one the catalog does
+    // not offer, or one it offers that is not transient.
+    for (id, operation) in [
+        ("order-a", "example.other.pay"),
+        ("order-b", "example.poll.not_granted"),
+        ("order-c", "example.poll.material_prepare"),
     ] {
         let mut foreign = order(now_ms() + 60_000);
+        foreign["orderId"] = json!(id);
         foreign["operation"] = json!(operation);
+        receive_order(&f, foreign).await;
         assert!(
             f.api
-                .plugin_capability_invoke(payment_request(foreign))
+                .plugin_capability_invoke(payment_request(id))
                 .await
-                .is_err()
+                .is_err(),
+            "{operation}"
         );
     }
     assert_eq!(host.payments.load(Ordering::SeqCst), 0);
 
-    // Open: confirmed by the host, then the transient operation is called
-    // with the order id and the host's proof.
+    // Open: the host draws the recorded order, the password goes to the
+    // provider only, and the transient operation gets the provider's ticket.
+    receive_order(&f, order(now_ms() + 60_000)).await;
+    f.answer("example.pay.ticket", vec![ticket()]);
     f.answer("example.poll.pay_confirm", vec![json!({"paid": true})]);
     let outcome = f
         .api
-        .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+        .plugin_capability_invoke(payment_request("order-1"))
         .await
         .unwrap();
     assert_eq!(outcome["kind"], "operation");
     assert_eq!(outcome["response"]["data"], json!({"paid": true}));
+    let asked = f.calls_to("example.pay.ticket");
+    assert_eq!(asked.len(), 1);
+    let expected = order(now_ms() + 60_000);
+    assert_eq!(asked[0]["payload"]["pluginId"], "example.poll");
+    assert_eq!(asked[0]["payload"]["orderId"], "order-1");
+    assert_eq!(asked[0]["payload"]["amount"], expected["amount"]);
+    assert_eq!(asked[0]["payload"]["currency"], expected["currency"]);
+    assert_eq!(asked[0]["payload"]["payee"], expected["payee"]);
+    assert_eq!(
+        asked[0]["payload"]["confirmation"],
+        json!({"method": "paymentPassword", "password": "123456"})
+    );
     let calls = f.calls_to("example.poll.pay_confirm");
     assert_eq!(calls.len(), 1);
     assert_eq!(
         calls[0]["payload"],
-        json!({"orderId": "order-1", "confirmation": {"ticket": "core-ticket-1"}})
+        json!({"orderId": "order-1", "ticket": "ticket_1-a"}),
+        "the plugin gets the ticket, never the password"
+    );
+
+    // Paid: the order is forgotten, so it cannot be confirmed again.
+    assert!(
+        f.api
+            .plugin_capability_invoke(payment_request("order-1"))
+            .await
+            .is_err()
     );
 
     // The viewer backs out: nothing is called.
+    receive_order(&f, order(now_ms() + 60_000)).await;
     *host.proof.lock().unwrap() = CapabilityHostAnswer::Cancelled;
     assert_eq!(
         f.api
-            .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+            .plugin_capability_invoke(payment_request("order-1"))
             .await
             .unwrap(),
         json!({"kind": "cancelled"})
     );
+    assert_eq!(f.calls_to("example.pay.ticket").len(), 1);
     assert_eq!(f.calls_to("example.poll.pay_confirm").len(), 1);
 
-    // A payment confirmation is never a declared target.
-    let mut declared = payment_request(order(now_ms() + 60_000));
-    declared.as_object_mut().unwrap().remove("order");
+    // A payment confirmation is never a declared target, and a host cannot
+    // hand the engine an order of its own.
+    let mut declared = payment_request("order-1");
+    declared.as_object_mut().unwrap().remove("orderId");
     assert!(f.api.plugin_capability_invoke(declared).await.is_err());
+    let mut supplied = payment_request("order-1");
+    supplied["order"] = order(now_ms() + 60_000);
+    assert!(f.api.plugin_capability_invoke(supplied).await.is_err());
 }
 
-#[test]
-fn an_operation_result_with_an_order_hands_it_to_the_host() {
+#[tokio::test]
+async fn an_order_the_engine_did_not_record_is_never_drawn() {
+    let f = Fixture::new().await;
+    let host = FakeHost::new();
+    setup(
+        &f,
+        &["paymentConfirmation"],
+        &["paymentConfirmation"],
+        host.clone(),
+    );
+    // Recorded for another plugin's page? Never: only this viewer's order of
+    // this plugin. An id nobody returned is refused before anyone is asked.
+    let error = f
+        .api
+        .plugin_capability_invoke(payment_request("order-made-up"))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("sdk.plugin.ui_action_unavailable"),
+        "{error}"
+    );
+    assert!(host.consents().is_empty());
+    assert_eq!(host.payments.load(Ordering::SeqCst), 0);
+
+    // A received order is recorded for its viewer and plugin only.
+    receive_order(&f, order(now_ms() + 60_000)).await;
+    let orders = &f.api.plugin_host.capability_host.orders;
+    let key = |viewer: &str, plugin: &str| {
+        super::native::HeldPaymentKey::new("201", viewer, plugin, "order-1")
+    };
+    assert!(orders.get(&key("u1", "example.poll")).is_some());
+    assert!(orders.get(&key("u2", "example.poll")).is_none());
+    assert!(orders.get(&key("u1", "example.pay")).is_none());
+}
+
+#[tokio::test]
+async fn without_a_payment_provider_no_credential_is_asked_for() {
+    let f = Fixture::new().await;
+    let host = FakeHost::new();
+    setup(
+        &f,
+        &["paymentConfirmation"],
+        &["paymentConfirmation"],
+        host.clone(),
+    );
+    receive_order(&f, order(now_ms() + 60_000)).await;
+    for provider in [
+        Value::Null,
+        // Named, but the operation is not a transient one of that plugin.
+        json!({"pluginId": "example.pay", "operation": "example.pay.other"}),
+        // The plugin asking for the payment cannot be made the provider by
+        // naming an operation of its own that the catalog does not mark.
+        json!({"pluginId": "example.poll", "operation": "example.poll.pay_confirm2"}),
+    ] {
+        f.catalog.lock().unwrap()["paymentProvider"] = provider;
+        let error = f
+            .api
+            .plugin_capability_invoke(payment_request("order-1"))
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("sdk.plugin.native_capability_unavailable"),
+            "{error}"
+        );
+    }
+    assert!(host.consents().is_empty());
+    assert_eq!(host.payments.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_refused_password_reaches_no_plugin_and_the_order_stays_open() {
+    let f = Fixture::new().await;
+    let host = FakeHost::new();
+    setup(
+        &f,
+        &["paymentConfirmation"],
+        &["paymentConfirmation"],
+        host.clone(),
+    );
+    receive_order(&f, order(now_ms() + 60_000)).await;
+    f.errors.lock().unwrap().insert(
+        "example.pay.ticket".into(),
+        (409, "BUSINESS_CONFLICT".into()),
+    );
+    assert!(
+        f.api
+            .plugin_capability_invoke(payment_request("order-1"))
+            .await
+            .is_err()
+    );
+    assert!(f.calls_to("example.poll.pay_confirm").is_empty());
+    // A ticket that does not read as one goes nowhere either.
+    f.errors.lock().unwrap().remove("example.pay.ticket");
+    f.answer("example.pay.ticket", vec![json!({"ticket": "a b"})]);
+    assert!(
+        f.api
+            .plugin_capability_invoke(payment_request("order-1"))
+            .await
+            .is_err()
+    );
+    assert!(f.calls_to("example.poll.pay_confirm").is_empty());
+    // The same order is confirmed on the next try.
+    f.answer("example.pay.ticket", vec![ticket()]);
+    let outcome = f
+        .api
+        .plugin_capability_invoke(payment_request("order-1"))
+        .await
+        .unwrap();
+    assert_eq!(outcome["kind"], "operation");
+    assert_eq!(f.calls_to("example.poll.pay_confirm").len(), 1);
+}
+
+#[tokio::test]
+async fn a_bundle_gets_a_location_without_a_page_input_and_its_payment_result() {
+    let f = Fixture::new().await;
+    let host = FakeHost::new();
+    setup(
+        &f,
+        &["locationOnce", "paymentConfirmation"],
+        &["locationOnce", "paymentConfirmation"],
+        host.clone(),
+    );
+    let fix = f
+        .api
+        .bundle_capability_invoke(json!({"pluginId": "example.poll",
+            "capability": "locationOnce", "params": {"precision": "coarse"},
+            "platform": "web", "userGesture": true}))
+        .await
+        .unwrap();
+    assert_eq!(
+        fix,
+        json!({"kind": "location", "location": {"latitude": 31.23, "longitude": 121.47,
+            "accuracyM": 1000.0, "precision": "coarse"}})
+    );
+    // A host still names the page input a fix goes into.
+    assert!(
+        f.api
+            .plugin_capability_invoke(json!({"pluginId": "example.poll",
+                "capability": "locationOnce", "params": {"precision": "coarse"},
+                "platform": "web", "userGesture": true}))
+            .await
+            .is_err()
+    );
+
+    // A pay action's order confirmed from a bundle answers with the order
+    // operation's result, never the action's continuation, which stays held.
+    f.answer(
+        "example.poll.hide",
+        vec![json!({"confirmation": order(now_ms() + 60_000)})],
+    );
+    press(&f, "pay").await;
+    assert_eq!(f.api.plugin_host.capability_host.payments.len(), 1);
+    f.answer("example.pay.ticket", vec![ticket()]);
+    f.answer("example.poll.pay_confirm", vec![json!({"currency": "USD"})]);
+    let paid = f
+        .api
+        .bundle_capability_invoke(payment_request("order-1"))
+        .await
+        .unwrap();
+    assert_eq!(paid["kind"], "operation", "{paid}");
+    assert_eq!(paid["response"]["data"], json!({"currency": "USD"}));
+    assert_eq!(f.api.plugin_host.capability_host.payments.len(), 1);
+}
+
+#[tokio::test]
+async fn an_operation_result_with_an_order_hands_it_to_the_host_and_records_it() {
+    let f = Fixture::new().await;
     let response = CapabilityDispatchResult {
         request_id: "r".into(),
         success: true,
@@ -441,13 +667,42 @@ fn an_operation_result_with_an_order_hands_it_to_the_host() {
         data: json!({"confirmation": order(i64::MAX)}),
         error: None,
     };
-    let outcome = super::native::operation_outcome("example.poll", &response);
+    let outcome = f
+        .api
+        .operation_outcome(Some("u1"), "example.poll", &response);
     assert_eq!(outcome["kind"], "operation");
     assert_eq!(outcome["confirmation"]["orderId"], "order-1");
+    let recorded = f
+        .api
+        .plugin_host
+        .capability_host
+        .orders
+        .get(&super::native::HeldPaymentKey::new(
+            "201",
+            "u1",
+            "example.poll",
+            "order-1",
+        ))
+        .unwrap();
+    assert_eq!(recorded.operation, "example.poll.pay_confirm");
     // Another plugin's operation is not this plugin's order.
     assert!(
-        super::native::operation_outcome("example.other", &response)
+        f.api
+            .operation_outcome(Some("u1"), "example.other", &response)
             .get("confirmation")
+            .is_none()
+    );
+    assert!(
+        f.api
+            .plugin_host
+            .capability_host
+            .orders
+            .get(&super::native::HeldPaymentKey::new(
+                "201",
+                "u1",
+                "example.other",
+                "order-1",
+            ))
             .is_none()
     );
 }
@@ -642,6 +897,7 @@ async fn an_order_is_refused_while_the_catalog_lists_no_transient_operation() {
         &["paymentConfirmation"],
         host.clone(),
     );
+    receive_order(&f, order(now_ms() + 60_000)).await;
     // An older Core lists none.
     f.catalog.lock().unwrap()["plugins"][0]
         .as_object_mut()
@@ -649,7 +905,7 @@ async fn an_order_is_refused_while_the_catalog_lists_no_transient_operation() {
         .remove("transientOperations");
     assert!(
         f.api
-            .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+            .plugin_capability_invoke(payment_request("order-1"))
             .await
             .is_err()
     );
@@ -658,8 +914,9 @@ async fn an_order_is_refused_while_the_catalog_lists_no_transient_operation() {
     assert!(f.calls_to("example.poll.pay_confirm").is_empty());
 }
 
-/// A pay page whose `pay` action's operation answers with an order and
-/// continues to the history page with the currency of its result.
+/// A pay page: its `pay` action's operation answers with an order and
+/// continues to the history page with the currency of its result; its
+/// `order` action runs the same operation with no continuation.
 fn declare_pay_page(f: &Fixture) {
     let mut catalog = f.catalog.lock().unwrap();
     catalog["plugins"][0]["extensions"]["contributions"]
@@ -672,11 +929,14 @@ fn declare_pay_page(f: &Fixture) {
                 "actions": [{"id": "pay", "label": "Pay", "style": "primary",
                     "target": {"kind": "operation", "operation": "example.poll.hide"},
                     "continuation": {"page": "example.poll.history",
-                        "input": {"currency": "/currency"}}}]}
+                        "input": {"currency": "/currency"}}},
+                    {"id": "order", "label": "Order",
+                    "target": {"kind": "operation", "operation": "example.poll.hide"}}]}
         }));
 }
 
-async fn press_pay(f: &Fixture) -> Value {
+/// Press `action` on the pay page.
+async fn press(f: &Fixture, action: &str) -> Value {
     f.answer(
         "example.poll.wallet",
         vec![json!({"balanceText": "¥1.00", "currency": "CNY"})],
@@ -692,7 +952,7 @@ async fn press_pay(f: &Fixture) -> Value {
     f.api
         .invoke_plugin_action(json!({
             "page": {"pluginId": "example.poll", "page": "example.poll.pay"},
-            "platform": "web", "actionId": "pay", "userGesture": true, "data": page["data"]
+            "platform": "web", "actionId": action, "userGesture": true, "data": page["data"]
         }))
         .await
         .unwrap()
@@ -708,14 +968,13 @@ async fn a_pay_actions_continuation_runs_only_after_its_order_is_confirmed() {
         &["paymentConfirmation"],
         host.clone(),
     );
-    declare_pay_page(&f);
     f.answer(
         "example.poll.hide",
         vec![json!({"confirmation": order(now_ms() + 60_000)})],
     );
     // The action's operation answered with an order: the host gets it to
     // confirm, and the continuation does not run yet.
-    let outcome = press_pay(&f).await;
+    let outcome = press(&f, "pay").await;
     assert_eq!(outcome["kind"], "operation", "{outcome}");
     assert_eq!(outcome["confirmation"]["orderId"], "order-1");
     assert_eq!(
@@ -728,7 +987,7 @@ async fn a_pay_actions_continuation_runs_only_after_its_order_is_confirmed() {
     host.decide(ConsentDecision::Deny);
     assert_eq!(
         f.api
-            .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+            .plugin_capability_invoke(payment_request("order-1"))
             .await
             .unwrap(),
         json!({"kind": "denied"})
@@ -738,28 +997,29 @@ async fn a_pay_actions_continuation_runs_only_after_its_order_is_confirmed() {
     *host.proof.lock().unwrap() = CapabilityHostAnswer::Cancelled;
     assert_eq!(
         f.api
-            .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+            .plugin_capability_invoke(payment_request("order-1"))
             .await
             .unwrap(),
         json!({"kind": "cancelled"})
     );
     assert!(f.calls_to("example.poll.pay_confirm").is_empty());
 
-    // The transient operation fails (a wrong password): no continuation,
-    // and it is still held for another try of the same order.
+    // The transient operation fails: no continuation, and it is still held
+    // for another try of the same order.
     *host.proof.lock().unwrap() = CapabilityHostAnswer::Done(
         json!({"method": "paymentPassword", "password": "000000"})
             .as_object()
             .unwrap()
             .clone(),
     );
+    f.answer("example.pay.ticket", vec![ticket()]);
     f.errors.lock().unwrap().insert(
         "example.poll.pay_confirm".into(),
         (409, "BUSINESS_CONFLICT".into()),
     );
     assert!(
         f.api
-            .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+            .plugin_capability_invoke(payment_request("order-1"))
             .await
             .is_err()
     );
@@ -775,7 +1035,7 @@ async fn a_pay_actions_continuation_runs_only_after_its_order_is_confirmed() {
     );
     let continued = f
         .api
-        .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
+        .plugin_capability_invoke(payment_request("order-1"))
         .await
         .unwrap();
     assert_eq!(continued["kind"], "host", "{continued}");
@@ -787,18 +1047,23 @@ async fn a_pay_actions_continuation_runs_only_after_its_order_is_confirmed() {
     let calls = f.calls_to("example.poll.pay_confirm");
     assert_eq!(
         calls[1]["payload"],
-        json!({"orderId": "order-1",
-            "confirmation": {"method": "paymentPassword", "password": "000000"}})
+        json!({"orderId": "order-1", "ticket": "ticket_1-a"})
+    );
+    // The password went to the provider each time, never to the plugin.
+    assert!(
+        f.calls_to("example.pay.ticket")
+            .iter()
+            .all(|call| call["payload"]["confirmation"]["password"] == "000000")
     );
 
-    // It runs once: confirming the same order again continues no more.
+    // It runs once, and the paid order is forgotten.
     assert_eq!(f.api.plugin_host.capability_host.payments.len(), 0);
-    let again = f
-        .api
-        .plugin_capability_invoke(payment_request(order(now_ms() + 60_000)))
-        .await
-        .unwrap();
-    assert_eq!(again["kind"], "operation", "{again}");
+    assert!(
+        f.api
+            .plugin_capability_invoke(payment_request("order-1"))
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

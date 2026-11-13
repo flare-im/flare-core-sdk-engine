@@ -593,11 +593,9 @@ impl CapabilityApi {
             BridgeRequest::PeopleResolve(params) => Box::pin(async move {
                 Outcome::Done(self.bundle_people(context, &params.user_ids).await)
             }),
-            BridgeRequest::MediaRead(params) => {
-                Box::pin(
-                    async move { Outcome::Done(self.bundle_media_read(&params.file_id).await) },
-                )
-            }
+            BridgeRequest::MediaRead(params) => Box::pin(async move {
+                Outcome::Done(self.bundle_media_read(context, &params.file_id).await)
+            }),
             request @ (BridgeRequest::StorageGet(_)
             | BridgeRequest::StorageSet(_)
             | BridgeRequest::StorageRemove(_)
@@ -677,12 +675,25 @@ impl CapabilityApi {
             })
             .await
             .map(|(response, _)| response);
+        // An order in the result is one the bundle may then confirm by id.
+        if let Ok(response) = &response
+            && response.success
+        {
+            self.record_payment_order(
+                Some(context.viewer.as_str()),
+                &context.plugin_id,
+                &response.data,
+            );
+        }
         operation_result(response, Some(command_id))
     }
 
     /// `host.capability`: a payment confirmation (the only way to a transient
-    /// operation) or a location fix, through the capability dispatch with its
-    /// allowlists and consent.
+    /// operation) of an order a `plugin.command` of this plugin returned,
+    /// named by `{orderId}`, or a location fix (`{precision}`), through the
+    /// capability dispatch with its allowlists and consent. A confirmed
+    /// payment answers with the order operation's `data`, a fix with
+    /// `{location}`.
     async fn bundle_capability(
         &self,
         context: &SessionContext,
@@ -698,12 +709,13 @@ impl CapabilityApi {
         });
         match name {
             NativeCapability::PaymentConfirmation => {
-                let order = params
+                let order_id = params
                     .as_ref()
-                    .and_then(|p| p.get("order"))
+                    .and_then(|p| p.get("orderId"))
+                    .filter(|id| id.is_string())
                     .cloned()
                     .ok_or_else(|| BridgeError::new(BridgeErrorCode::InvalidParams))?;
-                request["order"] = order;
+                request["orderId"] = order_id;
             }
             NativeCapability::LocationOnce => {
                 if let Some(params) = params {
@@ -715,27 +727,32 @@ impl CapabilityApi {
         if let Some(conversation) = &context.conversation_id {
             request["conversationId"] = Value::String(conversation.clone());
         }
-        let outcome = self
-            .plugin_capability_invoke(request)
+        let mut outcome = self
+            .bundle_capability_invoke(request)
             .await
             .map_err(|e| bundle::broker::bridge_error_of(&e))?;
         match outcome.get("kind").and_then(Value::as_str) {
             Some("operation") => {
-                let data = outcome
-                    .get("response")
-                    .and_then(|r| r.get("data"))
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                Ok(json!({ "data": data }))
+                let response = outcome["response"].take();
+                if response["success"] != Value::Bool(true) {
+                    let code = response["data"]["errorCode"].as_str();
+                    return Err(BridgeError::operation_failed(code.filter(|code| {
+                        !code.starts_with("PLUGIN_") && !code.starts_with("CAPABILITY_")
+                    })));
+                }
+                Ok(json!({ "data": response["data"] }))
             }
-            Some("location") => Ok(json!({ "location": outcome.get("location") })),
+            Some("location") => Ok(json!({ "location": outcome["location"] })),
             Some("denied" | "cancelled") => Err(BridgeError::new(BridgeErrorCode::Cancelled)),
             _ => Err(BridgeError::new(BridgeErrorCode::Unavailable)),
         }
     }
 
-    /// `people.resolve`: names and avatars this device already holds, of
-    /// members of the page's conversation when it has one.
+    /// `people.resolve`: display names and avatars this device already holds
+    /// of people the viewer may see: members of the page's conversation when
+    /// it has one, otherwise people who share a conversation with the viewer
+    /// (and the viewer). The name is the member's name there, else the
+    /// person's own nickname; the viewer's private remark name never leaves.
     async fn bundle_people(
         &self,
         context: &SessionContext,
@@ -747,6 +764,7 @@ impl CapabilityApi {
             .ok_or_else(|| BridgeError::new(BridgeErrorCode::Unavailable))?;
         let wanted: BTreeSet<&String> = user_ids.iter().collect();
         let mut member_names = std::collections::HashMap::new();
+        let mut ids: Vec<String> = Vec::new();
         if let Some(conversation) = &context.conversation_id {
             let store = people
                 .participants
@@ -761,12 +779,24 @@ impl CapabilityApi {
                     member_names.insert(member.user_id.clone(), member.nickname.clone());
                 }
             }
+            ids.extend(
+                user_ids
+                    .iter()
+                    .filter(|id| member_names.contains_key(*id))
+                    .cloned(),
+            );
+        } else {
+            for id in user_ids {
+                let shares = *id == context.viewer
+                    || match &people.participants {
+                        Some(store) => store.shares_conversation(id).await.unwrap_or(false),
+                        None => false,
+                    };
+                if shares {
+                    ids.push(id.clone());
+                }
+            }
         }
-        let ids: Vec<String> = user_ids
-            .iter()
-            .filter(|id| context.conversation_id.is_none() || member_names.contains_key(*id))
-            .cloned()
-            .collect();
         let profiles = people
             .profiles
             .get_many(&ids)
@@ -776,7 +806,6 @@ impl CapabilityApi {
         for id in &ids {
             let profile = profiles.get(id);
             let name = [
-                profile.map(|p| p.alias.as_str()),
                 member_names.get(id).map(String::as_str),
                 profile.map(|p| p.nickname.as_str()),
             ]
@@ -796,15 +825,30 @@ impl CapabilityApi {
             .map_err(|_| BridgeError::new(BridgeErrorCode::Internal))
     }
 
-    /// `media.read`: a private file read through the path hosts read image
-    /// blocks' files with (`resolve_media_access`), answered as a `data:`
+    /// `media.read`: a private file this plugin uploaded for this viewer
+    /// through the engine ([`super::file_upload::PluginUploads`]; any other
+    /// id, a chat file's included, answers `not_found`), read through the
+    /// path hosts read image blocks' files with (`resolve_media_access`),
+    /// answered as a `data:`
     /// address, the one form a bundle's policy loads on every platform
     /// (`img-src` allows `data:`; the page's own origin and the app's
     /// `blob:` addresses are not the same). The bytes are read by the engine:
     /// the cached copy on native targets, the short-lived address otherwise.
     /// Files over [`MAX_BUNDLE_MEDIA_BYTES`] answer `payload_too_large`.
-    async fn bundle_media_read(&self, file_id: &str) -> std::result::Result<Value, BridgeError> {
+    async fn bundle_media_read(
+        &self,
+        context: &SessionContext,
+        file_id: &str,
+    ) -> std::result::Result<Value, BridgeError> {
         use base64::Engine as _;
+        if !self.plugin_host.uploads.owns(
+            &context.tenant_id,
+            &context.viewer,
+            &context.plugin_id,
+            file_id,
+        ) {
+            return Err(BridgeError::new(BridgeErrorCode::NotFound));
+        }
         let media = self
             .bundle_media
             .clone()

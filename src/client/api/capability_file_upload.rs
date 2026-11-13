@@ -47,6 +47,53 @@ struct PreparedFile {
     ready: bool,
 }
 
+/// Private files the engine uploaded for a plugin on this device, kept at
+/// most this many at once (the oldest go first).
+const MAX_PLUGIN_UPLOADS: usize = 256;
+
+/// The private files each plugin uploaded for each viewer through this
+/// engine (its page forms' declared uploads), the only files a web bundle of
+/// that plugin may read back (`media.read`): never a chat file or another
+/// plugin's upload, whose id the bundle may still learn. In memory: a file
+/// uploaded before this engine started is not read back.
+#[derive(Default)]
+pub(crate) struct PluginUploads {
+    owned: std::sync::Mutex<std::collections::VecDeque<String>>,
+}
+
+impl std::fmt::Debug for PluginUploads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PluginUploads")
+    }
+}
+
+impl PluginUploads {
+    fn key(tenant: &str, user: &str, plugin_id: &str, file_id: &str) -> String {
+        format!("{tenant}\n{user}\n{plugin_id}\n{file_id}")
+    }
+    pub fn record(&self, tenant: &str, user: &str, plugin_id: &str, file_id: &str) {
+        let key = Self::key(tenant, user, plugin_id, file_id);
+        let mut owned = self
+            .owned
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owned.contains(&key) {
+            return;
+        }
+        if owned.len() >= MAX_PLUGIN_UPLOADS {
+            owned.pop_front();
+        }
+        owned.push_back(key);
+    }
+    /// Whether `plugin_id` uploaded `file_id` for `user` of `tenant`.
+    pub fn owns(&self, tenant: &str, user: &str, plugin_id: &str, file_id: &str) -> bool {
+        self.owned
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&Self::key(tenant, user, plugin_id, file_id))
+    }
+}
+
 fn invalid() -> FlareError {
     FlareError::localized(ErrorCode::InvalidParameter, "invalid plugin file upload")
 }
@@ -284,7 +331,14 @@ impl CapabilityApi {
                 {
                     return Err(invalid());
                 }
+                let uploads = &self.plugin_host.uploads;
                 if prepared.ready {
+                    uploads.record(
+                        &self.default_tenant_id,
+                        &viewer,
+                        &request.page.plugin_id,
+                        &reference.file_id,
+                    );
                     return serde_json::to_value(reference).map_err(|_| invalid());
                 }
                 if prepared
@@ -335,6 +389,12 @@ impl CapabilityApi {
                 if completed != reference || !completed.is_valid() {
                     return Err(invalid());
                 }
+                uploads.record(
+                    &self.default_tenant_id,
+                    &viewer,
+                    &request.page.plugin_id,
+                    &completed.file_id,
+                );
                 serde_json::to_value(completed).map_err(|_| invalid())
             })
             .await
@@ -343,6 +403,23 @@ impl CapabilityApi {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_upload_belongs_to_its_tenant_viewer_and_plugin_only() {
+        let uploads = super::PluginUploads::default();
+        uploads.record("t", "alice", "example.realname", "file:1");
+        assert!(uploads.owns("t", "alice", "example.realname", "file:1"));
+        assert!(!uploads.owns("t", "bob", "example.realname", "file:1"));
+        assert!(!uploads.owns("t", "alice", "example.other", "file:1"));
+        assert!(!uploads.owns("u", "alice", "example.realname", "file:1"));
+        assert!(!uploads.owns("t", "alice", "example.realname", "file:2"));
+        // Bounded: the oldest goes first.
+        for i in 0..super::MAX_PLUGIN_UPLOADS {
+            uploads.record("t", "alice", "example.realname", &format!("file:n{i}"));
+        }
+        assert!(!uploads.owns("t", "alice", "example.realname", "file:1"));
+        assert!(uploads.owns("t", "alice", "example.realname", "file:n0"));
+    }
+
     use super::*;
 
     #[test]
