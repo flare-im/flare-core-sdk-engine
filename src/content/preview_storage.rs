@@ -171,7 +171,7 @@ fn resolve_i18n_key(data: &HashMap<String, String>, fallback_key: &str) -> Optio
 
 fn attach_i18n_params(a: &mut Map<String, Value>, data: &HashMap<String, String>) {
     if let Some(raw) = data.get("i18n_params")
-        && let Ok(params) = serde_json::from_str::<Map<String, Value>>(raw)
+        && let Ok(params) = serde_json::from_slice::<Map<String, Value>>(raw.as_bytes())
         && !params.is_empty()
     {
         a.insert("p".into(), Value::Object(params));

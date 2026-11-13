@@ -158,7 +158,8 @@ pub fn verify_pack(pack: &ResourcePack, body: &[u8]) -> Result<String, PackError
         return Err(PackError::HashMismatch);
     }
     let content = std::str::from_utf8(body).map_err(|_| PackError::Malformed)?;
-    let document: Value = serde_json::from_str(content).map_err(|_| PackError::Malformed)?;
+    let document: Value =
+        serde_json::from_slice(content.as_bytes()).map_err(|_| PackError::Malformed)?;
     if document.get("schema").and_then(Value::as_str) != Some(RESOURCE_SCHEMA) {
         return Err(PackError::WrongSchema);
     }

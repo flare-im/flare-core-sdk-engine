@@ -102,7 +102,7 @@ fn message_dispatch_parts(request: Value) -> Result<(String, Value)> {
 }
 
 fn message_dispatch_json_parts(request_json: &str) -> Result<(String, String)> {
-    let request: Value = serde_json::from_str(request_json)
+    let request: Value = serde_json::from_slice(request_json.as_bytes())
         .map_err(|e| crate::binding_invalid_parameter(format!("invalid request JSON: {e}")))?;
     let (operation, params) = message_dispatch_parts(request)?;
     let params_json = serde_json::to_string(&params)

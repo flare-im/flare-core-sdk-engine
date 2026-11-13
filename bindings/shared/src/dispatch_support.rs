@@ -512,7 +512,7 @@ pub fn message_from_json_str(params_json: &str) -> Result<IMMessage> {
     match IMMessage::from_json_str(params_json) {
         Ok(message) => Ok(message),
         Err(top_level_error) => {
-            let params = serde_json::from_str::<Value>(params_json).map_err(|params_error| {
+            let params = serde_json::from_slice::<Value>(params_json.as_bytes()).map_err(|params_error| {
                 binding_invalid_parameter(format!(
                     "missing or invalid JSON message: {top_level_error}; invalid params JSON: {params_error}"
                 ))
@@ -542,7 +542,7 @@ pub fn from_json_str<T: for<'de> Deserialize<'de>>(json: &str, label: &str) -> R
 }
 
 pub fn dispatch_params_from_json(json: &str) -> Result<Value> {
-    serde_json::from_str(json)
+    serde_json::from_slice(json.as_bytes())
         .map_err(|e| binding_invalid_parameter(format!("invalid dispatch params JSON: {e}")))
 }
 

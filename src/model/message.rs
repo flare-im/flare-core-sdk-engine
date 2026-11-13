@@ -100,7 +100,7 @@ pub(crate) fn parse_reactions_from_attributes(
         Some(v) if !v.trim().is_empty() => v,
         _ => return Vec::new(),
     };
-    serde_json::from_str::<Vec<ReactionEntry>>(raw).unwrap_or_default()
+    serde_json::from_slice::<Vec<ReactionEntry>>(raw.as_bytes()).unwrap_or_default()
 }
 
 #[cfg(feature = "storage-sqlite")]
@@ -683,7 +683,8 @@ impl IMMessage {
                 .parse()
                 .ok()?,
             based_on_version,
-            values: serde_json::from_str(self.attributes.get(PLUGIN_STATE_JSON_KEY)?).ok()?,
+            values: serde_json::from_slice(self.attributes.get(PLUGIN_STATE_JSON_KEY)?.as_bytes())
+                .ok()?,
         };
         state.validate().ok()?;
         Some(state)

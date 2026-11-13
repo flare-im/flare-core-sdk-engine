@@ -38,7 +38,8 @@ fn parse_request(request_json: &str) -> Result<Value, JsValue> {
     if request_json.trim().is_empty() {
         return Ok(Value::Null);
     }
-    serde_json::from_str(request_json).map_err(|error| js_error("invalidParameter", "parse", error))
+    serde_json::from_slice(request_json.as_bytes())
+        .map_err(|error| js_error("invalidParameter", "parse", error))
 }
 
 fn spawn_event_bridge(rx: SharedEventReceiver, bridge: SessionTaskSlot, runtime_id: u64) {

@@ -48,7 +48,8 @@ impl IndexedDbPluginBundleStorage {
                 .map_err(|_| FlareError::system("plugin bundle storage failure"))
                 .and_then(|value| value.as_string().ok_or_else(|| invalid("corrupt_value")))
                 .and_then(|text| {
-                    serde_json::from_str::<Value>(&text).map_err(|_| invalid("corrupt_value"))
+                    serde_json::from_slice::<Value>(text.as_bytes())
+                        .map_err(|_| invalid("corrupt_value"))
                 });
             let _ = send.send(result);
         });
@@ -95,7 +96,7 @@ impl PluginBundleStorage for IndexedDbPluginBundleStorage {
             .call(Self::with(owner, json!({"operation": "get", "key": key})))
             .await?;
         match answer.get("value").and_then(Value::as_str) {
-            Some(text) => serde_json::from_str(text)
+            Some(text) => serde_json::from_slice(text.as_bytes())
                 .map(Some)
                 .map_err(|_| invalid("corrupt_value")),
             None => Ok(None),

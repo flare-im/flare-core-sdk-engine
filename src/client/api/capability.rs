@@ -1407,7 +1407,7 @@ impl CapabilityApi {
                 let data = if r.result_json.trim().is_empty() {
                     Value::Null
                 } else {
-                    serde_json::from_str(&r.result_json).unwrap_or(Value::Null)
+                    serde_json::from_slice(r.result_json.as_bytes()).unwrap_or(Value::Null)
                 };
                 let err = if r.error_message.is_empty() {
                     None

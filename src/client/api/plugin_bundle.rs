@@ -472,7 +472,7 @@ impl CapabilityApi {
             session.admit(call.envelope.as_bytes(), host_bridge, now)
         }) else {
             // The page outlived its session (closed, revoked, signed out).
-            let id = serde_json::from_str::<Value>(&call.envelope)
+            let id = serde_json::from_slice::<Value>(call.envelope.as_bytes())
                 .ok()
                 .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_owned));
             return Ok(answered(&bundle::broker::failure(

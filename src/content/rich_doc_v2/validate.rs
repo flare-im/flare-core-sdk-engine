@@ -77,8 +77,8 @@ pub fn validate_doc_json(doc_json: &str) -> Result<(), RichDocV2Error> {
             "doc_json exceeds {MAX_RICH_DOC_JSON_BYTES} bytes"
         )));
     }
-    let v: Value =
-        serde_json::from_str(doc_json).map_err(|e| RichDocV2Error::InvalidJson(e.to_string()))?;
+    let v: Value = serde_json::from_slice(doc_json.as_bytes())
+        .map_err(|e| RichDocV2Error::InvalidJson(e.to_string()))?;
     validate_value_as_doc(&v)
 }
 

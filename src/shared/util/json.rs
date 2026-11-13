@@ -10,13 +10,17 @@
 //! What reads differently through a value: a key repeated in an object keeps
 //! its last value instead of failing, and errors carry no line and column.
 //! The SDK reads only text it or its servers wrote.
+//!
+//! Code the browser bundle runs reads text with `serde_json::from_slice`, never
+//! `from_str`: the two compile separate parsers that read the same JSON the same
+//! way, with the same errors, so using one of them keeps the other out.
 use serde::de::DeserializeOwned;
 
 /// Read `T` from JSON text.
 pub fn from_str<T: DeserializeOwned>(text: &str) -> serde_json::Result<T> {
     #[cfg(target_arch = "wasm32")]
     {
-        from_value(serde_json::from_str(text)?)
+        from_value(serde_json::from_slice(text.as_bytes())?)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

@@ -48,7 +48,8 @@ impl IndexedDbPluginConsentStore {
                 .map_err(|_| FlareError::system("plugin consent storage failure"))
                 .and_then(|value| value.as_string().ok_or_else(|| invalid("corrupt_consent")))
                 .and_then(|text| {
-                    serde_json::from_str::<Value>(&text).map_err(|_| invalid("corrupt_consent"))
+                    serde_json::from_slice::<Value>(text.as_bytes())
+                        .map_err(|_| invalid("corrupt_consent"))
                 });
             let _ = send.send(result);
         });
