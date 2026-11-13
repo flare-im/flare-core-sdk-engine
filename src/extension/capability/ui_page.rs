@@ -179,6 +179,8 @@ pub(crate) fn split_previous(previous: Value) -> Result<(ShownPluginView, Value)
     };
     let data = object.remove("data").unwrap_or(Value::Null);
     object.remove("conversationId");
+    // The `bundle` marker of `plugin_page` is the host's, not the view's.
+    object.remove("bundle");
     let view = ShownPluginView::from_value(Value::Object(object)).ok_or_else(invalid)?;
     Ok((view, data))
 }

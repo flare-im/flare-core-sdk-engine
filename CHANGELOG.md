@@ -20,6 +20,8 @@
   以 `data:` 地址应答（包的 `img-src` 在各平台都放行 `data:`），文件 ≤4 MiB，超出应答 `payload_too_large`。
   新事件 `plugin.bundle_event`（C 7004，`{sessionId, envelope?, close?}`）：订阅的 `catalog.changed`、`entity.state`，
   目录不再下发时的 `lifecycle.revoked` 与关闭原因（`withdrawn`、`suspended`、`disabled`、`replaced`、`evicted`、`signedOut`）。
+  `plugin_page` 的结果在该页有提供给本客户端的 Web 包时带 `bundle: true`（宿主报了运行时、目录下发了所选变体的包、桥版本
+  可用；不下载、不建会话），宿主据此只对 Web 包页面调 `plugin_bundle_open`，声明式页面不再先显示「打开中」。
 - 插件界面按宿主能力下发：新增 `plugin.set_host_profile`（`{platform, kitVocabulary, nativeAllowlist?,
   bundleRuntime?}`），宿主声明 Kit 词汇、原生能力允许名单与 Web 包运行时，跨会话保留，变化时作废目录读取并重新
   推出最近展示的卡片。读目录（`flare.plugin.ui.catalog`）的载荷改为 `{descriptor}`：引擎词汇 ∩ Kit 词汇、

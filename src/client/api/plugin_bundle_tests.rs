@@ -445,3 +445,29 @@ fn every_command_has_its_own_journal_slot() {
     assert!(a.starts_with("example.poll.bundle."));
     assert!(crate::domain::valid_key(&a));
 }
+
+#[tokio::test]
+async fn a_page_with_an_offered_bundle_says_so_and_a_declarative_one_does_not() {
+    let bytes = archive(16);
+    let (f, root) = fixture(&bytes).await;
+    let page = || {
+        f.api.plugin_page(json!({
+            "pluginId": PLUGIN, "page": "example.poll.board", "platform": "web", "locale": "en"
+        }))
+    };
+    let offered = page().await.unwrap();
+    assert_eq!(offered["available"], true);
+    assert_eq!(offered["bundle"], true);
+    // Passing the shown page back keeps working with the marker on it.
+    assert!(ui_page_split_accepts(offered));
+    *f.catalog.lock().unwrap() = catalog(None, "0.2.0");
+    f.api.plugin_ui_catalog().await.unwrap();
+    let declarative = page().await.unwrap();
+    assert_eq!(declarative["available"], true);
+    assert!(declarative.get("bundle").is_none());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+fn ui_page_split_accepts(view: Value) -> bool {
+    crate::extension::capability::ui_page::split_previous(view).is_ok()
+}

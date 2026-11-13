@@ -172,6 +172,33 @@ struct Located {
     source: Option<String>,
 }
 
+/// The plugin, the bundle reference of its selected contribution
+/// `contribution_id` and the served bundle that reference names, when the
+/// catalog offers one (`not_offered` otherwise).
+fn offered_entry<'a>(
+    catalog: &'a UiCatalog,
+    plugin_id: &str,
+    contribution_id: &str,
+) -> Option<(
+    &'a flare_plugin_protocol::ui::ClientPlugin,
+    &'a flare_plugin_protocol::ui::UiBundleRef,
+    &'a WebBundleDecl,
+)> {
+    let plugin = catalog.plugins.iter().find(|p| p.plugin_id == plugin_id)?;
+    let reference = plugin
+        .extensions
+        .contributions
+        .iter()
+        .find(|c| c.id == contribution_id)?
+        .bundle
+        .as_ref()?;
+    let entry = plugin
+        .extensions
+        .web_bundle(&reference.id)
+        .filter(|entry| entry.validate_catalog().is_ok())?;
+    Some((plugin, reference, entry))
+}
+
 /// The slot a bundle command is logged under: one per command, so the four
 /// operations a page may run at once never share one, and a retry with the
 /// same `commandId` finds its record.
@@ -182,6 +209,25 @@ pub(crate) fn command_slot(plugin_id: &str, bundle_id: &str, command_id: &str) -
 }
 
 impl CapabilityApi {
+    /// Whether `plugin_bundle_open` would find a web bundle for
+    /// `contribution_id` in `catalog`: the host reported a bundle runtime, the
+    /// selected contribution opens a bundle the catalog serves, and the
+    /// bundle's bridge is one this runtime speaks. Nothing is fetched and no
+    /// session starts; the open itself can still fail (`unavailable`,
+    /// `rejected`), and the host then falls back to the declarative page.
+    pub(crate) fn bundle_offered(
+        &self,
+        catalog: &UiCatalog,
+        plugin_id: &str,
+        contribution_id: &str,
+    ) -> bool {
+        let Some(runtime) = self.plugin_client().descriptor.bundle.clone() else {
+            return false;
+        };
+        offered_entry(catalog, plugin_id, contribution_id)
+            .is_some_and(|(_, _, entry)| entry.bridge <= runtime.bridge.min(BRIDGE_VERSION))
+    }
+
     #[inline(never)]
     pub fn plugin_bundle_open(&self, request: Value) -> PluginCallFuture<'_> {
         Box::pin(self.plugin_bundle_open_now(request))
@@ -215,23 +261,9 @@ impl CapabilityApi {
             .clone()
             .ok_or_else(|| bundle_error("unsupported"))?;
         let (_, catalog) = self.fetch_plugin_ui_catalog().await?;
-        let plugin = catalog
-            .plugins
-            .iter()
-            .find(|p| p.plugin_id == request.plugin_id)
-            .ok_or_else(|| bundle_error("not_offered"))?;
-        let reference = plugin
-            .extensions
-            .contributions
-            .iter()
-            .find(|c| c.id == request.contribution_id)
-            .and_then(|c| c.bundle.clone())
-            .ok_or_else(|| bundle_error("not_offered"))?;
-        let entry = plugin
-            .extensions
-            .web_bundle(&reference.id)
-            .filter(|entry| entry.validate_catalog().is_ok())
-            .ok_or_else(|| bundle_error("not_offered"))?;
+        let (plugin, reference, entry) =
+            offered_entry(&catalog, &request.plugin_id, &request.contribution_id)
+                .ok_or_else(|| bundle_error("not_offered"))?;
         if entry.bridge > runtime.bridge.min(BRIDGE_VERSION) {
             return Err(bundle_error("unsupported"));
         }
@@ -1062,7 +1094,7 @@ enum MediaBytes {
 /// cached now (native), or the bytes behind the short-lived address (the
 /// browser).
 #[cfg(not(target_arch = "wasm32"))]
-async fn read_media_bytes(media: &super::MediaApi, file_id: &str) -> Result<MediaBytes> {
+async fn read_media_bytes(media: &crate::client::api::MediaApi, file_id: &str) -> Result<MediaBytes> {
     let access = media
         .resolve_media_access_opts(file_id, MEDIA_READ_EXPIRES_SECS, false)
         .await?;
@@ -1090,7 +1122,7 @@ async fn read_media_bytes(media: &super::MediaApi, file_id: &str) -> Result<Medi
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn read_media_bytes(media: &super::MediaApi, file_id: &str) -> Result<MediaBytes> {
+async fn read_media_bytes(media: &crate::client::api::MediaApi, file_id: &str) -> Result<MediaBytes> {
     let access = media
         .resolve_media_access_opts(file_id, MEDIA_READ_EXPIRES_SECS, false)
         .await?;

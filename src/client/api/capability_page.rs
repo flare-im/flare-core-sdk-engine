@@ -15,7 +15,10 @@ impl CapabilityApi {
     /// conversationId?, filters?, cursor?, previous?, refresh?}` in, a v2 view out (`available`,
     /// `title`, `fields`, `actions`, `menuActions?`, `blocks?`, `inputs?`,
     /// `nextCursor?`, `unavailableReason?`) plus `data`, what it was resolved
-    /// against, which a page action passes back.
+    /// against, which a page action passes back, and `bundle: true` when the
+    /// page has a web bundle offered to this client
+    /// ([`CapabilityApi::bundle_offered`]): the host opens that with
+    /// `plugin_bundle_open` and keeps this view as its fallback.
     ///
     /// - `arguments`: the payload of the page target that opened the page
     ///   (`{kind: "host", target: {kind: "page"}, payload}` of an action);
@@ -110,6 +113,16 @@ impl CapabilityApi {
                         ));
                     }
                 };
+                // The page has a web bundle offered to this client: the host
+                // opens it with `plugin_bundle_open` (contributionId = page)
+                // and shows no opening state before a declarative page.
+                let bundle = self.bundle_offered(&catalog, &request.plugin_id, &request.page);
+                let mark = |mut page: Value| {
+                    if bundle && let Some(object) = page.as_object_mut() {
+                        object.insert("bundle".into(), Value::Bool(true));
+                    }
+                    page
+                };
                 let prepared = ui_page::prepare_page(contribution, &request)?;
                 // A malformed cursor is refused before anything is sent.
                 let input = prepared.input(request.cursor.as_deref())?;
@@ -154,15 +167,15 @@ impl CapabilityApi {
                     }
                     Some((mut previous, previous_data)) => {
                         previous.append_page(view);
-                        return Ok(ui_page::shown_page_view(
+                        return Ok(mark(ui_page::shown_page_view(
                             previous,
                             previous_data,
                             request.conversation_id.as_deref(),
-                        ));
+                        )));
                     }
                     None => {}
                 }
-                ui_page::page_view(&view, Some(data), request.conversation_id.as_deref())
+                ui_page::page_view(&view, Some(data), request.conversation_id.as_deref()).map(mark)
             })
             .await
     }
