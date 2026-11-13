@@ -69,7 +69,7 @@ impl std::fmt::Debug for PluginUploads {
 
 impl PluginUploads {
     fn key(tenant: &str, user: &str, plugin_id: &str, file_id: &str) -> String {
-        format!("{tenant}\n{user}\n{plugin_id}\n{file_id}")
+        [tenant, user, plugin_id, file_id].join("\n")
     }
     pub fn record(&self, tenant: &str, user: &str, plugin_id: &str, file_id: &str) {
         let key = Self::key(tenant, user, plugin_id, file_id);
@@ -227,7 +227,7 @@ impl CapabilityApi {
                     &file.upload.prepare_operation,
                     &file.upload.complete_operation,
                 ] {
-                    if !operation.starts_with(&format!("{}.", plugin.plugin_id))
+                    if !crate::shared::util::is_under_namespace(operation, &plugin.plugin_id)
                         || !plugin.operations.contains(operation)
                         || plugin.query_operations.contains(operation)
                     {

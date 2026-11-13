@@ -47,3 +47,12 @@ pub use time::{
     yield_for_frame,
 };
 pub use token::{CoreTokenConfig, generate_core_token};
+
+/// Whether `name` is under the dotted `namespace` (`ns.x`, `ns.x.y`), never
+/// `namespace` itself or a sibling that only starts with the same letters.
+/// The same as `name.starts_with(&format!("{namespace}."))`, without the
+/// text it builds.
+pub fn is_under_namespace(name: &str, namespace: &str) -> bool {
+    name.strip_prefix(namespace)
+        .is_some_and(|rest| rest.starts_with('.'))
+}

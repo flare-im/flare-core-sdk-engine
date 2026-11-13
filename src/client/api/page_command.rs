@@ -59,7 +59,7 @@ impl CapabilityApi {
             )
         })?;
         let command = &record.command;
-        if !command.capability_id.starts_with(&format!("{plugin}.")) {
+        if !crate::shared::util::is_under_namespace(&command.capability_id, plugin) {
             return Err(denied());
         }
         if let Some(response) = record.response {
@@ -160,7 +160,7 @@ impl CapabilityApi {
         slot: &str,
         viewer: &str,
     ) -> Result<PluginCommandScope> {
-        if viewer.is_empty() || !slot.starts_with(&format!("{plugin}.")) {
+        if viewer.is_empty() || !crate::shared::util::is_under_namespace(slot, plugin) {
             return Err(FlareError::localized(
                 ErrorCode::InvalidParameter,
                 "sdk.plugin_command.invalid_scope",
@@ -188,7 +188,7 @@ impl CapabilityApi {
             policy,
             continuation,
         } = call;
-        if !operation.starts_with(&format!("{plugin}.")) {
+        if !crate::shared::util::is_under_namespace(operation, plugin) {
             return Err(FlareError::localized(
                 ErrorCode::PermissionDenied,
                 "sdk.plugin_command.invalid_scope",

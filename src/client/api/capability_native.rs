@@ -828,10 +828,10 @@ impl CapabilityApi {
                                 order_id,
                             ))
                             .ok_or_else(unavailable)?;
-                        if !order
-                            .operation
-                            .starts_with(&format!("{}.", plugin.plugin_id))
-                            || !plugin.operations.contains(&order.operation)
+                        if !crate::shared::util::is_under_namespace(
+                            &order.operation,
+                            &plugin.plugin_id,
+                        ) || !plugin.operations.contains(&order.operation)
                             || !plugin.transient_operations.contains(&order.operation)
                             || plugin.query_operations.contains(&order.operation)
                         {
@@ -849,9 +849,10 @@ impl CapabilityApi {
                                 catalog.plugins.iter().any(|p| {
                                     p.plugin_id == provider.plugin_id
                                         && p.transient_operations.contains(&provider.operation)
-                                        && provider
-                                            .operation
-                                            .starts_with(&format!("{}.", p.plugin_id))
+                                        && crate::shared::util::is_under_namespace(
+                                            &provider.operation,
+                                            &p.plugin_id,
+                                        )
                                 })
                             })
                             .cloned()

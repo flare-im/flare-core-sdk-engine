@@ -164,11 +164,9 @@ impl SdkPluginManifest {
     }
 
     pub fn owns_capability(&self, capability_id: &str) -> bool {
-        if !self
-            .namespaces
-            .iter()
-            .any(|ns| capability_id == ns || capability_id.starts_with(&format!("{ns}.")))
-        {
+        if !self.namespaces.iter().any(|ns| {
+            capability_id == ns || crate::shared::util::is_under_namespace(capability_id, ns)
+        }) {
             return false;
         }
         self.operations

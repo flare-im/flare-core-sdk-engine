@@ -153,7 +153,7 @@ pub(crate) fn parse_page(request: Value) -> Result<PageRequest> {
     }
     if !valid_id(&parsed.plugin_id)
         || !valid_id(&parsed.page)
-        || !parsed.page.starts_with(&format!("{}.", parsed.plugin_id))
+        || !crate::shared::util::is_under_namespace(&parsed.page, &parsed.plugin_id)
         || parsed.locale.len() > 32
         || parsed
             .conversation_id

@@ -251,8 +251,8 @@ fn offered_entry<'a>(
 /// same `commandId` finds its record.
 pub(crate) fn command_slot(plugin_id: &str, bundle_id: &str, command_id: &str) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(format!("{bundle_id}:{command_id}").as_bytes());
-    format!("{plugin_id}.bundle.{}", &hex::encode(digest)[..24])
+    let digest = Sha256::digest([bundle_id, ":", command_id].concat().as_bytes());
+    [plugin_id, ".bundle.", &hex::encode(digest)[..24]].concat()
 }
 
 impl CapabilityApi {
@@ -436,7 +436,7 @@ impl CapabilityApi {
             .ok_or_else(|| bundle_error("unavailable"))?;
         let bytes = crate::infrastructure::transport::http::http_client_wasm::fetch_bytes(
             "GET",
-            format!("{files}{BUNDLE_MANIFEST_ENTRY}"),
+            [files.as_str(), BUNDLE_MANIFEST_ENTRY].concat(),
             None,
             None,
             None,
