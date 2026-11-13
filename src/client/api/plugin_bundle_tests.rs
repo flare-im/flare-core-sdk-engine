@@ -551,7 +551,12 @@ impl crate::domain::UserReader for Profiles {
 #[tokio::test]
 async fn people_resolve_never_gives_the_private_remark_or_a_stranger() {
     let (f, root) = reading_fixture().await;
-    let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+    // One connection: every connection to `sqlite::memory:` is a database of its own.
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
     crate::infrastructure::persistence::sqlite::init_schema(&pool)
         .await
         .unwrap();
@@ -586,6 +591,12 @@ async fn people_resolve_never_gives_the_private_remark_or_a_stranger() {
             .unwrap();
         opened["sessionId"].as_str().unwrap().to_owned()
     };
+    let hello = api
+        .plugin_bundle_bridge(json!({"sessionId": session,
+            "envelope": request("h", "host.hello", json!({})).to_string()}))
+        .await
+        .unwrap();
+    assert_eq!(answer(&hello)["result"]["pluginId"], PLUGIN);
     let resolve = |ids: Value| request("p", "people.resolve", json!({"userIds": ids}));
     let reply = api
         .plugin_bundle_bridge(json!({"sessionId": session,
@@ -608,7 +619,19 @@ async fn people_resolve_never_gives_the_private_remark_or_a_stranger() {
 
 #[tokio::test]
 async fn a_bundle_confirms_only_an_order_its_own_command_returned() {
-    let (f, root) = reading_fixture().await;
+    use crate::infrastructure::persistence::sqlite::{SqlitePluginCommandRepo, init_schema};
+    let (mut f, root) = reading_fixture().await;
+    // A command needs its journal.
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    init_schema(&pool).await.unwrap();
+    f.api = f
+        .api
+        .clone()
+        .with_plugin_command_store(Some(Arc::new(SqlitePluginCommandRepo::new(pool))));
     let session = greeted(&f).await;
     let pay = |id: &str, order_id: &str| {
         request(

@@ -19,6 +19,9 @@ use super::*;
 use flare_plugin_protocol::ui::NativeCapability;
 
 /// The host: records what it was asked and answers as set.
+/// The smallest JPEG the engine takes as stripped: SOI, then the scan.
+const STRIPPED_JPEG: [u8; 8] = [0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02, 0xFF, 0xD9];
+
 struct FakeHost {
     decision: SyncMutex<ConsentDecision>,
     consents: SyncMutex<Vec<String>>,
@@ -45,7 +48,7 @@ impl FakeHost {
             file: CapturedFile {
                 file_name: "front.jpg".into(),
                 content_type: "image/jpeg".into(),
-                bytes: vec![0xFF, 0xD8, 0xFF, 0xD9],
+                bytes: STRIPPED_JPEG.to_vec(),
             },
             fix: LocationFix {
                 latitude: 31.230_416_7,
@@ -240,8 +243,8 @@ fn ticket() -> Value {
 
 fn ready_upload() -> Value {
     use sha2::{Digest, Sha256};
-    json!({"fileId": "file:front-1", "ready": true, "contentType": "image/jpeg", "sizeBytes": 4,
-        "sha256": hex::encode(Sha256::digest([0xFF, 0xD8, 0xFF, 0xD9]))})
+    json!({"fileId": "file:front-1", "ready": true, "contentType": "image/jpeg", "sizeBytes": STRIPPED_JPEG.len(),
+        "sha256": hex::encode(Sha256::digest(STRIPPED_JPEG))})
 }
 
 fn now_ms() -> i64 {

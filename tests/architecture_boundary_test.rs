@@ -937,6 +937,7 @@ fn bindings_read_messages_from_json_through_the_core_readers() {
             "IMMessage::from_json_value",
             "Elem::from_json_value",
             "serde_json::from_str::<Value>",
+            "serde_json::from_slice::<Value>",
         ]
         .iter()
         .fold(body.clone(), |rest, allowed| rest.replace(allowed, ""));
