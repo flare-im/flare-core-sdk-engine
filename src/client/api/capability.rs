@@ -246,6 +246,17 @@ impl CapabilityApi {
         self.plugin_host.set(profile);
         Ok(self)
     }
+    /// The host's part of plugin capabilities (consent, document capture,
+    /// payment confirmation, location) for an embedder that drives this API
+    /// without an [`crate::client::IMClient`] (acceptance harnesses); like
+    /// `IMClient::set_plugin_capability_host`.
+    pub fn with_plugin_capability_host(
+        self,
+        host: Option<Arc<dyn native::PluginCapabilityHost>>,
+    ) -> Self {
+        self.plugin_host.capability_host.set(host);
+        self
+    }
     /// Keeps capability consents in `store` (the user database) instead of
     /// memory. `None` keeps the store as it is.
     pub fn with_plugin_consent_store(
