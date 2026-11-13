@@ -570,32 +570,51 @@ pub(crate) fn truncate_location(
         .map(|value| json!(value))
 }
 
-/// Whether a JPEG carries an EXIF segment (APP1 `Exif\0\0`) before its
-/// image data. A document photo must reach the plugin stripped.
-pub(crate) fn jpeg_has_exif(bytes: &[u8]) -> bool {
+/// Whether a JPEG carries nothing but image data before its scan: the JFIF
+/// header (APP0 `JFIF\0`), an ICC profile (APP2 `ICC_PROFILE\0`), the Adobe
+/// colour transform (APP14 `Adobe`), tables and the frame header, with 0xFF
+/// fill bytes allowed before a marker. Any other segment (Exif or XMP in APP1,
+/// MPF, IPTC, comments, ...), a truncated header or no scan at all is not a
+/// stripped JPEG. A document photo must reach the plugin stripped; the kits
+/// re-encode it and check it with the same rule (`flareJpegIsStripped`).
+pub(crate) fn jpeg_is_stripped(bytes: &[u8]) -> bool {
     if bytes.len() < 4 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
         return false;
     }
     let mut at = 2;
-    while at + 4 <= bytes.len() {
-        if bytes[at] != 0xFF {
+    loop {
+        if bytes.get(at) != Some(&0xFF) {
             return false;
         }
-        let marker = bytes[at + 1];
-        // Start of scan or end of image: no more metadata segments.
-        if marker == 0xDA || marker == 0xD9 {
-            return false;
+        while bytes.get(at + 1) == Some(&0xFF) {
+            at += 1;
         }
-        let length = usize::from(bytes[at + 2]) << 8 | usize::from(bytes[at + 3]);
-        if length < 2 {
+        let Some(&marker) = bytes.get(at + 1) else {
             return false;
-        }
-        if marker == 0xE1 && bytes[at + 4..].starts_with(b"Exif\0\0") {
+        };
+        if marker == 0xDA {
             return true;
+        }
+        let Some(head) = bytes.get(at + 2..at + 4) else {
+            return false;
+        };
+        let length = usize::from(head[0]) << 8 | usize::from(head[1]);
+        let Some(body) = bytes.get(at + 4..at + 2 + length).filter(|_| length >= 2) else {
+            return false;
+        };
+        let allowed = match marker {
+            0xE0 => body.starts_with(b"JFIF\0"),
+            0xE2 => body.starts_with(b"ICC_PROFILE\0"),
+            0xEE => body.starts_with(b"Adobe"),
+            0xDB | 0xC4 | 0xCC | 0xDD => true,
+            0xC0..=0xCF => !matches!(marker, 0xC4 | 0xC8 | 0xCC),
+            _ => false,
+        };
+        if !allowed {
+            return false;
         }
         at += 2 + length;
     }
-    false
 }
 
 impl CapabilityApi {
@@ -928,10 +947,10 @@ impl CapabilityApi {
             && target.accept.contains(&file.content_type)
             && !file.bytes.is_empty()
             && file.bytes.len() as u64 <= target.max_bytes;
-        // A document photo reaches the plugin stripped of its metadata.
+        // A document photo reaches the plugin stripped of its metadata: the
+        // kits re-encode it as a JPEG, so anything else is refused.
         let stripped = capability != NativeCapability::DocumentCapture
-            || file.content_type != "image/jpeg"
-            || !jpeg_has_exif(&file.bytes);
+            || (file.content_type == "image/jpeg" && jpeg_is_stripped(&file.bytes));
         if !fits || !stripped {
             return Err(invalid());
         }
@@ -1128,17 +1147,54 @@ mod tests {
         }
     }
 
+    /// The kits' shared vectors (flare-im-design spec/capability-ui-vectors.json,
+    /// `jpegStripped`), so the kits' check and the engine's stay one rule.
     #[test]
-    fn exif_is_found_before_the_image_data_only() {
-        let mut with_exif = vec![0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x08];
-        with_exif.extend_from_slice(b"Exif\0\0");
-        with_exif.extend_from_slice(&[0xFF, 0xD9]);
-        assert!(jpeg_has_exif(&with_exif));
-        let stripped = [
-            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x4A, 0x46, 0xFF, 0xDA, 0x00, 0x02, 0xFF, 0xD9,
+    fn only_a_jpeg_with_image_data_alone_is_stripped() {
+        fn hex(text: &str) -> Vec<u8> {
+            (0..text.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+                .collect()
+        }
+        let jfif = "FFE000104A46494600010100000100010000";
+        let tables = "FFDB0004AAAAFFC0000500AAAAFFC4000400AA";
+        let scan = "FFDA0002FFD9";
+        let cases = [
+            (format!("FFD8{jfif}{tables}{scan}"), true),
+            // Fill bytes before a marker.
+            (format!("FFD8FFFF{jfif}FFFF{tables}FFFF{scan}"), true),
+            // An ICC profile and the Adobe segment are colour, not metadata.
+            (
+                format!("FFD8{jfif}FFE2000E4943435F50524F46494C4500{tables}{scan}"),
+                true,
+            ),
+            (format!("FFD8FFEE000741646F6265{tables}{scan}"), true),
+            // Exif, XMP, MPF, IPTC and comments are refused, before or after the tables.
+            (
+                format!("FFD8{jfif}FFE10008457869660000{tables}{scan}"),
+                false,
+            ),
+            (
+                format!("FFD8{jfif}{tables}FFE1000A687474703A2F2F6E73{scan}"),
+                false,
+            ),
+            (
+                format!("FFD8{jfif}FFE200084D5046000000{tables}{scan}"),
+                false,
+            ),
+            (format!("FFD8{jfif}FFED00045043{tables}{scan}"), false),
+            (format!("FFD8{jfif}FFFE0004AAAA{tables}{scan}"), false),
+            // An APP0 that is not JFIF, a truncated header, no scan, not a JPEG.
+            (format!("FFD8FFE000064A465858{tables}{scan}"), false),
+            (format!("FFD8{jfif}FFDB0010AAAA"), false),
+            (format!("FFD8{jfif}{tables}"), false),
+            ("89504E470D0A1A0A".to_owned(), false),
+            (String::new(), false),
         ];
-        assert!(!jpeg_has_exif(&stripped));
-        assert!(!jpeg_has_exif(b"\x89PNG\r\n"));
+        for (bytes, stripped) in cases {
+            assert_eq!(jpeg_is_stripped(&hex(&bytes)), stripped, "{bytes}");
+        }
     }
 
     #[test]
