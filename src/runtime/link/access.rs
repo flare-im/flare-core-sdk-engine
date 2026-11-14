@@ -5,6 +5,7 @@
 //! 第一次真正需要时再等它完成，不占调用线程。
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use flare_access::kernel::{AccessPointStatus, ManifestUpdate};
@@ -13,8 +14,8 @@ use flare_access::select::PinnedAccessPoint;
 use flare_access::store::{AcceptError, MemoryAccessStore};
 use flare_access::{
     AccessConfig, AccessKernel, AccessStore, AccessWarning, ApId, BootstrapReport, DirectoryChange,
-    HttpFetch, KernelOptions, NetPrint, Observation, SelectRequest, Selection, ServiceClass,
-    TrustMode,
+    HttpFetch, KernelOptions, NetPrint, NeutralReason, Observation, Outcome, SelectRequest,
+    Selection, ServiceClass, TrustMode,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use flare_core::client::dial::DohCache;
@@ -177,6 +178,9 @@ pub struct AccessRuntime {
     /// IM 拨号、REST 与引导拉取共用一份。
     #[cfg(not(target_arch = "wasm32"))]
     doh: Option<RuntimeDoh>,
+    /// 应用在后台（宿主报告）。系统常在后台切断应用的网络（Android 15 起后台应用被防火墙拦下，
+    /// iOS 挂起），这段时间里的连接失败说明不了接入点的好坏，不计入熔断。
+    background: AtomicBool,
 }
 
 // 浏览器里的 wasm32-unknown-unknown 只有一个线程（SDK 的任务都经 spawn_local 跑在页面线程上），
@@ -226,6 +230,7 @@ impl AccessRuntime {
             dial_rewrite: None,
             #[cfg(not(target_arch = "wasm32"))]
             doh: None,
+            background: AtomicBool::new(false),
         }
     }
 
@@ -496,8 +501,23 @@ impl AccessRuntime {
         })
     }
 
+    /// 宿主报告前后台（链路状态机转来）。
+    pub(crate) fn set_foreground(&self, foreground: bool) {
+        self.background.store(!foreground, Ordering::Relaxed);
+    }
+
     /// 回写一次结果（IM 与 REST 共用健康簿）。还没装配时丢弃：没有目录就没有接入点可言。
+    ///
+    /// 后台的失败按「设备无网络」记：系统在后台拦下应用的网络时，链路重连、心跳和请求都会失败，
+    /// 计入熔断的话回到前台时接入点仍在冷却，用户的第一个操作直接报「没有可达的接入点」。
     pub fn record(&self, ap: &str, observation: Observation) {
+        let observation = if self.background.load(Ordering::Relaxed)
+            && matches!(observation.outcome, Outcome::Failure(_))
+        {
+            Observation::new(observation.kind, Outcome::Neutral(NeutralReason::NoNetwork))
+        } else {
+            observation
+        };
         if let Some(kernel) = self.kernel_now() {
             let effect = kernel
                 .health()
@@ -1087,6 +1107,43 @@ mod tests {
         );
         let diagnostics = runtime.export_diagnostics().to_string();
         assert!(!diagnostics.contains("token"));
+    }
+
+    /// The system cuts a backgrounded app's network (Android 15 firewalls it a few seconds
+    /// after it leaves the screen): the link's reconnects and requests then all fail. Those
+    /// failures say nothing about the access point, so coming back finds it closed and REST
+    /// reaches it at once, instead of "no reachable access point offers coreApi".
+    #[tokio::test]
+    async fn failures_while_in_the_background_do_not_open_the_breaker() {
+        use flare_access::FailureClass;
+        let runtime = AccessRuntime::new(Some(development()), AccessStoreSource::memory());
+        let kernel = runtime.kernel().await.expect("development directory");
+        let failure = || Observation::http(Outcome::Failure(FailureClass::HttpConnectFailed));
+        let reachable = |runtime: &AccessRuntime| {
+            !runtime
+                .select(&kernel, ServiceClass::CoreApi, None, &[])
+                .candidates
+                .is_empty()
+        };
+
+        runtime.set_foreground(false);
+        for _ in 0..10 {
+            runtime.record("development", failure());
+            runtime.record("ap-b", failure());
+        }
+        runtime.set_foreground(true);
+        assert!(reachable(&runtime), "background failures open no breaker");
+        assert!(!runtime.is_unhealthy("development"));
+
+        // In the foreground the same failures still count.
+        for _ in 0..10 {
+            runtime.record("development", failure());
+            runtime.record("ap-b", failure());
+        }
+        assert!(
+            !reachable(&runtime),
+            "foreground failures open the breakers"
+        );
     }
 
     #[test]

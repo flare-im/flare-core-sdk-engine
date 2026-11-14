@@ -714,6 +714,7 @@ impl Supervisor {
     async fn on_app_state(&mut self, foreground: bool) {
         let was_foreground = self.foreground;
         self.foreground = foreground;
+        self.access.set_foreground(foreground);
         if !foreground {
             self.access.flush_health(true).await;
             return;
