@@ -892,7 +892,6 @@ impl CapabilityApi {
                         let (order, provider) = order.ok_or_else(invalid)?;
                         self.confirm_payment(
                             host.as_ref(),
-                            &catalog,
                             plugin,
                             PaymentCall {
                                 order,
@@ -1116,7 +1115,6 @@ impl CapabilityApi {
     async fn confirm_payment(
         &self,
         host: &dyn PluginCapabilityHost,
-        catalog: &flare_plugin_protocol::ui::UiCatalog,
         plugin: &ClientPlugin,
         call: PaymentCall<'_>,
     ) -> Result<Value> {
@@ -1211,9 +1209,14 @@ impl CapabilityApi {
                     .payments
                     .take(&key, self.server_clock.now_ms())
             {
+                // The viewer may have spent longer in the sheet than the
+                // catalog read before it lives (Core grants it a minute): the
+                // paid order's continuation reads a current one, or a payment
+                // goes through and its follow-up is refused as unavailable.
+                let (_, current) = self.fetch_plugin_ui_catalog().await?;
                 return self
                     .continue_page_action(
-                        catalog,
+                        &current,
                         &origin,
                         Some(user),
                         response,
