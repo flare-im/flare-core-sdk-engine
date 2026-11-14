@@ -81,6 +81,7 @@ class Settings:
         self.sandbox = b + 444
         self.web = b + 431
         self.task, self.wallet, self.redpacket = b + 909, b + 911, b + 902
+        self.realname, self.realname_material = b + 928, b + 929
         self.wallet_health = self.wallet + 1000
         self.access_metrics = b + 551
         self.web_origin = (web_origin or f"http://127.0.0.1:{self.web}").rstrip("/")
@@ -149,6 +150,21 @@ def configure(lab_dir, binaries=None, **options):
         def template(self):
             return super().template.with_name("platform-plugin.sandbox.template.json")
 
+    class RealnameSpec(lab.PluginSpec):
+        """The realname metaservice: its stream definition and broker permissions live in deploy/,
+        not in an initial/ directory, so the lab writes them in the shape the other plugins use."""
+
+        @property
+        def events(self):
+            directory = s.dir / "realname-events"
+            directory.mkdir(exist_ok=True, mode=0o700)
+            stream = json.loads((self.layout / "deploy" / "nats-stream.json").read_text())
+            (directory / "events-stream.json").write_text(json.dumps(stream))
+            (directory / "events-permissions.json").write_text(json.dumps({
+                "publish": {"allow": ["flare.plugins.realname.*.>", f"$JS.API.STREAM.INFO.{stream['name']}"]},
+                "subscribe": {"allow": ["_INBOX.>"]}}))
+            return directory
+
     plugin = lab.PLUGIN
     lab.PLUGINS = [
         lab.PluginSpec("task", "flare.task", "flare-task", "flare-sdk-plugin-task", s.task, "FLARE_TASK", "flare_task",
@@ -162,9 +178,12 @@ def configure(lab_dir, binaries=None, **options):
                                               "recipientDefinitionId": "main", "maxAmount": "100000",
                                               "dailyLimit": "1000000"}],
                            "maxRecipients": 100, "maxLifetimeSeconds": 86400, "maxPacketsPerMinute": 60}),
+        RealnameSpec("realname", "flare.realname", "flare-realname", "flare-sdk-plugin-realname", s.realname,
+                     "FLARE_REALNAME", "flare_realname", layout=plugin / "metaservices/realname",
+                     configuration={"acceptApplications": True}),
     ]
     lab.SPECS = {spec.key: spec for spec in lab.PLUGINS}
-    lab.FIXED_PLUGIN_PORTS = {spec.port for spec in lab.PLUGINS} | {s.wallet_health}
+    lab.FIXED_PLUGIN_PORTS = {spec.port for spec in lab.PLUGINS} | {s.wallet_health, s.realname_material}
     lab.LAB_ROLES = ["core_initialize", "core_runtime", "social_initialize", "social_runtime",
                      "flare_lab_platform_migrate", "flare_lab_platform_api", "flare_lab_platform_worker",
                      *[role for spec in lab.PLUGINS for role in (spec.owner, spec.runtime)]]
@@ -218,6 +237,7 @@ def all_ports():
     s = settings
     return sorted(set(PORTS.values()) | {s.pg, s.consul, s.redis, s.nats, s.nats + 1, s.platform, s.objects,
                                          s.sandbox, s.task, s.wallet, s.wallet_health, s.redpacket,
+                                         s.realname, s.realname_material,
                                          s.access_metrics, *s.mirror_base.values(), *s.mirror_upload.values()})
 
 
@@ -603,6 +623,9 @@ def databases(state, keys):
         lab.run([str(lab.TARGET / "flare-red-packet-initialize"), packet.runtime],
                 env={"FLARE_RED_PACKET_SCHEMA_OWNER_URL": keys.url(packet.owner, "redpacket")})
         record("redpacket")
+    if "realname" not in completed:
+        lab.setup_plugin_database(keys, specs["realname"])
+        record("realname")
     state["initialized"] = True
     lab.save_state(state)
 
@@ -678,7 +701,9 @@ def social_environment(keys):
                    "SOCIAL_POSTGRES_MAX_CONNECTIONS": "8", "FLARE_CONVERSATION_GRPC": lab.CORE_CONVERSATION_GRPC,
                    "FLARE_ORCHESTRATOR_GRPC": lab.CORE_ORCHESTRATOR_GRPC,
                    "FLARE_MESSAGE_INGEST_GRPC": "http://" + lab.CORE_INGEST_GRPC,
-                   "FLARE_SOCIAL_CONTROL_HTTP_ADDRESS": f"127.0.0.1:{p(50207)}", "RUST_LOG": "info,async_nats=warn"})
+                   "FLARE_SOCIAL_CONTROL_HTTP_ADDRESS": f"127.0.0.1:{p(50207)}", "RUST_LOG": "info,async_nats=warn",
+                   # The gateway's private material route in front of the realname service.
+                   "FLARE_REALNAME_MATERIAL_HTTP": f"http://127.0.0.1:{settings.realname_material}"})
     return social
 
 
@@ -879,6 +904,8 @@ def deploy(state, keys, tenant, only=None):
         if spec.key == "wallet":
             env.update({"FLARE_WALLET_MODE": "sandbox",
                         "FLARE_WALLET_HEALTH_LISTEN": f"127.0.0.1:{settings.wallet_health}"})
+        if spec.key == "realname":
+            env.update(realname_environment(keys))
         lab.spawn(state, lab.process_name(spec, version), [str(release["binary"])], env, str(release["binary"]))
         lab.wait_for(lambda a=release["address"]: lab.port_open(int(a.split(":")[1])), 60, spec.plugin_id)
         if spec.key == "task":
@@ -887,6 +914,32 @@ def deploy(state, keys, tenant, only=None):
         publish_features(keys, tenant, spec)
         lab.approval_check(tenant, release)
         lab.staff_grants_check(state, keys, tenant, release)
+
+
+def realname_environment(keys):
+    """The realname service's private material: encryption and fingerprint keys, its vault, the
+    material listener behind the Social gateway and the facts callers' public keys (the Social
+    hook's, which this lab does not wire: facts are not part of these cases)."""
+    secrets_dir = lab.lab_path("realname")
+    secrets_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    vault = secrets_dir / "vault"
+    vault.mkdir(exist_ok=True, mode=0o700)
+    pii = secrets_dir / "pii-keys.json"
+    if not pii.exists():
+        lab.write_private(pii, json.dumps({"active_key_id": "v1",
+                                           "keys": {"v1": base64.b64encode(secrets.token_bytes(32)).decode()},
+                                           "fingerprint_key": base64.b64encode(secrets.token_bytes(32)).decode()}))
+    workload = secrets_dir / "workload-keys.json"
+    if not workload.exists():
+        key = lab.Ed25519Key(secrets_dir / "social-hook-workload.pem")
+        lab.write_private(workload, json.dumps([{"kid": "social-hook-realname-lab", "source": "flare-social-hook",
+                                                 "publicKeyPem": key.public_pem().decode()}]))
+    for path in (pii, workload):
+        path.chmod(0o600)
+    return {"FLARE_REALNAME_MATERIAL_LISTEN": f"127.0.0.1:{settings.realname_material}",
+            "FLARE_REALNAME_PII_KEYS_FILE": str(pii), "FLARE_REALNAME_WORKLOAD_KEYS_FILE": str(workload),
+            "FLARE_REALNAME_VAULT_DIRECTORY": str(vault), "FLARE_REALNAME_VAULT_QUOTA_BYTES": str(64 << 20),
+            "FLARE_REALNAME_PUBLIC_HTTP_BASE_URL": f"http://127.0.0.1:{settings.dev(50200)}"}
 
 
 def publish_features(keys, tenant, spec):
@@ -963,7 +1016,8 @@ def main():
     parser.add_argument("--block", type=int, default=47000)
     parser.add_argument("--web-origin")
     parser.add_argument("command", choices=["up", "status", "down", "web-env"])
-    parser.add_argument("--only", action="append", help="deploy only these plugins (task, wallet, redpacket)")
+    parser.add_argument("--only", action="append",
+                        help="deploy only these plugins (task, wallet, redpacket, realname)")
     args = parser.parse_args()
     configure(args.lab_dir, args.binaries, offset=args.port_offset, block=args.block, web_origin=args.web_origin,
               lab_script=args.lab_script)
