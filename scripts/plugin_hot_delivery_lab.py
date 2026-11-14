@@ -82,6 +82,8 @@ class Settings:
         self.web = b + 431
         self.task, self.wallet, self.redpacket = b + 909, b + 911, b + 902
         self.realname, self.realname_material = b + 928, b + 929
+        # The https face of the Social gateway: the address protected material reads hand to devices.
+        self.social_front = b + 214
         self.wallet_health = self.wallet + 1000
         self.access_metrics = b + 551
         self.web_origin = (web_origin or f"http://127.0.0.1:{self.web}").rstrip("/")
@@ -101,6 +103,7 @@ MIRRORS = {"a": {"id": "phd-m-a", "provider": "sim-aws", "tld": "com", "bucket":
 ACCESS_POINTS = ["phd-ap-1", "phd-ap-2"]
 AP_SERVICES = {"imWs": {"path": "/ws"}, "ping": {"path": "/.well-known/flare/ping"}}
 SANDBOX_HOST = f"sandbox.{HOST_SUFFIX}"
+SOCIAL_HOST = f"social.{HOST_SUFFIX}"
 LABEL = "flare.plugin-hot-delivery.lab"
 
 
@@ -237,7 +240,7 @@ def all_ports():
     s = settings
     return sorted(set(PORTS.values()) | {s.pg, s.consul, s.redis, s.nats, s.nats + 1, s.platform, s.objects,
                                          s.sandbox, s.task, s.wallet, s.wallet_health, s.redpacket,
-                                         s.realname, s.realname_material,
+                                         s.realname, s.realname_material, s.social_front,
                                          s.access_metrics, *s.mirror_base.values(), *s.mirror_upload.values()})
 
 
@@ -486,6 +489,24 @@ def mirror_front_source(directory):
         }}
     }}
 """)
+    # The Social gateway as devices reach it: the realname material reads (`?grant=`) a native host
+    # draws only from an https origin it can resolve (the emulator maps the lab names to the host).
+    cert, cert_key = certificate("social", [SOCIAL_HOST])
+    servers.append(f"""    server {{
+        listen 127.0.0.1:{s.social_front} ssl;
+        listen [::1]:{s.social_front} ssl;
+        server_name {SOCIAL_HOST};
+        ssl_certificate {cert};
+        ssl_certificate_key {cert_key};
+        client_max_body_size 16m;
+        location / {{
+            proxy_pass http://127.0.0.1:{s.dev(50200)};
+            proxy_set_header Host $http_host;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+        }}
+    }}
+""")
     return (nginx_common(directory) + "http {\n"
             "    log_format access '$msec $status $request_method $uri $body_bytes_sent';\n"
             f"    access_log {directory}/access.log access;\n" + nginx_temp(directory) + "".join(servers) + "}\n")
@@ -499,6 +520,11 @@ SANDBOX_VARIABLES = ("FLARE_PLUGIN_SANDBOX_HOST", "FLARE_PLUGIN_SANDBOX_PORT", "
 
 def sandbox_origin():
     return f"https://{SANDBOX_HOST}:{settings.sandbox}"
+
+
+def social_origin():
+    """The Social gateway's https face (the mirrors' nginx, the lab CA)."""
+    return f"https://{SOCIAL_HOST}:{settings.social_front}"
 
 
 def review_secret():
@@ -942,7 +968,7 @@ def realname_environment(keys):
     return {"FLARE_REALNAME_MATERIAL_LISTEN": f"127.0.0.1:{settings.realname_material}",
             "FLARE_REALNAME_PII_KEYS_FILE": str(pii), "FLARE_REALNAME_WORKLOAD_KEYS_FILE": str(workload),
             "FLARE_REALNAME_VAULT_DIRECTORY": str(vault), "FLARE_REALNAME_VAULT_QUOTA_BYTES": str(64 << 20),
-            "FLARE_REALNAME_PUBLIC_HTTP_BASE_URL": f"http://127.0.0.1:{settings.dev(50200)}"}
+            "FLARE_REALNAME_PUBLIC_HTTP_BASE_URL": social_origin()}
 
 
 def publish_features(keys, tenant, spec):
