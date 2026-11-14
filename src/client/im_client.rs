@@ -553,6 +553,9 @@ impl IMClient {
         }
         // 探活用部署的信任根（私有 CA）；接入点的钉扎在探活时按接入点叠加。
         let trust = merged.core_tls_config();
+        // Web 包从同一批镜像下载，信任根与更新包一致。
+        #[cfg(not(target_arch = "wasm32"))]
+        g.plugin_host.bundles.set_trust(trust.clone());
         let store = match g.access_store.clone() {
             Some(InjectedAccessStore(store)) => {
                 crate::runtime::link::AccessStoreSource::Ready(store)

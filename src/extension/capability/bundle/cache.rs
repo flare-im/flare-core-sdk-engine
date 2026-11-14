@@ -414,21 +414,25 @@ pub fn contained_path(dir: &Path, path: &str) -> Option<PathBuf> {
 }
 
 /// Downloads over HTTPS: no cookies, no credentials, redirects limited,
-/// stopped past the declared size.
+/// stopped past the declared size. Trusts the deployment's roots (the
+/// built-in ones and its private CA), like update artifacts; the digest in
+/// the catalog decides whether the bytes are the bundle.
 pub struct HttpBundleFetcher {
     client: reqwest::Client,
 }
 
 impl HttpBundleFetcher {
-    pub fn new() -> Option<Self> {
-        reqwest::Client::builder()
+    pub fn new(trust: &flare_core::common::config_types::TlsConfig) -> Option<Self> {
+        let mut builder = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::limited(5))
             .connect_timeout(std::time::Duration::from_secs(10))
             .read_timeout(std::time::Duration::from_secs(30))
-            .https_only(true)
-            .build()
-            .ok()
-            .map(|client| Self { client })
+            .https_only(true);
+        if trust.requires_custom_client_tls() {
+            let config = flare_core::common::cert::create_client_config_with_tls(trust).ok()?;
+            builder = builder.use_preconfigured_tls(config);
+        }
+        builder.build().ok().map(|client| Self { client })
     }
 }
 

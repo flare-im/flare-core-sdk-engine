@@ -26,6 +26,10 @@ pub struct BundleSlot {
     pub(crate) entity_watch: std::sync::Mutex<Option<crate::kernel::event::Subscription>>,
     #[cfg(not(target_arch = "wasm32"))]
     cache: std::sync::RwLock<Option<std::sync::Arc<cache::BundleCache>>>,
+    /// The deployment's trust roots for downloads: the built-in roots plus the
+    /// configured private CA, as update artifacts from the same mirrors use.
+    #[cfg(not(target_arch = "wasm32"))]
+    trust: std::sync::RwLock<Option<flare_core::common::config_types::TlsConfig>>,
 }
 
 impl std::fmt::Debug for BundleSlot {
@@ -49,6 +53,26 @@ impl BundleSlot {
         {
             *cache = Some(std::sync::Arc::new(cache::BundleCache::new(root)));
         }
+    }
+
+    /// Trust the deployment's roots (`SdkConfig::core_tls_config`) when
+    /// downloading bundles: a private deployment's mirrors carry its CA.
+    pub fn set_trust(&self, trust: flare_core::common::config_types::TlsConfig) {
+        *self
+            .trust
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(trust);
+    }
+
+    /// A downloader with the deployment's trust roots.
+    pub fn fetcher(&self) -> Option<cache::HttpBundleFetcher> {
+        let trust = self
+            .trust
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or_else(flare_core::common::config_types::TlsConfig::none);
+        cache::HttpBundleFetcher::new(&trust)
     }
 
     /// The cache, under the default data root when none was set.

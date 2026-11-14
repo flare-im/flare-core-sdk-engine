@@ -401,9 +401,13 @@ impl CapabilityApi {
     /// first when needed.
     #[cfg(not(target_arch = "wasm32"))]
     async fn locate_bundle(&self, entry: &WebBundleDecl) -> Result<Located> {
-        use crate::extension::capability::bundle::cache::{CacheError, HttpBundleFetcher};
+        use crate::extension::capability::bundle::cache::CacheError;
         let cache = self.plugin_host.bundles.cache();
-        let fetcher = HttpBundleFetcher::new().ok_or_else(|| bundle_error("unavailable"))?;
+        let fetcher = self
+            .plugin_host
+            .bundles
+            .fetcher()
+            .ok_or_else(|| bundle_error("unavailable"))?;
         let cached = cache
             .ensure(entry, &fetcher)
             .await
@@ -993,10 +997,13 @@ impl CapabilityApi {
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn prefetch_entry_bundles(&self) -> Result<Value> {
-        use crate::extension::capability::bundle::cache::HttpBundleFetcher;
         let catalog = self.presentation_catalog().await?;
         let cache = self.plugin_host.bundles.cache();
-        let fetcher = HttpBundleFetcher::new().ok_or_else(|| bundle_error("unavailable"))?;
+        let fetcher = self
+            .plugin_host
+            .bundles
+            .fetcher()
+            .ok_or_else(|| bundle_error("unavailable"))?;
         let mut fetched = 0;
         for (_, entry) in events::prefetch_candidates(&catalog) {
             if cache.lookup(&entry.sha256).is_none() && cache.ensure(&entry, &fetcher).await.is_ok()
