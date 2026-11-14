@@ -644,6 +644,9 @@ def core_environment(keys, state):
     # lab.core_env is read at call time: switch-off (case 8) patches it.
     core = endpoint_environment(lab.core_env(keys, state))
     core.setdefault("FLARE_PLUGIN_WEB_BUNDLES_ENABLED", "true")
+    # The wallet confirms payments (its approved `payments.ticket`): without a provider no payment
+    # confirmation reaches a client.
+    core.setdefault("FLARE_PLUGIN_PAYMENT_PROVIDER", "flare.wallet.payments.ticket")
     core.update({"FLARE_CONFIG_PATH": str(lab.lab_path("config")),
                  "FLARE_CONSUL_ENDPOINT": f"http://127.0.0.1:{settings.consul}",
                  "FLARE_REDIS_URL_BASE": f"redis://127.0.0.1:{settings.redis}", "SERVICE_ADVERTISE_HOST": "127.0.0.1",
