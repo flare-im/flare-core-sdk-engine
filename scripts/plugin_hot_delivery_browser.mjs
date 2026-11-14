@@ -11,8 +11,10 @@ const { chromium } = require("@playwright/test");
 
 const CATALOG = "flare.plugin.ui.catalog";
 const PAGE_TITLE = process.env.FLARE_DASHBOARD_TITLE || "任务看板";
-// Kit copy of an upgrade placeholder (pluginUpgrade.title / description, plugin.unavailable).
-const UPGRADE_TEXTS = ["需要更新应用", "此内容需要更新到新版本后才能使用", "更新应用后查看"];
+// Kit copy of an upgrade placeholder (pluginUpgrade.title / description / notAvailable, the last
+// shown when the update channel offers no newer release; plugin.unavailable).
+const UPGRADE_TEXTS = ["需要更新应用", "此内容需要更新到新版本后才能使用", "当前版本暂不支持，新版本发布后可用", "更新应用后查看"];
+const DECLARATIVE_SETTLE_MS = 4000;
 const probeSource = readFileSync(new URL("./plugin_hot_delivery_probe.js", import.meta.url), "utf8");
 
 const browser = await chromium.launch({
@@ -79,6 +81,9 @@ async function openDashboard({ timeoutMs = 30_000 } = {}) {
   const frame = bundleFrameLocator();
   const heading = page.getByRole("heading", { name: PAGE_TITLE, exact: true });
   const deadline = Date.now() + timeoutMs;
+  // The host page draws its heading at once and mounts the bundle frame after the catalog read:
+  // the page counts as declarative only once its heading stood that long without a frame.
+  let headingSince = null;
   while (Date.now() < deadline) {
     if (await frame.count()) {
       const element = await frame.first().elementHandle();
@@ -99,8 +104,13 @@ async function openDashboard({ timeoutMs = 30_000 } = {}) {
       };
     }
     if (await heading.count()) {
-      const upgrade = await upgradeVisible();
-      return { mode: "declarative", upgrade };
+      headingSince ??= Date.now();
+      if (Date.now() - headingSince >= DECLARATIVE_SETTLE_MS) {
+        const upgrade = await upgradeVisible();
+        return { mode: "declarative", upgrade };
+      }
+    } else {
+      headingSince = null;
     }
     await page.waitForTimeout(250);
   }
@@ -108,6 +118,9 @@ async function openDashboard({ timeoutMs = 30_000 } = {}) {
 }
 
 async function upgradeVisible() {
+  // The kit's FlarePluginUpgradeNotice marks itself (entry, page, card).
+  const notice = page.locator("[data-upgrade-notice]");
+  if (await notice.count()) return (await notice.first().innerText()).trim() || "upgrade notice";
   for (const text of UPGRADE_TEXTS) {
     if (await page.getByText(text).count()) return text;
   }

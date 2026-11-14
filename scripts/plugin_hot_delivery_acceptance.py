@@ -14,6 +14,11 @@ Stacks (scripts/ of the workspace root):
   online           plugin-online-lab.py up      Core, Social, platform, poll/schedule/announcement/
                                                 solitaire/task/call; the task dashboard is the bundle
   wallet-sandbox   wallet-sandbox-lab.py up     wallet and red packet (minClient floors, payment)
+  isolated         plugin_hot_delivery_lab.py up (this directory) a lab of its own: own containers, ports,
+                                                databases and directory, task + wallet + red packet, the
+                                                access control plane with two https mirrors, and the
+                                                plugin sandbox server block; every case runs on it
+                                                (--profile isolated --lab-dir DIR --binaries DIR)
 
 Order (online unless marked):
   python3 scripts/plugin_hot_delivery_acceptance.py preflight [--web-origin URL]
@@ -126,9 +131,19 @@ def load_module(name, path):
 class Stack:
     """One running lab: its module (ports, helpers), keys, state, accounts and evidence."""
 
-    def __init__(self, profile, wallet_directory):
+    def __init__(self, profile, wallet_directory, isolated=None):
         self.profile = profile
-        if profile == "wallet-sandbox":
+        if profile == "isolated":
+            # One lab of its own (plugin_hot_delivery_lab.py) with task, wallet and red packet:
+            # every case runs on it.
+            isolated_lab = load_module("plugin_hot_delivery_lab", HERE / "plugin_hot_delivery_lab.py")
+            isolated_lab.configure(isolated.lab_dir, isolated.binaries, offset=isolated.port_offset,
+                                   block=isolated.block, lab_script=isolated.lab_script)
+            self.lab = isolated_lab.lab
+            self.metrics_port = isolated_lab.settings.metrics(CAPABILITY_METRICS_PORT)
+            global LAB_CA
+            LAB_CA = isolated_lab.ca_file()
+        elif profile == "wallet-sandbox":
             wallet = load_module("wallet_sandbox_lab", WALLET_SCRIPT)
             wallet.configure(Path(wallet_directory).expanduser())
             self.lab = wallet.lab
@@ -355,7 +370,7 @@ def open_browser(case, origin):
 
 
 def require_profile(stack, profile):
-    if stack.profile != profile:
+    if stack.profile != profile and stack.profile != "isolated":
         raise SystemExit(f"this case runs on the {profile} lab: pass --profile {profile}")
 
 
@@ -598,6 +613,7 @@ def declared_bundle(manifest):
 
 def flare_plugin_cli(args):
     for candidate in (args.cli, shutil.which("flare-plugin"), ROOT / "target" / "debug" / "flare-plugin",
+                      getattr(args, "binaries", None) and Path(args.binaries) / "flare-plugin",
                       ROOT / "flare-plugin-devkit" / "target" / "debug" / "flare-plugin"):
         if candidate and Path(candidate).exists():
             return str(candidate)
@@ -632,14 +648,25 @@ def core_registry_row(stack, plugin, version):
     return next((r for r in rows if r["bundleId"] == DASHBOARD_BUNDLE), None)
 
 
+# The private CA of a lab whose mirrors present certificates of their own (the isolated lab).
+LAB_CA = None
+
+
+def loopback(host):
+    return host in ("127.0.0.1", "localhost", "::1") or (host or "").endswith(".localhost")
+
+
 def put_presigned(request, body):
     """The uploader's step, exactly as the platform handed it out. Only a loopback lab mirror
-    may present the lab's own certificate."""
+    may present the lab's own certificate: verified against the lab's CA when it has one."""
     url = urllib.parse.urlsplit(request["url"])
     context = ssl.create_default_context()
-    if url.hostname in ("127.0.0.1", "localhost", "::1"):
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
+    if loopback(url.hostname):
+        if LAB_CA:
+            context = ssl.create_default_context(cafile=str(LAB_CA))
+        else:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
     item = urllib.request.Request(request["url"], data=body, method=request.get("method") or "PUT",
                                   headers=request.get("headers") or {})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context))
@@ -652,13 +679,15 @@ def put_presigned(request, body):
         return f"{type(error).__name__}: {error}"
 
 
-def fetch(url, method="GET"):
-    """A sandbox or mirror read with the lab certificate accepted (loopback test only)."""
+def fetch(url, method="GET", dest=None):
+    """A sandbox or mirror read with the lab certificate accepted (loopback test only). `dest` is
+    the Sec-Fetch-Dest a browser sends: the sandbox serves HTML to a frame load only."""
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context))
-    item = urllib.request.Request(url, method=method, headers={"Origin": "null"})
+    headers = {"Origin": "null", **({"Sec-Fetch-Dest": dest} if dest else {})}
+    item = urllib.request.Request(url, method=method, headers=headers)
     try:
         with opener.open(item, timeout=30) as response:
             return response.status, dict(response.headers), response.read()
@@ -785,7 +814,7 @@ def case_bundle_publish(case, args):
     status, _, mirrored = fetch(entry["urls"][0])
     case.check("the first mirror serves the declared bytes", status == 200
                and hashlib.sha256(mirrored).hexdigest() == declared["sha256"], {"status": status})
-    status, headers, _ = fetch(entry["files"] + "index.html")
+    status, headers, _ = fetch(entry["files"] + "index.html", dest="iframe")
     policy = headers.get("Content-Security-Policy", "")
     case.step("sandbox entry response", {"status": status, "headers": headers})
     case.check("the sandbox serves the entry with the bundle policy, CORS for an opaque origin and no cookie",
@@ -796,9 +825,15 @@ def case_bundle_publish(case, args):
         ancestors = re.search(r"frame-ancestors ([^;]+)", policy)
         case.check("frame-ancestors names the web app", ancestors and args.web_origin.rstrip("/")
                    in ancestors[1].split(), policy)
-    status, _, _ = fetch(entry["files"] + "bundle.json.map")
+    case.check("the bundle policy carries the CSP sandbox directive", policy.startswith("sandbox allow-scripts allow-forms"),
+               policy)
+    for dest in ("document", None):
+        status, _, _ = fetch(entry["files"] + "index.html", dest=dest)
+        case.check(f"the entry is not served as a top-level page (Sec-Fetch-Dest {dest or 'absent'})", status == 404,
+                   status)
+    status, _, _ = fetch(entry["files"] + "bundle.json.map", dest="iframe")
     case.check("an unlisted type is refused by the sandbox", status == 404, status)
-    status, _, _ = fetch(entry["files"] + "index.html", method="POST")
+    status, _, _ = fetch(entry["files"] + "index.html", method="POST", dest="iframe")
     case.check("only GET reaches the sandbox", status in (403, 405), status)
 
 
@@ -1181,7 +1216,7 @@ def command_preflight(stack, args):
     status, catalog = stack.catalog(stack.accounts[0], descriptor(kit_vocabulary("vue"), build=2))
     facts["catalog_status"] = status
     facts["plugins"] = sorted(p["pluginId"] for p in (catalog or {}).get("plugins", [])) if isinstance(catalog, dict) else catalog
-    if stack.profile == "online":
+    if stack.profile in ("online", "isolated"):
         _, version, manifest = task_release(stack)
         declared = declared_bundle(manifest)
         facts["task"] = {"version": version, "declared": declared}
@@ -1206,8 +1241,14 @@ def command_preflight(stack, args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--profile", choices=["online", "wallet-sandbox"], default="online")
+    parser.add_argument("--profile", choices=["online", "wallet-sandbox", "isolated"], default="online")
     parser.add_argument("--wallet-directory", default="~/.flare-wallet-sandbox-lab")
+    isolated = parser.add_argument_group("isolated profile (plugin_hot_delivery_lab.py)")
+    isolated.add_argument("--lab-dir", help="the isolated lab's directory")
+    isolated.add_argument("--binaries", help="the isolated lab's binaries (flare-plugin is looked up here too)")
+    isolated.add_argument("--lab-script", help="scripts/plugin-online-lab.py of the workspace root")
+    isolated.add_argument("--port-offset", type=int, default=-36000)
+    isolated.add_argument("--block", type=int, default=47000)
     commands = parser.add_subparsers(dest="command", required=True)
 
     def with_web(sub):
@@ -1247,7 +1288,9 @@ def main():
     commands.add_parser("report", help="every case and device verdict")
     args = parser.parse_args()
 
-    stack = Stack(args.profile, args.wallet_directory)
+    if args.profile == "isolated" and not args.lab_dir:
+        parser.error("--profile isolated needs --lab-dir")
+    stack = Stack(args.profile, args.wallet_directory, args)
     tools = {"preflight": command_preflight, "manual": command_manual, "capture": command_capture,
              "verdict": command_verdict, "report": command_report}
     if args.command in tools:
