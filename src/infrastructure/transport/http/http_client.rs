@@ -3067,15 +3067,27 @@ impl HttpClient {
     /// The Core bearer the request context holds now: after a refresh (SDK-managed tokens, or the host's
     /// `update_access_token`) or a renewal it is the new one. `None` without a context or a bearer.
     pub(crate) async fn current_core_bearer(&self) -> Option<String> {
-        let token = self.context.as_ref()?.auth_token.read().await.clone();
-        (!token.trim().is_empty()).then_some(token)
+        self.current_core_bearer_with_epoch()
+            .await
+            .map(|(token, _)| token)
+    }
+
+    /// [`Self::current_core_bearer`] with the credential owner epoch it belongs to, read together so
+    /// a later renewal can be fenced to the same owner ([`Self::renew_core_bearer`]).
+    pub(crate) async fn current_core_bearer_with_epoch(&self) -> Option<(String, u64)> {
+        let core = self.context.as_ref()?.core_auth.read().await;
+        (!core.token.trim().is_empty()).then(|| (core.token.clone(), core.epoch))
     }
 
     /// After Core rejected `rejected` as expired: the bearer to retry with, renewed through the request
-    /// context the same way as this client's own requests ([`HttpRequestContext::renew_core_bearer`]).
-    /// `None` without a context or when the renewal failed.
-    pub(crate) async fn renew_core_bearer(&self, rejected: &str) -> Option<String> {
-        self.context.as_ref()?.renew_core_bearer(rejected).await
+    /// context the same way as this client's own requests, for the owner `epoch` captured with the
+    /// bearer before the request. `None` without a context, when the owner changed since, or when the
+    /// renewal failed.
+    pub(crate) async fn renew_core_bearer(&self, rejected: &str, epoch: u64) -> Option<String> {
+        self.context
+            .as_ref()?
+            .renew_core_bearer_for_epoch(rejected, epoch)
+            .await
     }
 
     fn core_bearer_in_headers(

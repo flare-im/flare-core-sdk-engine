@@ -469,11 +469,11 @@ mod native {
     /// 的凭据，所以核对通过时取到的一定是这个账号的。
     ///
     /// Core 答凭据过期（401 `TOKEN_EXPIRED`）时和别的 Core 请求一样续期一次：上下文里已经换了新的就用它，
-    /// 否则走上下文的续期；换到了、会话也还在，就用新的再发一次。续期没换到新的（刷新确实失败了），或答的是
+    /// 否则走上下文的续期（只为取凭据时的那个凭据主人续期，主人换过就不续）；换到了、会话也还在，就用新的再发一次。续期没换到新的（刷新确实失败了），或答的是
     /// 别的 401（和别的 Core 请求一样不续期），才按 401 留着下次再报。会话已经换代、或上下文里没有凭据时为
     /// `None`（这批不动）。
     async fn send_batch(sender: &ReceiptSender, body: &serde_json::Value) -> Option<Sent> {
-        let mut bearer = sender.http.current_core_bearer().await?;
+        let (mut bearer, epoch) = sender.http.current_core_bearer_with_epoch().await?;
         let mut renewed = false;
         loop {
             if !sender.current() {
@@ -500,12 +500,12 @@ mod native {
             renewed = true;
             let fresh = match sender
                 .http
-                .current_core_bearer()
+                .current_core_bearer_with_epoch()
                 .await
-                .filter(|current| *current != bearer)
+                .filter(|(current, owner)| *owner == epoch && *current != bearer)
             {
-                Some(current) => Some(current),
-                None => sender.http.renew_core_bearer(&bearer).await,
+                Some((current, _)) => Some(current),
+                None => sender.http.renew_core_bearer(&bearer, epoch).await,
             };
             match fresh {
                 Some(fresh) => bearer = fresh,
