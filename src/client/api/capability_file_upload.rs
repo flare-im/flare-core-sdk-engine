@@ -1,9 +1,9 @@
 //! Private plugin form uploads. Grants stay in memory and never enter the
 //! durable plugin command journal; business ownership remains with the plugin.
-use super::CapabilityApi;
+use super::{CapabilityApi, PluginCallFuture};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_plugin_protocol::manifest::{ClientPlatform, UiContributionKind};
-use flare_plugin_protocol::ui::{UiFileReference, UiInput, UiInputKind, UiRenderContext};
+use flare_plugin_protocol::ui::{UiFileReference, UiInput, UiRenderContext};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -45,6 +45,53 @@ struct PreparedFile {
     size_bytes: u64,
     sha256: String,
     ready: bool,
+}
+
+/// Private files the engine uploaded for a plugin on this device, kept at
+/// most this many at once (the oldest go first).
+const MAX_PLUGIN_UPLOADS: usize = 256;
+
+/// The private files each plugin uploaded for each viewer through this
+/// engine (its page forms' declared uploads), the only files a web bundle of
+/// that plugin may read back (`media.read`): never a chat file or another
+/// plugin's upload, whose id the bundle may still learn. In memory: a file
+/// uploaded before this engine started is not read back.
+#[derive(Default)]
+pub(crate) struct PluginUploads {
+    owned: std::sync::Mutex<std::collections::VecDeque<String>>,
+}
+
+impl std::fmt::Debug for PluginUploads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PluginUploads")
+    }
+}
+
+impl PluginUploads {
+    fn key(tenant: &str, user: &str, plugin_id: &str, file_id: &str) -> String {
+        [tenant, user, plugin_id, file_id].join("\n")
+    }
+    pub fn record(&self, tenant: &str, user: &str, plugin_id: &str, file_id: &str) {
+        let key = Self::key(tenant, user, plugin_id, file_id);
+        let mut owned = self
+            .owned
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owned.contains(&key) {
+            return;
+        }
+        if owned.len() >= MAX_PLUGIN_UPLOADS {
+            owned.pop_front();
+        }
+        owned.push_back(key);
+    }
+    /// Whether `plugin_id` uploaded `file_id` for `user` of `tenant`.
+    pub fn owns(&self, tenant: &str, user: &str, plugin_id: &str, file_id: &str) -> bool {
+        self.owned
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&Self::key(tenant, user, plugin_id, file_id))
+    }
 }
 
 fn invalid() -> FlareError {
@@ -108,9 +155,15 @@ impl CapabilityApi {
     /// Upload one file of a real, visible page form. Prepare and complete are
     /// direct declared plugin commands, with the caller's stable commandId.
     /// No upload grant, bytes or intermediate reply is stored in a journal.
-    pub async fn plugin_file_upload(&self, value: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_file_upload(&self, value: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_file_upload_now(value))
+    }
+    async fn plugin_file_upload_now(&self, value: Value) -> Result<Value> {
         let request: PluginFileUploadRequest =
-            serde_json::from_value(value).map_err(|_| invalid())?;
+            crate::shared::util::json::from_value(value).map_err(|_| invalid())?;
         if !valid_id(&request.page.plugin_id)
             || !valid_id(&request.page.page)
             || !valid_id(&request.input_id)
@@ -163,7 +216,7 @@ impl CapabilityApi {
                     .schema
                     .inputs
                     .iter()
-                    .find(|input| input.id == request.input_id && input.kind == UiInputKind::File)
+                    .find(|input| input.id == request.input_id && input.kind.is_upload())
                     .ok_or_else(unavailable)?;
                 let file = declaration
                     .file
@@ -174,7 +227,7 @@ impl CapabilityApi {
                     &file.upload.prepare_operation,
                     &file.upload.complete_operation,
                 ] {
-                    if !operation.starts_with(&format!("{}.", plugin.plugin_id))
+                    if !crate::shared::util::is_under_namespace(operation, &plugin.plugin_id)
                         || !plugin.operations.contains(operation)
                         || plugin.query_operations.contains(operation)
                     {
@@ -205,7 +258,8 @@ impl CapabilityApi {
                     return Err(unavailable());
                 }
                 let resolved: Vec<UiInput> =
-                    serde_json::from_value(view["inputs"].clone()).map_err(|_| unavailable())?;
+                    crate::shared::util::json::from_value(view["inputs"].clone())
+                        .map_err(|_| unavailable())?;
                 let form_values = request.form_values.as_ref().unwrap_or(&Value::Null);
                 if form_values.as_object().is_some_and(|values| {
                     values
@@ -266,7 +320,7 @@ impl CapabilityApi {
                     return Err(unavailable());
                 }
                 let prepared: PreparedFile =
-                    serde_json::from_value(prepared.data).map_err(|_| invalid())?;
+                    crate::shared::util::json::from_value(prepared.data).map_err(|_| invalid())?;
                 let reference = UiFileReference {
                     file_id: prepared.file_id,
                 };
@@ -277,7 +331,14 @@ impl CapabilityApi {
                 {
                     return Err(invalid());
                 }
+                let uploads = &self.plugin_host.uploads;
                 if prepared.ready {
+                    uploads.record(
+                        &self.default_tenant_id,
+                        &viewer,
+                        &request.page.plugin_id,
+                        &reference.file_id,
+                    );
                     return serde_json::to_value(reference).map_err(|_| invalid());
                 }
                 if prepared
@@ -324,10 +385,16 @@ impl CapabilityApi {
                     return Err(unavailable());
                 }
                 let completed: UiFileReference =
-                    serde_json::from_value(complete.data).map_err(|_| invalid())?;
+                    crate::shared::util::json::from_value(complete.data).map_err(|_| invalid())?;
                 if completed != reference || !completed.is_valid() {
                     return Err(invalid());
                 }
+                uploads.record(
+                    &self.default_tenant_id,
+                    &viewer,
+                    &request.page.plugin_id,
+                    &completed.file_id,
+                );
                 serde_json::to_value(completed).map_err(|_| invalid())
             })
             .await
@@ -336,6 +403,23 @@ impl CapabilityApi {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_upload_belongs_to_its_tenant_viewer_and_plugin_only() {
+        let uploads = super::PluginUploads::default();
+        uploads.record("t", "alice", "example.realname", "file:1");
+        assert!(uploads.owns("t", "alice", "example.realname", "file:1"));
+        assert!(!uploads.owns("t", "bob", "example.realname", "file:1"));
+        assert!(!uploads.owns("t", "alice", "example.other", "file:1"));
+        assert!(!uploads.owns("u", "alice", "example.realname", "file:1"));
+        assert!(!uploads.owns("t", "alice", "example.realname", "file:2"));
+        // Bounded: the oldest goes first.
+        for i in 0..super::MAX_PLUGIN_UPLOADS {
+            uploads.record("t", "alice", "example.realname", &format!("file:n{i}"));
+        }
+        assert!(!uploads.owns("t", "alice", "example.realname", "file:1"));
+        assert!(uploads.owns("t", "alice", "example.realname", "file:n0"));
+    }
+
     use super::*;
 
     #[test]
@@ -428,23 +512,29 @@ mod tests {
         let good = json!({"page":{"pluginId":"example.plugin","page":"example.plugin.form"},
             "inputId":"attachment","platform":"web","fileName":"receipt.png","contentType":"image/png",
             "bytes":[0,128,255],"commandId":"upload-1"});
-        assert!(serde_json::from_value::<PluginFileUploadRequest>(good.clone()).is_ok());
+        assert!(
+            crate::shared::util::json::from_value::<PluginFileUploadRequest>(good.clone()).is_ok()
+        );
         for bytes in [json!([-1]), json!([256]), json!([1.5]), json!("base64")] {
             let mut bad = good.clone();
             bad["bytes"] = bytes;
-            assert!(serde_json::from_value::<PluginFileUploadRequest>(bad).is_err());
+            assert!(crate::shared::util::json::from_value::<PluginFileUploadRequest>(bad).is_err());
         }
         let mut bad = good;
         bad["uploadUrl"] = json!("/private/attacker?grant=x");
-        assert!(serde_json::from_value::<PluginFileUploadRequest>(bad).is_err());
+        assert!(crate::shared::util::json::from_value::<PluginFileUploadRequest>(bad).is_err());
         assert!(
-            serde_json::from_value::<PreparedFile>(json!({"fileId":"file-1","ready":true,
-            "contentType":"image/png","sizeBytes":3,"sha256":"x"}))
+            crate::shared::util::json::from_value::<PreparedFile>(
+                json!({"fileId":"file-1","ready":true,
+            "contentType":"image/png","sizeBytes":3,"sha256":"x"})
+            )
             .is_ok()
         );
         assert!(
-            serde_json::from_value::<PreparedFile>(json!({"fileId":"file-1","ready":"true",
-            "contentType":"image/png","sizeBytes":3,"sha256":"x"}))
+            crate::shared::util::json::from_value::<PreparedFile>(
+                json!({"fileId":"file-1","ready":"true",
+            "contentType":"image/png","sizeBytes":3,"sha256":"x"})
+            )
             .is_err()
         );
     }

@@ -278,7 +278,7 @@ mod tests {
     use serde_json::json;
 
     fn card(message_id: &str, refresh_on: serde_json::Value, interval: u32) -> ViewerCard {
-        let contribution: UiContribution = serde_json::from_value(json!({
+        let contribution: UiContribution = crate::shared::util::json::from_value(json!({
             "kind": "message-content", "id": "example.poll.card", "schemaVersion": 1,
             "requiredPermissions": [], "entityPath": "/pollId", "schema": {"title": "t"},
             "viewerState": {"operation": "example.poll.view", "input": {"pollId": "/pollId"},
@@ -294,7 +294,7 @@ mod tests {
         ViewerCard {
             message_id: message_id.into(),
             conversation_id: "group-1".into(),
-            message: serde_json::from_value(json!({
+            message: crate::shared::util::json::from_value(json!({
                 "pluginId": "example.poll", "contributionId": "example.poll.card",
                 "schemaVersion": 1, "summary": "s", "payload": {"pollId": "p-1"}
             }))

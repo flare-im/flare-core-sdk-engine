@@ -74,9 +74,11 @@ impl DeviceGlobalSyncPointStore {
         let Some(raw) = self.cursors.get_raw(&key).await? else {
             return Ok(None);
         };
-        serde_json::from_str(&raw).map(Some).map_err(|error| {
-            FlareError::general_error(format!("invalid global sync point: {error}"))
-        })
+        crate::shared::util::json::from_str(&raw)
+            .map(Some)
+            .map_err(|error| {
+                FlareError::general_error(format!("invalid global sync point: {error}"))
+            })
     }
 
     pub async fn save(&self, point: &DeviceGlobalSyncPoint) -> Result<()> {

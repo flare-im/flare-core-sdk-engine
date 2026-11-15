@@ -69,6 +69,33 @@ pub const C_DISPATCH_OPS: &[(&str, &str)] = &[
         "capability.plugin_account_entries",
         "plugin_account_entries",
     ),
+    ("capability.plugin_bundle_bridge", "plugin_bundle_bridge"),
+    ("capability.plugin_bundle_close", "plugin_bundle_close"),
+    (
+        "capability.plugin_bundle_host_event",
+        "plugin_bundle_host_event",
+    ),
+    (
+        "capability.plugin_bundle_host_result",
+        "plugin_bundle_host_result",
+    ),
+    ("capability.plugin_bundle_open", "plugin_bundle_open"),
+    (
+        "capability.plugin_bundle_prefetch",
+        "plugin_bundle_prefetch",
+    ),
+    (
+        "capability.plugin_capability_consent_revoke",
+        "plugin_capability_consent_revoke",
+    ),
+    (
+        "capability.plugin_capability_consents",
+        "plugin_capability_consents",
+    ),
+    (
+        "capability.plugin_capability_invoke",
+        "plugin_capability_invoke",
+    ),
     (
         "capability.plugin_catalog_invalidate",
         "plugin_catalog_invalidate",
@@ -225,6 +252,8 @@ pub const EVENT_CODES: &[(&str, i32)] = &[
     ("extension.event", 5001),
     ("plugin.realtime", 7001),
     ("plugin.catalog_changed", 7002),
+    ("plugin.capability_request", 7003),
+    ("plugin.bundle_event", 7004),
 ];
 
 pub const ERROR_CODES: &[(&str, i32)] = &[

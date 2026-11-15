@@ -39,4 +39,9 @@ tokio = { version = "1", default-features = false, features = ["sync", "macros",
 # 单调用方内联上限：-Oz 默认不限大小，raw 略小，gzip 却大很多，用户下载的是 gzip。
 # 2026-11-06 同一份代码实测 raw / gzip：不设 4,977,796 / 1,913,323，60 是 4,988,322 / 1,780,196，
 # 40 是 5,005,508 / 1,763,935。
-wasm-opt = ["-Oz", "--one-caller-inline-max-function-size=40", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
+# 2026-11-13 同一份输入再量：40 是 5,024,077 / 1,783,331。加 `--converge`（反复跑到不再变小）后
+# gzip 依次是 40 1,780,645、30 1,777,809、20 1,775,834、15 1,774,884、10 1,775,968、0 1,781,581，取 15。
+# `--low-memory-unused`：让 wasm-opt 把「指针 + 常量」折进访存偏移。这只在相加回绕到内存最低 1K 时
+# 才会改变结果；Rust 的产物栈在最前（0..1MB，向下长），数据从 1MB 起，合法代码不会算出回绕的地址。
+# 同一份输入 gzip 再小约 4.4 KB（1,771,762 → 1,767,373）。
+wasm-opt = ["-Oz", "--converge", "--one-caller-inline-max-function-size=15", "--low-memory-unused", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

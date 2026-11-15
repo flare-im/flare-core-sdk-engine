@@ -23,12 +23,34 @@ use crate::infrastructure::transport::http::http_client::HttpRequestContext;
 use crate::infrastructure::transport::http::{HttpApiResponse, HttpClient, unwrap_api_response};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
+/// The future of a plugin call the bindings await (not `Send` in the
+/// browser, where the storage futures are not).
+#[cfg(not(target_arch = "wasm32"))]
+pub type PluginCallFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 'a>>;
+#[cfg(target_arch = "wasm32")]
+pub type PluginCallFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + 'a>>;
+
+#[path = "capability_consent.rs"]
+mod consent;
 #[path = "capability_entry_availability.rs"]
 mod entry_availability;
+pub use consent::manifest_major;
 #[path = "capability_file_upload.rs"]
 mod file_upload;
+#[path = "capability_host_profile.rs"]
+pub(crate) mod host_profile;
 #[path = "capability_native.rs"]
-mod native;
+pub(crate) mod native;
+pub use native::{
+    CapabilityConsentPrompt, CapabilityHostAnswer, CapabilityHostRequests, CapturedFile,
+    ConsentDecision, DocumentCapturePrompt, FilePickPrompt, LocationFix, LocationPrompt,
+    PaymentConfirmationPrompt, PluginCapabilityHost,
+};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "capability_native_tests.rs"]
+mod native_tests;
 #[path = "capability_page.rs"]
 mod page;
 pub use file_upload::{PluginFileUploadPage, PluginFileUploadRequest};
@@ -38,8 +60,16 @@ mod page_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_platform_v2_tests.rs"]
 mod platform_v2_tests;
+#[path = "plugin_bundle.rs"]
+mod plugin_bundle;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "plugin_bundle_tests.rs"]
+mod plugin_bundle_tests;
 #[path = "capability_tenant_notices.rs"]
 mod tenant_notices;
+#[path = "capability_upgrade.rs"]
+mod upgrade;
+pub use upgrade::PluginUpgradeStatus;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_ui_tests.rs"]
 mod ui_tests;
@@ -128,6 +158,18 @@ impl CatalogFlight {
 #[derive(Clone)]
 pub struct CapabilityApi {
     pub(super) plugin_commands: Option<Arc<dyn crate::domain::PluginCommandStore>>,
+    /// The viewer's consents to plugins using host capabilities
+    /// ([`consent`]); in memory until the user store gives one.
+    plugin_consents: Arc<dyn crate::domain::PluginConsentStore>,
+    /// What web bundles keep through the bridge (`storage.*`); in memory
+    /// until the user store gives one.
+    plugin_bundle_storage: Arc<dyn crate::domain::PluginBundleStorage>,
+    /// Who `people.resolve` may name: local profiles, and the members of the
+    /// page's conversation when it has one.
+    bundle_people: Option<plugin_bundle::BundlePeople>,
+    /// Where `media.read` reads a plugin's private file: the same path hosts
+    /// read image blocks' files with (`resolve_media_access`).
+    bundle_media: Option<Arc<super::MediaApi>>,
     /// Local message store and bus for plugin card state (`messageId` requests).
     messages: Option<Arc<dyn crate::domain::MessageStore>>,
     bus: Option<crate::kernel::event::EventBus>,
@@ -136,6 +178,12 @@ pub struct CapabilityApi {
     /// Background reads of presented cards' viewer layers (`viewerState`).
     viewer_state: Option<Arc<viewer::ViewerStateDriver>>,
     catalog_flight: Arc<CatalogFlight>,
+    /// The host's plugin UI profile, shared with the client across sessions:
+    /// the vocabulary catalogs are read with, the descriptor sent with every
+    /// catalog read and the native allowlist of every action.
+    plugin_host: Arc<host_profile::PluginHostSlot>,
+    /// The application build and distribution the descriptor carries.
+    app_identity: host_profile::AppIdentity,
     /// Recent answers of composer entries' availability queries.
     entry_availability: Arc<entry_availability::EntryAvailability>,
     /// The server clock estimate: a catalog's `validUntilMs` is the server's clock.
@@ -164,11 +212,21 @@ impl CapabilityApi {
         let _ = (grpc_endpoint.into(), http_request_context);
         Self {
             plugin_commands: None,
+            plugin_consents: Arc::new(
+                crate::infrastructure::persistence::MemoryPluginConsentStore::new(),
+            ),
+            plugin_bundle_storage: Arc::new(
+                crate::infrastructure::persistence::MemoryPluginBundleStorage::new(),
+            ),
+            bundle_people: None,
+            bundle_media: None,
             messages: None,
             bus: None,
             plugin_state_refetch: None,
             viewer_state: None,
             catalog_flight: Arc::new(CatalogFlight::default()),
+            plugin_host: Arc::default(),
+            app_identity: host_profile::AppIdentity::default(),
             entry_availability: Arc::default(),
             server_clock: crate::kernel::ServerClock::new(),
             http: None,
@@ -189,6 +247,83 @@ impl CapabilityApi {
     /// [`Self::with_viewer_state`], whose driver keeps a clone of this API.
     pub(crate) fn with_server_clock(mut self, clock: crate::kernel::ServerClock) -> Self {
         self.server_clock = clock;
+        self
+    }
+    /// Reads plugin UI with the host's profile kept in `slot`
+    /// ([`host_profile`]) and reports `identity` in the descriptor. Call it
+    /// before [`Self::with_viewer_state`], whose driver keeps a clone of this API.
+    pub(crate) fn with_plugin_host(
+        mut self,
+        slot: Arc<host_profile::PluginHostSlot>,
+        identity: host_profile::AppIdentity,
+    ) -> Self {
+        self.plugin_host = slot;
+        self.app_identity = identity;
+        self
+    }
+    /// What plugin UI is read with now: the vocabulary, the native allowlist
+    /// and the descriptor of the host's current profile.
+    pub(crate) fn plugin_client(&self) -> host_profile::PluginClient {
+        host_profile::PluginClient::of(self.plugin_host.profile().as_ref(), &self.app_identity)
+    }
+    /// The host's plugin UI profile (`plugin.set_host_profile` input), for an
+    /// embedder that drives this API without an [`crate::client::IMClient`]
+    /// (acceptance harnesses). Without it views are read with vocabulary 1.
+    pub fn with_plugin_host_profile(self, request: Value) -> Result<Self> {
+        let profile = host_profile::parse_profile(request, &self.app_identity)?;
+        self.plugin_host.set(profile);
+        Ok(self)
+    }
+    /// The host's part of plugin capabilities (consent, document capture,
+    /// payment confirmation, location) for an embedder that drives this API
+    /// without an [`crate::client::IMClient`] (acceptance harnesses); like
+    /// `IMClient::set_plugin_capability_host`.
+    pub fn with_plugin_capability_host(
+        self,
+        host: Option<Arc<dyn native::PluginCapabilityHost>>,
+    ) -> Self {
+        self.plugin_host.capability_host.set(host);
+        self
+    }
+    /// Keeps capability consents in `store` (the user database) instead of
+    /// memory. `None` keeps the store as it is.
+    pub fn with_plugin_consent_store(
+        mut self,
+        store: Option<Arc<dyn crate::domain::PluginConsentStore>>,
+    ) -> Self {
+        if let Some(store) = store {
+            self.plugin_consents = store;
+        }
+        self
+    }
+    /// Keeps web bundle storage in `store` (the user database) instead of
+    /// memory. `None` keeps the store as it is.
+    pub fn with_plugin_bundle_storage(
+        mut self,
+        store: Option<Arc<dyn crate::domain::PluginBundleStorage>>,
+    ) -> Self {
+        if let Some(store) = store {
+            self.plugin_bundle_storage = store;
+        }
+        self
+    }
+    /// Lets `people.resolve` answer from local profiles: the page's
+    /// conversation members when it has a conversation, otherwise people
+    /// sharing a conversation with the viewer.
+    pub fn with_bundle_people(
+        mut self,
+        profiles: Arc<dyn crate::domain::UserReader>,
+        participants: Option<Arc<dyn crate::domain::ConversationParticipantStore>>,
+    ) -> Self {
+        self.bundle_people = Some(plugin_bundle::BundlePeople {
+            profiles,
+            participants,
+        });
+        self
+    }
+    /// Lets `media.read` read a plugin's private files through `media`.
+    pub fn with_bundle_media(mut self, media: Arc<super::MediaApi>) -> Self {
+        self.bundle_media = Some(media);
         self
     }
     pub fn with_plugin_command_store(
@@ -338,24 +473,40 @@ impl CapabilityApi {
         Ok(())
     }
 
-    pub async fn resolve_plugin_message(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn resolve_plugin_message(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.resolve_plugin_message_now(request))
+    }
+    async fn resolve_plugin_message_now(&self, request: Value) -> Result<Value> {
         self.session_guard
             .run(async {
                 crate::extension::capability::ui::resolve(
                     &self.default_tenant_id,
                     request,
                     &self.server_clock,
+                    &self.plugin_client().vocabulary,
                 )
             })
             .await
     }
-    pub async fn plugin_ui_action(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_ui_action(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_ui_action_now(request))
+    }
+    async fn plugin_ui_action_now(&self, request: Value) -> Result<Value> {
         self.session_guard
             .run(async {
+                let client = self.plugin_client();
                 crate::extension::capability::ui::action(
                     &self.default_tenant_id,
                     request,
                     &self.server_clock,
+                    &client.vocabulary,
+                    &client.native,
                 )
             })
             .await
@@ -389,7 +540,13 @@ impl CapabilityApi {
     /// instead of an error, and a card Core marked as an unbound copy is
     /// read-only (`unbound_copy`). Concurrent presentations share one catalog
     /// read; none is kept after it.
-    pub async fn present_plugin_message(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn present_plugin_message(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.present_plugin_message_now(request))
+    }
+    async fn present_plugin_message_now(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         let request = ui::parse_present(request)?;
         self.session_guard
@@ -434,7 +591,7 @@ impl CapabilityApi {
                 {
                     refetch.on_present(stored, entity, &viewer);
                 }
-                let view = ui::present_card(
+                let mut view = ui::present_card(
                     &catalog,
                     &request.message,
                     &state,
@@ -452,6 +609,16 @@ impl CapabilityApi {
                     let interactive =
                         !state.unbound && view.get("available") == Some(&Value::Bool(true));
                     driver.on_present(stored, contribution, &viewer, interactive);
+                }
+                // A "+" form or a card's "view all" with a web bundle offered to this
+                // client says so, so the host opens the bundle only then.
+                if self.bundle_offered(
+                    &catalog,
+                    &request.message.plugin_id,
+                    &request.message.contribution_id,
+                ) && let Some(object) = view.as_object_mut()
+                {
+                    object.insert("bundle".into(), Value::Bool(true));
                 }
                 card_view_value(view, &state)
             })
@@ -579,22 +746,22 @@ impl CapabilityApi {
         if !response.success {
             return;
         }
-        let local =
-            response.data.get("messageState").and_then(|raw| {
-                match serde_json::from_value::<flare_plugin_protocol::ui::PluginMessageState>(
-                    raw.clone(),
-                ) {
-                    Ok(state) if state.validate().is_ok() => Some(state),
-                    _ => {
-                        tracing::warn!(
-                            target = "flare_sdk.plugin",
-                            plugin_id = %message.plugin_id,
-                            "plugin returned an invalid message state"
-                        );
-                        None
-                    }
+        let local = response.data.get("messageState").and_then(|raw| {
+            match crate::shared::util::json::from_value::<
+                flare_plugin_protocol::ui::PluginMessageState,
+            >(raw.clone())
+            {
+                Ok(state) if state.validate().is_ok() => Some(state),
+                _ => {
+                    tracing::warn!(
+                        target = "flare_sdk.plugin",
+                        plugin_id = %message.plugin_id,
+                        "plugin returned an invalid message state"
+                    );
+                    None
                 }
-            });
+            }
+        });
         let shared = match flare_plugin_protocol::state::SharedState::from_result(&response.data) {
             Ok(Some(state)) if entity == Some(state.entity.as_str()) => Some(state),
             Ok(None) => None,
@@ -695,11 +862,24 @@ impl CapabilityApi {
     /// re-announces the plugin's recent cards. A create result's `data.posted`
     /// (the card Core posted) is returned as it is.
     ///
+    /// A successful operation whose `data.confirmation` is a valid payment
+    /// order of the same plugin comes back with it as `confirmation`, and the
+    /// engine records it; the host passes its `orderId` to
+    /// `plugin_capability_invoke` (`paymentConfirmation`).
+    /// A native target comes back as `{kind: "host", target, payload}` for
+    /// `plugin_capability_invoke` too.
+    ///
     /// A page action names `page: {pluginId, page}` instead of `message`
     /// (see [`Self::plugin_page`]): it binds over the page view's `data`, a
     /// row action takes `row: {key, input}` as the view gave it, and it never
     /// carries `messageId`.
-    pub async fn invoke_plugin_action(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn invoke_plugin_action(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.invoke_plugin_action_now(request))
+    }
+    async fn invoke_plugin_action_now(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         use flare_plugin_protocol::ui::UiActionTarget;
         if crate::extension::capability::ui_page::is_page_action(&request) {
@@ -732,6 +912,7 @@ impl CapabilityApi {
                     &catalog,
                     &request,
                     stored.as_ref(),
+                    &self.plugin_client().native,
                 )? {
                     ui::PreparedAction::FormErrors(errors) => {
                         Ok(serde_json::json!({"kind":"formErrors","errors":errors}))
@@ -768,7 +949,11 @@ impl CapabilityApi {
                             )
                             .await;
                         }
-                        Ok(serde_json::json!({"kind":"operation","response":response}))
+                        Ok(self.operation_outcome(
+                            user_id.as_deref(),
+                            &request.message.plugin_id,
+                            &response,
+                        ))
                     }
                     ui::PreparedAction::Ready {
                         target, payload, ..
@@ -807,10 +992,23 @@ impl CapabilityApi {
     /// re-reads a sheet after a state change keeps the pages it had loaded.
     /// The merged view replaces `previous`; any page failing fails the call,
     /// and the host keeps showing `previous`.
-    pub async fn plugin_detail(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_detail(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_detail_now(request))
+    }
+    async fn plugin_detail_now(&self, request: Value) -> Result<Value> {
         use crate::extension::capability::ui;
         let mut request = ui::parse_detail(request)?;
-        let previous = request.previous.take();
+        let previous = request
+            .previous
+            .take()
+            .map(|previous| {
+                flare_plugin_protocol::ui::ShownPluginView::from_value(previous)
+                    .ok_or_else(ui::invalid)
+            })
+            .transpose()?;
         self.session_guard
             .run_with_user(|user_id| async move {
                 let (_, catalog) = self.fetch_plugin_ui_catalog().await?;
@@ -847,7 +1045,7 @@ impl CapabilityApi {
                     .await?;
                 match previous {
                     Some(previous) if request.refresh => {
-                        let wanted = ui::detail_entries(&previous);
+                        let wanted = previous.entries();
                         let mut pages = 1;
                         while let Some(cursor) =
                             ui::detail_refresh_continues(&view, wanted, pages).map(str::to_owned)
@@ -862,7 +1060,7 @@ impl CapabilityApi {
                     }
                     Some(mut previous) => {
                         previous.append_page(view);
-                        view = previous;
+                        return Ok(previous.into_value());
                     }
                     None => {}
                 }
@@ -963,7 +1161,13 @@ impl CapabilityApi {
     /// `{actions: [{pluginId, contributionId, title, icon?, order, audience?}]}`
     /// out. `audience` (`{conversationTypes?, groupRoles?}`) is for the host to
     /// filter by the open conversation and the viewer's role in it.
-    pub async fn plugin_composer_actions(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_composer_actions(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_composer_actions_now(request))
+    }
+    async fn plugin_composer_actions_now(&self, request: Value) -> Result<Value> {
         let request = crate::extension::capability::ui::parse_composer_actions(request)?;
         let actions = self
             .composer_actions(request.platform, &request.locale)
@@ -997,7 +1201,13 @@ impl CapabilityApi {
     /// `{entries: [{pluginId, contributionId, title, icon?, order, page,
     /// summary?: {operation, path}}]}` out. `page` is the plugin's page
     /// contribution the entry opens.
-    pub async fn plugin_account_entries(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_account_entries(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_account_entries_now(request))
+    }
+    async fn plugin_account_entries_now(&self, request: Value) -> Result<Value> {
         let request = crate::extension::capability::ui::parse_composer_actions(request)?;
         let entries = self
             .account_entries(request.platform, &request.locale)
@@ -1036,14 +1246,23 @@ impl CapabilityApi {
     /// Each plugin carries `configuration`: the client-visible subset of its
     /// tenant configuration (keys marked `x-flare-client-visible`), absent when
     /// empty.
-    pub async fn plugin_ui_catalog(&self) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_ui_catalog(&self) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_ui_catalog_now())
+    }
+    async fn plugin_ui_catalog_now(&self) -> Result<Value> {
         Ok(self.fetch_plugin_ui_catalog().await?.0)
     }
     /// A fresh catalog read; presentations waiting meanwhile share it
-    /// ([`CatalogFlight`]). The catalog is read plugin by plugin
-    /// ([`crate::extension::capability::ui::parse_catalog`]), so a plugin this
-    /// client cannot read costs only that plugin. A catalog that cannot be read
-    /// at all is `sdk.plugin.catalog_unreachable`.
+    /// ([`CatalogFlight`]). The request carries the descriptor of the host's
+    /// profile (`{"descriptor": ...}`, [`Self::plugin_client`]) and the catalog
+    /// is read plugin by plugin with the same vocabulary
+    /// ([`crate::extension::capability::ui::parse_catalog`]): a contribution
+    /// this client cannot read becomes an upgrade placeholder, a plugin it
+    /// cannot read costs only that plugin. A catalog that cannot be read at all
+    /// is `sdk.plugin.catalog_unreachable`.
     async fn fetch_plugin_ui_catalog(
         &self,
     ) -> Result<(Value, flare_plugin_protocol::ui::UiCatalog)> {
@@ -1056,10 +1275,13 @@ impl CapabilityApi {
         };
         let generation = self.catalog_flight.generation();
         let user = self.session_guard.capture_user().await?.unwrap_or_default();
+        // What this client renders: Core selects every contribution's variant
+        // by it, and this read takes out what still does not fit.
+        let client = self.plugin_client();
         let result = self
             .dispatch(
                 flare_plugin_protocol::ui::UI_CATALOG_OPERATION,
-                Value::Null,
+                serde_json::json!({ "descriptor": client.descriptor }),
                 None,
                 None,
                 None,
@@ -1075,8 +1297,9 @@ impl CapabilityApi {
         if !result.success {
             return Err(unreachable());
         }
-        let mut catalog = crate::extension::capability::ui::parse_catalog(&result.data)
-            .ok_or_else(unreachable)?;
+        let mut catalog =
+            crate::extension::capability::ui::parse_catalog(&result.data, &client.vocabulary)
+                .ok_or_else(unreachable)?;
         // Evaluated against the device clock from here on: move the server's deadline onto it.
         crate::extension::capability::ui::localize_validity(&mut catalog, &self.server_clock);
         if catalog.plugins.len() > 128 {
@@ -1084,6 +1307,8 @@ impl CapabilityApi {
         }
         self.catalog_flight
             .completed(user, generation, catalog.clone());
+        // Open web bundle pages the catalog no longer serves close here.
+        self.reconcile_bundle_sessions(&catalog);
         Ok((result.data, catalog))
     }
 
@@ -1228,7 +1453,7 @@ impl CapabilityApi {
                 let data = if r.result_json.trim().is_empty() {
                     Value::Null
                 } else {
-                    serde_json::from_str(&r.result_json).unwrap_or(Value::Null)
+                    serde_json::from_slice(r.result_json.as_bytes()).unwrap_or(Value::Null)
                 };
                 let err = if r.error_message.is_empty() {
                     None

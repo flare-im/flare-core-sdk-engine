@@ -10,14 +10,16 @@ use flare_im_core_sdk::Result;
 use flare_im_core_sdk::client::HeartbeatAppState;
 
 /// Five MiB of bytes expand to at most twenty MiB as a compact JSON integer
-/// array. Keep the larger transport budget exclusive to this upload API;
-/// the Core implementation still enforces the declaration's raw byte limit.
+/// array. Keep the larger transport budget exclusive to the APIs that carry
+/// file bytes: the upload itself, and the host handing back a captured or
+/// picked file for a plugin capability (`plugin.capability_complete`). The
+/// Core implementation still enforces the declaration's raw byte limit.
 pub const PLUGIN_FILE_UPLOAD_JSON_MAX_BYTES: usize = 24 * 1024 * 1024;
 
 pub fn plugin_file_upload_json_limit(operation: &str) -> Option<usize> {
     matches!(
         operation,
-        "plugin_file_upload" | "capability.plugin_file_upload"
+        "plugin_file_upload" | "capability.plugin_file_upload" | "plugin.capability_complete"
     )
     .then_some(PLUGIN_FILE_UPLOAD_JSON_MAX_BYTES)
 }
@@ -88,7 +90,7 @@ pub fn optional_media_reference(
         conversation_id: Option<String>,
         message_seq: Option<i64>,
     }
-    let fields: Fields = serde_json::from_value(params.clone())
+    let fields: Fields = flare_im_core_sdk::json::from_value(params.clone())
         .map_err(|_| binding_invalid_parameter("invalid message media reference"))?;
     match (fields.conversation_id, fields.message_seq) {
         (None, None) => Ok(None),
@@ -524,7 +526,7 @@ pub fn message_from_json_str(params_json: &str) -> Result<IMMessage> {
     match IMMessage::from_json_str(params_json) {
         Ok(message) => Ok(message),
         Err(top_level_error) => {
-            let params = serde_json::from_str::<Value>(params_json).map_err(|params_error| {
+            let params = serde_json::from_slice::<Value>(params_json.as_bytes()).map_err(|params_error| {
                 binding_invalid_parameter(format!(
                     "missing or invalid JSON message: {top_level_error}; invalid params JSON: {params_error}"
                 ))
@@ -544,22 +546,22 @@ pub fn message_from_json_str(params_json: &str) -> Result<IMMessage> {
 }
 
 pub fn from_value<T: for<'de> Deserialize<'de>>(value: Value, label: &str) -> Result<T> {
-    serde_json::from_value(value)
+    flare_im_core_sdk::json::from_value(value)
         .map_err(|e| binding_invalid_parameter(format!("invalid {label}: {e}")))
 }
 
 pub fn from_json_str<T: for<'de> Deserialize<'de>>(json: &str, label: &str) -> Result<T> {
-    serde_json::from_str(json)
+    flare_im_core_sdk::json::from_str(json)
         .map_err(|e| binding_invalid_parameter(format!("invalid {label}: {e}")))
 }
 
 pub fn dispatch_params_from_json(json: &str) -> Result<Value> {
-    serde_json::from_str(json)
+    serde_json::from_slice(json.as_bytes())
         .map_err(|e| binding_invalid_parameter(format!("invalid dispatch params JSON: {e}")))
 }
 
 pub fn dispatch_operation_from_json(json: &str) -> Result<String> {
-    serde_json::from_str::<DispatchOperationRequest>(json)
+    flare_im_core_sdk::json::from_str::<DispatchOperationRequest>(json)
         .map(|request| request.op)
         .map_err(|e| binding_invalid_parameter(format!("invalid dispatch op: {e}")))
 }
@@ -766,6 +768,10 @@ mod tests {
         );
         assert_eq!(
             plugin_file_upload_json_limit("capability.plugin_file_upload"),
+            Some(24 * 1024 * 1024)
+        );
+        assert_eq!(
+            plugin_file_upload_json_limit("plugin.capability_complete"),
             Some(24 * 1024 * 1024)
         );
         for other in [

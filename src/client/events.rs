@@ -225,6 +225,16 @@ impl IMClient {
         self.with_engine(|e| e.bus().on_plugin_catalog_changed(f))
     }
 
+    /// The engine asks the host to do its part of a plugin host capability
+    /// (`requestId`, method, request); answer with
+    /// [`IMClient::complete_plugin_capability_request`].
+    pub fn on_plugin_capability_request<F>(&self, f: F) -> Result<Subscription>
+    where
+        F: Fn(u64, &str, &serde_json::Value) + Send + Sync + 'static,
+    {
+        self.with_engine(|e| e.bus().on_plugin_capability_request(f))
+    }
+
     // ========== 会话列表（元数据 / 未读 / 删除）==========
 
     /// 会话列表**同步完成**（或全量刷新）；参数为本次涉及的 `conversation_id` 列表。

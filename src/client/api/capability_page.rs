@@ -1,7 +1,7 @@
 //! Plugin pages: `CapabilityApi::plugin_page` and page actions.
 use serde_json::Value;
 
-use super::{CapabilityApi, CapabilityDispatchResult};
+use super::{CapabilityApi, CapabilityDispatchResult, PluginCallFuture};
 use crate::extension::capability::ui_page;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_plugin_protocol::{
@@ -15,7 +15,10 @@ impl CapabilityApi {
     /// conversationId?, filters?, cursor?, previous?, refresh?}` in, a v2 view out (`available`,
     /// `title`, `fields`, `actions`, `menuActions?`, `blocks?`, `inputs?`,
     /// `nextCursor?`, `unavailableReason?`) plus `data`, what it was resolved
-    /// against, which a page action passes back.
+    /// against, which a page action passes back, and `bundle: true` when the
+    /// page has a web bundle offered to this client
+    /// ([`CapabilityApi::bundle_offered`]): the host opens that with
+    /// `plugin_bundle_open` and keeps this view as its fallback.
     ///
     /// - `arguments`: the payload of the page target that opened the page
     ///   (`{kind: "host", target: {kind: "page"}, payload}` of an action);
@@ -40,7 +43,13 @@ impl CapabilityApi {
     ///   fails instead, and any other failure of the source is an error.
     ///
     /// A page is no card: its calls carry no `messageId` and bind no entity.
-    pub async fn plugin_page(&self, request: Value) -> Result<Value> {
+    // Boxed so that its future is compiled once, here, and not again in
+    // each crate that awaits it.
+    #[inline(never)]
+    pub fn plugin_page(&self, request: Value) -> PluginCallFuture<'_> {
+        Box::pin(self.plugin_page_now(request))
+    }
+    async fn plugin_page_now(&self, request: Value) -> Result<Value> {
         let mut request = ui_page::parse_page(request)?;
         let previous = request
             .previous
@@ -77,6 +86,25 @@ impl CapabilityApi {
                 };
                 let contribution = match catalog.page(&request.plugin_id, &request.page, &context) {
                     Ok((_, contribution)) => contribution,
+                    // A page this client cannot show: the whole-page upgrade
+                    // prompt, with the page's title and `minBuild`.
+                    Err(UiUnavailableReason::UpgradeRequired) if request.degrades() => {
+                        return match ui_page::upgrade_placeholder(
+                            &catalog,
+                            &request.plugin_id,
+                            &request.page,
+                        ) {
+                            Some(placeholder) => ui_page::page_view(
+                                &ResolvedPluginView::upgrade_required_entry(
+                                    placeholder,
+                                    &request.locale,
+                                ),
+                                None,
+                                request.conversation_id.as_deref(),
+                            ),
+                            None => inert(UiUnavailableReason::UpgradeRequired),
+                        };
+                    }
                     Err(reason) if request.degrades() => return inert(reason),
                     Err(_) => {
                         return Err(FlareError::localized(
@@ -84,6 +112,16 @@ impl CapabilityApi {
                             "sdk.plugin.ui_action_unavailable",
                         ));
                     }
+                };
+                // The page has a web bundle offered to this client: the host
+                // opens it with `plugin_bundle_open` (contributionId = page)
+                // and shows no opening state before a declarative page.
+                let bundle = self.bundle_offered(&catalog, &request.plugin_id, &request.page);
+                let mark = |mut page: Value| {
+                    if bundle && let Some(object) = page.as_object_mut() {
+                        object.insert("bundle".into(), Value::Bool(true));
+                    }
+                    page
                 };
                 let prepared = ui_page::prepare_page(contribution, &request)?;
                 // A malformed cursor is refused before anything is sent.
@@ -113,10 +151,10 @@ impl CapabilityApi {
                     );
                 }
                 let mut view = resolve(&first)?;
-                let mut data = first;
+                let data = first;
                 match previous {
                     Some((previous, _)) if request.refresh => {
-                        let wanted = ui_page::page_items(&previous);
+                        let wanted = previous.entries() + previous.rows();
                         let mut pages = 1;
                         while let Some(cursor) =
                             ui_page::refresh_continues(&view, wanted, pages).map(str::to_owned)
@@ -129,12 +167,15 @@ impl CapabilityApi {
                     }
                     Some((mut previous, previous_data)) => {
                         previous.append_page(view);
-                        view = previous;
-                        data = previous_data;
+                        return Ok(mark(ui_page::shown_page_view(
+                            previous,
+                            previous_data,
+                            request.conversation_id.as_deref(),
+                        )));
                     }
                     None => {}
                 }
-                ui_page::page_view(&view, Some(data), request.conversation_id.as_deref())
+                ui_page::page_view(&view, Some(data), request.conversation_id.as_deref()).map(mark)
             })
             .await
     }
@@ -216,9 +257,14 @@ impl CapabilityApi {
                     .find(|a| a.id == request.action_id)
                     .cloned()
                     .ok_or_else(|| FlareError::system("page action missing"))?;
-                let has_password = declaration.schema.inputs.iter().any(|i| action.form.contains(&i.id) && i.kind == flare_plugin_protocol::ui::UiInputKind::Password);
+                let has_password = declaration.schema.inputs.iter().any(|i| {
+                    action.form.contains(&i.id)
+                        && i.kind == flare_plugin_protocol::ui::UiInputKind::Password
+                });
                 if has_password && action.command.is_some() {
-                    return Err(FlareError::system("password inputs cannot enter durable commands"));
+                    return Err(FlareError::system(
+                        "password inputs cannot enter durable commands",
+                    ));
                 }
                 if (action.command.is_some() || has_password)
                     && request.data.as_ref().is_none_or(|d| {
@@ -231,7 +277,12 @@ impl CapabilityApi {
                         "sdk.plugin_command.session_changed",
                     ));
                 }
-                match ui_page::prepare_page_action(&self.default_tenant_id, &catalog, &request)? {
+                match ui_page::prepare_page_action(
+                    &self.default_tenant_id,
+                    &catalog,
+                    &request,
+                    &self.plugin_client().native,
+                )? {
                     PreparedAction::FormErrors(errors) => {
                         Ok(serde_json::json!({"kind":"formErrors","errors":errors}))
                     }
@@ -241,7 +292,7 @@ impl CapabilityApi {
                         ..
                     } => {
                         let conversation = request.conversation_id.as_deref();
-                        let (mut response, mut continuation) = if let Some(policy) = &action.command {
+                        let (response, continuation) = if let Some(policy) = &action.command {
                             self.page_command(crate::client::api::page_command::PageCommandCall {
                                 plugin: &request.page.plugin_id,
                                 catalog: &catalog,
@@ -274,100 +325,236 @@ impl CapabilityApi {
                             };
                             (response, action.continuation.clone())
                         };
-                        // A successful explicit operation may continue through one declared
-                        // durable action. Read fresh target truth, recheck its current grant,
-                        // and persist the financial command before dispatch. Secrets remain
-                        // solely in the initiating non-journalled request.
+                        let origin = PageContinuationOrigin {
+                            plugin_id: request.page.plugin_id.clone(),
+                            platform: request.platform,
+                            conversation_id: request.conversation_id.clone(),
+                            user_gesture: request.user_gesture,
+                        };
+                        // An operation that answers with a payment order runs nothing
+                        // further yet: its continuation is held for the order and runs
+                        // only after the viewer confirmed and the order's transient
+                        // operation succeeded (`plugin_capability_invoke`).
                         if response.success
-                            && let Some(transition) = continuation.as_ref()
-                            && let Some(action_id) = transition.action_id.as_deref()
+                            && let Some(transition) = continuation.clone()
+                            && let Some(order) =
+                                flare_plugin_protocol::ui::PaymentConfirmationOrder::from_result(
+                                    &request.page.plugin_id,
+                                    &response.data,
+                                )
                         {
-                            let next = transition.resolve(&response.data)
-                                .map_err(|_| FlareError::system("invalid operation continuation"))?
-                                .ok_or_else(|| FlareError::system("continuation unavailable"))?;
-                            let plugin = transition.plugin_id.as_deref().unwrap_or(&request.page.plugin_id);
-                            let (_, target) = catalog.page(plugin, &transition.page, &context)
-                                .map_err(|_| FlareError::localized(ErrorCode::OperationNotSupported, "sdk.plugin.ui_action_unavailable"))?;
-                            let follow = target.schema.actions.iter().find(|a| a.id == action_id)
-                                .ok_or_else(|| FlareError::system("continuation action missing"))?;
-                            let Some(policy) = follow.command.as_ref().filter(|p| p.mode == flare_plugin_protocol::ui::UiPageCommandMode::Submit) else {
-                                return Err(FlareError::system("continuation must be a durable submit"));
-                            };
-                            if !follow.form.is_empty() || follow.confirm.is_some()
-                                || follow.continuation.as_ref().is_some_and(|t| t.action_id.is_some())
-                            {
-                                return Err(FlareError::system("continuation cannot collect consent or chain"));
-                            }
-                            let target_request = ui_page::parse_page(serde_json::json!({
-                                "pluginId":plugin,"page":transition.page,"platform":request.platform,
-                                "conversationId":conversation,
-                                "arguments":next["payload"],
-                            }))?;
-                            let prepared = ui_page::prepare_page(target, &target_request)?;
-                            let mut data = self.page_data(&target_request, &prepared, prepared.input(None)?, user_id.as_deref().unwrap_or_default()).await?;
-                            data["_session"] = serde_json::json!({"tenantId":self.default_tenant_id,"userId":user_id});
-                            // Hidden or otherwise unavailable actions never become executable
-                            // merely because a source plugin named them.
-                            let view = target.resolve_page(&data, "", user_id.as_deref().unwrap_or_default())
-                                .ok_or_else(|| FlareError::system("continuation page unavailable"))?;
-                            if !view.actions.iter().any(|a| a.id == action_id) {
-                                return Err(FlareError::localized(ErrorCode::OperationNotSupported,"sdk.plugin.ui_action_unavailable"));
-                            }
-                            let call = ui_page::parse_page_action(serde_json::json!({
-                                "page":{"pluginId":plugin,"page":transition.page},"platform":request.platform,
-                                "conversationId":conversation,
-                                "actionId":action_id,"userGesture":request.user_gesture,"data":data,
-                            }))?;
-                            let PreparedAction::Ready {target:UiActionTarget::Operation {operation},mut payload,..} =
-                                ui_page::prepare_page_action(&self.default_tenant_id,&catalog,&call)? else {
-                                    return Err(FlareError::system("invalid continuation action"));
-                                };
-                            // A declared continuation may carry the stable identity of
-                            // its accepted source result. Repeated password submissions
-                            // then prepare the same durable command, including when two
-                            // calls race before either observes a pending journal row.
-                            if let Some(command) = next["payload"].get("commandId") {
-                                if payload.get("commandId").is_some_and(|old| old != command) {
-                                    return Err(FlareError::system("continuation command identity changed"));
-                                }
-                                payload["commandId"] = command.clone();
-                            }
-                            let follow_conversation = call.conversation_id.as_deref();
-                            let followed = self.page_command(crate::client::api::page_command::PageCommandCall {
-                                plugin,catalog:&catalog,viewer:user_id.as_deref().unwrap_or_default(),operation:&operation,
-                                payload,conversation:follow_conversation,policy,continuation:follow.continuation.clone(),
-                            }).await;
-                            match followed {
-                                Ok((result, mut next)) => {
-                                    if let Some(next) = next.as_mut() { next.plugin_id.get_or_insert_with(|| plugin.to_owned()); }
-                                    response = result; continuation = next;
-                                }
-                                // The financial submit may have committed. Show its own
-                                // journal/recovery UI; never leave a password retry on the
-                                // initiating page after an unknown follow-up.
-                                Err(_) => return Ok(ui_page::page_navigation(serde_json::json!({"kind":"host","target":{"kind":"page","pluginId":plugin,"page":transition.page},"payload":next["payload"]}), conversation)),
-                            }
+                            self.plugin_host.capability_host.payments.hold(
+                                super::native::HeldPaymentKey::new(
+                                    &self.default_tenant_id,
+                                    user_id.as_deref().unwrap_or_default(),
+                                    &request.page.plugin_id,
+                                    &order.order_id,
+                                ),
+                                origin,
+                                transition,
+                                order.expires_at_ms,
+                                self.server_clock.now_ms(),
+                            );
+                            return Ok(self.operation_outcome(
+                                user_id.as_deref(),
+                                &request.page.plugin_id,
+                                &response,
+                            ));
                         }
-                        if response.success
-                            && let Some(next) = continuation
-                                .and_then(|t| t.resolve(&response.data).ok())
-                                .flatten()
-                        {
-                            let target_plugin = next["target"]["pluginId"]
-                                .as_str()
-                                .unwrap_or(&request.page.plugin_id);
-                            let target_page = next["target"]["page"].as_str().unwrap_or_default();
-                            if catalog.page(target_plugin, target_page, &context).is_ok() {
-                                return Ok(ui_page::page_navigation(next, conversation));
-                            }
-                        }
-                        Ok(serde_json::json!({"kind":"operation","response":response}))
+                        self.continue_page_action(
+                            &catalog,
+                            &origin,
+                            user_id.as_deref(),
+                            response,
+                            continuation,
+                        )
+                        .await
                     }
                     PreparedAction::Ready {
                         target, payload, ..
-                    } => Ok(ui_page::page_navigation(serde_json::json!({"kind":"host","target":target,"payload":payload}), request.conversation_id.as_deref())),
+                    } => Ok(ui_page::page_navigation(
+                        serde_json::json!({"kind":"host","target":target,"payload":payload}),
+                        request.conversation_id.as_deref(),
+                    )),
                 }
             })
             .await
+    }
+}
+
+/// The page a page action ran on, which its continuation follows from.
+#[derive(Clone, Debug)]
+pub(crate) struct PageContinuationOrigin {
+    pub plugin_id: String,
+    pub platform: flare_plugin_protocol::manifest::ClientPlatform,
+    pub conversation_id: Option<String>,
+    pub user_gesture: bool,
+}
+
+impl CapabilityApi {
+    /// What a successful page operation leads to: its declared continuation
+    /// (a durable follow-up action, then the page it opens), else the
+    /// operation outcome. Shared by a page action and by the transient
+    /// operation behind a payment confirmation that action's order asked for.
+    pub(super) async fn continue_page_action(
+        &self,
+        catalog: &flare_plugin_protocol::ui::UiCatalog,
+        origin: &PageContinuationOrigin,
+        viewer: Option<&str>,
+        mut response: CapabilityDispatchResult,
+        mut continuation: Option<flare_plugin_protocol::ui::UiPageTransition>,
+    ) -> Result<Value> {
+        use crate::extension::capability::ui::PreparedAction;
+        use flare_plugin_protocol::ui::UiActionTarget;
+        let viewer = viewer.unwrap_or_default();
+        let context = UiRenderContext {
+            tenant: &self.default_tenant_id,
+            platform: origin.platform,
+            kind: UiContributionKind::Page,
+            locale: "",
+            viewer,
+            now_ms: ui_page::now_ms(),
+        };
+        let conversation = origin.conversation_id.as_deref();
+        // A successful explicit operation may continue through one declared
+        // durable action. Read fresh target truth, recheck its current grant,
+        // and persist the financial command before dispatch. Secrets remain
+        // solely in the initiating non-journalled request.
+        if response.success
+            && let Some(transition) = continuation.as_ref()
+            && let Some(action_id) = transition.action_id.as_deref()
+        {
+            let next = transition
+                .resolve(&response.data)
+                .map_err(|_| FlareError::system("invalid operation continuation"))?
+                .ok_or_else(|| FlareError::system("continuation unavailable"))?;
+            let plugin = transition.plugin_id.as_deref().unwrap_or(&origin.plugin_id);
+            let (_, target) = catalog
+                .page(plugin, &transition.page, &context)
+                .map_err(|_| {
+                    FlareError::localized(
+                        ErrorCode::OperationNotSupported,
+                        "sdk.plugin.ui_action_unavailable",
+                    )
+                })?;
+            let follow = target
+                .schema
+                .actions
+                .iter()
+                .find(|a| a.id == action_id)
+                .ok_or_else(|| FlareError::system("continuation action missing"))?;
+            let Some(policy) = follow
+                .command
+                .as_ref()
+                .filter(|p| p.mode == flare_plugin_protocol::ui::UiPageCommandMode::Submit)
+            else {
+                return Err(FlareError::system("continuation must be a durable submit"));
+            };
+            if !follow.form.is_empty()
+                || follow.confirm.is_some()
+                || follow
+                    .continuation
+                    .as_ref()
+                    .is_some_and(|t| t.action_id.is_some())
+            {
+                return Err(FlareError::system(
+                    "continuation cannot collect consent or chain",
+                ));
+            }
+            let target_request = ui_page::parse_page(serde_json::json!({
+                "pluginId":plugin,"page":transition.page,"platform":origin.platform,
+                "conversationId":conversation,
+                "arguments":next["payload"],
+            }))?;
+            let prepared = ui_page::prepare_page(target, &target_request)?;
+            let mut data = self
+                .page_data(&target_request, &prepared, prepared.input(None)?, viewer)
+                .await?;
+            data["_session"] = serde_json::json!({"tenantId":self.default_tenant_id,"userId":(!viewer.is_empty()).then_some(viewer)});
+            // Hidden or otherwise unavailable actions never become executable
+            // merely because a source plugin named them.
+            let view = target
+                .resolve_page(&data, "", viewer)
+                .ok_or_else(|| FlareError::system("continuation page unavailable"))?;
+            if !view.actions.iter().any(|a| a.id == action_id) {
+                return Err(FlareError::localized(
+                    ErrorCode::OperationNotSupported,
+                    "sdk.plugin.ui_action_unavailable",
+                ));
+            }
+            let call = ui_page::parse_page_action(serde_json::json!({
+                "page":{"pluginId":plugin,"page":transition.page},"platform":origin.platform,
+                "conversationId":conversation,
+                "actionId":action_id,"userGesture":origin.user_gesture,"data":data,
+            }))?;
+            let PreparedAction::Ready {
+                target: UiActionTarget::Operation { operation },
+                mut payload,
+                ..
+            } = ui_page::prepare_page_action(
+                &self.default_tenant_id,
+                catalog,
+                &call,
+                &self.plugin_client().native,
+            )?
+            else {
+                return Err(FlareError::system("invalid continuation action"));
+            };
+            // A declared continuation may carry the stable identity of
+            // its accepted source result. Repeated password submissions
+            // then prepare the same durable command, including when two
+            // calls race before either observes a pending journal row.
+            if let Some(command) = next["payload"].get("commandId") {
+                if payload.get("commandId").is_some_and(|old| old != command) {
+                    return Err(FlareError::system("continuation command identity changed"));
+                }
+                payload["commandId"] = command.clone();
+            }
+            let follow_conversation = call.conversation_id.as_deref();
+            let followed = self
+                .page_command(crate::client::api::page_command::PageCommandCall {
+                    plugin,
+                    catalog,
+                    viewer,
+                    operation: &operation,
+                    payload,
+                    conversation: follow_conversation,
+                    policy,
+                    continuation: follow.continuation.clone(),
+                })
+                .await;
+            match followed {
+                Ok((result, mut next)) => {
+                    if let Some(next) = next.as_mut() {
+                        next.plugin_id.get_or_insert_with(|| plugin.to_owned());
+                    }
+                    response = result;
+                    continuation = next;
+                }
+                // The financial submit may have committed. Show its own
+                // journal/recovery UI; never leave a password retry on the
+                // initiating page after an unknown follow-up.
+                Err(_) => {
+                    return Ok(ui_page::page_navigation(
+                        serde_json::json!({"kind":"host","target":{"kind":"page","pluginId":plugin,"page":transition.page},"payload":next["payload"]}),
+                        conversation,
+                    ));
+                }
+            }
+        }
+        if response.success
+            && let Some(next) = continuation
+                .and_then(|t| t.resolve(&response.data).ok())
+                .flatten()
+        {
+            let target_plugin = next["target"]["pluginId"]
+                .as_str()
+                .unwrap_or(&origin.plugin_id);
+            let target_page = next["target"]["page"].as_str().unwrap_or_default();
+            if catalog.page(target_plugin, target_page, &context).is_ok() {
+                return Ok(ui_page::page_navigation(next, conversation));
+            }
+        }
+        Ok(self.operation_outcome(Some(viewer), &origin.plugin_id, &response))
     }
 }

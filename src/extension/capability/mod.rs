@@ -7,6 +7,8 @@
 //!
 //! 插件下行实时包与目录变更通知以类型化事件 [`crate::kernel::event::PluginEvent`] 交给宿主。
 
+/// L3 web bundles: cache, bridge broker, storage and events.
+pub mod bundle;
 mod manifest;
 mod plugin;
 /// Localized keys of plugin call failures.

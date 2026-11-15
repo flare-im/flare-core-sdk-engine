@@ -28,6 +28,15 @@ pub const CAPABILITY_DISPATCH_OPERATIONS: &[&str] = &[
     "plugin_page",
     "plugin_file_upload",
     "plugin_native_invoke",
+    "plugin_capability_invoke",
+    "plugin_capability_consents",
+    "plugin_capability_consent_revoke",
+    "plugin_bundle_open",
+    "plugin_bundle_bridge",
+    "plugin_bundle_host_result",
+    "plugin_bundle_host_event",
+    "plugin_bundle_close",
+    "plugin_bundle_prefetch",
     "plugin_account_entries",
     "plugin_scan_handlers",
     "plugin_catalog_invalidate",
@@ -166,6 +175,87 @@ pub async fn dispatch_capability(
         ),
         "plugin_native_invoke" => json(
             api.plugin_native_invoke(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_capability_invoke" => json(
+            api.plugin_capability_invoke(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_capability_consents" => json(
+            api.plugin_capability_consents(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_capability_consent_revoke" => json(
+            api.revoke_plugin_capability_consent(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_bundle_open" => json(
+            api.plugin_bundle_open(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_bundle_bridge" => json(
+            api.plugin_bundle_bridge(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_bundle_host_result" => json(
+            api.plugin_bundle_host_result(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_bundle_host_event" => json(
+            api.plugin_bundle_host_event(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_bundle_close" => json(
+            api.plugin_bundle_close(
+                params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .await?,
+        ),
+        "plugin_bundle_prefetch" => json(
+            api.plugin_bundle_prefetch(
                 params
                     .get("payload")
                     .cloned()

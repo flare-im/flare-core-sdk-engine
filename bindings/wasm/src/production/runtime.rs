@@ -38,7 +38,8 @@ fn parse_request(request_json: &str) -> Result<Value, JsValue> {
     if request_json.trim().is_empty() {
         return Ok(Value::Null);
     }
-    serde_json::from_str(request_json).map_err(|error| js_error("invalidParameter", "parse", error))
+    serde_json::from_slice(request_json.as_bytes())
+        .map_err(|error| js_error("invalidParameter", "parse", error))
 }
 
 fn spawn_event_bridge(rx: SharedEventReceiver, bridge: SessionTaskSlot, runtime_id: u64) {
@@ -207,13 +208,13 @@ async fn invoke_impl(
                 .map(str::to_string);
             let sdk_config = if request.get("sdkConfig").is_some() {
                 Some(
-                    serde_json::from_value(
+                    flare_im_core_sdk::json::from_value(
                         request.get("sdkConfig").cloned().unwrap_or(Value::Null),
                     )
                     .map_err(|e| js_error("invalidParameter", operation, e))?,
                 )
             } else {
-                serde_json::from_value(request.clone()).ok()
+                flare_im_core_sdk::json::from_value(request.clone()).ok()
             };
             state
                 .set_config(environment, sdk_config)

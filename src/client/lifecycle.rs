@@ -210,7 +210,7 @@ mod tests {
     /// 没给保留构建期的，两边都没有就保持为空——绝不回退成假版本号。
     #[test]
     fn app_overlay_merges_onto_configured_config() {
-        let overlay: SdkConfigOverlay = serde_json::from_value(serde_json::json!({
+        let overlay: SdkConfigOverlay = crate::shared::util::json::from_value(serde_json::json!({
             "app": { "version": "3.2.1", "build": 30201, "distribution": "appstore", "channel": "stable" }
         }))
         .expect("camelCase app object");
@@ -239,7 +239,7 @@ mod tests {
     /// 开发模式的接入配置原样带过去；旧的单地址字段与全局钉扎不再被认（一条路径）。
     #[test]
     fn access_overlay_is_the_only_way_to_say_where_to_connect() {
-        let overlay: SdkConfigOverlay = serde_json::from_value(serde_json::json!({
+        let overlay: SdkConfigOverlay = crate::shared::util::json::from_value(serde_json::json!({
             "access": {
                 "trustMode": "development",
                 "developmentEndpoints": {
@@ -279,8 +279,10 @@ mod tests {
             assert!(json.get(removed).is_none(), "{removed} must be gone");
         }
         assert!(
-            serde_json::from_value::<SdkConfigOverlay>(serde_json::json!({ "wsUrl": "ws://x" }))
-                .is_ok_and(|overlay| overlay.access.is_none()),
+            crate::shared::util::json::from_value::<SdkConfigOverlay>(
+                serde_json::json!({ "wsUrl": "ws://x" })
+            )
+            .is_ok_and(|overlay| overlay.access.is_none()),
             "unknown legacy keys are ignored, never mapped"
         );
         let production = AccessConfig::production("b7f3c9a1e2d4b6a8", vec![], None);

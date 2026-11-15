@@ -315,6 +315,29 @@ pub enum PluginEvent {
         /// The authorization projection version Core announced.
         version: String,
     },
+    /// The engine asks the host to do its part of a plugin host capability
+    /// (`plugin_capability_invoke`): ask the viewer's consent, capture a
+    /// document, pick a file, confirm a payment or take a location fix. The
+    /// host answers with `plugin.capability_complete` `{requestId, result}`;
+    /// the methods and result shapes are on
+    /// `crate::client::api::native::EventCapabilityHost`.
+    CapabilityRequest {
+        request_id: u64,
+        /// `consent`, `captureDocument`, `pickFile`, `confirmPayment` or `locateOnce`.
+        method: String,
+        request: serde_json::Value,
+    },
+    /// Something for an open web bundle page (`plugin_bundle_open`): a bridge
+    /// event `envelope` the host posts to the bundle as it is (a subscribed
+    /// topic, or `lifecycle.revoked`), and/or `close` when the host must close
+    /// the page: `withdrawn`, `suspended`, `disabled`, `replaced` (the catalog
+    /// stopped serving it), `evicted` (a newer page took its place) or
+    /// `signedOut`.
+    Bundle {
+        session_id: String,
+        envelope: Option<String>,
+        close: Option<String>,
+    },
 }
 
 /// Notification 域事件：IM 下行 `NotificationContent`（与聊天 `MessageEvent::Received` 分离），

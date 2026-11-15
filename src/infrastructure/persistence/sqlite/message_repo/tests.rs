@@ -567,7 +567,7 @@ async fn init_schema_backfills_fts_for_existing_messages() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 4);
+    assert_eq!(version, 6);
 
     let repo = SqliteMessageRepo::new(pool);
     let results = repo.search("searchable", 10).await.unwrap();

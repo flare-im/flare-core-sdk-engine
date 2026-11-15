@@ -4,3 +4,6 @@
 # opt-level 3. `scripts/check_wasm_budget.py` measures the result.
 [profile.release]
 opt-level = "z"
+# The browser target cannot unwind (its standard library is built to abort), so the workspace's
+# `panic = "unwind"` only adds cleanup paths that never run. A panic aborts either way.
+panic = "abort"

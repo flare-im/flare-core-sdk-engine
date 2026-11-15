@@ -13,7 +13,7 @@ use flare_plugin_protocol::{
     manifest::{ClientPlatform, UiContribution, UiContributionKind},
     ui::{
         DETAIL_CURSOR_INPUT, MAX_UI_ACTION_INPUT_BYTES, NativeCapability, ResolvedPluginView,
-        ResolvedUiBlock, UiCatalog, UiUnavailableReason,
+        ResolvedUiBlock, ShownPluginView, UiCatalog, UiUnavailableReason,
     },
 };
 use serde::Deserialize;
@@ -48,8 +48,29 @@ pub(crate) fn page_admission_unavailable(reason: UiUnavailableReason) -> FlareEr
         UiUnavailableReason::IncompatibleVersion => "incompatible_version",
         UiUnavailableReason::CatalogUnreachable => "catalog_unreachable",
         UiUnavailableReason::UnboundCopy => "unbound_copy",
+        UiUnavailableReason::UpgradeRequired => "upgrade_required",
     };
     admission_unavailable("page", reason)
+}
+/// The upgrade placeholder standing for `page` of `plugin_id`, if the
+/// catalog has one: what a page this client cannot show is listed as.
+pub(crate) fn upgrade_placeholder<'a>(
+    catalog: &'a UiCatalog,
+    plugin_id: &str,
+    page: &str,
+) -> Option<&'a flare_plugin_protocol::manifest::UiContribution> {
+    catalog
+        .plugins
+        .iter()
+        .find(|p| p.plugin_id == plugin_id)?
+        .extensions
+        .contributions
+        .iter()
+        .find(|c| {
+            c.id == page
+                && c.kind == flare_plugin_protocol::manifest::UiContributionKind::Page
+                && c.upgrade.is_some()
+        })
 }
 pub(crate) fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -114,7 +135,8 @@ impl PageRequest {
 
 pub(crate) fn parse_page(request: Value) -> Result<PageRequest> {
     bounded(&request)?;
-    let mut parsed: PageRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let mut parsed: PageRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     if let Some(previous) = &parsed.previous {
         let previous_conversation = match previous.get("conversationId") {
             None | Some(Value::Null) => None,
@@ -131,7 +153,7 @@ pub(crate) fn parse_page(request: Value) -> Result<PageRequest> {
     }
     if !valid_id(&parsed.plugin_id)
         || !valid_id(&parsed.page)
-        || !parsed.page.starts_with(&format!("{}.", parsed.plugin_id))
+        || !crate::shared::util::is_under_namespace(&parsed.page, &parsed.plugin_id)
         || parsed.locale.len() > 32
         || parsed
             .conversation_id
@@ -149,14 +171,17 @@ pub(crate) fn parse_page(request: Value) -> Result<PageRequest> {
 }
 
 /// A view a host passes back (`previous`): the view and the `data` it was
-/// returned with.
-pub(crate) fn split_previous(previous: Value) -> Result<(ResolvedPluginView, Value)> {
+/// returned with. The view stays JSON ([`ShownPluginView`]): paging only
+/// appends to its entries and rows.
+pub(crate) fn split_previous(previous: Value) -> Result<(ShownPluginView, Value)> {
     let Value::Object(mut object) = previous else {
         return Err(invalid());
     };
     let data = object.remove("data").unwrap_or(Value::Null);
     object.remove("conversationId");
-    let view = serde_json::from_value(Value::Object(object)).map_err(|_| invalid())?;
+    // The `bundle` marker of `plugin_page` is the host's, not the view's.
+    object.remove("bundle");
+    let view = ShownPluginView::from_value(Value::Object(object)).ok_or_else(invalid)?;
     Ok((view, data))
 }
 
@@ -245,16 +270,33 @@ pub(crate) fn page_view(
     data: Option<Value>,
     conversation: Option<&str>,
 ) -> Result<Value> {
-    let mut value = serde_json::to_value(view).map_err(|_| invalid())?;
-    if view.available
-        && let (Some(data), Some(object)) = (data, value.as_object_mut())
-    {
+    let value = serde_json::to_value(view).map_err(|_| invalid())?;
+    Ok(page_value(value, view.available, data, conversation))
+}
+
+/// [`page_view`] of a shown view a page was appended to.
+pub(crate) fn shown_page_view(
+    view: ShownPluginView,
+    data: Value,
+    conversation: Option<&str>,
+) -> Value {
+    let available = view.available();
+    page_value(view.into_value(), available, Some(data), conversation)
+}
+
+fn page_value(
+    mut value: Value,
+    available: bool,
+    data: Option<Value>,
+    conversation: Option<&str>,
+) -> Value {
+    if available && let (Some(data), Some(object)) = (data, value.as_object_mut()) {
         object.insert("data".into(), data);
     }
     if let Some(conversation) = conversation {
         value["conversationId"] = conversation.into();
     }
-    Ok(value)
+    value
 }
 
 /// Carry host route context alongside navigation, never inside plugin arguments.
@@ -309,8 +351,6 @@ pub(crate) struct PageActionRequest {
     pub action_id: String,
     pub user_gesture: bool,
     #[serde(default)]
-    pub native_allowlist: BTreeSet<NativeCapability>,
-    #[serde(default)]
     pub conversation_id: Option<String>,
     #[serde(default)]
     pub data: Option<Value>,
@@ -329,7 +369,8 @@ pub(crate) fn is_page_action(request: &Value) -> bool {
 
 pub(crate) fn parse_page_action(request: Value) -> Result<PageActionRequest> {
     bounded(&request)?;
-    let parsed: PageActionRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let parsed: PageActionRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     if !valid_id(&parsed.page.plugin_id)
         || !valid_id(&parsed.page.page)
         || parsed.data.as_ref().is_some_and(|d| !d.is_object())
@@ -348,7 +389,7 @@ pub(crate) fn parse_page_action(request: Value) -> Result<PageActionRequest> {
 }
 
 /// Check a page action against the catalog (declaration, platform, gesture,
-/// host consent) and bind its input: a document action over the page `data`
+/// host consent: `native`, the host profile's allowlist) and bind its input: a document action over the page `data`
 /// (form and choices selection as on a card); a row action from the row's
 /// bound input, which must name exactly the action's declared inputs, plus
 /// its form. Nothing is sent from here.
@@ -356,6 +397,7 @@ pub(crate) fn prepare_page_action(
     tenant: &str,
     catalog: &UiCatalog,
     request: &PageActionRequest,
+    native: &BTreeSet<NativeCapability>,
 ) -> Result<PreparedAction> {
     let action_now_ms = now_ms();
     let target = catalog
@@ -365,7 +407,7 @@ pub(crate) fn prepare_page_action(
             &request.page.page,
             &request.action_id,
             request.platform,
-            &request.native_allowlist,
+            native,
             request.user_gesture,
             action_now_ms,
         )

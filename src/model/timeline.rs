@@ -325,11 +325,12 @@ mod tests {
     #[test]
     fn open_timeline_view_request_reads_an_optional_anchor() {
         let plain: OpenTimelineViewRequest =
-            serde_json::from_value(json!({ "conversationId": "c1" })).expect("decodes");
+            crate::shared::util::json::from_value(json!({ "conversationId": "c1" }))
+                .expect("decodes");
         assert_eq!(plain.message_limit, 40);
         assert!(plain.anchor.is_none());
 
-        let anchored: OpenTimelineViewRequest = serde_json::from_value(json!({
+        let anchored: OpenTimelineViewRequest = crate::shared::util::json::from_value(json!({
             "conversationId": "c1",
             "messageLimit": 40,
             "anchor": { "messageId": "srv-123", "seq": 81234 }

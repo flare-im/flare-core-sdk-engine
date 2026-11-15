@@ -182,6 +182,12 @@ public final class DefaultEventsApi: EventsApiProtocol {
     public func onPluginCatalogChanged(_ listener: @escaping EventCallback<PluginCatalogChangedEvent>) -> any EventSubscription {
         registerTyped(listener)
     }
+    public func onPluginCapabilityRequest(_ listener: @escaping EventCallback<PluginCapabilityRequestEvent>) -> any EventSubscription {
+        registerTyped(listener)
+    }
+    public func onPluginBundleEvent(_ listener: @escaping EventCallback<PluginBundleEvent>) -> any EventSubscription {
+        registerTyped(listener)
+    }
     public func onNotificationPresent(_ listener: @escaping EventCallback<NotificationPresentation>) -> any EventSubscription {
         registerTyped(listener)
     }
@@ -317,6 +323,18 @@ private func nativeEventFromCode(eventType: Int, payload: Any?) throws -> Any {
         )
     case EventCode.pluginCatalogChanged:
         return PluginCatalogChangedEvent(version: try requiredString(json["version"]?.value, "version"))
+    case EventCode.pluginCapabilityRequest:
+        return PluginCapabilityRequestEvent(
+            requestId: try requiredUInt64(json["requestId"]?.value, "requestId"),
+            method: try requiredString(json["method"]?.value, "method"),
+            request: try requiredJsonObject(json["request"]?.value, "request")
+        )
+    case EventCode.pluginBundleEvent:
+        return PluginBundleEvent(
+            sessionId: try requiredString(json["sessionId"]?.value, "sessionId"),
+            envelope: try optionalString(json["envelope"]?.value, "envelope"),
+            close: try optionalString(json["close"]?.value, "close")
+        )
     case EventCode.notificationPresent:
         return try notificationPresentationFromJson(plainMap(json))
     case EventCode.notificationClear:
@@ -650,6 +668,14 @@ private func dispatchToListener(_ listener: any FlareImEventListener, event: Any
     }
     if let catalog = event as? PluginCatalogChangedEvent {
         listener.onPluginCatalogChanged(catalog)
+        return
+    }
+    if let request = event as? PluginCapabilityRequestEvent {
+        listener.onPluginCapabilityRequest(request)
+        return
+    }
+    if let bundle = event as? PluginBundleEvent {
+        listener.onPluginBundleEvent(bundle)
         return
     }
     if let presentation = event as? NotificationPresentation {

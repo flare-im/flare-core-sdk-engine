@@ -181,6 +181,28 @@
       "json_expr": "resources"
     },
     {
+      "route": "update.plugin_upgrade_status",
+      "result": "json",
+      "body": "\n            let min_build = dispatch_support::optional_value::<u64>(request, \"minBuild\")?;\n            let status = client.plugin_upgrade_status(min_build).await?;\n        ",
+      "json_expr": "status"
+    },
+    {
+      "route": "update.open_flow",
+      "result": "json",
+      "body": "\n            let status = client.open_update_flow().await?;\n        ",
+      "json_expr": "status"
+    },
+    {
+      "route": "plugin.set_host_profile",
+      "result": "unit",
+      "body": "\n            client.set_plugin_host_profile(request.clone()).await?;\n        "
+    },
+    {
+      "route": "plugin.capability_complete",
+      "result": "unit",
+      "body": "\n            client.complete_plugin_capability_request(request.clone()).await?;\n        "
+    },
+    {
       "route": "connection.server_clock",
       "result": "json",
       "body": "\n            let clock = client.server_clock().await;\n        ",

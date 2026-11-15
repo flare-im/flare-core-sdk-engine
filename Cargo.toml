@@ -110,7 +110,8 @@ schemars = { workspace = true }
 flare-plugin-protocol = { version = "0.1.0", path = "../flare-protocol/flare-plugin-protocol" }
 # 提示规则（决策、会话槽位与设备预算、通知文案）：与推送服务端同一份实现，无 IO、可编进 wasm。
 flare-notify-rules = { version = "0.1.0", path = "../flare-protocol/flare-notify-rules" }
-anyhow = { workspace = true }
+# `std` only off the browser: see the native entry below.
+anyhow = { version = "1.0", default-features = false }
 thiserror = "2.0"
 async-trait = "0.1.92"
 arc-swap = "1.7"
@@ -137,10 +138,16 @@ flare-im-core-sdk-storage-sqlite = { version = "1.1.0", path = "storage/sqlite",
 pulldown-cmark = "0.12"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The browser cannot capture a backtrace, and anyhow's `std` feature would still link the
+# backtrace printer and symbol demangler into the WASM bundle; native builds keep it.
+anyhow = { workspace = true }
 # wasm 走浏览器的 `String.prototype.normalize`，共用路径的 URL 判定走 `flare_access::ParsedUrl`。
 # 这里的 `url` 只留给原生专属代码：`file:` 转路径，以及必须和 reqwest 同样解析的钉扎。
 unicode-normalization = "0.1"
 url = "2.5"
+# Web bundle archives are unpacked into the native cache only; the browser reads the
+# sandbox domain's unpacked copy, so wasm builds keep the zip reader out.
+flare-plugin-protocol = { version = "0.1.0", path = "../flare-protocol/flare-plugin-protocol", features = ["bundle-archive"] }
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }

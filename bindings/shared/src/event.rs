@@ -394,6 +394,22 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         SdkEvent::Plugin(PluginEvent::CatalogChanged { version }) => {
             ("plugin.catalog_changed", json!({ "version": version }))
         }
+        SdkEvent::Plugin(PluginEvent::CapabilityRequest {
+            request_id,
+            method,
+            request,
+        }) => (
+            "plugin.capability_request",
+            json!({ "requestId": request_id, "method": method, "request": request }),
+        ),
+        SdkEvent::Plugin(PluginEvent::Bundle {
+            session_id,
+            envelope,
+            close,
+        }) => (
+            "plugin.bundle_event",
+            json!({ "sessionId": session_id, "envelope": envelope, "close": close }),
+        ),
         _ => return None,
     };
 
@@ -689,6 +705,41 @@ mod tests {
         assert_eq!(channel, "im://notification_badge");
         assert_eq!(sdk_event_code(&badge), 3505);
         assert_eq!(payload, json!({"count": 12}));
+    }
+
+    #[test]
+    fn plugin_capability_requests_reach_hosts_with_their_request_id() {
+        let event = SdkEvent::Plugin(PluginEvent::CapabilityRequest {
+            request_id: 7,
+            method: "captureDocument".to_string(),
+            request: json!({"pluginId": "example.identity", "side": "front"}),
+        });
+        let (channel, payload) =
+            sdk_event_channel_payload(&event).expect("capability request should map to channel");
+
+        assert_eq!(channel, "im://plugin_capability_request");
+        assert_eq!(sdk_event_code(&event), 7003);
+        assert_eq!(
+            payload,
+            json!({"requestId": 7, "method": "captureDocument",
+                   "request": {"pluginId": "example.identity", "side": "front"}})
+        );
+    }
+
+    #[test]
+    fn plugin_bundle_events_reach_hosts_with_their_session() {
+        let event = SdkEvent::Plugin(PluginEvent::Bundle {
+            session_id: "s1".to_string(),
+            envelope: Some(r#"{"bridge":1,"type":"event","event":"catalog.changed"}"#.into()),
+            close: None,
+        });
+        let (channel, payload) =
+            sdk_event_channel_payload(&event).expect("bundle event should map to channel");
+
+        assert_eq!(channel, "im://plugin_bundle_event");
+        assert_eq!(sdk_event_code(&event), 7004);
+        assert_eq!(payload["sessionId"], "s1");
+        assert_eq!(payload["close"], json!(null));
     }
 
     #[test]

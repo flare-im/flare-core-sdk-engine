@@ -90,6 +90,12 @@ pub const EVENT_ROUTE_TABLE: &[(i32, &str, &str)] = &[
         "plugin.catalog_changed",
         "im://plugin_catalog_changed",
     ),
+    (
+        7003,
+        "plugin.capability_request",
+        "im://plugin_capability_request",
+    ),
+    (7004, "plugin.bundle_event", "im://plugin_bundle_event"),
 ];
 
 pub fn contract_event_id_for_code(code: i32) -> Option<&'static str> {

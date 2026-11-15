@@ -8,6 +8,10 @@ use std::sync::Arc;
 /// 存储提供者 — 统一持有各 Store；待发/用户资料使用 domain Reader/Writer 分开持有
 pub struct StoreProvider {
     pub plugin_commands: Option<Arc<dyn crate::domain::PluginCommandStore>>,
+    /// 插件能力同意记录（用户库）；没有时进程内保存，重启后重新询问。
+    pub plugin_consents: Option<Arc<dyn crate::domain::PluginConsentStore>>,
+    /// 插件 Web 包经桥存的数据（用户库独立表）；没有时进程内保存。
+    pub plugin_bundle_storage: Option<Arc<dyn crate::domain::PluginBundleStorage>>,
     pub messages: Arc<dyn MessageStore>,
     pub conversations: Arc<dyn ConversationStore>,
     pub conversation_participants: Option<Arc<dyn ConversationParticipantStore>>,
@@ -88,6 +92,8 @@ impl Clone for StoreProvider {
     fn clone(&self) -> Self {
         Self {
             plugin_commands: self.plugin_commands.clone(),
+            plugin_consents: self.plugin_consents.clone(),
+            plugin_bundle_storage: self.plugin_bundle_storage.clone(),
             messages: self.messages.clone(),
             conversations: self.conversations.clone(),
             conversation_participants: self.conversation_participants.clone(),

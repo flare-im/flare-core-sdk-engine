@@ -1324,8 +1324,8 @@ mod tests {
         assert_eq!(value["content"]["title"], "Notice");
         assert_eq!(value["content"]["body"], "Body");
 
-        let decoded: IMMessage =
-            serde_json::from_value(value).expect("deserialize binding notification message");
+        let decoded: IMMessage = crate::shared::util::json::from_value(value)
+            .expect("deserialize binding notification message");
 
         assert_message_shape(
             "notification",

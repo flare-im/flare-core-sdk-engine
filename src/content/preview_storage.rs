@@ -94,7 +94,8 @@ impl PreviewStoragePayload {
                 .a
                 .get("inner")
                 .and_then(|inner| {
-                    serde_json::from_value::<PreviewStoragePayload>(inner.clone()).ok()
+                    crate::shared::util::json::from_value::<PreviewStoragePayload>(inner.clone())
+                        .ok()
                 })
                 .map(|inner| inner.verbatim_text())
                 .filter(|text| !text.is_empty()),
@@ -116,7 +117,7 @@ pub fn decode_or_user_text(s: &str) -> PreviewStoragePayload {
             a: Map::new(),
         };
     }
-    if let Ok(p) = serde_json::from_str::<PreviewStoragePayload>(t) {
+    if let Ok(p) = crate::shared::util::json::from_str::<PreviewStoragePayload>(t) {
         return p;
     }
     let mut a = Map::new();
@@ -145,7 +146,7 @@ pub fn is_redundant_content_text_extra(s: &str) -> bool {
     if t == "[未知]" {
         return true;
     }
-    if let Ok(p) = serde_json::from_str::<PreviewStoragePayload>(t)
+    if let Ok(p) = crate::shared::util::json::from_str::<PreviewStoragePayload>(t)
         && p.k == keys::UNKNOWN
     {
         return true;
@@ -170,7 +171,7 @@ fn resolve_i18n_key(data: &HashMap<String, String>, fallback_key: &str) -> Optio
 
 fn attach_i18n_params(a: &mut Map<String, Value>, data: &HashMap<String, String>) {
     if let Some(raw) = data.get("i18n_params")
-        && let Ok(params) = serde_json::from_str::<Map<String, Value>>(raw)
+        && let Ok(params) = serde_json::from_slice::<Map<String, Value>>(raw.as_bytes())
         && !params.is_empty()
     {
         a.insert("p".into(), Value::Object(params));

@@ -89,7 +89,7 @@ impl MessageApi {
             )
         })?;
         let request: crate::application::services::read_summaries::ReadReceiptMembersRequest =
-            serde_json::from_value(request).map_err(|_| {
+            crate::shared::util::json::from_value(request).map_err(|_| {
                 FlareError::localized(
                     ErrorCode::InvalidParameter,
                     "sdk.read_receipt.invalid_request",

@@ -9,6 +9,13 @@ pub use plugin_command_repository::{
     MAX_TERMINAL_ERROR_CODES, PluginCommand, PluginCommandRecord, PluginCommandScope,
     PluginCommandStore,
 };
+pub(crate) mod plugin_consent_repository;
+pub use plugin_consent_repository::{PluginConsent, PluginConsentScope, PluginConsentStore};
+pub(crate) mod plugin_bundle_storage_repository;
+pub use plugin_bundle_storage_repository::{
+    PluginBundleStorage, PluginBundleStorageScope, bundle_storage_cost, bundle_storage_fits,
+    valid_bundle_storage_key,
+};
 mod sync_cursor_repository;
 mod timeline_coverage_repository;
 mod upload_manifest_repository;

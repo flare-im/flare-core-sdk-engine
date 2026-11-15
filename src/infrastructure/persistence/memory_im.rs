@@ -1021,6 +1021,8 @@ pub fn in_memory_im_provider() -> StoreProvider {
     let user_profiles = Arc::new(MemoryUserProfileStore::new());
     StoreProvider {
         plugin_commands: None,
+        plugin_consents: None,
+        plugin_bundle_storage: None,
         messages: Arc::new(MemoryMessageStore::new()),
         conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
@@ -1621,7 +1623,7 @@ mod tests {
     #[tokio::test]
     async fn plugin_message_state_is_monotonic_and_survives_ack_and_sync() {
         let state = |version: u64, status: &str| {
-            serde_json::from_value::<flare_plugin_protocol::ui::PluginMessageState>(
+            crate::shared::util::json::from_value::<flare_plugin_protocol::ui::PluginMessageState>(
                 serde_json::json!({"version": version, "values": {"status": status}}),
             )
             .unwrap()

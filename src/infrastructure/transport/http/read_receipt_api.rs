@@ -165,16 +165,17 @@ mod tests {
 
     #[test]
     fn wire_pages_decode_from_core_shapes() {
-        let summaries: HttpApiResponse<SummariesData> = serde_json::from_value(serde_json::json!({
-            "code": 0,
-            "data": {"conversation_id": "g1", "available": true, "summaries": [
-                {"server_msg_id": "s1", "read_count": 2, "unread_count": 3, "total": 5}]}
-        }))
-        .unwrap();
+        let summaries: HttpApiResponse<SummariesData> =
+            crate::shared::util::json::from_value(serde_json::json!({
+                "code": 0,
+                "data": {"conversation_id": "g1", "available": true, "summaries": [
+                    {"server_msg_id": "s1", "read_count": 2, "unread_count": 3, "total": 5}]}
+            }))
+            .unwrap();
         let data = unwrap_api_response(summaries, "x").unwrap();
         assert!(data.available);
         assert_eq!(data.summaries[0].summary().unread_count, 3);
-        let readers: HttpApiResponse<ReadersData> = serde_json::from_value(serde_json::json!({
+        let readers: HttpApiResponse<ReadersData> = crate::shared::util::json::from_value(serde_json::json!({
             "code": 0,
             "data": {"conversation_id": "g1", "server_msg_id": "s1", "available": true,
                      "summary": null, "user_ids": ["u1", "u2"], "next_cursor": "", "has_more": false}

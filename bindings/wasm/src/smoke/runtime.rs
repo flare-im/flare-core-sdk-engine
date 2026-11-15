@@ -1178,12 +1178,12 @@ fn parse_init_request(value: Value) -> SmokeInitState {
         let overlay = value
             .get("sdkConfig")
             .cloned()
-            .and_then(|v| serde_json::from_value::<SdkConfigOverlay>(v).ok())
+            .and_then(|v| flare_im_core_sdk::json::from_value::<SdkConfigOverlay>(v).ok())
             .unwrap_or_default();
         return SmokeInitState { overlay };
     }
     SmokeInitState {
-        overlay: serde_json::from_value(value).unwrap_or_default(),
+        overlay: flare_im_core_sdk::json::from_value(value).unwrap_or_default(),
     }
 }
 

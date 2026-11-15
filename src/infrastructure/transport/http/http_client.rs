@@ -2105,7 +2105,7 @@ impl HttpClient {
         core_epoch: Option<u64>,
     ) -> Result<T> {
         self.ensure_request_scope(core_epoch).await?;
-        serde_json::from_slice(bytes)
+        crate::shared::util::json::from_slice(bytes)
             .map_err(|error| FlareError::system(format!("parse http json failed: {error}")))
     }
 

@@ -2555,3 +2555,48 @@ public func conversationFromJson(_ json: [String: Any]) throws -> Conversation {
         visibleAfterSeq: try requiredUInt64Field(json, "visibleAfterSeq", "Conversation")
     )
 }
+
+// MARK: - Plugin host profile, plugin upgrades and host capabilities
+
+func updatePluginUpgradeStatusRequestToMap(_ request: UpdatePluginUpgradeStatusRequest) -> [String: AnySendable] {
+    var map: [String: AnySendable] = [:]
+    if let minBuild = request.minBuild {
+        map["minBuild"] = wrapSendable(minBuild)
+    }
+    return map
+}
+
+func updateOpenFlowRequestToMap(_ request: UpdateOpenFlowRequest) -> [String: AnySendable] {
+    [:]
+}
+
+func pluginUpgradeStatusFromJson(_ value: [String: AnySendable]) throws -> PluginUpgradeStatus {
+    let json = plainMap(value)
+    let context = "PluginUpgradeStatus"
+    return PluginUpgradeStatus(
+        available: try requiredBoolField(json, "available", context),
+        build: try optionalUInt64Field(json, "build", context)
+    )
+}
+
+func pluginHostProfileToMap(_ request: PluginHostProfile) -> [String: AnySendable] {
+    var map: [String: AnySendable] = [
+        "platform": wrapSendable(request.platform),
+        "kitVocabulary": wrapSendable(request.kitVocabulary),
+    ]
+    if let nativeAllowlist = request.nativeAllowlist {
+        map["nativeAllowlist"] = wrapSendable(nativeAllowlist)
+    }
+    if let bundleRuntime = request.bundleRuntime {
+        map["bundleRuntime"] = wrapSendable(bundleRuntime)
+    }
+    return map
+}
+
+func pluginCapabilityCompletionToMap(_ request: PluginCapabilityCompletion) -> [String: AnySendable] {
+    var map: [String: AnySendable] = ["requestId": wrapSendable(request.requestId)]
+    if let result = request.result {
+        map["result"] = wrapSendable(result)
+    }
+    return map
+}

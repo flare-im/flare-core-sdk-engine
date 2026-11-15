@@ -63,8 +63,8 @@ impl SdkCapabilityRegistry {
         for ns in &namespaces {
             if index.keys().any(|existing| {
                 existing == ns
-                    || existing.starts_with(&format!("{ns}."))
-                    || ns.starts_with(&format!("{existing}."))
+                    || crate::shared::util::is_under_namespace(existing, ns)
+                    || crate::shared::util::is_under_namespace(ns, existing)
             }) {
                 return Err(FlareError::localized(
                     ErrorCode::OperationNotSupported,
@@ -157,7 +157,8 @@ impl SdkCapabilityRegistry {
             index
                 .iter()
                 .find(|(ns, _)| {
-                    capability_id == ns.as_str() || capability_id.starts_with(&format!("{ns}."))
+                    capability_id == ns.as_str()
+                        || crate::shared::util::is_under_namespace(capability_id, ns)
                 })
                 .map(|(_, id)| id.clone())
         })?;

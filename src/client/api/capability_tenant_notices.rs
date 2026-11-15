@@ -160,6 +160,7 @@ impl TenantNotices {
             if let Err(error) = self.capability.invalidate_plugin_catalog().await {
                 tracing::debug!(target: "flare_sdk.plugin", %error, "plugin catalog invalidation failed");
             }
+            self.capability.refresh_bundle_sessions().await;
             self.bus
                 .publish(SdkEvent::Plugin(PluginEvent::CatalogChanged {
                     version: pending.version.to_string(),

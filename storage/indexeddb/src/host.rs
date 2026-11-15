@@ -178,7 +178,7 @@ pub async fn load_snapshot(user_id: &str) -> Result<SnapshotPayload> {
     if raw.trim().is_empty() {
         return Ok(SnapshotPayload::default());
     }
-    serde_json::from_str(&raw)
+    flare_im_core_sdk::json::from_str(&raw)
         .map_err(|e| FlareError::system(format!("decode storage snapshot failed: {e}")))
 }
 

@@ -138,6 +138,18 @@ impl ConversationParticipantStore for SqliteConversationParticipantRepo {
         Ok(value.unwrap_or_default().max(0) as u64)
     }
 
+    async fn shares_conversation(&self, user_id: &str) -> Result<bool> {
+        let row = sqlx::query(
+            r#"SELECT 1 FROM conversation_participants
+               WHERE user_id = ? LIMIT 1"#,
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(sqlx_err)?;
+        Ok(row.is_some())
+    }
+
     async fn patch_user_avatar(&self, user_id: &str, avatar_url: &str) -> Result<()> {
         if avatar_url.trim().is_empty() {
             return Ok(());
@@ -207,5 +219,25 @@ mod tests {
             members[0].attributes.get("avatar_url").map(String::as_str),
             Some("https://flare.test/a.png")
         );
+    }
+
+    #[tokio::test]
+    async fn only_a_member_of_a_held_conversation_shares_one() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        super::super::schema::init_schema(&pool).await.unwrap();
+        let repo = SqliteConversationParticipantRepo::new(pool);
+        repo.save_page(
+            "2A_g",
+            &[ConversationParticipant {
+                user_id: "u_a".to_string(),
+                ..Default::default()
+            }],
+            1,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(repo.shares_conversation("u_a").await.unwrap());
+        assert!(!repo.shares_conversation("u_stranger").await.unwrap());
     }
 }

@@ -48,7 +48,8 @@ impl IndexedDbPluginCommandStore {
                 .map_err(|_| FlareError::system("plugin command journal storage failure"))
                 .and_then(|value| value.as_string().ok_or_else(|| invalid("corrupt_journal")))
                 .and_then(|text| {
-                    serde_json::from_str::<Value>(&text).map_err(|_| invalid("corrupt_journal"))
+                    serde_json::from_slice::<Value>(text.as_bytes())
+                        .map_err(|_| invalid("corrupt_journal"))
                 });
             let _ = send.send(result);
         });
@@ -63,7 +64,7 @@ impl IndexedDbPluginCommandStore {
 }
 fn decode(value: Value) -> Result<PluginCommandRecord> {
     let record: PluginCommandRecord =
-        serde_json::from_value(value).map_err(|_| invalid("corrupt_journal"))?;
+        flare_im_core_sdk::json::from_value(value).map_err(|_| invalid("corrupt_journal"))?;
     record.command.validate()?;
     if record
         .response

@@ -39,6 +39,8 @@ pub mod spi;
 pub use schemars;
 pub use serde;
 pub use serde_json;
+/// Reading JSON text the way the browser bundle keeps small ([`shared::util::json`]).
+pub use shared::util::json;
 
 /// Event subscription and SDK event payload facade.
 /// 客户端链路：接入配置、接入运行时与诊断数据、HTTP 路由（社交 SDK 等经它按服务路由与带幂等键重试）。
@@ -91,23 +93,34 @@ pub mod storage {
         set_local_cleared_through_seq,
     };
     pub use crate::domain::{MemberKey, ParticipantDisplaySnapshot, stored_name_is_an_id};
+    /// Web bundle storage (`storage.*` of the bridge), for a store adapter
+    /// such as the browser's IndexedDB.
+    pub use crate::domain::{
+        PluginBundleStorage, PluginBundleStorageScope, bundle_storage_cost, bundle_storage_fits,
+        valid_bundle_storage_key,
+    };
     pub use crate::domain::{
         PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,
     };
+    pub use crate::domain::{PluginConsent, PluginConsentScope, PluginConsentStore};
     pub use crate::infrastructure::persistence::memory_im::{
         MemoryConversationStore, MemoryMessageStore,
     };
     #[cfg(feature = "storage-sqlite")]
     pub use crate::infrastructure::persistence::sqlite::SqlitePluginCommandRepo;
+    #[cfg(feature = "storage-sqlite")]
+    pub use crate::infrastructure::persistence::sqlite::SqlitePluginConsentRepo;
     pub use crate::infrastructure::persistence::{
-        CursorBackedTimelineCoverageStore, MemoryPendingSendStore, MemorySyncCursorStore,
-        MemoryTimelineCoverageStore, MemoryUserProfileStore, StoreProvider,
+        CursorBackedTimelineCoverageStore, MemoryPendingSendStore, MemoryPluginConsentStore,
+        MemorySyncCursorStore, MemoryTimelineCoverageStore, MemoryUserProfileStore, StoreProvider,
         in_memory_empty_im_provider, in_memory_im_provider,
     };
     pub use crate::platform::ports::storage::{
         LOCAL_DATABASE_KEY_BYTES, SecureKeyDescriptor, SecureKeyStore, SecureSecret,
         VolatileSecureKeyStore, load_or_create_local_database_key, validate_local_database_key,
     };
+    /// A namespace's quota: keys and encoded values together.
+    pub use flare_plugin_protocol::bridge::MAX_BRIDGE_STORAGE_BYTES as MAX_PLUGIN_BUNDLE_STORAGE_BYTES;
 }
 
 pub use client::*;

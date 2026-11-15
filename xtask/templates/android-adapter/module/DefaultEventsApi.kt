@@ -206,6 +206,12 @@ class DefaultEventsApi(
     override fun onPluginCatalogChanged(listener: EventCallback<PluginCatalogChangedEvent>): EventSubscription =
         registerTyped(PluginCatalogChangedEvent::class.java, listener)
 
+    override fun onPluginCapabilityRequest(listener: EventCallback<PluginCapabilityRequestEvent>): EventSubscription =
+        registerTyped(PluginCapabilityRequestEvent::class.java, listener)
+
+    override fun onPluginBundleEvent(listener: EventCallback<PluginBundleEvent>): EventSubscription =
+        registerTyped(PluginBundleEvent::class.java, listener)
+
     override fun onNotificationPresent(listener: EventCallback<NotificationPresentation>): EventSubscription =
         registerTyped(NotificationPresentation::class.java, listener)
 
@@ -329,6 +335,8 @@ class DefaultEventsApi(
             is ViewUpdate -> listener.onViewUpdated(event)
             is PluginRealtimeEvent -> listener.onPluginRealtime(event)
             is PluginCatalogChangedEvent -> listener.onPluginCatalogChanged(event)
+            is PluginCapabilityRequestEvent -> listener.onPluginCapabilityRequest(event)
+            is PluginBundleEvent -> listener.onPluginBundleEvent(event)
             is NotificationPresentation -> listener.onNotificationPresent(event)
             is NotificationClearEvent -> listener.onNotificationClear(event)
             is NotificationBadgeEvent -> listener.onNotificationBadge(event)
@@ -420,6 +428,16 @@ private fun nativeEventFromCode(eventType: Int, payload: Map<String, Any?>): Any
         )
         EventCode.PLUGIN_CATALOG_CHANGED -> PluginCatalogChangedEvent(
             version = requiredEventString(payload["version"], "version"),
+        )
+        EventCode.PLUGIN_CAPABILITY_REQUEST -> PluginCapabilityRequestEvent(
+            requestId = requiredEventInt(payload["requestId"], "requestId"),
+            method = requiredEventString(payload["method"], "method"),
+            request = requiredEventMap(payload["request"], "request"),
+        )
+        EventCode.PLUGIN_BUNDLE_EVENT -> PluginBundleEvent(
+            sessionId = requiredEventString(payload["sessionId"], "sessionId"),
+            envelope = optionalEventString(payload["envelope"], "envelope"),
+            close = optionalEventString(payload["close"], "close"),
         )
         EventCode.NOTIFICATION_PRESENT -> notificationPresentationFromJson(payload)
         EventCode.NOTIFICATION_CLEAR -> NotificationClearEvent(

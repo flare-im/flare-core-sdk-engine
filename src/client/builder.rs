@@ -155,6 +155,8 @@ pub struct IMClientBuilder {
     access: Option<Arc<crate::runtime::link::AccessRuntime>>,
     /// 链路状态机的初始网络可用性（登录重建引擎时沿用宿主此前报过的）。
     network_available: bool,
+    /// 宿主的插件界面资料槽（登录重建时沿用上一个会话的）；没有时新建一个空的。
+    plugin_host: Option<Arc<crate::client::api::PluginHostSlot>>,
     builder_errors: Vec<FlareError>,
 }
 
@@ -181,6 +183,7 @@ impl IMClientBuilder {
             metrics_sink: None,
             access: None,
             network_available: true,
+            plugin_host: None,
             builder_errors: Vec::new(),
         }
     }
@@ -212,6 +215,12 @@ impl IMClientBuilder {
     /// 使用已有的接入运行时（跨会话共用健康簿与熔断状态）。
     pub fn access_runtime(mut self, access: Arc<crate::runtime::link::AccessRuntime>) -> Self {
         self.access = Some(access);
+        self
+    }
+
+    /// 宿主此前设过的插件界面资料（`plugin.set_host_profile`）：登录重建时交给新会话。
+    pub(crate) fn plugin_host(mut self, slot: Arc<crate::client::api::PluginHostSlot>) -> Self {
+        self.plugin_host = Some(slot);
         self
     }
 
@@ -571,6 +580,7 @@ impl IMClientBuilder {
             profile_reader.clone(),
         );
         let capability_grpc_url = development_capability_grpc_url(&self.config);
+        let plugin_host = self.plugin_host.clone().unwrap_or_default();
         let tenant_id = self
             .config
             .tenant_id
@@ -657,7 +667,21 @@ impl IMClientBuilder {
             )
             .with_http_transport(capability_http_client)
             .with_server_clock(engine.server_clock().clone())
+            .with_plugin_host(
+                plugin_host.clone(),
+                crate::client::api::AppIdentity {
+                    build: self.config.app.build,
+                    distribution: self.config.effective_distribution(),
+                },
+            )
             .with_plugin_command_store(store_ref.plugin_commands.clone())
+            .with_plugin_consent_store(store_ref.plugin_consents.clone())
+            .with_plugin_bundle_storage(store_ref.plugin_bundle_storage.clone())
+            .with_bundle_media(media_api.clone())
+            .with_bundle_people(
+                store_ref.user_profiles_or_memory(),
+                store_ref.conversation_participants.clone(),
+            )
             .with_message_state(store_ref.messages.clone(), bus.clone())
             .with_plugin_state_refetch(Arc::new(PluginStateRefetch::new(
                 plugin_state_lookup,
@@ -751,6 +775,7 @@ impl IMClientBuilder {
             conversation_api: Some(conversation_api),
             view_api: Some(view_api),
             http_request_context: Some(http_request_context),
+            plugin_host,
             notification_registry: Some(notification_registry),
             extension_runtime: Some(extension_runtime),
             extension_components,

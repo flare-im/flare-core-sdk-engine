@@ -926,6 +926,7 @@ impl Supervisor {
             // 只数后台里连续得到应答的心跳：前后台一换就从头数。
             self.heartbeat.restart(now_ms());
         }
+        self.access.set_foreground(foreground);
         if !foreground {
             if was_foreground {
                 self.on_backgrounded().await;

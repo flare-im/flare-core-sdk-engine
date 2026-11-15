@@ -155,6 +155,9 @@ pub(crate) struct IMClientInner {
     pub conversation_api: Option<Arc<ConversationApi>>,
     pub view_api: Option<Arc<ViewApi>>,
     pub http_request_context: Option<Arc<HttpRequestContext>>,
+    /// 宿主声明的插件界面资料（`plugin.set_host_profile`）。属于宿主，跨会话共用：每个会话的
+    /// [`CapabilityApi`] 拿同一个槽。
+    pub plugin_host: Arc<crate::client::api::PluginHostSlot>,
     pub session_generation: u64,
     pub metrics: MetricsRecorder,
 }
@@ -576,6 +579,9 @@ impl IMClient {
         }
         // 探活用部署的信任根（私有 CA）；接入点的钉扎在探活时按接入点叠加。
         let trust = merged.core_tls_config();
+        // Web 包从同一批镜像下载，信任根与更新包一致。
+        #[cfg(not(target_arch = "wasm32"))]
+        g.plugin_host.bundles.set_trust(trust.clone());
         let store = match g.access_store.clone() {
             Some(InjectedAccessStore(store)) => {
                 crate::runtime::link::AccessStoreSource::Ready(store)

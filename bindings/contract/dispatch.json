@@ -1766,6 +1766,105 @@
           "result": "json"
         },
         {
+          "op": "plugin_capability_invoke",
+          "method": "plugin_capability_invoke",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_capability_consents",
+          "method": "plugin_capability_consents",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_capability_consent_revoke",
+          "method": "revoke_plugin_capability_consent",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_bundle_open",
+          "method": "plugin_bundle_open",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_bundle_bridge",
+          "method": "plugin_bundle_bridge",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_bundle_host_result",
+          "method": "plugin_bundle_host_result",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_bundle_host_event",
+          "method": "plugin_bundle_host_event",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_bundle_close",
+          "method": "plugin_bundle_close",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "plugin_bundle_prefetch",
+          "method": "plugin_bundle_prefetch",
+          "args": [
+            [
+              "request",
+              "json_null_default"
+            ]
+          ],
+          "result": "json"
+        },
+        {
           "op": "plugin_account_entries",
           "method": "plugin_account_entries",
           "args": [

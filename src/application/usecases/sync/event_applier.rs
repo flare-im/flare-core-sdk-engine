@@ -751,6 +751,8 @@ mod tests {
         let applier = SyncEventApplier::new(
             StoreProvider {
                 plugin_commands: None,
+                plugin_consents: None,
+                plugin_bundle_storage: None,
                 messages: message_repo.clone(),
                 conversations: Arc::new(NoopConversationStore),
                 conversation_participants: None,
@@ -820,6 +822,8 @@ mod tests {
         let applier = SyncEventApplier::new(
             StoreProvider {
                 plugin_commands: None,
+                plugin_consents: None,
+                plugin_bundle_storage: None,
                 messages: message_repo.clone(),
                 conversations: Arc::new(NoopConversationStore),
                 conversation_participants: None,
@@ -919,6 +923,8 @@ mod tests {
         let applier = SyncEventApplier::new(
             StoreProvider {
                 plugin_commands: None,
+                plugin_consents: None,
+                plugin_bundle_storage: None,
                 messages: message_repo.clone(),
                 conversations: Arc::new(NoopConversationStore),
                 conversation_participants: None,

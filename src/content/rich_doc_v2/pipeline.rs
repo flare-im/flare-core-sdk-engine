@@ -43,8 +43,8 @@ pub fn normalize_from_html_with_options(
 /// 客户端已持有权威 doc JSON（例如自研编辑器直出）时：仅校验 + 派生。
 pub fn normalize_from_doc_json(doc_json: &str) -> Result<NormalizeOutput, RichDocV2Error> {
     validate_doc_json(doc_json)?;
-    let v: Value =
-        serde_json::from_str(doc_json).map_err(|e| RichDocV2Error::InvalidJson(e.to_string()))?;
+    let v: Value = serde_json::from_slice(doc_json.as_bytes())
+        .map_err(|e| RichDocV2Error::InvalidJson(e.to_string()))?;
     let derived = derive_from_value(&v)?;
     Ok(NormalizeOutput::from_parts(
         doc_json.to_string(),

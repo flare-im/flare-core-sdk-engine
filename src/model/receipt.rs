@@ -67,7 +67,7 @@ impl IMMessage {
             return None;
         }
         let raw = self.attributes.get(READ_SUMMARY_JSON_KEY)?;
-        serde_json::from_str::<MessageReadSummary>(raw)
+        crate::shared::util::json::from_str::<MessageReadSummary>(raw)
             .ok()
             .filter(MessageReadSummary::is_displayable)
     }

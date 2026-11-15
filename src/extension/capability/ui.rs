@@ -11,17 +11,19 @@ use flare_plugin_protocol::{
         ClientPlugin, NativeCapability, PluginMessage, PluginMessageState, ResolvedPluginView,
         ResolvedUiBlock, UiActionTarget, UiAudience, UiCatalog, UiDetail, UiEntryAvailability,
         UiEntrySummary, UiFormError, UiRenderContext, UiStateLayers, UiUnavailablePlugin,
-        UiUnavailableReason,
+        UiUnavailableReason, UiUpgrade, UiVocabulary,
+        lenient::{Prepared, prepare_contribution},
     },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
+/// A host-supplied catalog stays raw until it is read with the host
+/// profile's vocabulary ([`host_catalog`]).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ResolveRequest {
-    #[serde(deserialize_with = "tolerant_catalog")]
-    catalog: UiCatalog,
+    catalog: Value,
     message: PluginMessage,
     platform: ClientPlatform,
     #[serde(default)]
@@ -35,17 +37,15 @@ struct ResolveRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ActionRequest {
-    #[serde(deserialize_with = "tolerant_catalog")]
-    catalog: UiCatalog,
+    catalog: Value,
     platform: ClientPlatform,
     plugin_id: String,
     contribution_id: String,
     action_id: String,
-    native_allowlist: BTreeSet<NativeCapability>,
     user_gesture: bool,
     payload: Value,
 }
-fn invalid() -> FlareError {
+pub(crate) fn invalid() -> FlareError {
     FlareError::localized(ErrorCode::InvalidParameter, "sdk.plugin.invalid_ui_request")
 }
 /// The device clock. Every catalog evaluated here has had its validity moved
@@ -89,8 +89,6 @@ pub(crate) struct InvokeRequest {
     pub action_id: String,
     pub user_gesture: bool,
     #[serde(default)]
-    pub native_allowlist: BTreeSet<NativeCapability>,
-    #[serde(default)]
     pub conversation_id: Option<String>,
     /// Message the action came from. Only then is a returned `data.messageState`
     /// written back to that message.
@@ -130,9 +128,10 @@ pub(crate) struct DetailRequest {
     pub cursor: Option<String>,
     /// The view shown so far, exactly as an earlier call returned it. With
     /// `cursor` the page is appended to it; with `refresh` it is the view to
-    /// bring up to date. Without either only the page comes back.
+    /// bring up to date. Without either only the page comes back. Kept as
+    /// JSON ([`flare_plugin_protocol::ui::ShownPluginView`]).
     #[serde(default)]
-    pub previous: Option<ResolvedPluginView>,
+    pub previous: Option<Value>,
     /// Re-read `previous` (required) from the first page, following the
     /// cursors until the entries are at least as many as `previous` showed,
     /// the detail has no next page, or [`MAX_DETAIL_REFRESH_PAGES`] pages were
@@ -155,7 +154,8 @@ fn valid_message_id(id: &Option<String>) -> bool {
 }
 pub(crate) fn parse_present(request: Value) -> Result<PresentRequest> {
     bounded(&request)?;
-    let parsed: PresentRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let parsed: PresentRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     parsed.message.validate().map_err(|_| invalid())?;
     if !valid_message_id(&parsed.message_id) || !valid_locale(&parsed.locale) {
         return Err(invalid());
@@ -164,7 +164,8 @@ pub(crate) fn parse_present(request: Value) -> Result<PresentRequest> {
 }
 pub(crate) fn parse_detail(request: Value) -> Result<DetailRequest> {
     bounded(&request)?;
-    let parsed: DetailRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let parsed: DetailRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     parsed.message.validate().map_err(|_| invalid())?;
     if !valid_message_id(&parsed.message_id)
         || !valid_locale(&parsed.locale)
@@ -183,7 +184,8 @@ pub(crate) fn parse_detail(request: Value) -> Result<DetailRequest> {
 }
 pub(crate) fn parse_invoke(request: Value) -> Result<InvokeRequest> {
     bounded(&request)?;
-    let parsed: InvokeRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let parsed: InvokeRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     parsed.message.validate().map_err(|_| invalid())?;
     if parsed
         .conversation_id
@@ -216,6 +218,11 @@ pub struct PluginComposerAction {
     /// the wire, hosts only see entries that passed.
     #[serde(skip)]
     pub availability: Option<UiEntryAvailability>,
+    /// Set when this client cannot show the entry: an upgrade placeholder
+    /// (`minBuild` when the plugin names one). Hosts list it with a "needs
+    /// update" mark and open the upgrade prompt instead of the form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<UiUpgrade>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -226,7 +233,8 @@ pub(crate) struct ComposerActionsRequest {
 }
 pub(crate) fn parse_composer_actions(request: Value) -> Result<ComposerActionsRequest> {
     bounded(&request)?;
-    let parsed: ComposerActionsRequest = serde_json::from_value(request).map_err(|_| invalid())?;
+    let parsed: ComposerActionsRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     if !valid_locale(&parsed.locale) {
         return Err(invalid());
     }
@@ -236,7 +244,8 @@ pub(crate) fn parse_composer_actions(request: Value) -> Result<ComposerActionsRe
 /// server already trimmed the catalog by grant, capability policy and user
 /// consent, so this only drops what a client cannot render: another tenant's
 /// or an expired catalog, other platforms, unknown schema versions and invalid
-/// documents. An entry declaring an availability the catalog does not offer
+/// documents. An upgrade placeholder is listed with `upgrade` set; an unsupported one
+/// (a native capability this host withholds) is not listed. An entry declaring an availability the catalog does not offer
 /// (a malformed one, or an operation outside the plugin's offered operations)
 /// is dropped too; the others carry it for the SDK to ask before listing.
 pub(crate) fn composer_actions(
@@ -259,6 +268,8 @@ pub(crate) fn composer_actions(
                 .iter()
                 .filter(|c| {
                     c.kind == UiContributionKind::ComposerAction
+                        // No build of this client offers it: not listed at all.
+                        && !c.upgrade.as_ref().is_some_and(|u| u.unsupported)
                         && c.schema_version == 1
                         && c.schema.validate().is_ok()
                         // A malformed audience hides the entry rather than showing it to everyone.
@@ -281,6 +292,7 @@ pub(crate) fn composer_actions(
                         .map_or(c.order, |order| order.saturating_add(c.order)),
                     audience: c.audience.clone().filter(|a| *a != UiAudience::default()),
                     availability: c.availability.clone(),
+                    upgrade: c.upgrade.clone(),
                 })
         })
         .collect();
@@ -302,13 +314,19 @@ pub struct PluginAccountEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     pub order: i32,
-    /// The `page` contribution of the same plugin the entry opens.
+    /// The `page` contribution of the same plugin the entry opens; empty on
+    /// an upgrade placeholder, which opens nothing.
     pub page: String,
     /// The subtitle source: a `query` operation (called with `{}`) and the
     /// pointer of a scalar in its result data. Never called while listing;
     /// the host calls it when it shows the entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<UiEntrySummary>,
+    /// Set when this client cannot show the entry: an upgrade placeholder
+    /// (`minBuild` when the plugin names one). Hosts list it with a "needs
+    /// update" mark and open the upgrade prompt instead of a page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<UiUpgrade>,
 }
 
 /// One approved, exact scan route. This is generic plugin infrastructure;
@@ -385,7 +403,8 @@ pub(crate) fn scan_handlers(
 /// so this only drops what a client cannot render (another tenant's or an
 /// expired catalog, other platforms, unknown schema versions, invalid
 /// documents, an entry whose page is not in the catalog, a summary operation
-/// the catalog does not offer).
+/// the catalog does not offer). An upgrade placeholder is listed with
+/// `upgrade` set and no page.
 pub(crate) fn account_entries(
     tenant: &str,
     catalog: &UiCatalog,
@@ -406,10 +425,24 @@ pub(crate) fn account_entries(
                 .iter()
                 .filter(|c| {
                     c.kind == UiContributionKind::AccountEntry
+                        // No build of this client offers it: not listed at all.
+                        && !c.upgrade.as_ref().is_some_and(|u| u.unsupported)
                         && c.schema_version == 1
                         && c.schema.validate().is_ok()
                 })
                 .filter_map(move |c| {
+                    if c.upgrade.is_some() {
+                        return Some(PluginAccountEntry {
+                            plugin_id: plugin.plugin_id.clone(),
+                            contribution_id: c.id.clone(),
+                            title: c.schema.localized_title(locale).to_owned(),
+                            icon: c.icon.clone().filter(|icon| is_ui_icon_name(icon)),
+                            order: c.order,
+                            page: String::new(),
+                            summary: None,
+                            upgrade: c.upgrade.clone(),
+                        });
+                    }
                     let page = match c.schema.actions.as_slice() {
                         [action] => match &action.target {
                             UiActionTarget::Page { page, .. } => page,
@@ -436,6 +469,7 @@ pub(crate) fn account_entries(
                             summary.validate().is_ok()
                                 && plugin.operations.contains(&summary.operation)
                         }),
+                        upgrade: None,
                     })
                 })
         })
@@ -446,17 +480,23 @@ pub(crate) fn account_entries(
     entries
 }
 
-/// The catalog in a `flare.plugin.ui.catalog` result, read plugin by plugin so
-/// one plugin a client cannot read (a newer manifest field, an unknown
-/// contribution kind) costs only that plugin, or only that contribution:
-/// - a contribution that does not parse is dropped from its plugin;
-/// - a plugin that still does not parse is dropped and listed in
+/// The catalog in a `flare.plugin.ui.catalog` result, read plugin by plugin
+/// with `vocabulary`, the host profile's (engine ∩ kit, native ∩ allowlist),
+/// so what this client cannot render costs only itself:
+/// - every contribution is read through [`prepare_contribution`] first: what
+///   the vocabulary does not know is taken out (blocks that are not
+///   `required`, unknown formats and renderers, actions the client cannot
+///   run); a contribution that still cannot be read, and Core's own upgrade
+///   placeholder, is kept as an upgrade placeholder (`upgrade`), which
+///   resolves to `upgrade_required`; one whose identity does not read (an
+///   unknown kind, no id) is dropped;
+/// - a plugin whose own fields do not parse is dropped and listed in
 ///   `unavailable` as `incompatible_version` (when its id is readable);
 /// - an `unavailable` entry that does not parse is dropped.
 ///
 /// `None` when the envelope itself (tenant, version, validity, plugin list)
 /// is unreadable.
-pub(crate) fn parse_catalog(data: &Value) -> Option<UiCatalog> {
+pub(crate) fn parse_catalog(data: &Value, vocabulary: &UiVocabulary) -> Option<UiCatalog> {
     let object = data.as_object()?;
     let mut catalog = UiCatalog {
         tenant_id: object.get("tenantId")?.as_str()?.to_owned(),
@@ -469,50 +509,72 @@ pub(crate) fn parse_catalog(data: &Value) -> Option<UiCatalog> {
             .map(|items| {
                 items
                     .iter()
-                    .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                    .filter_map(|item| crate::shared::util::json::from_value(item.clone()).ok())
                     .collect()
             })
             .unwrap_or_default(),
+        // Unreadable: no provider, so no payment is confirmed.
+        payment_provider: object
+            .get("paymentProvider")
+            .and_then(|value| crate::shared::util::json::from_value(value.clone()).ok()),
     };
     for raw in object.get("plugins")?.as_array()? {
-        match serde_json::from_value::<ClientPlugin>(raw.clone()) {
-            Ok(plugin) => catalog.plugins.push(plugin),
-            Err(_) => {
-                let mut trimmed = raw.clone();
-                if let Some(contributions) = trimmed
-                    .pointer_mut("/extensions/contributions")
-                    .and_then(Value::as_array_mut)
-                {
-                    contributions
-                        .retain(|c| serde_json::from_value::<UiContribution>(c.clone()).is_ok());
-                }
-                match serde_json::from_value::<ClientPlugin>(trimmed) {
-                    Ok(plugin) => {
-                        tracing::warn!(
-                            target: "flare_sdk.plugin",
-                            plugin_id = %plugin.plugin_id,
-                            "plugin catalog: contributions this client cannot read were dropped"
-                        );
-                        catalog.plugins.push(plugin);
-                    }
-                    Err(_) => {
-                        let plugin_id = raw.get("pluginId").and_then(Value::as_str);
-                        tracing::warn!(
-                            target: "flare_sdk.plugin",
-                            plugin_id = plugin_id.unwrap_or_default(),
-                            "plugin catalog: a plugin this client cannot read was dropped"
-                        );
-                        if let Some(plugin_id) = plugin_id.filter(|id| {
-                            !id.is_empty()
-                                && id.len() <= 128
-                                && !catalog.unavailable.iter().any(|p| p.plugin_id == *id)
-                        }) {
-                            catalog.unavailable.push(UiUnavailablePlugin {
-                                plugin_id: plugin_id.to_owned(),
-                                reason: UiUnavailableReason::IncompatibleVersion,
-                            });
+        // The plugin is read without its contributions, which are read one by one.
+        let mut shell = raw.clone();
+        let contributions = shell
+            .pointer_mut("/extensions/contributions")
+            .and_then(Value::as_array_mut)
+            .map(std::mem::take)
+            .unwrap_or_default();
+        match crate::shared::util::json::from_value::<ClientPlugin>(shell) {
+            Ok(mut plugin) => {
+                let (mut upgrades, mut dropped) = (0usize, 0usize);
+                for contribution in &contributions {
+                    match prepare_contribution(contribution, vocabulary) {
+                        Prepared::Ready(contribution) => {
+                            plugin.extensions.contributions.push(contribution);
                         }
+                        Prepared::Upgrade(contribution) => {
+                            upgrades += 1;
+                            plugin.extensions.contributions.push(contribution);
+                        }
+                        Prepared::Dropped => dropped += 1,
                     }
+                }
+                if dropped > 0 {
+                    tracing::warn!(
+                        target: "flare_sdk.plugin",
+                        plugin_id = %plugin.plugin_id,
+                        dropped,
+                        "plugin catalog: contributions this client cannot identify were dropped"
+                    );
+                }
+                if upgrades > 0 {
+                    tracing::debug!(
+                        target: "flare_sdk.plugin",
+                        plugin_id = %plugin.plugin_id,
+                        upgrades,
+                        "plugin catalog: contributions shown as upgrade required"
+                    );
+                }
+                catalog.plugins.push(plugin);
+            }
+            Err(_) => {
+                let plugin_id = raw.get("pluginId").and_then(Value::as_str);
+                tracing::warn!(
+                    target: "flare_sdk.plugin",
+                    plugin_id = plugin_id.unwrap_or_default(),
+                    "plugin catalog: a plugin this client cannot read was dropped"
+                );
+                if let Some(plugin_id) = plugin_id.filter(|id| {
+                    !id.is_empty()
+                        && id.len() <= 128
+                        && !catalog.unavailable.iter().any(|p| p.plugin_id == *id)
+                }) {
+                    catalog.unavailable.push(UiUnavailablePlugin {
+                        plugin_id: plugin_id.to_owned(),
+                        reason: UiUnavailableReason::IncompatibleVersion,
+                    });
                 }
             }
         }
@@ -520,27 +582,33 @@ pub(crate) fn parse_catalog(data: &Value) -> Option<UiCatalog> {
     Some(catalog)
 }
 
-/// The catalog a host hands back in a request, read like [`parse_catalog`]:
-/// hosts keep the raw `plugin_ui_catalog` result, so what this client cannot
-/// read costs only that plugin or contribution here too. Only an unreadable
-/// envelope refuses the request.
-fn tolerant_catalog<'de, D>(deserializer: D) -> std::result::Result<UiCatalog, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let raw = Value::deserialize(deserializer)?;
-    parse_catalog(&raw).ok_or_else(|| serde::de::Error::custom("unreadable plugin catalog"))
+/// The catalog a host hands back in a request, read like [`parse_catalog`]
+/// with the same vocabulary: hosts keep the raw `plugin_ui_catalog` result,
+/// so what this client cannot read costs only that plugin or contribution
+/// here too. Only an unreadable envelope refuses the request.
+fn host_catalog(
+    raw: &Value,
+    vocabulary: &UiVocabulary,
+    clock: &crate::kernel::ServerClock,
+) -> Result<UiCatalog> {
+    let mut catalog = parse_catalog(raw, vocabulary).ok_or_else(invalid)?;
+    localize_validity(&mut catalog, clock);
+    Ok(catalog)
 }
 
+/// `vocabulary` is the host profile's: the catalog in the request is read
+/// with it.
 pub(crate) fn resolve(
     tenant: &str,
     request: Value,
     clock: &crate::kernel::ServerClock,
+    vocabulary: &UiVocabulary,
 ) -> Result<Value> {
     bounded(&request)?;
-    let mut request: ResolveRequest = serde_json::from_value(request).map_err(|_| invalid())?;
-    localize_validity(&mut request.catalog, clock);
-    serde_json::to_value(request.catalog.resolve_with_context(
+    let request: ResolveRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
+    let catalog = host_catalog(&request.catalog, vocabulary, clock)?;
+    serde_json::to_value(catalog.resolve_with_context(
         &request.message,
         flare_plugin_protocol::ui::UiRenderContext {
             tenant,
@@ -553,23 +621,28 @@ pub(crate) fn resolve(
     ))
     .map_err(|_| invalid())
 }
+/// `vocabulary` and `native` are the host profile's: the catalog in the
+/// request is read with the one, a native target is offered only within the
+/// other.
 pub(crate) fn action(
     tenant: &str,
     request: Value,
     clock: &crate::kernel::ServerClock,
+    vocabulary: &UiVocabulary,
+    native: &BTreeSet<NativeCapability>,
 ) -> Result<Value> {
     bounded(&request)?;
-    let mut request: ActionRequest = serde_json::from_value(request).map_err(|_| invalid())?;
-    localize_validity(&mut request.catalog, clock);
-    let target = request
-        .catalog
+    let request: ActionRequest =
+        crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
+    let catalog = host_catalog(&request.catalog, vocabulary, clock)?;
+    let target = catalog
         .action(
             tenant,
             &request.plugin_id,
             &request.contribution_id,
             &request.action_id,
             request.platform,
-            &request.native_allowlist,
+            native,
             request.user_gesture,
             now_ms(),
         )
@@ -579,8 +652,7 @@ pub(crate) fn action(
                 "sdk.plugin.ui_action_unavailable",
             )
         })?;
-    let action = request
-        .catalog
+    let action = catalog
         .plugins
         .iter()
         .find(|p| p.plugin_id == request.plugin_id)
@@ -716,7 +788,7 @@ pub(crate) enum PreparedAction {
 }
 
 /// Check the action against the catalog (declaration, platform, gesture, host
-/// consent), validate its form, read the choices selection, and bind the input,
+/// consent: `native`, the host profile's allowlist), validate its form, read the choices selection, and bind the input,
 /// all over the document's data ([`ClientPlugin::document_data`]): the merged
 /// card data, or `{"config": ...}` for a composer-action form, so its inputs'
 /// `maxPath` and `defaultPath` apply as the host rendered them. Nothing is
@@ -726,6 +798,7 @@ pub(crate) fn prepare_action(
     catalog: &UiCatalog,
     request: &InvokeRequest,
     stored: Option<&crate::model::IMMessage>,
+    native: &BTreeSet<NativeCapability>,
 ) -> Result<PreparedAction> {
     let message = &request.message;
     let target = catalog
@@ -735,7 +808,7 @@ pub(crate) fn prepare_action(
             &message.contribution_id,
             &request.action_id,
             request.platform,
-            &request.native_allowlist,
+            native,
             request.user_gesture,
             now_ms(),
         )
@@ -814,7 +887,8 @@ pub(crate) fn strip_native_form_inputs(
     if matches!(
         target,
         flare_plugin_protocol::ui::UiActionTarget::Native {
-            capability: NativeCapability::Reauthenticate
+            capability: NativeCapability::Reauthenticate,
+            ..
         }
     ) && let Some(object) = payload.as_object_mut()
     {

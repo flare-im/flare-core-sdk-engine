@@ -7,6 +7,50 @@
 
 ### 新增
 
+- Web 包（L3）：`plugin_bundle_open`、`plugin_bundle_bridge`、`plugin_bundle_host_result`、`plugin_bundle_host_event`、
+  `plugin_bundle_close`、`plugin_bundle_prefetch`（`flare_capability_dispatch_json`）。原生端按 SHA-256 内容寻址缓存在
+  `{dataRoot}/plugin_bundles/`：从目录镜像地址依次下载，先比大小和摘要再解包，写文件前再查一次路径，解包到临时目录后改名；
+  解包后总量 ≤64 MiB 按最近使用淘汰（打开中的不淘汰），目录不再引用的包 24 小时后删除，回滚到旧版本直接命中缓存；Wi-Fi 空闲时
+  预取「我」页入口与「+」菜单打开的包。浏览器不解包，只读沙箱域上的 `bundle.json`。
+  桥的检查全在引擎：信封（≤64 KiB）→ 桥版本 → 握手 → 方法与参数 → 桥权限（`bundle.json` ∩ 租户批准）→ 操作
+  （`bundle.json` ∩ 目录授权，`plugin.query` 只能是查询，瞬时操作只能经宿主付款确认）→ 限速（每秒 20、同时 4 个操作）；
+  错误一律是固定错误码，不带 Core、插件或引擎的原文。`plugin.command` 每条命令一个日志槽，未知结果用同一 `commandId` 找回。
+  `storage.*` 存在用户库独立表（SQLite 迁移 v6 新表 `plugin_bundle_storage`，每插件每用户 ≤1 MiB，退出登录清空；浏览器存 IndexedDB `flare-plugin-bundle-storage-v1`，按租户、用户、插件分命名空间，配额检查与写入同一事务）。
+  `media.read` 只读本插件经引擎为当前用户私有上传过的文件（其他文件一律 `not_found`），走宿主读图片块私有文件的同一路径（`resolve_media_access`；原生先读本地缓存、没有就缓存一份，浏览器读短时地址），
+  以 `data:` 地址应答（包的 `img-src` 在各平台都放行 `data:`），文件 ≤4 MiB，超出应答 `payload_too_large`。
+  新事件 `plugin.bundle_event`（C 7004，`{sessionId, envelope?, close?}`）：订阅的 `catalog.changed`、`entity.state`，
+  目录不再下发时的 `lifecycle.revoked` 与关闭原因（`withdrawn`、`suspended`、`disabled`、`replaced`、`evicted`、`signedOut`）。
+  `plugin_page` 的结果在该页有提供给本客户端的 Web 包时带 `bundle: true`（宿主报了运行时、目录下发了所选变体的包、桥版本
+  可用；不下载、不建会话），宿主据此只对 Web 包页面调 `plugin_bundle_open`，声明式页面不再先显示「打开中」。
+  `present_plugin_message` 对「+」表单与卡片同样带 `bundle: true`，宿主只对标了的表单和卡片「查看全部」试包。
+  `people.resolve` 只给会话内昵称或本人昵称（不给当前用户的私人备注）；页面不属于会话时只解析与当前用户同在某个会话里的人。
+  `host.capability` 的 `locationOnce` 不需要页面输入，回 `{location}`；Web 包确认付款时回订单瞬时操作的结果，不跑页面动作的后续。
+- 插件界面按宿主能力下发：新增 `plugin.set_host_profile`（`{platform, kitVocabulary, nativeAllowlist?,
+  bundleRuntime?}`），宿主声明 Kit 词汇、原生能力允许名单与 Web 包运行时，跨会话保留，变化时作废目录读取并重新
+  推出最近展示的卡片。读目录（`flare.plugin.ui.catalog`）的载荷改为 `{descriptor}`：引擎词汇 ∩ Kit 词汇、
+  `native` 再 ∩ 允许名单、构建号与渠道取 `app.build`、`app.distribution`；没有声明时按第 1 版词汇、不带原生能力。
+- 目录按同一词汇宽容读取：不认识的非必需块连同它的动作去掉，读不了的贡献（含 Core 下发的升级占位）显示为
+  `upgrade_required`（带 `minBuild`），整页为升级视图；「+」与「我」页条目带 `upgrade`。
+- `update.plugin_upgrade_status`（`{minBuild?}` → `{available, build?}`）判断本渠道是否已有这台设备能装、不低于
+  `minBuild` 的版本（灰度未命中不算）；`update.open_flow` 打开更新中心现有的更新提示，不受提示频率限制。
+- 插件宿主能力通用调度 `capability.plugin_capability_invoke`：三重允许名单（Manifest 声明 ∩ 宿主允许名单 ∩ 用户同意），
+  宿主的一步经 `plugin.capability_request` 事件（`{requestId, method, request}`，方法 `consent`、`captureDocument`、
+  `pickFile`、`confirmPayment`、`locateOnce`）交给宿主，宿主用 `plugin.capability_complete`（`{requestId, result}`）
+  交回；Rust 嵌入方可用 `IMClient::set_plugin_capability_host` 装自己的 `PluginCapabilityHost`。证件照与选取的文件经
+  页面输入声明的私有上传写回 `into` 输入（证件 JPEG 带 EXIF 拒收）；一次定位按声明精度截断（粗约 1 公里、细约 1 米）后
+  写回 `into` 指向的同精度 `location` 输入（`{kind: input, input, value: {latitude, longitude, accuracyM, precision}}`）；
+  付款确认只认引擎从经 Core 返回的操作结果里记下的订单（按租户、用户、插件、订单号），宿主与 Web 包只传 `orderId`；
+  校验订单（同插件、在目录 `transientOperations` 内、未过期，确认后再查一次）后，宿主收的支付凭证只交给目录
+  `paymentProvider`（Core 配置的付款方，例如钱包的 `payments.ticket`），付款方回一次性票据，订单的瞬时操作的入参是
+  `{orderId, ticket}`，凭证本身到不了发起付款的插件；目录没有付款方时不询问凭证、直接不可用。
+  操作结果带 `data.confirmation` 时，`plugin_ui_invoke` 的结果同时给出 `confirmation`，引擎同时记下这张订单。
+  页面动作的操作结果带付款订单时，动作声明的后续（下一页或下一个持久动作）先挂在这张订单上，宿主确认、订单的瞬时操作
+  成功后才以瞬时操作的结果继续；拒绝、取消或失败都不继续（失败后同一订单再试仍可继续）。
+- 同意记录存在用户库（SQLite 迁移 v5 新表 `plugin_capability_consents`、浏览器 IndexedDB、无库时内存），按
+  `(用户, 插件, 能力)` 记 Manifest 大版本与敏感级别；新大版本或更敏感的参数（细定位、视频、共享屏幕）重新询问，
+  宿主答 `{decision: "once" | "always" | "deny"}`，只记「始终允许」，「仅此一次」只放行本次请求。`clipboardWrite`、`selectImage`、`selectFile` 免同意。新增 `capability.plugin_capability_consents`
+  与 `capability.plugin_capability_consent_revoke`。
+
 - 时间线已证实连续区间：每个会话一组已合并的闭区间 `[from, to]`（seq），区间内每个 seq 本地有行，或已被
   服务端证明没有可见消息。`TimelineCoverageStore`（`StoreProvider::timeline_coverage`）有 SQLite（新表
   `timeline_coverage`）、浏览器（存进同步游标键值 `timeline_coverage:<会话 id>`，经宿主 `saveCursor` 持久化、
@@ -134,6 +178,11 @@
 - 全栈验收 `tests/reachability_acceptance.rs`（全部 `#[ignore]`，跑法见文件头）：经可开关的 TCP 中继模拟应用被杀，
   读出 outbox 里的任务信封，断言设计文档完成定义 1、4 到 13 中服务端看得到的条目（时延、合并键、处置、条数、
   响铃与厂商调用上界、修正、勿扰、大群、登出与被踢、seq 连续、决策链与到达回执）。
+
+### 变更
+
+- `plugin_ui_invoke`、`plugin_ui_action` 与页面动作不再接受 `nativeAllowlist`，原生能力以宿主资料为准；
+  `plugin_ui_resolve`、`plugin_ui_action` 里宿主交回的目录按宿主资料的词汇读取。
 
 ### 修复
 
