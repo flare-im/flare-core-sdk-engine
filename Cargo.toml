@@ -108,6 +108,8 @@ serde = { workspace = true }
 serde_json = "1.0"
 schemars = { workspace = true }
 flare-plugin-protocol = { version = "0.1.0", path = "../flare-protocol/flare-plugin-protocol" }
+# 提示规则（决策、会话槽位与设备预算、通知文案）：与推送服务端同一份实现，无 IO、可编进 wasm。
+flare-notify-rules = { version = "0.1.0", path = "../flare-protocol/flare-notify-rules" }
 anyhow = { workspace = true }
 thiserror = "2.0"
 async-trait = "0.1.92"

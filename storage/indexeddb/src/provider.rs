@@ -732,6 +732,14 @@ impl ConversationWriter for PersistingConversationStore {
         Ok(())
     }
 
+    async fn set_notify_all(&self, conversation_id: &str, enabled: bool) -> Result<()> {
+        self.inner.set_notify_all(conversation_id, enabled).await?;
+        if let Some(conversation) = self.inner.get(conversation_id).await? {
+            persist_conversation_spawn(&self.user_id, conversation);
+        }
+        Ok(())
+    }
+
     async fn set_archived(&self, conversation_id: &str, archived: bool) -> Result<()> {
         self.inner.set_archived(conversation_id, archived).await?;
         if let Some(conversation) = self.inner.get(conversation_id).await? {

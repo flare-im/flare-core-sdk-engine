@@ -301,12 +301,28 @@
       "tauri": "im://notification"
     },
     {
-      "id": "notification.message_sound",
-      "core": "SdkEvent::Notification(NotificationEvent::MessageSound)",
-      "cCode": 3502,
-      "cCodeName": "FLARE_EVENT_NOTIFICATION_MESSAGE_SOUND",
-      "cJson": { "type": "notification", "event": "message_sound", "fields": ["conversationId", "messageId"] },
-      "tauri": "im://message_sound"
+      "id": "notification.present",
+      "core": "SdkEvent::Notification(NotificationEvent::Present)",
+      "cCode": 3503,
+      "cCodeName": "FLARE_EVENT_NOTIFICATION_PRESENT",
+      "cJson": { "type": "notification", "event": "present", "fields": ["collapseId", "threadId", "conversationId", "messageId", "seq", "title", "body", "count", "sound", "channel", "surface"] },
+      "tauri": "im://notification_present"
+    },
+    {
+      "id": "notification.clear",
+      "core": "SdkEvent::Notification(NotificationEvent::Clear)",
+      "cCode": 3504,
+      "cCodeName": "FLARE_EVENT_NOTIFICATION_CLEAR",
+      "cJson": { "type": "notification", "event": "clear", "fields": ["collapseIds", "all"] },
+      "tauri": "im://notification_clear"
+    },
+    {
+      "id": "notification.badge",
+      "core": "SdkEvent::Notification(NotificationEvent::Badge)",
+      "cCode": 3505,
+      "cCodeName": "FLARE_EVENT_NOTIFICATION_BADGE",
+      "cJson": { "type": "notification", "event": "badge", "fields": ["count"] },
+      "tauri": "im://notification_badge"
     },
     {
       "id": "sync.started",

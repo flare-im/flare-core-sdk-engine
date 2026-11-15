@@ -10,10 +10,11 @@ use flare_core::common::protocol::{
     flare::core::commands::command::Type as CommandType,
     flare::core::commands::payload_command::Type as PayloadType,
 };
+use flare_proto::common::ack::Payload as AckPayload;
 use flare_proto::common::data_packet::Payload as DataPacketPayload;
 use flare_proto::common::{
-    Ack, CustomData, DataPacket, ErrorCode as ProtoErrorCode, Event, Message as ProtoMessage,
-    RealtimeControlPacket, SyncRes,
+    Ack, AckBatch, ConversationAck, CustomData, DataPacket, DeviceStateReport,
+    ErrorCode as ProtoErrorCode, Event, Message as ProtoMessage, RealtimeControlPacket, SyncRes,
 };
 use prost::Message;
 use tokio::sync::Mutex;
@@ -24,6 +25,9 @@ use crate::shared::util::{now_millis, timeout};
 
 const CONTROL_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 const BEST_EFFORT_CONTROL_SEND_TIMEOUT: Duration = Duration::from_millis(250);
+/// 设备状态上报与送达确认的发送时限。服务端等确认只等一到三秒，过了就转推送，晚到的没有用，
+/// 不值得像已读回执那样等十秒。
+const REACH_SIGNAL_SEND_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// 发送帧失败时按原因给错误码，供应用按码提示，而不是解析错误文本。
 ///
@@ -86,7 +90,7 @@ impl PacketSender {
     }
 
     /// 新连接就绪后补发 `since_ms` 之后发过的已读 / 送达回执（每会话最大值）。返回补发条数；
-    /// 单条失败不影响其它（回执可重复，下一次阅读也会自愈）。
+    /// 单条失败不影响其它（回执可重复，下一次阅读也会自愈）。送达确认照旧合成一个批确认。
     pub(crate) async fn replay_acks_since(&self, since_ms: u64) -> usize {
         let due = self
             .ack_ledger
@@ -94,9 +98,23 @@ impl PacketSender {
             .map(|ledger| ledger.since(since_ms))
             .unwrap_or_default();
         let mut replayed = 0;
+        let mut delivered = Vec::new();
         for ack in due {
-            if self.send_ack(&ack).await.is_ok() {
-                replayed += 1;
+            match &ack.payload {
+                Some(AckPayload::Conversation(confirmation)) => {
+                    delivered.push(confirmation.clone());
+                }
+                _ => {
+                    if self.send_ack(&ack).await.is_ok() {
+                        replayed += 1;
+                    }
+                }
+            }
+        }
+        if !delivered.is_empty() {
+            let count = delivered.len();
+            if self.send_delivery_acks(delivered).await.is_ok() {
+                replayed += count;
             }
         }
         replayed
@@ -117,8 +135,23 @@ impl PacketSender {
         timeout_duration: Duration,
         timeout_message: &'static str,
     ) -> Result<()> {
+        self.write_frame(frame, timeout_duration, timeout_message, true)
+            .await
+    }
+
+    /// 写出一帧。`counts_as_activity` 为假的是引擎自己发的状态上报与送达确认：收到消息就会发，
+    /// 算进「最近活动」的话，消息多的账号永远等不到恢复切回要的那段空闲。
+    async fn write_frame(
+        &self,
+        frame: &Frame,
+        timeout_duration: Duration,
+        timeout_message: &'static str,
+        counts_as_activity: bool,
+    ) -> Result<()> {
         let client = self.client_snapshot().await?;
-        self.note_activity();
+        if counts_as_activity {
+            self.note_activity();
+        }
         timeout(timeout_duration, client.send_frame(frame))
             .await
             .map_err(|_| FlareError::localized(ErrorCode::OperationTimeout, timeout_message))?
@@ -178,6 +211,30 @@ impl PacketSender {
 
     /// 上报 ACK（ack.proto Ack：PushAck/ConversationAck/AckBatch）。PayloadCommand.type=Ack。
     pub async fn send_ack(&self, ack: &Ack) -> Result<()> {
+        self.send_ack_frame(ack, CONTROL_SEND_TIMEOUT, true).await
+    }
+
+    /// 送达确认：各会话从链路收到并处理完的最大 seq，合成一个 `AckBatch` 发出。服务端据此停止等待，
+    /// 不再把这些消息转给推送通道；发出即记进补发账本。
+    pub(crate) async fn send_delivery_acks(&self, delivered: Vec<ConversationAck>) -> Result<()> {
+        let ack = Ack {
+            ack_id: None,
+            ack_at: Some(now_millis() as i64),
+            payload: Some(AckPayload::Batch(AckBatch {
+                conversation_acks: delivered,
+                ..Default::default()
+            })),
+        };
+        self.send_ack_frame(&ack, REACH_SIGNAL_SEND_TIMEOUT, false)
+            .await
+    }
+
+    async fn send_ack_frame(
+        &self,
+        ack: &Ack,
+        timeout_duration: Duration,
+        counts_as_activity: bool,
+    ) -> Result<()> {
         let message_id = builder::generate_message_id();
         let payload = ack.encode_to_vec();
         let cmd = PayloadCommand {
@@ -188,12 +245,31 @@ impl PacketSender {
             seq: 0,
         };
         let frame = builder::frame_with_payload_command(cmd, Reliability::AtLeastOnce);
-        self.send_frame_with_timeout(&frame, CONTROL_SEND_TIMEOUT, "ack send timeout")
-            .await?;
+        self.write_frame(
+            &frame,
+            timeout_duration,
+            "ack send timeout",
+            counts_as_activity,
+        )
+        .await?;
         if let Ok(mut ledger) = self.ack_ledger.lock() {
             ledger.record(ack, now_millis());
         }
         Ok(())
+    }
+
+    /// 上报设备状态（`DEVICE_STATE` 系统命令，载荷是 `DeviceStateReport`）：新消息的提示由这条链路
+    /// 负责，还是交给推送通道。
+    pub(crate) async fn send_device_state(&self, report: &DeviceStateReport) -> Result<()> {
+        let command = builder::device_state(report.encode_to_vec());
+        let frame = builder::frame_with_system_command(command, Reliability::AtLeastOnce);
+        self.write_frame(
+            &frame,
+            REACH_SIGNAL_SEND_TIMEOUT,
+            "device state send timeout",
+            false,
+        )
+        .await
     }
 
     /// 发送用户扩展（`DataPacket` + `user_custom`）。PayloadCommand.type=Data。
@@ -527,5 +603,30 @@ mod tests {
             .await
             .expect_err("no client");
         assert_eq!(err.code(), Some(ErrorCode::NotConnected), "{err}");
+    }
+
+    /// 没有连接时状态上报与送达确认同样是 `NOT_CONNECTED`：不记进补发账本，也不算一次活动。
+    #[tokio::test]
+    async fn reach_signals_without_a_client_are_not_connected() {
+        let sender = PacketSender::new(
+            Arc::new(Mutex::new(None)),
+            Arc::new(crate::infrastructure::protocol::ProtobufCodec),
+        );
+        let err = sender
+            .send_device_state(&DeviceStateReport::default())
+            .await
+            .expect_err("no client");
+        assert_eq!(err.code(), Some(ErrorCode::NotConnected), "{err}");
+        let err = sender
+            .send_delivery_acks(vec![ConversationAck {
+                conversation_id: "c1".into(),
+                last_delivered_seq: 3,
+                ..Default::default()
+            }])
+            .await
+            .expect_err("no client");
+        assert_eq!(err.code(), Some(ErrorCode::NotConnected), "{err}");
+        assert_eq!(sender.replay_acks_since(0).await, 0);
+        assert_eq!(sender.last_activity_ms(), 0);
     }
 }

@@ -1,3 +1,5 @@
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod atomic_file;
 pub mod background;
 pub mod constants;
 pub mod date;

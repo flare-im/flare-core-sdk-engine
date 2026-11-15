@@ -4,6 +4,7 @@ use flare_im_core_sdk::event::{
     ReadinessStage, SdkEvent, SyncNotify, SyncPhase,
 };
 use flare_im_core_sdk::model::message::send_ack;
+use flare_im_core_sdk::model::notification::{NotificationBadgeEvent, NotificationClearEvent};
 use flare_im_core_sdk::prelude::SyncRunContext;
 use flare_im_core_sdk::serde_json::{self, Value, json};
 use std::fmt::Write as _;
@@ -275,12 +276,22 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         SdkEvent::Notification(NotificationEvent::Received { message }) => {
             ("notification.received", message_json(message.as_ref()))
         }
-        SdkEvent::Notification(NotificationEvent::MessageSound {
-            conversation_id,
-            message_id,
-        }) => (
-            "notification.message_sound",
-            json!({ "conversationId": conversation_id, "messageId": message_id }),
+        SdkEvent::Notification(NotificationEvent::Present(presentation)) => (
+            "notification.present",
+            serde_json::to_value(presentation.as_ref()).unwrap_or_else(|_| json!({})),
+        ),
+        SdkEvent::Notification(NotificationEvent::Clear { collapse_ids, all }) => (
+            "notification.clear",
+            serde_json::to_value(NotificationClearEvent {
+                collapse_ids: collapse_ids.clone(),
+                all: *all,
+            })
+            .unwrap_or_else(|_| json!({})),
+        ),
+        SdkEvent::Notification(NotificationEvent::Badge { count }) => (
+            "notification.badge",
+            serde_json::to_value(NotificationBadgeEvent { count: *count })
+                .unwrap_or_else(|_| json!({})),
         ),
 
         SdkEvent::Conversation(ConversationEvent::Synced { conversation_ids }) => (
@@ -622,6 +633,62 @@ mod tests {
         assert_eq!(channel, "im://plugin_catalog_changed");
         assert_eq!(sdk_event_code(&event), 7002);
         assert_eq!(payload, json!({"version": "42"}));
+    }
+
+    /// NotifyCenter 的三个事件：展示、撤掉、角标，各走自己的通道与事件码。
+    #[test]
+    fn notification_events_carry_the_presentation_contract() {
+        use flare_im_core_sdk::model::notification::NotificationPresentation;
+
+        let present = SdkEvent::Notification(NotificationEvent::Present(Box::new(
+            NotificationPresentation {
+                collapse_id: "c:0123456789abcdef0123456789abcdef".into(),
+                thread_id: "c:0123456789abcdef0123456789abcdef".into(),
+                conversation_id: "conv-1".into(),
+                message_id: "m-7".into(),
+                seq: 7,
+                title: "Team".into(),
+                body: "Ann: hi".into(),
+                count: 2,
+                sound: true,
+                channel: "messages".into(),
+                surface: "inApp".into(),
+            },
+        )));
+        let (channel, payload) = sdk_event_channel_payload(&present).expect("present channel");
+        assert_eq!(channel, "im://notification_present");
+        assert_eq!(sdk_event_code(&present), 3503);
+        assert_eq!(
+            payload,
+            json!({
+                "collapseId": "c:0123456789abcdef0123456789abcdef",
+                "threadId": "c:0123456789abcdef0123456789abcdef",
+                "conversationId": "conv-1",
+                "messageId": "m-7",
+                "seq": 7,
+                "title": "Team",
+                "body": "Ann: hi",
+                "count": 2,
+                "sound": true,
+                "channel": "messages",
+                "surface": "inApp"
+            })
+        );
+
+        let clear = SdkEvent::Notification(NotificationEvent::Clear {
+            collapse_ids: vec!["c:1".into()],
+            all: false,
+        });
+        let (channel, payload) = sdk_event_channel_payload(&clear).expect("clear channel");
+        assert_eq!(channel, "im://notification_clear");
+        assert_eq!(sdk_event_code(&clear), 3504);
+        assert_eq!(payload, json!({"collapseIds": ["c:1"], "all": false}));
+
+        let badge = SdkEvent::Notification(NotificationEvent::Badge { count: 12 });
+        let (channel, payload) = sdk_event_channel_payload(&badge).expect("badge channel");
+        assert_eq!(channel, "im://notification_badge");
+        assert_eq!(sdk_event_code(&badge), 3505);
+        assert_eq!(payload, json!({"count": 12}));
     }
 
     #[test]

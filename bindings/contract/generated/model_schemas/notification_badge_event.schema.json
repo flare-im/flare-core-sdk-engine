@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Payload of notification.badge: the app badge as an absolute value.",
+  "properties": {
+    "count": {
+      "description": "Unread total, counted like the conversation list (archived conversations do not count,\nmuted ones only with mentions).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "count"
+  ],
+  "title": "NotificationBadgeEvent",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "NotificationBadgeEvent"
+}

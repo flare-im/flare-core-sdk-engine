@@ -1,0 +1,133 @@
+{
+  "$defs": {
+    "MultiDeviceAlertPolicy": {
+      "description": "What a phone does with an alert while another device of the same user is in use.",
+      "oneOf": [
+        {
+          "const": "delay",
+          "description": "Wait about 15 seconds; reading the conversation elsewhere in that time cancels the alert.",
+          "type": "string"
+        },
+        {
+          "const": "immediate",
+          "description": "Alert at once, as if no other device were in use.",
+          "type": "string"
+        },
+        {
+          "const": "badgeOnly",
+          "description": "Do not alert; only update the badge.",
+          "type": "string"
+        }
+      ]
+    },
+    "NotificationPreview": {
+      "description": "How much of a message a notification shows.",
+      "oneOf": [
+        {
+          "const": "full",
+          "description": "Sender and content.",
+          "type": "string"
+        },
+        {
+          "const": "senderOnly",
+          "description": "Only who sent it; the body says that a message arrived.",
+          "type": "string"
+        },
+        {
+          "const": "hidden",
+          "description": "Neither sender nor content: a generic title and body.",
+          "type": "string"
+        }
+      ]
+    },
+    "QuietHours": {
+      "additionalProperties": false,
+      "description": "Do-not-disturb hours, in the device's local time.",
+      "properties": {
+        "allowMentions": {
+          "description": "Whether messages that mention the user still ring inside the window.",
+          "type": "boolean"
+        },
+        "endMinute": {
+          "description": "End, minute of the day (0..1439), exclusive. Equal to the start: all day. Smaller than the\nstart: the window crosses midnight.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "startMinute": {
+          "description": "Start, minute of the day (0..1439), inclusive.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "weekdays": {
+          "description": "Days the window starts on: bit0 Monday .. bit6 Sunday; 0 means every day.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "startMinute",
+        "endMinute",
+        "weekdays",
+        "allowMentions"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A partial update of the user's notification settings: items left out keep their value; at\nleast one item must be given.",
+  "properties": {
+    "baseSettingsVersion": {
+      "default": 0,
+      "description": "The settingsVersion the change is based on; 0 skips the check. When the stored settings\nchanged in the meantime the whole update is rejected: read them again and retry.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "clearQuietHours": {
+      "default": false,
+      "description": "Remove the do-not-disturb hours. Rejected together with quietHours.",
+      "type": "boolean"
+    },
+    "multiDevice": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MultiDeviceAlertPolicy"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "New multi-device policy."
+    },
+    "preview": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NotificationPreview"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "New preview mode."
+    },
+    "quietHours": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QuietHours"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "New do-not-disturb hours, replacing the old ones."
+    }
+  },
+  "title": "UpdateUserNotificationSettingsRequest",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "UpdateUserNotificationSettingsRequest"
+}

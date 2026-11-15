@@ -479,6 +479,104 @@ mod tests {
                     .is_err()
             );
         }
+
+        // 远程推送入口：没有会话时一律按未登录忽略，点开的通知不指向任何会话。
+        let payload = r#"{"uid":"alice","tenant_id":"0","conversation_id":"c1","seq":"5","collapse_id":"c:0123456789abcdef0123456789abcdef","disposition":"loud","alert_class":"normal","title":"Bob","body":"hi"}"#;
+        let outcome = binding_response_to_value(
+            invoke_api_id_json(
+                &session,
+                "sdk.handle_remote_message",
+                &format!(r#"{{"provider":"fcm","payload":{payload},"budgetMs":8000}}"#),
+            )
+            .await
+            .unwrap(),
+        );
+        assert_eq!(
+            outcome,
+            serde_json::json!({"action": "ignore", "clearCollapseIds": [], "reason": "notLoggedIn"})
+        );
+        let tap = binding_response_to_value(
+            invoke_api_id_json(
+                &session,
+                "sdk.resolve_notification_tap",
+                &format!(r#"{{"payload":{payload}}}"#),
+            )
+            .await
+            .unwrap(),
+        );
+        assert_eq!(tap, serde_json::json!({}));
+        for (id, body) in [
+            (
+                "sdk.handle_remote_message",
+                r#"{"provider":"webpush","payload":{}}"#.to_owned(),
+            ),
+            (
+                "sdk.handle_remote_message",
+                format!(r#"{{"provider":"fcm","payload":{payload},"budget":1}}"#),
+            ),
+            (
+                "sdk.handle_remote_message",
+                r#"{"provider":"fcm","payload":{"seq":5}}"#.to_owned(),
+            ),
+            (
+                "sdk.resolve_notification_tap",
+                format!(r#"{{"payload":{payload},"userId":"other"}}"#),
+            ),
+        ] {
+            assert!(
+                invoke_api_id_json(&session, id, &body).await.is_err(),
+                "{id} {body}"
+            );
+        }
+    }
+
+    /// 通知模块：焦点与后台展示方登录前就能报；设置的读写要会话；认不得的键拒绝。
+    #[tokio::test]
+    async fn notification_routes_take_host_facts_before_login() {
+        let session = DirectOnlySession::new();
+        for (id, body) in [
+            ("notification.set_focus", r#"{"conversationId":"c1"}"#),
+            ("notification.set_focus", "{}"),
+            (
+                "notification.set_background_presenter",
+                r#"{"attached":true}"#,
+            ),
+            ("notification.set_snapshot_directory", "{}"),
+        ] {
+            assert!(
+                invoke_api_id_json(&session, id, body).await.is_ok(),
+                "{id} {body}"
+            );
+        }
+        // 没有会话时后台刷新照常答复，只是没有完成。
+        let refreshed = binding_response_to_value(
+            invoke_api_id_json(
+                &session,
+                "notification.background_refresh",
+                r#"{"budgetMs":1000}"#,
+            )
+            .await
+            .expect("background refresh without a session"),
+        );
+        assert_eq!(refreshed, serde_json::json!({"completed": false}));
+        for (id, body) in [
+            ("notification.get_settings", "{}"),
+            ("notification.update_settings", r#"{"preview":"hidden"}"#),
+            ("notification.set_focus", r#"{"conversation":"c1"}"#),
+            ("notification.set_background_presenter", "{}"),
+            ("notification.update_settings", r#"{"preview":"secret"}"#),
+            ("notification.set_snapshot_directory", r#"{"dir":"/tmp"}"#),
+            (
+                "notification.set_snapshot_directory",
+                r#"{"directory":"relative/path"}"#,
+            ),
+            ("notification.background_refresh", "{}"),
+        ] {
+            assert!(
+                invoke_api_id_json(&session, id, body).await.is_err(),
+                "{id} {body}"
+            );
+        }
     }
 
     /// 没有会话时状态是 `idle`，且每个字段都出现（宿主整体替换，不做合并）。

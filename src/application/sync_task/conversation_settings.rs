@@ -74,4 +74,6 @@ pub struct ConversationUserSettingsPatch {
     pub is_archived: Option<bool>,
     pub draft: Option<String>,
     pub clear_history_through_seq: Option<u64>,
+    /// 大群里显式开启「全部消息通知」。
+    pub notify_all: Option<bool>,
 }

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Where the engine keeps the notification snapshot an iOS notification service extension reads.",
+  "properties": {
+    "directory": {
+      "description": "Directory shared with the extension (the App Group container on iOS). The engine writes\nsnapshot.json there and reads the extension's receipts.log from it. Absent: stop writing;\nfiles already there are left alone.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "SetNotificationSnapshotDirectoryRequest",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "SetNotificationSnapshotDirectoryRequest"
+}

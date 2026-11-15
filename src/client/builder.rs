@@ -479,8 +479,7 @@ impl IMClientBuilder {
             notification_registry.clone(),
             message_deduper.clone(),
             bus.clone(),
-        )
-        .with_conversations(stores.conversations.clone());
+        );
         let init_msg_concurrency = resources.init_message_sync_concurrency as usize;
         let sync_handler: Arc<SyncProtocolAdapter> = Arc::new(SyncProtocolAdapter::new(
             sender.clone(),
@@ -523,6 +522,8 @@ impl IMClientBuilder {
             metrics: metrics.clone(),
             access: access.clone(),
             network_available: self.network_available,
+            device_id: self.config.effective_device_id(),
+            locale: self.config.effective_locale(),
         });
 
         // 注入应用层同步任务（构造时传入 SyncProtocolAdapter，execute 内自行调用，与用户扩展一致）

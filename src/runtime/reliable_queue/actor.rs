@@ -131,6 +131,8 @@ enum QueueCommand {
     },
     /// 暂时性拒绝的退避到期，该条消息可以重发了（`retries` 用来识别过期的到期通知）。
     RetryBackoffElapsed { client_msg_id: String, retries: u32 },
+    /// 问当前在途的条数（帧已派发、还在等 SendAck）。
+    InFlight { resp: oneshot::Sender<usize> },
     /// Answered once every command sent before it has been handled: the actor handles commands
     /// one at a time, in the order they were sent. Lets tests wait for the queue, not the clock.
     #[cfg(all(test, feature = "storage-sqlite"))]
@@ -489,6 +491,17 @@ impl ReliableSendQueue {
         })?
     }
 
+    /// 当前在途的条数（帧已派发、还在等 SendAck）；队列已停时为 0。链路托管前据此给在途的发送
+    /// 一点时间收尾，免得消息停在「发送中」直到应用回到前台。
+    pub(crate) async fn in_flight(&self) -> usize {
+        let (resp, rx) = oneshot::channel();
+        let asked = self.tx.send(QueueCommand::InFlight { resp }).await;
+        if asked.is_err() {
+            return 0;
+        }
+        rx.await.unwrap_or(0)
+    }
+
     pub(crate) fn shutdown(&self) {
         self.worker.abort();
         self.writer.abort();
@@ -697,6 +710,9 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
                 debug!(%client_msg_id, retries, "reliable queue retry backoff elapsed");
             }
             try_send_next(st).await?;
+        }
+        QueueCommand::InFlight { resp } => {
+            let _ = resp.send(st.in_flight.len());
         }
         #[cfg(all(test, feature = "storage-sqlite"))]
         QueueCommand::Handled(done) => {

@@ -16,8 +16,10 @@
 
 pub(crate) mod ack_ledger;
 pub mod codec;
+pub(crate) mod delivery_acks;
 pub mod downlink;
 pub use codec::{Codec, MAX_DOWNLINK_PAYLOAD_BYTES, ProtobufCodec};
+pub(crate) use delivery_acks::DeliveryAcks;
 pub use downlink::DownlinkPayload;
 pub use packet_sender::PacketSender;
 

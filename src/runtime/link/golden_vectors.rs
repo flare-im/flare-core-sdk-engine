@@ -160,7 +160,7 @@ fn switch_reason(value: &Value) -> Option<SwitchReason> {
         .map(|name| serde_json::from_value(Value::from(name)).unwrap())
 }
 
-const INTERNAL_PHASES: [(&str, LinkPhase); 11] = [
+const INTERNAL_PHASES: [(&str, LinkPhase); 12] = [
     ("idle", LinkPhase::Idle),
     ("resolving", LinkPhase::Resolving),
     ("connecting", LinkPhase::Connecting),
@@ -171,6 +171,7 @@ const INTERNAL_PHASES: [(&str, LinkPhase); 11] = [
     ("backoff", LinkPhase::Backoff),
     ("recovering", LinkPhase::Recovering),
     ("suspended", LinkPhase::Suspended),
+    ("parked", LinkPhase::Parked),
     ("terminated", LinkPhase::Terminated),
 ];
 
@@ -618,7 +619,7 @@ fn status_vectors() -> Value {
     let facts = |patch: Value| with(located.clone(), patch);
     let at = |phase: &str, facts: Value| json!({ "phase": phase, "facts": facts });
     json!({
-        "description": "Internal link phase + link facts -> the connection://status payload (every field present, null when absent). resolving / connecting / authenticating show connecting before the session was first online and switching (with the switch reason) after; syncing carries rttMs; ready and degraded are online with quality good / poor; backoff is reconnecting with the access point (cell, region, protocol) it will try next, attempt and nextRetryAt; recovering is serviceUnavailable with attempt and nextRetryAt and without the access point; suspended is waitingForNetwork; terminated is actionRequired with its reason (expired when none was recorded). developmentMode is carried in every phase.",
+        "description": "Internal link phase + link facts -> the connection://status payload (every field present, null when absent). resolving / connecting / authenticating show connecting before the session was first online and switching (with the switch reason) after; syncing carries rttMs; ready and degraded are online with quality good / poor; backoff is reconnecting with the access point (cell, region, protocol) it will try next, attempt and nextRetryAt; recovering is serviceUnavailable with attempt and nextRetryAt and without the access point; suspended is waitingForNetwork; parked (the link handed over to the push channel while the app is in the background) is online with quality good, field for field what ready gives; terminated is actionRequired with its reason (expired when none was recorded). developmentMode is carried in every phase.",
         "cases": cases(eval_status, vec![
             ("idle", at("idle", facts(json!({})))),
             ("idle in development mode", at("idle", facts(json!({ "developmentMode": true })))),
@@ -637,6 +638,7 @@ fn status_vectors() -> Value {
             ("backoff in development mode", at("backoff", facts(json!({ "developmentMode": true, "attempt": 1 })))),
             ("recovering", at("recovering", facts(json!({ "attempt": 3 })))),
             ("suspended", at("suspended", facts(json!({})))),
+            ("parked", at("parked", facts(json!({})))),
             ("terminated by a kick", at("terminated", facts(json!({ "actionReason": "kicked" })))),
             ("terminated by an expired token", at("terminated", facts(json!({ "actionReason": "expired" })))),
             ("terminated for an upgrade", at("terminated", facts(json!({ "actionReason": "upgradeRequired" })))),

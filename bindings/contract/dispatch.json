@@ -1213,6 +1213,21 @@
           "result": "unit"
         },
         {
+          "op": "set_notify_all",
+          "method": "set_notify_all",
+          "args": [
+            [
+              "conversation_id",
+              "str_ref"
+            ],
+            [
+              "enabled",
+              "bool"
+            ]
+          ],
+          "result": "unit"
+        },
+        {
           "op": "set_archived",
           "method": "set_archived",
           "args": [

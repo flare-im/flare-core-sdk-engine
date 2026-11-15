@@ -71,6 +71,91 @@ const CORE_SCHEMA_SPECS: &[CoreSchemaSpec] = &[
         sdk_name: "PushLifecycleStatus",
     },
     CoreSchemaSpec {
+        group: "session",
+        file_name: "handle_remote_message_request.schema.json",
+        sdk_name: "HandleRemoteMessageRequest",
+    },
+    CoreSchemaSpec {
+        group: "session",
+        file_name: "remote_message_outcome.schema.json",
+        sdk_name: "RemoteMessageOutcome",
+    },
+    CoreSchemaSpec {
+        group: "session",
+        file_name: "notification_presentation.schema.json",
+        sdk_name: "NotificationPresentation",
+    },
+    CoreSchemaSpec {
+        group: "session",
+        file_name: "resolve_notification_tap_request.schema.json",
+        sdk_name: "ResolveNotificationTapRequest",
+    },
+    CoreSchemaSpec {
+        group: "session",
+        file_name: "notification_tap_result.schema.json",
+        sdk_name: "NotificationTapResult",
+    },
+    CoreSchemaSpec {
+        group: "notification",
+        file_name: "notification_clear_event.schema.json",
+        sdk_name: "NotificationClearEvent",
+    },
+    CoreSchemaSpec {
+        group: "notification",
+        file_name: "notification_badge_event.schema.json",
+        sdk_name: "NotificationBadgeEvent",
+    },
+    CoreSchemaSpec {
+        group: "notification",
+        file_name: "notification_preview.schema.json",
+        sdk_name: "NotificationPreview",
+    },
+    CoreSchemaSpec {
+        group: "notification",
+        file_name: "multi_device_alert_policy.schema.json",
+        sdk_name: "MultiDeviceAlertPolicy",
+    },
+    CoreSchemaSpec {
+        group: "notification",
+        file_name: "quiet_hours.schema.json",
+        sdk_name: "QuietHours",
+    },
+    CoreSchemaSpec {
+        group: "notification",
+        file_name: "user_notification_settings.schema.json",
+        sdk_name: "UserNotificationSettings",
+    },
+    CoreSchemaSpec {
+        group: "notification",
+        file_name: "update_user_notification_settings_request.schema.json",
+        sdk_name: "UpdateUserNotificationSettingsRequest",
+    },
+    CoreSchemaSpec {
+        group: "notification",
+        file_name: "set_notification_focus_request.schema.json",
+        sdk_name: "SetNotificationFocusRequest",
+    },
+    CoreSchemaSpec {
+        group: "notification",
+        file_name: "set_background_presenter_request.schema.json",
+        sdk_name: "SetBackgroundPresenterRequest",
+    },
+    CoreSchemaSpec {
+        group: "notification",
+        file_name: "set_notification_snapshot_directory_request.schema.json",
+        sdk_name: "SetNotificationSnapshotDirectoryRequest",
+    },
+    CoreSchemaSpec {
+        group: "notification",
+        file_name: "background_refresh_request.schema.json",
+        sdk_name: "BackgroundRefreshRequest",
+    },
+    CoreSchemaSpec {
+        group: "notification",
+        file_name: "background_refresh_result.schema.json",
+        sdk_name: "BackgroundRefreshResult",
+    },
+    CoreSchemaSpec {
         group: "conversations",
         file_name: "conversation_type.schema.json",
         sdk_name: "ConversationType",
@@ -601,6 +686,9 @@ fn core_schema_group_description(group: &str) -> &'static str {
         "messages" => "Core-owned message DTOs derived from Rust JsonSchema.",
         "sync" => "Core-owned sync DTOs derived from Rust JsonSchema.",
         "media" => "Core-owned media DTOs derived from Rust JsonSchema.",
+        "notification" => {
+            "Core-owned notification DTOs (user notification settings, focus, background presenter, snapshot directory, background refresh) derived from Rust JsonSchema."
+        }
         _ => "Core-owned DTOs derived from Rust JsonSchema.",
     }
 }

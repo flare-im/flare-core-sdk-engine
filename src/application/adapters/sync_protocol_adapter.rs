@@ -32,7 +32,7 @@ use crate::kernel::{
     watermark_provably_clean,
 };
 use crate::kernel::{SyncFsm, SyncState, SyncTransition};
-use crate::model::apply_remote_settings_version;
+use crate::model::{apply_remote_settings_version, set_notify_all};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use crate::shared::util::now_millis;
 use crate::spi::metrics::{MetricLabel, MetricsRecorder};
@@ -668,7 +668,7 @@ impl SyncProtocolAdapter {
         }
     }
 
-    /// 上行同步当前用户的会话偏好（置顶/免打扰/归档/草稿）。
+    /// 上行同步当前用户的会话偏好（置顶/免打扰/归档/草稿/大群全部消息通知）。
     pub async fn push_conversation_user_settings(
         &self,
         conversation_id: &str,
@@ -692,6 +692,7 @@ impl SyncProtocolAdapter {
                 draft: patch.draft,
                 base_settings_version,
                 clear_history_through_seq: patch.clear_history_through_seq,
+                notify_all: patch.notify_all,
             })
             .await?;
         let Some(SyncResPayload::ConversationUserSettings(res)) = resp.payload else {
@@ -739,6 +740,7 @@ impl SyncProtocolAdapter {
             conversation.is_mention_only = Some(settings.is_mention_only);
             conversation.is_archived = settings.is_archived;
             conversation.draft = non_empty(&settings.draft);
+            set_notify_all(&mut conversation, settings.notify_all);
             apply_remote_settings_version(&mut conversation, settings.settings_version);
             self.stores
                 .conversations
@@ -762,6 +764,9 @@ impl SyncProtocolAdapter {
                 is_muted: Some(conversation.is_muted),
                 is_archived: Some(conversation.is_archived),
                 draft: conversation.draft.clone(),
+                notify_all: crate::model::conversation_user_settings::notify_all_in(
+                    &conversation.ext,
+                ),
                 ..Default::default()
             },
         )

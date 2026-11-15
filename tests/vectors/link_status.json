@@ -546,6 +546,38 @@
     },
     {
       "expected": {
+        "accessPointId": "ap-sg-1",
+        "attempt": 0,
+        "cellId": "cell-sg-a",
+        "developmentMode": false,
+        "nextRetryAt": null,
+        "phase": "online",
+        "protocol": "quic",
+        "quality": "good",
+        "reason": null,
+        "regionId": "sg",
+        "rttMs": 42
+      },
+      "input": {
+        "facts": {
+          "accessPointId": "ap-sg-1",
+          "actionReason": null,
+          "attempt": 2,
+          "cellId": "cell-sg-a",
+          "developmentMode": false,
+          "nextRetryAt": 1793779204000,
+          "protocol": "quic",
+          "regionId": "sg",
+          "rttMs": 42,
+          "switchReason": null,
+          "wasOnline": false
+        },
+        "phase": "parked"
+      },
+      "name": "parked"
+    },
+    {
+      "expected": {
         "accessPointId": null,
         "attempt": 0,
         "cellId": null,
@@ -705,5 +737,5 @@
       "name": "terminated without a recorded reason"
     }
   ],
-  "description": "Internal link phase + link facts -> the connection://status payload (every field present, null when absent). resolving / connecting / authenticating show connecting before the session was first online and switching (with the switch reason) after; syncing carries rttMs; ready and degraded are online with quality good / poor; backoff is reconnecting with the access point (cell, region, protocol) it will try next, attempt and nextRetryAt; recovering is serviceUnavailable with attempt and nextRetryAt and without the access point; suspended is waitingForNetwork; terminated is actionRequired with its reason (expired when none was recorded). developmentMode is carried in every phase."
+  "description": "Internal link phase + link facts -> the connection://status payload (every field present, null when absent). resolving / connecting / authenticating show connecting before the session was first online and switching (with the switch reason) after; syncing carries rttMs; ready and degraded are online with quality good / poor; backoff is reconnecting with the access point (cell, region, protocol) it will try next, attempt and nextRetryAt; recovering is serviceUnavailable with attempt and nextRetryAt and without the access point; suspended is waitingForNetwork; parked (the link handed over to the push channel while the app is in the background) is online with quality good, field for field what ready gives; terminated is actionRequired with its reason (expired when none was recorded). developmentMode is carried in every phase."
 }

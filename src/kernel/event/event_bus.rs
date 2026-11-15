@@ -491,7 +491,11 @@ impl EventBus {
                     |f, message| f(message.clone()),
                 );
             }
-            SdkEvent::Notification(NotificationEvent::MessageSound { .. }) => {}
+            SdkEvent::Notification(
+                NotificationEvent::Present(_)
+                | NotificationEvent::Clear { .. }
+                | NotificationEvent::Badge { .. },
+            ) => {}
             SdkEvent::Conversation(ce) => match ce {
                 ConversationEvent::Synced { conversation_ids } => {
                     dispatched += dispatch_callbacks_with(

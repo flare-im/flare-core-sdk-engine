@@ -6,6 +6,15 @@
 //!
 //! 异步工作（装配目录、取令牌、建连、等补同步）放在单一的「进行中操作」槽里与命令并发等待，
 //! 所以建连的 8 秒里也能立即响应断开、网络变化；换一个操作即取消上一个（丢弃 future 即取消竞速）。
+//!
+//! 设备状态也从这里报给服务端：前后台变化、后台展示方接上或卸下、每次建连之后各报一次。链路保留
+//! 着的后台里报哪个状态，看本进程能不能自己提示（[`DeviceReach::background_state`]）。进后台后链路
+//! 怎么办按平台分两种（[`BackgroundMode`]）：保留链路的平台照旧，其中手机断线后只自己重连有限的几轮；
+//! 托管的平台（iOS）把提示交给推送通道后主动关掉链路，停在 [`LinkPhase::Parked`]，回到前台再连。
+//! 托管交接放在另一个槽里与命令并发等待，用户中途回来即丢弃。
+//!
+//! 推送唤醒（[`LinkCommand::Wake`]）也只进这里：应用在后台、链路停着的时候，一条推送带来一段后台
+//! 执行时间，就在这段时间里连上、补同步，时间到了回到原来的做法（托管的平台重新托管）。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,18 +33,22 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::kernel::SdkState;
 use crate::kernel::event::{ConnectionEvent, EventBus, SdkEvent};
 use crate::shared::error::{ErrorCode, FlareError, Result};
-use crate::shared::util::{BackgroundTask, delay, spawn_background, spawn_background_task};
+use crate::shared::util::{
+    BackgroundTask, delay, spawn_background, spawn_background_task, timeout,
+};
 
 use super::access::{AccessRuntime, AccessUnavailable, ConnectAckSummary, CurrentLink, now_ms};
 use super::driver::{
-    LinkDriver, LinkFuture, LinkHeartbeat, LinkTarget, LinkUp, OpenRequest, boxed,
+    DeviceLinkState, LinkDriver, LinkFuture, LinkHeartbeat, LinkTarget, LinkUp, OpenRequest, boxed,
 };
 use super::epoch::ConnectionEpoch;
 use super::failover::{
     Backoff, FailoverAction, FailoverEvent, LinkLoss, RejectionKind, ReportRecord, RetryContext,
     attempt_observation, between, classify_loss, classify_rejection, decide, duration_ms,
-    from_transport, plan_retry, report_records, to_transport,
+    from_transport, plan_retry, report_records, to_transport, unattended_round_allowed,
 };
+use super::heartbeat_learning::{BeatOutcome, HeartbeatTrial, learned_heartbeat};
+use super::reach::{BackgroundMode, DeviceReach, ReachProfile};
 use super::status::{
     AccessEndpoint, AccessSwitched, ActionRequiredReason, ConnectionStatus, LinkFacts, LinkPhase,
     SwitchReason, project,
@@ -56,6 +69,11 @@ const POOR_RTT_MS: u32 = 1_500;
 const PROBE_GRACE_MS: i64 = 1_000;
 /// 新清单把当前接入点标为 draining / disabled：在这个窗口里随机时刻迁走，别让全网同时重连。
 const MANIFEST_DRAIN_WINDOW_MS: (u64, u64) = (1_000, 60_000);
+/// 一次推送唤醒最长给多久：系统给的后台时间里最长的是 iOS 后台刷新任务（约 25 秒）。
+const WAKE_BUDGET_CAP: Duration = Duration::from_secs(30);
+/// 等托管交接收尾的总时限。交接本身每一步都有时限（冲刷 2 秒、等应答 1 秒、最后一批确认 0.5 秒），
+/// 这里再兜底，加上关连接的时间。
+const PARKING_SETTLE_CAP: Duration = Duration::from_secs(4);
 
 /// 送给状态机的命令。
 pub(crate) enum LinkCommand {
@@ -77,8 +95,42 @@ pub(crate) enum LinkCommand {
     AppState {
         foreground: bool,
     },
+    /// 后台展示方接上或卸下了：后台里报给服务端的状态随之变（`STANDBY` / `DEFERRED`）。
+    DeviceStateChanged,
     /// 手动固定变了：当前接入点不是固定的那个就切过去。
     Repin,
+    /// 唤醒：应用在后台、链路停着（托管、空闲、后台重连预算用完）时立即连上并补同步，`budget`
+    /// 用完后回到原来的做法。已有一次唤醒在跑时并入它。`done` 在链路补完同步时收到 `true`，唤醒
+    /// 没起来或没等到就结束时收到 `false`。
+    Wake {
+        budget: Duration,
+        source: WakeSource,
+        done: Option<oneshot::Sender<bool>>,
+    },
+    /// 提前结束进行中的唤醒（后台刷新做完了）：应用还在后台时回到原来的做法（托管的平台重新托管）。
+    EndWake,
+    /// 进后台引起的托管交接收尾（交接完并关掉连接、被放弃，或根本没有交接）时答复。
+    ParkingSettled {
+        reply: oneshot::Sender<()>,
+    },
+}
+
+/// 唤醒从哪里来：只影响日志，做法相同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WakeSource {
+    /// 一条带后台执行时间的远程推送（FCM 高优先级数据消息、iOS 静默推送）。
+    Push,
+    /// 平台给的后台刷新（iOS BGAppRefreshTask）。
+    BackgroundRefresh,
+}
+
+impl WakeSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Push => "push",
+            Self::BackgroundRefresh => "backgroundRefresh",
+        }
+    }
 }
 
 /// 连接送来的信号（监听器、采样任务）。带连接代数：旧连接的一律丢弃。
@@ -91,6 +143,10 @@ pub(crate) enum LinkSignal {
     RoundTrip {
         epoch: u64,
         rtt: Duration,
+    },
+    /// 应用在后台时这条连接的一次心跳得到了应答：心跳学习按它拉长后台间隔。
+    Beat {
+        epoch: u64,
     },
 }
 
@@ -148,6 +204,8 @@ pub(crate) struct LinkHandle {
     status: Arc<ArcSwap<ConnectionStatus>>,
     /// 状态机用的接入运行时（宿主的状态、诊断、固定接入点 API 必须读写同一份）。
     access: Arc<AccessRuntime>,
+    /// 这个平台进后台就托管：进后台的调用方要等交接收尾（见 [`Self::parking_settled`]）。
+    parks: bool,
     _worker: Arc<WorkerGuard>,
 }
 
@@ -156,11 +214,15 @@ impl LinkHandle {
     ///
     /// `network_available` 是宿主此前报过的网络可用性（没报过为 `true`）：平台常在登录前首报、之后对
     /// 相同状态去重，新建的状态机必须从它起步，否则离线时登录看不到「等网络」。
+    ///
+    /// `reach` 是引擎的设备可达状态：平台进后台后链路保留还是托管、后台重连受不受预算约束，以及
+    /// 后台里本进程能不能自己提示（决定报 `STANDBY` 还是 `DEFERRED`）。
     pub fn spawn(
         driver: Arc<dyn LinkDriver>,
         access: Arc<AccessRuntime>,
         bus: EventBus,
         network_available: bool,
+        reach: Arc<DeviceReach>,
     ) -> Self {
         let (commands_tx, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (signals_tx, signals_rx) = mpsc::channel(SIGNAL_CAPACITY);
@@ -174,6 +236,7 @@ impl LinkHandle {
             tx: signals_tx.clone(),
             epoch: epoch.clone(),
         };
+        let parks = reach.profile().background == BackgroundMode::Park;
         let supervisor = Supervisor {
             driver,
             access: access.clone(),
@@ -193,6 +256,7 @@ impl LinkHandle {
             live: None,
             round: None,
             op: None,
+            hand_over: None,
             timer: None,
             retry_at: None,
             pending_prefer: Vec::new(),
@@ -205,6 +269,13 @@ impl LinkHandle {
             backoff: Backoff::default(),
             failed_rounds: 0,
             foreground: true,
+            profile: reach.profile(),
+            reach,
+            background_rounds: 0,
+            wake_until: None,
+            wake_waiters: Vec::new(),
+            heartbeat: HeartbeatTrial::default(),
+            parking_waiters: Vec::new(),
             network_available,
             link_lost_at: None,
             last_switch_ms: 0,
@@ -220,6 +291,7 @@ impl LinkHandle {
             signals,
             status,
             access,
+            parks,
             _worker: Arc::new(WorkerGuard(worker)),
         }
     }
@@ -279,8 +351,59 @@ impl LinkHandle {
         self.command(LinkCommand::AppState { foreground }).await;
     }
 
+    /// 后台展示方接上或卸下了：应用在后台且链路在时重新上报设备状态。
+    pub async fn device_state_changed(&self) {
+        self.command(LinkCommand::DeviceStateChanged).await;
+    }
+
     pub async fn repin(&self) {
         self.command(LinkCommand::Repin).await;
+    }
+
+    /// 推送唤醒：应用在后台、链路停着（托管、空闲、后台重连预算用完）时立即连上并补同步，`budget`
+    /// 用完后回到原来的做法（托管的平台重新托管，保留链路的平台留着链路）。已有一次唤醒在跑时忽略；
+    /// 前台时不起作用。只把命令交给状态机，不等建连。
+    pub async fn wake(&self, budget: Duration) {
+        self.command(LinkCommand::Wake {
+            budget,
+            source: WakeSource::Push,
+            done: None,
+        })
+        .await;
+    }
+
+    /// 唤醒并等它：与 [`Self::wake`] 一样把链路拉起来，等到补完同步（`true`），或者预算用完、唤醒
+    /// 没能开始（没有会话、没网、已终止）（`false`）。链路本来就在线时立即答 `true`。预算到了状态机
+    /// 自己收尾；提前做完的调用方用 [`Self::end_wake`] 收尾。
+    pub async fn wake_until_ready(&self, source: WakeSource, budget: Duration) -> bool {
+        let (done, rx) = oneshot::channel();
+        self.command(LinkCommand::Wake {
+            budget,
+            source,
+            done: Some(done),
+        })
+        .await;
+        matches!(timeout(budget, rx).await, Ok(Ok(true)))
+    }
+
+    /// 提前结束唤醒：应用还在后台时回到原来的做法（托管的平台把链路交回推送通道后关掉，保留链路的
+    /// 平台不动）。前台时什么都不做。
+    pub async fn end_wake(&self) {
+        self.command(LinkCommand::EndWake).await;
+    }
+
+    /// 进后台（[`Self::app_state`] 报了后台）之后调用。托管的平台等交接收尾才返回：交接完并关掉
+    /// 连接、用户回来放弃了交接，或根本没有可交接的连接；宿主据此恰好持有这么久的后台执行。交接
+    /// 每一步都有时限，这里再兜一个总时限。其它平台立即返回。
+    pub async fn parking_settled(&self) {
+        if !self.parks {
+            return;
+        }
+        let (reply, rx) = oneshot::channel();
+        self.command(LinkCommand::ParkingSettled { reply }).await;
+        if timeout(PARKING_SETTLE_CAP, rx).await.is_err() {
+            tracing::warn!("the hand-over did not settle in time; returning anyway");
+        }
     }
 
     pub fn status(&self) -> ConnectionStatus {
@@ -306,6 +429,12 @@ enum OpResult {
     Synced {
         epoch: u64,
     },
+}
+
+/// 一次托管交接的结果：交接的是哪条连接，服务端有没有在时限内应答。
+struct HandOver {
+    epoch: u64,
+    acked: bool,
 }
 
 struct Session {
@@ -353,6 +482,9 @@ struct Supervisor {
     live: Option<LiveLink>,
     round: Option<Round>,
     op: Option<LinkFuture<OpResult>>,
+    /// 进行中的托管交接。与 `op` 分开：交接期间连接还在用，补同步的等待照常收尾；用户回到前台时
+    /// 丢弃它即取消交接。
+    hand_over: Option<LinkFuture<HandOver>>,
     timer: Option<(i64, LinkFuture<()>)>,
     retry_at: Option<i64>,
     pending_prefer: Vec<String>,
@@ -366,6 +498,20 @@ struct Supervisor {
     backoff: Backoff,
     failed_rounds: u32,
     foreground: bool,
+    /// 这个平台的可达特征：进后台后链路的做法，后台重连受不受预算约束。
+    profile: ReachProfile,
+    /// 引擎的设备可达状态：这里只读后台里该报哪个状态（随后台展示方接没接上而变）。
+    reach: Arc<DeviceReach>,
+    /// 应用在后台期间已经发起的建连轮数；连上、回到前台、网络恢复、显式重连时清零。
+    background_rounds: u32,
+    /// 进行中的推送唤醒到期的时刻；没有唤醒在跑时为空。
+    wake_until: Option<i64>,
+    /// 等唤醒结果的调用方（后台刷新）：链路补完同步时答 `true`，唤醒结束、停靠、终止时答 `false`。
+    wake_waiters: Vec<oneshot::Sender<bool>>,
+    /// 按网络学到的后台心跳间隔（只在保留链路的手机上起作用）。
+    heartbeat: HeartbeatTrial,
+    /// 等托管交接收尾的调用方（进后台的 `setAppState`）。交接不在进行时即答复。
+    parking_waiters: Vec<oneshot::Sender<()>>,
     network_available: bool,
     link_lost_at: Option<i64>,
     last_switch_ms: i64,
@@ -383,11 +529,13 @@ enum Wake {
     Command(Option<LinkCommand>),
     Signal(Option<LinkSignal>),
     Op(OpResult),
+    HandedOver(HandOver),
     Directory(DirectoryChange),
     Timer,
 }
 
-async fn poll_op(slot: &mut Option<LinkFuture<OpResult>>) -> OpResult {
+/// 等槽里的操作完成并取出结果；槽空时永远不就绪。
+async fn poll_slot<T>(slot: &mut Option<LinkFuture<T>>) -> T {
     match slot.as_mut() {
         Some(future) => {
             let result = future.await;
@@ -452,7 +600,8 @@ impl Supervisor {
             let wake = tokio::select! {
                 command = self.commands.recv() => Wake::Command(command),
                 signal = self.signals.recv() => Wake::Signal(signal),
-                result = poll_op(&mut self.op) => Wake::Op(result),
+                result = poll_slot(&mut self.op) => Wake::Op(result),
+                handed_over = poll_slot(&mut self.hand_over) => Wake::HandedOver(handed_over),
                 change = next_change(&mut self.changes) => Wake::Directory(change),
                 () = poll_timer(&mut self.timer) => Wake::Timer,
             };
@@ -462,8 +611,15 @@ impl Supervisor {
                 Wake::Signal(Some(signal)) => self.on_signal(signal).await,
                 Wake::Signal(None) => {}
                 Wake::Op(result) => self.on_op(result).await,
+                Wake::HandedOver(handed_over) => self.on_handed_over(handed_over).await,
                 Wake::Directory(change) => self.on_directory_changed(change).await,
                 Wake::Timer => self.on_timer().await,
+            }
+            // 托管交接不在进行（交接完并关掉了连接、被放弃，或根本没有）：等它收尾的调用方可以返回了。
+            if self.hand_over.is_none() {
+                for waiter in self.parking_waiters.drain(..) {
+                    let _ = waiter.send(());
+                }
             }
         }
         // 所有句柄都已释放：会话没了，收尾关掉连接。
@@ -507,6 +663,7 @@ impl Supervisor {
             self.degraded_until,
             self.next_maintenance,
             self.manifest_move_at,
+            self.wake_until,
         ]
         .into_iter()
         .flatten()
@@ -541,9 +698,14 @@ impl Supervisor {
                 }
                 self.access.wake_refresh();
                 match self.phase {
-                    LinkPhase::Backoff | LinkPhase::Recovering | LinkPhase::Suspended => {
+                    // 显式的重连请求也把已托管的链路连回来（应用还在后台时按 STANDBY 建连）。
+                    LinkPhase::Backoff
+                    | LinkPhase::Recovering
+                    | LinkPhase::Suspended
+                    | LinkPhase::Parked => {
                         self.backoff.reset();
                         self.failed_rounds = 0;
+                        self.background_rounds = 0;
                         self.begin_round(Vec::new(), None);
                     }
                     // 已在连接、已在线或已终止（只能由重新登录离开）：不打断。
@@ -554,7 +716,25 @@ impl Supervisor {
                 self.on_network(available, changed).await;
             }
             LinkCommand::AppState { foreground } => self.on_app_state(foreground).await,
+            LinkCommand::DeviceStateChanged => {
+                // 前台总是 ACTIVE，与展示方无关；交接中的连接马上要关，再报别的状态会把托管作废。
+                if self.live.is_some() && !self.foreground && self.hand_over.is_none() {
+                    self.driver.report_device_state(self.device_state());
+                }
+            }
             LinkCommand::Repin => self.on_repin().await,
+            LinkCommand::Wake {
+                budget,
+                source,
+                done,
+            } => self.on_wake(budget, source, done),
+            LinkCommand::EndWake => {
+                // 做完了：不等预算到期，回到原来的做法。
+                self.wake_until = None;
+                self.end_wake().await;
+            }
+            // 交接还在进行就等它收尾（见 `run`），否则这一轮就答复。
+            LinkCommand::ParkingSettled { reply } => self.parking_waiters.push(reply),
         }
     }
 
@@ -589,11 +769,15 @@ impl Supervisor {
             if !online
                 && matches!(
                     self.phase,
-                    LinkPhase::Backoff | LinkPhase::Recovering | LinkPhase::Idle
+                    LinkPhase::Backoff
+                        | LinkPhase::Recovering
+                        | LinkPhase::Idle
+                        | LinkPhase::Parked
                 )
             {
                 self.backoff.reset();
                 self.failed_rounds = 0;
+                self.background_rounds = 0;
                 self.begin_round(Vec::new(), None);
             }
             return;
@@ -615,6 +799,8 @@ impl Supervisor {
         };
         self.backoff.reset();
         self.failed_rounds = 0;
+        self.background_rounds = 0;
+        self.wake_until = None;
         self.switch_from = None;
         self.link_lost_at = None;
         if !self.network_available {
@@ -630,6 +816,10 @@ impl Supervisor {
     async fn stop_session(&mut self) {
         self.epoch.advance();
         self.op = None;
+        self.hand_over = None;
+        self.wake_until = None;
+        self.answer_wake(false);
+        self.heartbeat.clear();
         self.round = None;
         self.retry_at = None;
         self.degraded_until = None;
@@ -658,6 +848,10 @@ impl Supervisor {
         if self.session.is_none() || self.phase == LinkPhase::Terminated {
             return;
         }
+        if self.phase == LinkPhase::Parked {
+            // 已托管：网络变化不动链路，只记下可用性，回到前台时按它决定是连还是等网络。
+            return;
+        }
         if !available {
             // 停止一切尝试；连接若还在就留着（网络可能只是抖了一下），恢复后先验活。
             self.round = None;
@@ -672,6 +866,18 @@ impl Supervisor {
         }
         // 恢复期间换了网络：之前到不了的引导源可能到得了了。
         self.access.wake_refresh();
+        if changed
+            && self.live.is_some()
+            && self.learns_heartbeat()
+            && let Some(heartbeat) = self.heartbeat.on_network(
+                self.access.heartbeat_learning(),
+                self.access.net(),
+                now_ms(),
+            )
+        {
+            // 连接还在、换了网：后台间隔换成新网络学到的值。
+            self.retune_heartbeat(heartbeat);
+        }
         if let Some(live) = self.live.as_ref() {
             let current_unhealthy = changed && self.access.is_unhealthy(&live.access_point_id);
             let was_suspended = self.phase == LinkPhase::Suspended;
@@ -704,8 +910,10 @@ impl Supervisor {
             LinkPhase::Suspended | LinkPhase::Backoff | LinkPhase::Recovering
         ) {
             // 换了网络，之前的失败不再说明问题：重置退避，按新网络的健康记录立即选路。
+            // 后台用完重连预算停下的，也从这里重新开始。
             self.backoff.reset();
             self.failed_rounds = 0;
+            self.background_rounds = 0;
             let prefer = std::mem::take(&mut self.pending_prefer);
             self.begin_round(prefer, None);
         }
@@ -714,15 +922,43 @@ impl Supervisor {
     async fn on_app_state(&mut self, foreground: bool) {
         let was_foreground = self.foreground;
         self.foreground = foreground;
+        if was_foreground != foreground {
+            // 只数后台里连续得到应答的心跳：前后台一换就从头数。
+            self.heartbeat.restart(now_ms());
+        }
         if !foreground {
+            if was_foreground {
+                self.on_backgrounded().await;
+            }
             self.access.flush_health(true).await;
             return;
         }
         if was_foreground || self.session.is_none() {
             return;
         }
+        self.background_rounds = 0;
+        // 唤醒途中回到前台：唤醒到此为止，之后一切照前台的做法（正在连的接着连，连上的留着）。
+        self.wake_until = None;
+        if self.hand_over.take().is_some() {
+            // 交接到一半用户回来了：放弃托管，连接留着。下面的 ACTIVE 上报同时让服务端收回提示。
+            tracing::info!("back in the foreground during the hand-over; keeping the link");
+        }
+        if self.live.is_some() {
+            self.driver.report_device_state(DeviceLinkState::Active);
+        }
         self.access.wake_refresh();
         match self.phase {
+            // 托管后回来：立即连，不用退避；补同步随新连接照常进行。
+            LinkPhase::Parked => {
+                self.backoff.reset();
+                self.failed_rounds = 0;
+                if self.network_available {
+                    self.begin_round(Vec::new(), None);
+                } else {
+                    // 停靠期间断网了：等网络回来（发件箱在托管时已暂停）。
+                    self.set_phase(LinkPhase::Suspended);
+                }
+            }
             // 回到前台：后台的长退避不该让用户等，立即一轮。
             LinkPhase::Backoff | LinkPhase::Recovering if self.network_available => {
                 self.backoff.reset();
@@ -732,6 +968,233 @@ impl Supervisor {
             LinkPhase::Ready => self.check_failback(true).await,
             _ => {}
         }
+    }
+
+    /// 此刻该报给服务端的设备状态（不含托管）：前台 `ACTIVE`；后台看本进程能不能自己提示。
+    fn device_state(&self) -> DeviceLinkState {
+        if self.foreground {
+            DeviceLinkState::Active
+        } else {
+            self.reach.background_state()
+        }
+    }
+
+    /// 应用进了后台。保留链路的平台报 `STANDBY` 或 `DEFERRED`；托管的平台把提示交给推送通道后关掉
+    /// 链路。
+    async fn on_backgrounded(&mut self) {
+        if self.session.is_none() || self.phase == LinkPhase::Terminated {
+            return;
+        }
+        match self.profile.background {
+            BackgroundMode::Standby => {
+                // 没有连接：状态等连上再报（手机上，之后的重连轮数受后台预算约束）。
+                if self.live.is_some() {
+                    self.driver.report_device_state(self.device_state());
+                }
+            }
+            BackgroundMode::Park => self.hand_over_or_park().await,
+        }
+    }
+
+    /// 托管的平台把提示交回推送通道：有连接先交接再关（交接与命令并发等待，用户马上回来时丢弃它
+    /// 即可）；没有连接可交接（正在建连、退避、等网络）就直接停靠，回到前台再连。
+    async fn hand_over_or_park(&mut self) {
+        match self.live.as_ref().map(|live| live.epoch) {
+            Some(epoch) => {
+                let driver = self.driver.clone();
+                self.hand_over = Some(boxed(async move {
+                    let acked = driver.hand_over().await;
+                    HandOver { epoch, acked }
+                }));
+            }
+            None => self.park().await,
+        }
+    }
+
+    /// 唤醒（应用在后台）。链路停着（托管、空闲，或后台用完重连预算停在退避里）就立即按此刻的
+    /// 后台状态建连，连上后照常补同步；`budget` 到了由 [`Self::end_wake`] 收尾。
+    ///
+    /// 同一时间只有一次唤醒：在跑的那次不因新的唤醒延长，新来的等它的结果。前台、链路已在或正在连
+    /// 时不另起唤醒（前台与在线的链路本来就在收消息），等的一方等链路补完同步；没有会话、没有网络、
+    /// 已终止时连不上，等的一方立即得到 `false`。
+    fn on_wake(
+        &mut self,
+        budget: Duration,
+        source: WakeSource,
+        done: Option<oneshot::Sender<bool>>,
+    ) {
+        if let Some(done) = done {
+            self.wake_waiters.push(done);
+        }
+        if self.session.is_none()
+            || self.phase == LinkPhase::Terminated
+            || !self.network_available
+            || budget.is_zero()
+        {
+            self.answer_wake(false);
+            return;
+        }
+        if self.live.as_ref().is_some_and(|live| !live.syncing)
+            && matches!(self.phase, LinkPhase::Ready | LinkPhase::Degraded)
+        {
+            self.answer_wake(true);
+            return;
+        }
+        if self.foreground || self.wake_until.is_some() {
+            return;
+        }
+        // 后台用完重连预算停下的：停在退避阶段，但没有下一次重试的时刻。
+        let stopped = match self.phase {
+            LinkPhase::Parked | LinkPhase::Idle => true,
+            LinkPhase::Backoff | LinkPhase::Recovering => self.retry_at.is_none(),
+            _ => false,
+        };
+        if !stopped {
+            return;
+        }
+        let budget_ms = duration_ms(budget.min(WAKE_BUDGET_CAP));
+        tracing::info!(
+            budget_ms,
+            source = source.as_str(),
+            "woken in the background; connecting"
+        );
+        self.wake_until = Some(now_ms() + i64::from(budget_ms));
+        self.backoff.reset();
+        self.failed_rounds = 0;
+        // 推送到了说明网络已经通：冷却中的接入点各放一次试探，不让之前断网时攒下的熔断把这次唤醒
+        // 整轮挡掉。试探失败照常翻倍冷却。
+        if let Some(kernel) = self.access.kernel_now() {
+            let expedited = kernel.health().expedite_trials(self.access.net(), now_ms());
+            if expedited > 0 {
+                tracing::debug!(expedited, "wake expedites access point trials");
+            }
+        }
+        // 不清后台重连轮数：唤醒的这一轮照样计入，连不上时链路仍按后台预算停下。
+        self.begin_round(Vec::new(), None);
+    }
+
+    /// 答复等唤醒结果的调用方。
+    fn answer_wake(&mut self, ready: bool) {
+        for waiter in self.wake_waiters.drain(..) {
+            let _ = waiter.send(ready);
+        }
+    }
+
+    /// 唤醒的预算用完，应用还在后台：托管的平台像进后台时那样把提示交回推送通道（有连接先交接再关，
+    /// 没有就直接停靠）；保留链路的平台什么都不动，链路留着，照旧受后台重连预算约束。
+    async fn end_wake(&mut self) {
+        if self.foreground
+            || self.session.is_none()
+            || self.profile.background != BackgroundMode::Park
+            || matches!(self.phase, LinkPhase::Parked | LinkPhase::Terminated)
+            || self.hand_over.is_some()
+        {
+            return;
+        }
+        tracing::info!("the push wake's budget is spent; parking again");
+        self.hand_over_or_park().await;
+    }
+
+    async fn on_handed_over(&mut self, handed_over: HandOver) {
+        // 回到前台时交接已被丢弃；连接在交接期间断了或换了的，各自的路径已经处理。
+        let current = self
+            .live
+            .as_ref()
+            .is_some_and(|live| live.epoch == handed_over.epoch);
+        if self.foreground || !current {
+            return;
+        }
+        if !handed_over.acked {
+            // 没等到应答也照样关：连接关闭时服务端把没确认的帧交给推送，提示不会漏。
+            tracing::warn!("no answer to the parking report in time; parking anyway");
+        }
+        self.park().await;
+    }
+
+    /// 应用在后台，而这个平台后台不保留链路：此时引擎不自己建连。
+    fn parks_in_background(&self) -> bool {
+        !self.foreground && self.profile.background == BackgroundMode::Park
+    }
+
+    /// 停靠：关掉连接（有的话，按托管关闭），之后不重连、不设重试定时。
+    async fn park(&mut self) {
+        // 先丢掉进行中的建连，再关：免得刚建好的连接留在槽里没人管。
+        self.op = None;
+        self.round = None;
+        if self.live.take().is_some() {
+            self.link_lost_at = Some(now_ms());
+            self.driver.close_parked().await;
+        } else {
+            self.driver.close().await;
+        }
+        self.driver.link_down().await;
+        self.settle_parked();
+    }
+
+    /// 进入 [`LinkPhase::Parked`]。调用时连接已经不在、发件箱已暂停。
+    fn settle_parked(&mut self) {
+        tracing::info!("link parked; alerts are left to the push channel");
+        // 作废这条连接：迟到的帧与断开都不再算数。
+        self.epoch.advance();
+        self.op = None;
+        self.hand_over = None;
+        // 停靠了，进行中的唤醒（若有）也到此为止。
+        self.wake_until = None;
+        self.answer_wake(false);
+        self.heartbeat.clear();
+        self.round = None;
+        self.live = None;
+        self.retry_at = None;
+        self.degraded_until = None;
+        self.next_maintenance = None;
+        self.manifest_move_at = None;
+        self.resume_after_probe = false;
+        self.pending_prefer.clear();
+        self.pending_only = None;
+        self.facts.next_retry_at = None;
+        self.facts.attempt = 0;
+        self.facts.switch_reason = None;
+        self.access.set_current(None);
+        self.access.set_recovering(false);
+        // 首次建连途中进了后台：会话保留，登录照常成功，回到前台再连。
+        self.answer_start(Ok(()));
+        self.set_phase(LinkPhase::Parked);
+    }
+
+    /// 没有人在等的时候（应用在后台）还能不能自己再发起一轮：手机用完后台预算就不能了，不论它在
+    /// 后台报的是 `STANDBY` 还是 `DEFERRED`（进程随时会被冻结，这与有没有后台展示方无关）。
+    fn may_retry_unattended(&self) -> bool {
+        unattended_round_allowed(self.foreground, self.profile.mobile, self.background_rounds)
+    }
+
+    /// 应用在后台时还能不能自己安排下一轮。不能时已经停好（托管的平台停靠；保留链路的手机用完预算
+    /// 后原地停下），调用方直接返回。
+    fn stops_unattended_retry(&mut self) -> bool {
+        if self.parks_in_background() {
+            self.settle_parked();
+            return true;
+        }
+        if self.may_retry_unattended() {
+            return false;
+        }
+        tracing::info!(
+            rounds = self.background_rounds,
+            "background reconnect budget spent; waiting for the foreground, the network or a retry"
+        );
+        self.retry_at = None;
+        self.facts.attempt = self.failed_rounds;
+        self.facts.next_retry_at = None;
+        self.plan_next_location();
+        // 引导面也停下：没有人在等，不值得在后台继续找新地址。
+        self.access.set_recovering(false);
+        // 停在和退避时相同的阶段，只是没有下一次重试的时刻。
+        let recovering = self.failed_rounds >= super::failover::RECOVERING_AFTER_FAILED_ROUNDS;
+        self.set_phase(if recovering {
+            LinkPhase::Recovering
+        } else {
+            LinkPhase::Backoff
+        });
+        true
     }
 
     async fn on_repin(&mut self) {
@@ -753,8 +1216,13 @@ impl Supervisor {
         if self.session.is_none() {
             return;
         }
+        if !self.foreground {
+            self.background_rounds = self.background_rounds.saturating_add(1);
+        }
         self.retry_at = None;
         self.op = None;
+        // 新的一轮取代上一条连接，连同它没做完的托管交接。
+        self.hand_over = None;
         self.round = Some(Round {
             token: None,
             tried: Vec::new(),
@@ -909,6 +1377,12 @@ impl Supervisor {
         let policy = selection.snapshot.policy();
         let probe_timeout_ms = policy.probe_wake_timeout_ms;
         let heartbeat = LinkHeartbeat::from_policy(policy);
+        // 保留链路的手机：后台间隔用这张网学到的值（前台节奏与判死超时不动）。
+        let heartbeat = if self.learns_heartbeat() {
+            learned_heartbeat(self.access.heartbeat_learning(), heartbeat, net, now_ms())
+        } else {
+            heartbeat
+        };
         let target = LinkTarget {
             access_point_id: candidate.ap_id.clone(),
             protocols,
@@ -936,6 +1410,7 @@ impl Supervisor {
             token,
             target: target.clone(),
             foreground: self.foreground,
+            device_state: self.device_state(),
             #[cfg(not(target_arch = "wasm32"))]
             doh: self.access.doh(),
         };
@@ -1049,6 +1524,9 @@ impl Supervisor {
         server_window_ms: Option<(u64, u64)>,
         next_half_open: Option<i64>,
     ) {
+        if self.stops_unattended_retry() {
+            return;
+        }
         let policy = self.access.policy();
         let plan = plan_retry(
             &mut self.backoff,
@@ -1166,6 +1644,15 @@ impl Supervisor {
             protocol,
             syncing: true,
         });
+        // 后台心跳学习从这条连接建连时的节奏开始计。
+        self.heartbeat.begin(
+            epoch,
+            self.access.net(),
+            target.heartbeat,
+            target.probe_timeout,
+            self.access.policy().heartbeat.background_interval_sec,
+            now_ms(),
+        );
         // CONNECT_ACK 的诊断字段：服务端报的接入点和这里选的不一致（DNS 被劫持、解析到别的入口、网关配错）
         // 时打告警、记进健康簿（同探活头不符，按「探活不合法」计），不断连。
         let reported_ap = report.ack.ap_id.clone().filter(|id| !id.trim().is_empty());
@@ -1204,8 +1691,11 @@ impl Supervisor {
         self.facts.rtt_ms = Some(duration_ms(report.handshake));
         self.last_rtt = None;
         self.facts.next_retry_at = None;
+        self.background_rounds = 0;
         self.set_phase(LinkPhase::Syncing);
         self.answer_start(Ok(()));
+        // CONNECT 里只带状态本身，而且是发起建连那一刻的：连上后按此刻的状态完整报一次（含角标）。
+        self.driver.report_device_state(self.device_state());
         // 新连接已收到 CONNECT_ACK：换到了另一个接入点就算切换完成（补同步在新连接上继续）。
         if let Some((from, reason)) = self.switch_from.take()
             && from.ap != ap.as_ref()
@@ -1267,6 +1757,8 @@ impl Supervisor {
         } else {
             LinkPhase::Ready
         });
+        // 唤醒（后台刷新、推送）等的就是这一刻：连上并补完了同步。
+        self.answer_wake(true);
     }
 
     async fn on_attempt_failed(&mut self, target: LinkTarget, failure: ConnectFailure) {
@@ -1302,6 +1794,9 @@ impl Supervisor {
                             tracing::info!(%error, "overloaded; waiting on the same access point");
                         }
                         self.answer_start(Ok(()));
+                        if self.stops_unattended_retry() {
+                            return;
+                        }
                         self.pending_only = Some(access_point);
                         let at = now_ms() + delay_ms as i64;
                         self.retry_at = Some(at);
@@ -1357,6 +1852,10 @@ impl Supervisor {
         );
         self.epoch.advance();
         self.op = None;
+        self.hand_over = None;
+        self.wake_until = None;
+        self.answer_wake(false);
+        self.heartbeat.clear();
         self.round = None;
         self.retry_at = None;
         self.degraded_until = None;
@@ -1378,7 +1877,42 @@ impl Supervisor {
         match signal {
             LinkSignal::Lost { epoch, reason } => self.on_lost(epoch, reason).await,
             LinkSignal::RoundTrip { epoch, rtt } => self.on_round_trip(epoch, rtt),
+            LinkSignal::Beat { epoch } => self.on_background_beat(epoch),
         }
+    }
+
+    /// 后台心跳学习只在保留链路的手机上做：iOS 进后台就托管，桌面与 Web 没有蜂窝模块要省。
+    fn learns_heartbeat(&self) -> bool {
+        self.profile.mobile && self.profile.background == BackgroundMode::Standby
+    }
+
+    /// 后台里当前连接的一次心跳得到了应答：连续够了就拉长后台间隔，把新的节奏交给这条连接。
+    fn on_background_beat(&mut self, epoch: u64) {
+        if !self.learns_heartbeat()
+            || self.foreground
+            || self.live.as_ref().is_none_or(|live| live.epoch != epoch)
+        {
+            return;
+        }
+        let outcome = self
+            .heartbeat
+            .on_beat(self.access.heartbeat_learning(), epoch, now_ms());
+        if let Some(BeatOutcome::Retune(heartbeat)) = outcome {
+            tracing::debug!(
+                background_interval_sec = heartbeat.background_interval.as_secs(),
+                "the background heartbeat held; lengthening it on this network"
+            );
+            self.retune_heartbeat(heartbeat);
+        }
+    }
+
+    /// 把新的心跳节奏交给当前连接。要等连接的锁（发送等回执时一直占着），放到后台。
+    fn retune_heartbeat(&self, heartbeat: LinkHeartbeat) {
+        let driver = self.driver.clone();
+        let probe_timeout = self.heartbeat.probe_timeout();
+        spawn_background(async move {
+            driver.retune_heartbeat(heartbeat, probe_timeout).await;
+        });
     }
 
     async fn on_lost(&mut self, epoch: u64, reason: DisconnectReason) {
@@ -1392,8 +1926,28 @@ impl Supervisor {
             return;
         };
         tracing::info!(access_point = %live.access_point_id, %reason, "link lost");
+        // 后台空闲时在当前间隔上死了：这张网的 NAT 撑不了这么久，记下上限，下一条连接退回去。
+        if self.learns_heartbeat()
+            && !self.foreground
+            && self.network_available
+            && matches!(classify_loss(&reason), LinkLoss::Failed(_))
+        {
+            let now = now_ms();
+            let idle_ms = now.saturating_sub(self.driver.last_activity_ms());
+            if let Some(ceiling) =
+                self.heartbeat
+                    .on_idle_death(self.access.heartbeat_learning(), epoch, idle_ms, now)
+            {
+                tracing::info!(
+                    background_interval_sec = ceiling,
+                    "the link died idle in the background; capping the heartbeat on this network"
+                );
+            }
+        }
+        self.heartbeat.clear();
         self.access.set_current(None);
         self.op = None;
+        self.hand_over = None;
         self.degraded_until = None;
         self.next_maintenance = None;
         self.manifest_move_at = None;
@@ -1426,14 +1980,23 @@ impl Supervisor {
             protocol: live.protocol.as_str().to_owned(),
         };
         self.driver.link_down().await;
-        if !self.network_available {
-            self.set_phase(LinkPhase::Suspended);
-            return;
-        }
         let drain_window_max_ms = match &loss {
             LinkLoss::Planned { window_ms, .. } => Some(window_ms.map_or(0, |(_, max)| max)),
             _ => None,
         };
+        if self.parks_in_background() && !matches!(loss, LinkLoss::SessionEnded(_)) {
+            // 托管的平台在后台丢了连接（交接途中断了，或后台里显式连上的那条断了）：不自己重连，
+            // 停靠到回前台。服务端在连接断开时把没确认的帧交给推送。
+            if let Some(window_max_ms) = drain_window_max_ms {
+                self.hold_drained(&live.access_point_id, window_max_ms);
+            }
+            self.settle_parked();
+            return;
+        }
+        if !self.network_available {
+            self.set_phase(LinkPhase::Suspended);
+            return;
+        }
         match decide(&FailoverEvent::LinkLost(loss), unit()) {
             FailoverAction::Stay => {}
             FailoverAction::ConnectNow { prefer } => {
@@ -1536,6 +2099,12 @@ impl Supervisor {
             self.manifest_move_at = None;
             self.move_off_manifest_change().await;
         }
+        if self.wake_until.is_some_and(|at| at <= now) {
+            self.wake_until = None;
+            // 预算用完还没补完同步：等的一方不再等。
+            self.answer_wake(false);
+            self.end_wake().await;
+        }
     }
 
     // ---------------------------------------------------------------- 目录变更
@@ -1573,8 +2142,10 @@ impl Supervisor {
         }
         if self.network_available
             && matches!(self.phase, LinkPhase::Backoff | LinkPhase::Recovering)
+            && self.may_retry_unattended()
         {
             // 之前的失败说的是旧拓扑。等服务端窗口的（过载、排空）也不再等：要去的接入点可能已经没了。
+            // 后台用完重连预算停下的不在此列：新清单不是有人在等的信号。
             self.pending_prefer.clear();
             self.pending_only = None;
             self.backoff.reset();
@@ -1667,6 +2238,10 @@ impl Supervisor {
     /// 计划性切换（恢复切回、手动固定、新网络下当前入口不佳）：作废当前连接，切到别的接入点。
     /// 不重登：不调用 prepare、会话世代不变，发件箱暂停后在新连接上原样恢复。
     async fn switch_away(&mut self, prefer: Vec<String>, reason: SwitchReason) {
+        if self.hand_over.is_some() {
+            // 这条连接正在托管、马上要关：不再为它换线路。
+            return;
+        }
         if let Some(live) = self.live.take() {
             self.switch_from = Some((
                 AccessEndpoint {

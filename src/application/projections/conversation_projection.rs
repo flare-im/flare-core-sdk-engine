@@ -470,6 +470,10 @@ mod tests {
             Ok(())
         }
 
+        async fn set_notify_all(&self, _conversation_id: &str, _enabled: bool) -> Result<()> {
+            Ok(())
+        }
+
         async fn set_archived(&self, _conversation_id: &str, _archived: bool) -> Result<()> {
             Ok(())
         }

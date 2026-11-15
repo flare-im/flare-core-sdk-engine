@@ -10,6 +10,7 @@ use flare_proto::common::{
 };
 
 use crate::kernel::{SyncRunContext, SyncState};
+use crate::model::notification::NotificationPresentation;
 use crate::model::{IMMessage, ViewUpdate};
 
 // ========== 域事件枚举（Domain events） ==========
@@ -316,16 +317,23 @@ pub enum PluginEvent {
     },
 }
 
-/// Notification 域事件：IM 下行 `NotificationContent`（与聊天 `MessageEvent::Received` 分离）。
+/// Notification 域事件：IM 下行 `NotificationContent`（与聊天 `MessageEvent::Received` 分离），
+/// 以及 NotifyCenter 给宿主的展示指令（展示、撤掉、角标）。
 #[derive(Clone, Debug)]
 pub enum NotificationEvent {
     Received {
         message: Box<IMMessage>,
     },
-    /// One optional foreground sound for a newly delivered message batch.
-    MessageSound {
-        conversation_id: String,
-        message_id: String,
+    /// 展示一条通知，或原地替换合并键相同的那条（`notification.present`）。
+    Present(Box<NotificationPresentation>),
+    /// 撤掉通知（`notification.clear`）：`collapse_ids` 里的那些；`all` 为真时撤掉本应用的全部通知。
+    Clear {
+        collapse_ids: Vec<String>,
+        all: bool,
+    },
+    /// 应用角标改成这个绝对值（`notification.badge`）：未读总数，口径与首页一致。
+    Badge {
+        count: u32,
     },
 }
 

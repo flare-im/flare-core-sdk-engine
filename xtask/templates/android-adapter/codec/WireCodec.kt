@@ -91,6 +91,76 @@ fun setHeartbeatNatTimeoutRequestToMap(request: SetHeartbeatNatTimeoutRequest): 
     request.natTimeoutSecs?.let { put("natTimeoutSecs", it) }
 }
 
+/** Unset optional fields are left out; `capabilities` always goes as a list. */
+fun pushTokenInputToMap(request: PushTokenInput): Map<String, Any?> = buildMap {
+    put("provider", request.provider)
+    put("platform", request.platform)
+    put("token", request.token)
+    request.appBundle?.let { put("appBundle", it) }
+    request.environment?.let { put("environment", it) }
+    request.locale?.let { put("locale", it) }
+    request.timeZone?.let { put("timeZone", it) }
+    request.appVersion?.let { put("appVersion", it) }
+    request.capabilities?.let { put("capabilities", it.toList()) }
+}
+
+/** `payload` goes as a JSON object of strings. */
+fun handleRemoteMessageRequestToMap(request: HandleRemoteMessageRequest): Map<String, Any?> = buildMap {
+    put("provider", request.provider)
+    put("payload", request.payload.toMap())
+    request.budgetMs?.let { put("budgetMs", it) }
+}
+
+fun resolveNotificationTapRequestToMap(request: ResolveNotificationTapRequest): Map<String, Any?> = buildMap {
+    put("payload", request.payload.toMap())
+}
+
+/** No conversation open: the key is left out. */
+fun setNotificationFocusRequestToMap(request: SetNotificationFocusRequest): Map<String, Any?> = buildMap {
+    request.conversationId?.let { put("conversationId", it) }
+}
+
+fun setBackgroundPresenterRequestToMap(request: SetBackgroundPresenterRequest): Map<String, Any?> = buildMap {
+    put("attached", request.attached)
+}
+
+/** No directory: the key is left out (the engine stops writing the snapshot). */
+fun setNotificationSnapshotDirectoryRequestToMap(request: SetNotificationSnapshotDirectoryRequest): Map<String, Any?> = buildMap {
+    request.directory?.let { put("directory", it) }
+}
+
+fun backgroundRefreshRequestToMap(request: BackgroundRefreshRequest): Map<String, Any?> = buildMap {
+    put("budgetMs", request.budgetMs)
+}
+
+fun quietHoursToMap(value: QuietHours): Map<String, Any?> = buildMap {
+    put("startMinute", value.startMinute)
+    put("endMinute", value.endMinute)
+    put("weekdays", value.weekdays)
+    put("allowMentions", value.allowMentions)
+}
+
+fun notificationPreviewWireValue(value: NotificationPreview): String = when (value) {
+    NotificationPreview.FULL -> "full"
+    NotificationPreview.SENDER_ONLY -> "senderOnly"
+    NotificationPreview.HIDDEN -> "hidden"
+}
+
+fun multiDeviceAlertPolicyWireValue(value: MultiDeviceAlertPolicy): String = when (value) {
+    MultiDeviceAlertPolicy.DELAY -> "delay"
+    MultiDeviceAlertPolicy.IMMEDIATE -> "immediate"
+    MultiDeviceAlertPolicy.BADGE_ONLY -> "badgeOnly"
+}
+
+/** Items the update leaves alone are left out. */
+fun updateUserNotificationSettingsRequestToMap(request: UpdateUserNotificationSettingsRequest): Map<String, Any?> = buildMap {
+    request.quietHours?.let { put("quietHours", quietHoursToMap(it)) }
+    put("clearQuietHours", request.clearQuietHours)
+    request.preview?.let { put("preview", notificationPreviewWireValue(it)) }
+    request.multiDevice?.let { put("multiDevice", multiDeviceAlertPolicyWireValue(it)) }
+    put("baseSettingsVersion", request.baseSettingsVersion)
+}
+
 fun networkInterfaceKindWireValue(value: NetworkInterfaceKind): String = when (value) {
     NetworkInterfaceKind.UNKNOWN -> "unknown"
     NetworkInterfaceKind.WIFI -> "wifi"
@@ -1545,6 +1615,100 @@ fun heartbeatEffectiveIntervalResponseFromJson(value: Any?): HeartbeatEffectiveI
     )
 }
 
+fun remoteMessageOutcomeFromJson(value: Any?): RemoteMessageOutcome {
+    val context = "RemoteMessageOutcome"
+    val json = mapValue(value)
+    return RemoteMessageOutcome(
+        action = requiredStringField(json, "action", context),
+        badge = optionalWireUnsigned(json, "badge", context)?.let { java.lang.Math.toIntExact(it) },
+        clearCollapseIds = field(json, "clearCollapseIds")
+            ?.let { requiredStringList(it, "clearCollapseIds", context) }
+            ?: emptyList(),
+        presentation = field(json, "presentation")?.let {
+            notificationPresentationFromJson(requiredWireObject(it, "$context.presentation"))
+        },
+        reason = optionalWireString(json, "reason", context),
+    )
+}
+
+fun notificationPresentationFromJson(value: Any?): NotificationPresentation {
+    val context = "NotificationPresentation"
+    val json = mapValue(value)
+    return NotificationPresentation(
+        body = requiredStringField(json, "body", context),
+        channel = requiredStringField(json, "channel", context),
+        collapseId = requiredStringField(json, "collapseId", context),
+        conversationId = requiredStringField(json, "conversationId", context),
+        count = java.lang.Math.toIntExact(requiredLongField(json, "count", context)),
+        messageId = requiredStringField(json, "messageId", context),
+        seq = requiredLongField(json, "seq", context),
+        sound = requiredBooleanField(json, "sound", context),
+        surface = requiredStringField(json, "surface", context),
+        threadId = requiredStringField(json, "threadId", context),
+        title = requiredStringField(json, "title", context),
+    )
+}
+
+fun userNotificationSettingsFromJson(value: Any?): UserNotificationSettings {
+    val context = "UserNotificationSettings"
+    val json = mapValue(value)
+    return UserNotificationSettings(
+        multiDevice = when (val wire = requiredStringField(json, "multiDevice", context)) {
+            "delay" -> MultiDeviceAlertPolicy.DELAY
+            "immediate" -> MultiDeviceAlertPolicy.IMMEDIATE
+            "badgeOnly" -> MultiDeviceAlertPolicy.BADGE_ONLY
+            else -> throw unknownWireValue(context, "multiDevice", wire)
+        },
+        preview = when (val wire = requiredStringField(json, "preview", context)) {
+            "full" -> NotificationPreview.FULL
+            "senderOnly" -> NotificationPreview.SENDER_ONLY
+            "hidden" -> NotificationPreview.HIDDEN
+            else -> throw unknownWireValue(context, "preview", wire)
+        },
+        quietHours = field(json, "quietHours")?.let {
+            quietHoursFromJson(requiredWireObject(it, "$context.quietHours"))
+        },
+        settingsVersion = requiredLongField(json, "settingsVersion", context),
+    )
+}
+
+fun quietHoursFromJson(value: Any?): QuietHours {
+    val context = "QuietHours"
+    val json = mapValue(value)
+    return QuietHours(
+        allowMentions = requiredBooleanField(json, "allowMentions", context),
+        endMinute = java.lang.Math.toIntExact(requiredLongField(json, "endMinute", context)),
+        startMinute = java.lang.Math.toIntExact(requiredLongField(json, "startMinute", context)),
+        weekdays = java.lang.Math.toIntExact(requiredLongField(json, "weekdays", context)),
+    )
+}
+
+private fun unknownWireValue(context: String, key: String, value: String): FlareSdkException =
+    FlareSdkException(
+        SdkErrorCodes.INVALIDPARAMETER,
+        "$context.$key has an unknown value",
+        operation = "wire.decode",
+        details = mapOf("field" to "$context.$key", "value" to value),
+    )
+
+fun backgroundRefreshResultFromJson(value: Any?): BackgroundRefreshResult {
+    val context = "BackgroundRefreshResult"
+    val json = mapValue(value)
+    return BackgroundRefreshResult(
+        completed = requiredBooleanField(json, "completed", context),
+    )
+}
+
+fun notificationTapResultFromJson(value: Any?): NotificationTapResult {
+    val context = "NotificationTapResult"
+    val json = mapValue(value)
+    return NotificationTapResult(
+        conversationId = optionalWireString(json, "conversationId", context),
+        messageId = optionalWireString(json, "messageId", context),
+        seq = optionalWireUnsigned(json, "seq", context),
+    )
+}
+
 fun runtimeHealthResponseFromJson(value: Any?): RuntimeHealthResponse {
     val json = mapValue(value)
     return RuntimeHealthResponse(
@@ -1887,6 +2051,7 @@ fun conversationFromJson(json: Map<String, Any?>): Conversation {
         draft = field(json, "draft")?.toString(),
         ext = requiredStringMap(field(json, "ext"), "ext", "Conversation"),
         isArchived = requiredBooleanField(json, "isArchived", "Conversation"),
+        isMentionOnly = field(json, "isMentionOnly") as? Boolean,
         isMuted = requiredBooleanField(json, "isMuted", "Conversation"),
         isPinned = requiredBooleanField(json, "isPinned", "Conversation"),
         lastMessage = messagePreviewFromJson(field(json, "lastMessage")),
@@ -1903,6 +2068,7 @@ fun conversationFromJson(json: Map<String, Any?>): Conversation {
         membersCount = requiredLongField(json, "membersCount", "Conversation").toInt(),
         mentionCount = requiredLongField(json, "mentionCount", "Conversation").toInt(),
         mentionMe = requiredBooleanField(json, "mentionMe", "Conversation"),
+        notifyAll = field(json, "notifyAll") as? Boolean ?: false,
         participantVersion = requiredLongField(json, "participantVersion", "Conversation"),
         participants = requiredListOfMaps(field(json, "participants"), "participants", "Conversation").map(::conversationParticipantFromJson),
         peerReadSeq = requiredLongField(json, "peerReadSeq", "Conversation"),

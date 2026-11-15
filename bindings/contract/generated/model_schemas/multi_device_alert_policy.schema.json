@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "What a phone does with an alert while another device of the same user is in use.",
+  "oneOf": [
+    {
+      "const": "delay",
+      "description": "Wait about 15 seconds; reading the conversation elsewhere in that time cancels the alert.",
+      "type": "string"
+    },
+    {
+      "const": "immediate",
+      "description": "Alert at once, as if no other device were in use.",
+      "type": "string"
+    },
+    {
+      "const": "badgeOnly",
+      "description": "Do not alert; only update the badge.",
+      "type": "string"
+    }
+  ],
+  "title": "MultiDeviceAlertPolicy",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "MultiDeviceAlertPolicy"
+}

@@ -59,6 +59,11 @@ impl Dispatcher {
                 all.extend(push.notifications);
                 self.metrics
                     .counter("dispatcher.message_push_items_total", all.len() as u64);
+                // 送达确认在帧到达时定下，处理完再发（见 `delivery_due`）。
+                let arrived = all
+                    .iter()
+                    .map(|m| (m.conversation_id.as_str(), m.conversation_seq));
+                let delivery_due = self.delivery_due(arrived);
                 let mut messages: Vec<IMMessage> = all.into_iter().map(IMMessage::new).collect();
                 let current_user_id = self.current_user_id.read().await.clone();
                 if let Some(converger) = &self.incoming_message_converger {
@@ -100,6 +105,8 @@ impl Dispatcher {
                             .await;
                     }
                 }
+                // 汇聚后一条不剩的（早已处理过的重复帧）也确认：免得服务端等不到又转一次推送。
+                self.confirm_delivered(delivery_due);
             }
             DownlinkPayload::Event(ev) => {
                 self.metrics.counter_with_labels(
@@ -107,7 +114,8 @@ impl Dispatcher {
                     &[MetricLabel::new("type", "event")],
                     1,
                 );
-                self.dispatch_single_event(&ev).await;
+                let delivery_due = self.delivery_due(arrived_message(&ev));
+                self.dispatch_single_event(&ev, delivery_due).await;
             }
             DownlinkPayload::EventEnvelope(mut env) => {
                 self.metrics.counter_with_labels(
@@ -128,6 +136,9 @@ impl Dispatcher {
                 // 信封内的**消息事件**合并为一个 ReceivedBatch（避免逐条回调，与 MessagePush 一致）；
                 // 非消息事件（recall/edit/reaction/read 等）仍逐条处理。
                 // 消息 payload 按值 move（不再 message+Event 双份深克隆）；失败回滚只保留小去重键。
+                // 送达确认在帧到达时定下：信封里全部消息事件，含下面去重掉的重复事件。
+                let arrived = env.events.iter().filter_map(arrived_message);
+                let delivery_due = self.delivery_due(arrived);
                 let current_user_id = self.current_user_id.read().await.clone();
                 let mut batch_messages: Vec<IMMessage> = Vec::new();
                 let mut batched_keys: Vec<EventDedupeKey> = Vec::new();
@@ -142,14 +153,17 @@ impl Dispatcher {
                             }
                         }
                     } else {
-                        self.dispatch_single_event(&ev).await;
+                        self.dispatch_single_event(&ev, Vec::new()).await;
                     }
                 }
-                if !batch_messages.is_empty() {
+                if batch_messages.is_empty() {
+                    self.confirm_delivered(delivery_due);
+                } else {
                     self.dispatch_inbound_message_event_batch(
                         batch_messages,
                         batched_keys,
                         &current_user_id,
+                        delivery_due,
                     )
                     .await;
                 }
@@ -287,6 +301,17 @@ impl Dispatcher {
                                 event: aggregate,
                             }));
                     }
+                    Some(flare_proto::common::realtime_control_packet::Payload::Custom(data))
+                        if data.r#type == USER_SETTINGS_CHANGED_TYPE =>
+                    {
+                        // 只认自己 sync 收件箱上的这一帧：网关丢弃客户端发往 `sync:` 收件箱的实时帧，
+                        // 它只可能来自服务端。信号只给引擎，不作为扩展事件外发。
+                        let user_id = self.current_user_id.read().await.clone();
+                        if !user_id.is_empty() && conversation_id == format!("sync:{user_id}") {
+                            self.notification_pipeline
+                                .user_settings_changed(&data.payload);
+                        }
+                    }
                     Some(flare_proto::common::realtime_control_packet::Payload::Custom(data)) => {
                         self.bus.publish(SdkEvent::Extension(ExtensionEvent {
                             source: "realtime_control".to_string(),
@@ -313,11 +338,13 @@ impl Dispatcher {
 
     /// 把信封内的消息事件作为**一个批次**汇聚→落库→投递（一个 ReceivedBatch）。镜像 `dispatch_single_event`
     /// 的消息处理路径但批量化；任一步失败则忘记这些事件（解除去重）以便后续重投。
+    /// 处理成功后发出 `delivery_due`（这一帧到达时定下的送达确认）；失败不发。
     async fn dispatch_inbound_message_event_batch(
         &self,
         mut messages: Vec<IMMessage>,
         dedupe_keys: Vec<EventDedupeKey>,
         current_user_id: &str,
+        delivery_due: Vec<(String, u64)>,
     ) {
         // Delivery-lag visibility (recv side): server create time vs local receipt. On a
         // co-located dev stack clock skew is ~0, so this approximates end-to-end delivery latency
@@ -352,6 +379,8 @@ impl Dispatcher {
             }
         }
         if messages.is_empty() {
+            // 汇聚后一条不剩：都是早已处理过的消息，照样确认。
+            self.confirm_delivered(delivery_due);
             return;
         }
         // 复用统一持久化管线（save_batch → 会话投影 → seq 补偿）；失败回滚去重键，
@@ -363,6 +392,7 @@ impl Dispatcher {
         self.notification_pipeline
             .finish_batch(messages, current_user_id)
             .await;
+        self.confirm_delivered(delivery_due);
     }
 
     /// 回滚一次事件应用：去重键 + 已应用事件 seq 一并撤销，使事件可被后续同步重放。
@@ -379,9 +409,16 @@ impl Dispatcher {
         }
     }
 
-    /// 分发单条 Event（从 EventEnvelope 或单条 Event 下行复用）
-    pub(super) async fn dispatch_single_event(&self, ev: &flare_proto::common::Event) {
+    /// 分发单条 Event（从 EventEnvelope 或单条 Event 下行复用）。`delivery_due` 是这一帧到达时定下的
+    /// 送达确认（只有消息事件有），消息处理成功后发出。
+    pub(super) async fn dispatch_single_event(
+        &self,
+        ev: &flare_proto::common::Event,
+        delivery_due: Vec<(String, u64)>,
+    ) {
         if !self.event_deduper.record_if_new(ev).await {
+            // 重复送来的事件早已处理过：照样确认，免得服务端等不到又转一次推送。
+            self.confirm_delivered(delivery_due);
             return;
         }
         if !matches!(&ev.payload, Some(EventPayload::Message(_))) {
@@ -433,6 +470,7 @@ impl Dispatcher {
                 .finish_batch(messages, &current_user_id)
                 .await;
         }
+        self.confirm_delivered(delivery_due);
         let conversation_id = Self::event_conversation_id(ev);
         if let Some(p) = &ev.payload {
             match p {

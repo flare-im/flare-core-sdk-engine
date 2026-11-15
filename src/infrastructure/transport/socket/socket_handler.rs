@@ -11,15 +11,16 @@ use flare_core::common::compression::CompressionUtil;
 use flare_core::common::protocol::Frame;
 use flare_core::common::protocol::flare::core::commands::command::Type as CommandType;
 use flare_core::common::protocol::flare::core::commands::payload_command::Type as PayloadType;
-use flare_proto::common::Ack;
+use flare_core::common::protocol::flare::core::commands::system_command::Type as SystemType;
 use flare_proto::common::ack::Payload as AckPayload;
+use flare_proto::common::{Ack, DeviceStateAck};
 use prost::Message;
 use tracing::{debug, warn};
 
 use crate::infrastructure::protocol::downlink::DownlinkPayload;
 use crate::infrastructure::protocol::{Codec, MAX_DOWNLINK_PAYLOAD_BYTES};
 use crate::runtime::Dispatcher;
-use crate::runtime::link::{LinkSignal, LinkSignals};
+use crate::runtime::link::{DeviceReach, LinkSignal, LinkSignals};
 
 /// Socket 推送处理器 — 实现 flare-core `MessageListener`。
 ///
@@ -30,6 +31,8 @@ pub struct SocketHandler {
     codec: Arc<dyn Codec>,
     epoch: u64,
     signals: LinkSignals,
+    /// 设备状态的应答记在这里：托管交接在等它。
+    reach: Arc<DeviceReach>,
 }
 
 impl SocketHandler {
@@ -38,17 +41,32 @@ impl SocketHandler {
         codec: Arc<dyn Codec>,
         epoch: u64,
         signals: LinkSignals,
+        reach: Arc<DeviceReach>,
     ) -> Self {
         Self {
             dispatcher,
             codec,
             epoch,
             signals,
+            reach,
         }
     }
 
     fn is_current(&self) -> bool {
         self.signals.epoch().is_current(self.epoch)
+    }
+
+    /// `DEVICE_STATE_ACK`：服务端已按上报的状态生效。同一条连接上帧按写出顺序到达，所以它之前
+    /// 服务端写出的帧此刻都已到达。
+    fn on_device_state_ack(&self, data: &[u8]) {
+        match DeviceStateAck::decode(data) {
+            Ok(ack) => {
+                let state = ack.state();
+                debug!(epoch = self.epoch, ?state, "device state acknowledged");
+                self.reach.on_state_ack(state);
+            }
+            Err(error) => warn!(%error, "DEVICE_STATE_ACK payload did not decode; ignored"),
+        }
     }
 }
 
@@ -86,6 +104,17 @@ impl MessageListener for SocketHandler {
             cmd = ?cmd_type,
             "on_message: receive command",
         );
+
+        // 系统帧里只有设备状态的应答归这里处理，其余（PONG、KICKED、CLOSE）传输层已经处理过。
+        // 后台里的 PONG 另外告诉链路状态机：一次后台心跳得到了应答，心跳学习按它拉长间隔。
+        if let CommandType::System(system) = cmd_type {
+            if system.r#type == SystemType::DeviceStateAck as i32 {
+                self.on_device_state_ack(&system.data);
+            } else if system.r#type == SystemType::Pong as i32 && !self.reach.is_foreground() {
+                self.signals.send(LinkSignal::Beat { epoch: self.epoch });
+            }
+            return Ok(None);
+        }
 
         // 与 flare-signaling gateway 一致：Frame.command 为 Payload(PayloadCommand)，type 1=Message 2=Event 3=Ack 4=Data
         if let CommandType::Payload(payload_cmd) = cmd_type {
@@ -234,8 +263,10 @@ mod tests {
     use crate::application::services::{EventDeduper, MessageDeduper};
     use crate::infrastructure::protocol::ProtobufCodec;
     use crate::kernel::event::EventBus;
+    use crate::runtime::link::ReachProfile;
     use crate::spi::metrics::MetricsRecorder;
     use flare_core::common::protocol::{Reliability, builder, frame_with_system_command};
+    use flare_proto::common::DeviceAppState;
     use tokio::sync::RwLock;
 
     fn handler(
@@ -269,10 +300,59 @@ mod tests {
                 Arc::new(ProtobufCodec),
                 current,
                 signals,
+                Arc::new(DeviceReach::new(ReachProfile::for_platform("ios"))),
             ),
             rx,
             epoch,
         )
+    }
+
+    fn device_state_ack(state: DeviceAppState) -> Frame {
+        let ack = DeviceStateAck {
+            state: state as i32,
+            server_time: 1_700_000_000_000,
+        };
+        frame_with_system_command(
+            builder::device_state_ack(ack.encode_to_vec()),
+            Reliability::AtLeastOnce,
+        )
+    }
+
+    /// 托管的应答经这条连接的监听器记进可达状态：之后到的帧不再确认。别的状态的应答不算。
+    #[tokio::test]
+    async fn the_parking_ack_hands_the_link_over() {
+        let bus = EventBus::new();
+        let (handler, _rx, _epoch) = handler(&bus);
+        handler.reach.begin_parking();
+
+        handler
+            .on_message(&device_state_ack(DeviceAppState::Standby))
+            .await
+            .unwrap();
+        assert!(handler.reach.parking_pending());
+        assert!(handler.reach.confirms_deliveries());
+
+        handler
+            .on_message(&device_state_ack(DeviceAppState::Parking))
+            .await
+            .unwrap();
+        assert!(!handler.reach.parking_pending());
+        assert!(!handler.reach.confirms_deliveries(), "应答之后到的帧不确认");
+    }
+
+    /// 被取代的连接迟到的托管应答不算数。
+    #[tokio::test]
+    async fn a_parking_ack_from_a_superseded_connection_is_ignored() {
+        let bus = EventBus::new();
+        let (handler, _rx, epoch) = handler(&bus);
+        handler.reach.begin_parking();
+        epoch.advance();
+
+        handler
+            .on_message(&device_state_ack(DeviceAppState::Parking))
+            .await
+            .unwrap();
+        assert!(handler.reach.parking_pending());
     }
 
     /// 连接结束原样（类型化原因 + 连接代数）交给链路状态机，不再在这里按文本猜踢线、令牌过期。
@@ -320,6 +400,22 @@ mod tests {
             0,
             "旧连接的帧连服务端时钟样本都不算"
         );
+    }
+
+    /// 后台里的 PONG 告诉链路状态机一次后台心跳得到了应答；前台的不报（心跳学习只学后台）。
+    #[tokio::test]
+    async fn background_pongs_reach_the_supervisor_as_beats() {
+        let bus = EventBus::new();
+        let (handler, mut rx, _epoch) = handler(&bus);
+        let pong = frame_with_system_command(builder::pong(), Reliability::BestEffort);
+        handler.on_message(&pong).await.unwrap();
+        assert!(rx.try_recv().is_err(), "前台的心跳不报");
+        handler.reach.set_foreground(false);
+        handler.on_message(&pong).await.unwrap();
+        match rx.try_recv().expect("a beat") {
+            LinkSignal::Beat { epoch } => assert_eq!(epoch, handler.epoch),
+            other => panic!("unexpected signal {other:?}"),
+        }
     }
 
     /// 服务端打包的载荷帧带着服务端时间戳，是服务端时钟的样本；系统帧不算（本机传输会用本机时钟

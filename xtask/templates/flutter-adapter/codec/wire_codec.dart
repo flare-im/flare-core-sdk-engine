@@ -226,6 +226,91 @@ Map<String, Object?> setHeartbeatNatTimeoutRequestToMap(
   };
 }
 
+/// Unset optional fields are left out; `capabilities` always goes as a list.
+Map<String, Object?> pushTokenInputToMap(PushTokenInput request) {
+  return {
+    'provider': request.provider,
+    'platform': request.platform,
+    'token': request.token,
+    if (request.appBundle != null) 'appBundle': request.appBundle!,
+    if (request.environment != null) 'environment': request.environment!,
+    if (request.locale != null) 'locale': request.locale!,
+    if (request.timeZone != null) 'timeZone': request.timeZone!,
+    if (request.appVersion != null) 'appVersion': request.appVersion!,
+    if (request.capabilities != null)
+      'capabilities': List<String>.of(request.capabilities!),
+  };
+}
+
+/// `payload` goes as a JSON object of strings.
+Map<String, Object?> handleRemoteMessageRequestToMap(
+  HandleRemoteMessageRequest request,
+) {
+  return {
+    'provider': request.provider,
+    'payload': Map<String, String>.of(request.payload),
+    if (request.budgetMs != null) 'budgetMs': request.budgetMs!,
+  };
+}
+
+Map<String, Object?> resolveNotificationTapRequestToMap(
+  ResolveNotificationTapRequest request,
+) {
+  return {'payload': Map<String, String>.of(request.payload)};
+}
+
+/// No conversation open: the key is left out.
+Map<String, Object?> setNotificationFocusRequestToMap(
+  SetNotificationFocusRequest request,
+) {
+  return {
+    if (request.conversationId != null)
+      'conversationId': request.conversationId!,
+  };
+}
+
+Map<String, Object?> setBackgroundPresenterRequestToMap(
+  SetBackgroundPresenterRequest request,
+) {
+  return {'attached': request.attached};
+}
+
+/// No directory: the key is left out (the engine stops writing the snapshot).
+Map<String, Object?> setNotificationSnapshotDirectoryRequestToMap(
+  SetNotificationSnapshotDirectoryRequest request,
+) {
+  return {if (request.directory != null) 'directory': request.directory!};
+}
+
+Map<String, Object?> backgroundRefreshRequestToMap(
+  BackgroundRefreshRequest request,
+) {
+  return {'budgetMs': request.budgetMs};
+}
+
+Map<String, Object?> quietHoursToMap(QuietHours value) {
+  return {
+    'startMinute': value.startMinute,
+    'endMinute': value.endMinute,
+    'weekdays': value.weekdays,
+    'allowMentions': value.allowMentions,
+  };
+}
+
+/// Items the update leaves alone are left out.
+Map<String, Object?> updateUserNotificationSettingsRequestToMap(
+  UpdateUserNotificationSettingsRequest request,
+) {
+  return {
+    if (request.quietHours != null)
+      'quietHours': quietHoursToMap(request.quietHours!),
+    'clearQuietHours': request.clearQuietHours,
+    if (request.preview != null) 'preview': request.preview!.name,
+    if (request.multiDevice != null) 'multiDevice': request.multiDevice!.name,
+    'baseSettingsVersion': request.baseSettingsVersion,
+  };
+}
+
 Map<String, Object?> networkChangeRequestToMap(NetworkChangeRequest request) {
   return {
     if (request.available != null) 'available': request.available!,
@@ -710,6 +795,110 @@ ServerClockResponse serverClockResponseFromJson(Object? value) {
   );
 }
 
+RemoteMessageOutcome remoteMessageOutcomeFromJson(Object? value) {
+  const context = 'RemoteMessageOutcome';
+  final json = mapValue(value);
+  final clearCollapseIds = json['clearCollapseIds'];
+  final presentation = json['presentation'];
+  return RemoteMessageOutcome(
+    action: requiredStringField(json, 'action', context),
+    badge: _optionalUnsignedField(json, 'badge', context),
+    clearCollapseIds: clearCollapseIds == null
+        ? const []
+        : stringList(clearCollapseIds),
+    presentation: presentation == null
+        ? null
+        : notificationPresentationFromJson(
+            _requiredMapField(json, 'presentation', context),
+          ),
+    reason: _optionalStringField(json, 'reason', context),
+  );
+}
+
+NotificationPresentation notificationPresentationFromJson(Object? value) {
+  const context = 'NotificationPresentation';
+  final json = mapValue(value);
+  return NotificationPresentation(
+    body: requiredStringField(json, 'body', context),
+    channel: requiredStringField(json, 'channel', context),
+    collapseId: requiredStringField(json, 'collapseId', context),
+    conversationId: requiredStringField(json, 'conversationId', context),
+    count: requiredIntField(json, 'count', context),
+    messageId: requiredStringField(json, 'messageId', context),
+    seq: requiredIntField(json, 'seq', context),
+    sound: _requiredBoolField(json, 'sound', context),
+    surface: requiredStringField(json, 'surface', context),
+    threadId: requiredStringField(json, 'threadId', context),
+    title: requiredStringField(json, 'title', context),
+  );
+}
+
+UserNotificationSettings userNotificationSettingsFromJson(Object? value) {
+  const context = 'UserNotificationSettings';
+  final json = mapValue(value);
+  final quietHours = json['quietHours'];
+  return UserNotificationSettings(
+    multiDevice: _wireEnum(
+      MultiDeviceAlertPolicy.values,
+      requiredStringField(json, 'multiDevice', context),
+      context,
+      'multiDevice',
+    ),
+    preview: _wireEnum(
+      NotificationPreview.values,
+      requiredStringField(json, 'preview', context),
+      context,
+      'preview',
+    ),
+    quietHours: quietHours == null
+        ? null
+        : quietHoursFromJson(_requiredMapField(json, 'quietHours', context)),
+    settingsVersion: requiredIntField(json, 'settingsVersion', context),
+  );
+}
+
+QuietHours quietHoursFromJson(Object? value) {
+  const context = 'QuietHours';
+  final json = mapValue(value);
+  return QuietHours(
+    allowMentions: _requiredBoolField(json, 'allowMentions', context),
+    endMinute: requiredIntField(json, 'endMinute', context),
+    startMinute: requiredIntField(json, 'startMinute', context),
+    weekdays: requiredIntField(json, 'weekdays', context),
+  );
+}
+
+/// The enum value whose name is the wire string; an unknown string is a decode error.
+T _wireEnum<T extends Enum>(
+  List<T> values,
+  String wire,
+  String context,
+  String key,
+) {
+  for (final value in values) {
+    if (value.name == wire) return value;
+  }
+  throw ArgumentError.value(wire, context, '$context.$key has an unknown value');
+}
+
+BackgroundRefreshResult backgroundRefreshResultFromJson(Object? value) {
+  const context = 'BackgroundRefreshResult';
+  final json = mapValue(value);
+  return BackgroundRefreshResult(
+    completed: _requiredBoolField(json, 'completed', context),
+  );
+}
+
+NotificationTapResult notificationTapResultFromJson(Object? value) {
+  const context = 'NotificationTapResult';
+  final json = mapValue(value);
+  return NotificationTapResult(
+    conversationId: _optionalStringField(json, 'conversationId', context),
+    messageId: _optionalStringField(json, 'messageId', context),
+    seq: _optionalUnsignedField(json, 'seq', context),
+  );
+}
+
 HeartbeatEffectiveIntervalResponse heartbeatEffectiveIntervalResponseFromJson(
   Object? value,
 ) {
@@ -835,6 +1024,10 @@ Conversation conversationFromJson(Map<dynamic, dynamic> rawJson) {
     visibleAfterSeq: intValue(json['visibleAfterSeq']),
     isPinned: boolValue(json['isPinned']),
     isMuted: boolValue(json['isMuted']),
+    isMentionOnly: json['isMentionOnly'] is bool
+        ? json['isMentionOnly'] as bool
+        : null,
+    notifyAll: json['notifyAll'] == true,
     isArchived: boolValue(json['isArchived']),
     updatedAt: intValue(json['updatedAt']),
     createdAt: intValue(json['createdAt']),

@@ -9,6 +9,8 @@ pub mod epoch;
 pub mod failover;
 #[cfg(test)]
 mod golden_vectors;
+pub(crate) mod heartbeat_learning;
+pub(crate) mod reach;
 pub mod refresher;
 pub mod status;
 pub(crate) mod supervisor;
@@ -23,13 +25,14 @@ pub use access::{
     ConnectAckSummary, CurrentLink, RecoveryImportDto,
 };
 pub(crate) use driver::{
-    LinkDriver, LinkFuture, LinkHeartbeat, LinkTarget, LinkUp, OpenRequest, boxed,
+    DeviceLinkState, LinkDriver, LinkFuture, LinkHeartbeat, LinkTarget, LinkUp, OpenRequest, boxed,
 };
 pub use epoch::ConnectionEpoch;
+pub(crate) use reach::{DeviceReach, ReachProfile, device_state_report};
 pub use refresher::{RecoveringStatus, RefreshAttemptDto, RefreshReportDto, RefreshStatus};
 pub use status::{
     AccessEndpoint, AccessSwitched, ActionRequiredReason, ConnectionPhase, ConnectionStatus,
     LinkPhase, LinkQuality, SwitchReason,
 };
-pub(crate) use supervisor::{LinkHandle, LinkSignal, LinkSignals};
+pub(crate) use supervisor::{LinkHandle, LinkSignal, LinkSignals, WakeSource};
 pub(crate) use token::{ConnectToken, LinkTokenSource};

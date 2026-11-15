@@ -30,6 +30,9 @@ pub enum LinkPhase {
     Recovering,
     /// 设备没有网络：停止一切尝试，发件箱计时冻结。
     Suspended,
+    /// 已托管：应用在后台，提示交给了推送通道，链路由引擎自己关掉。没有连接，不重连，也不设任何
+    /// 重试定时；只由回到前台或显式的重连请求离开，网络变化不动它。
+    Parked,
     /// 只能由用户动作离开（重新登录、升级后重启）。
     Terminated,
 }
@@ -77,7 +80,12 @@ pub fn project(phase: LinkPhase, facts: &LinkFacts) -> ConnectionStatus {
             status.phase = ConnectionPhase::Syncing;
             status.rtt_ms = facts.rtt_ms;
         }
-        LinkPhase::Ready | LinkPhase::Degraded => {
+        // 托管对外仍是 online，与 Ready 的投影逐字段相同，所以在线时进后台不会多发一个状态事件。
+        // 托管是引擎自己做的交接，不是故障。进后台那一刻的界面会被系统留作快照，回来时用户第一眼
+        // 看到的就是它：这里若报成 reconnecting 或 waitingForNetwork，快照里就留着一条错误横幅。
+        // 回到前台立即建连，状态照常走 switching → syncing → online，快的时候不到 Kit 的显示阈值，
+        // 界面上什么都不出现；连不上再按真实结果显示横幅。
+        LinkPhase::Ready | LinkPhase::Degraded | LinkPhase::Parked => {
             located(&mut status);
             status.phase = ConnectionPhase::Online;
             status.rtt_ms = facts.rtt_ms;
@@ -203,5 +211,17 @@ mod tests {
             project(LinkPhase::Terminated, &first).reason.as_deref(),
             Some("expired")
         );
+    }
+
+    /// 托管对外与在线逐字段相同：在线时进后台不产生新的状态事件，界面快照里也不留横幅。
+    #[test]
+    fn parked_projects_exactly_like_ready() {
+        let facts = facts();
+        let parked = project(LinkPhase::Parked, &facts);
+        assert_eq!(parked.phase, ConnectionPhase::Online);
+        assert_eq!(parked.quality, Some(LinkQuality::Good));
+        assert_eq!(parked.next_retry_at, None, "托管时没有重试定时");
+        assert_eq!(parked.attempt, 0);
+        assert_eq!(parked, project(LinkPhase::Ready, &facts));
     }
 }

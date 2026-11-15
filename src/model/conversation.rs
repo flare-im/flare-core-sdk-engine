@@ -507,6 +507,10 @@ pub struct Conversation {
     /// Notification preference. None means the sync source did not supply it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_mention_only: Option<bool>,
+    /// In a large group, whether the current user turned on notifications for every message
+    /// (large groups otherwise alert only on mentions). False when never turned on.
+    // 读取时由核心从 `ext` 投影，不落库；核心内部读 `notify_all(conversation)`。
+    pub notify_all: bool,
     pub is_archived: bool,
 
     // ===============================
@@ -579,6 +583,7 @@ impl Default for Conversation {
             is_pinned: false,
             is_muted: false,
             is_mention_only: None,
+            notify_all: false,
             is_archived: false,
             version: 0,
             updated_at: 0,
@@ -655,6 +660,7 @@ impl Conversation {
             last_read_seq: self.last_read_seq,
             is_muted: self.is_muted,
             is_mention_only: self.is_mention_only,
+            notify_all: crate::model::conversation_user_settings::notify_all_in(&self.ext),
             is_pinned: self.is_pinned,
             is_archived: self.is_archived,
             updated_at: u64_to_proto_ms(self.updated_at),
@@ -840,6 +846,10 @@ impl From<flare_proto::common::ConversationSummary> for Conversation {
                         crate::model::EXT_USER_SETTINGS_VERSION.to_string(),
                         s.user_settings_version.to_string(),
                     );
+                }
+                // 老服务端不带这一项：不写，本地已有的记录在合并时保留。
+                if let Some(notify_all) = s.notify_all {
+                    crate::model::set_notify_all_in(&mut ext, notify_all);
                 }
                 ext.insert(
                     crate::model::EXT_SETTINGS_DIRTY.to_string(),

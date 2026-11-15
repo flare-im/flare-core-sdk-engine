@@ -114,6 +114,8 @@ pub trait ConversationWriter: Send + Sync {
     ) -> Result<()>;
     async fn set_pinned(&self, conversation_id: &str, pinned: bool) -> Result<()>;
     async fn set_muted(&self, conversation_id: &str, muted: bool) -> Result<()>;
+    /// 大群里当前用户的「全部消息通知」（ext `notify_all`）。
+    async fn set_notify_all(&self, conversation_id: &str, enabled: bool) -> Result<()>;
     async fn set_archived(&self, conversation_id: &str, archived: bool) -> Result<()>;
     /// 标为未读：将读位回退 1 并显示未读角标（飞书「标为未读」语义）。
     async fn mark_unread(&self, conversation_id: &str) -> Result<u32>;

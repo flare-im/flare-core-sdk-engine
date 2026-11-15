@@ -69,6 +69,14 @@ pub const DIRECT_INVOKE_ROUTES: &[&str] = &[
     "sdk.set_push_permission",
     "sdk.reconcile_push",
     "sdk.push_status",
+    "sdk.handle_remote_message",
+    "sdk.resolve_notification_tap",
+    "notification.set_focus",
+    "notification.get_settings",
+    "notification.update_settings",
+    "notification.set_background_presenter",
+    "notification.set_snapshot_directory",
+    "notification.background_refresh",
 ];
 
 pub fn is_direct_invoke_route(route: &str) -> bool {
@@ -132,6 +140,14 @@ pub fn is_direct_invoke_route(route: &str) -> bool {
         "sdk.set_push_permission" => true,
         "sdk.reconcile_push" => true,
         "sdk.push_status" => true,
+        "sdk.handle_remote_message" => true,
+        "sdk.resolve_notification_tap" => true,
+        "notification.set_focus" => true,
+        "notification.get_settings" => true,
+        "notification.update_settings" => true,
+        "notification.set_background_presenter" => true,
+        "notification.set_snapshot_directory" => true,
+        "notification.background_refresh" => true,
         _ => false,
     }
 }
@@ -603,6 +619,67 @@ pub async fn dispatch_direct(
         }
         "sdk.push_status" => {
             let response = session.client().push_status();
+            dispatch_support::json(response)
+        }
+        "sdk.handle_remote_message" => {
+            let input = dispatch_support::from_value::<
+                flare_im_core_sdk::client::push_inbox::HandleRemoteMessageRequest,
+            >(request.clone(), "remote message")?;
+            let response = session.client().handle_remote_message(input).await?;
+            dispatch_support::json(response)
+        }
+        "sdk.resolve_notification_tap" => {
+            let input = dispatch_support::from_value::<
+                flare_im_core_sdk::client::push_inbox::ResolveNotificationTapRequest,
+            >(request.clone(), "notification tap")?;
+            let response = session.client().resolve_notification_tap(input)?;
+            dispatch_support::json(response)
+        }
+        "notification.set_focus" => {
+            let input = dispatch_support::from_value::<
+                flare_im_core_sdk::model::notification::SetNotificationFocusRequest,
+            >(request.clone(), "notification focus")?;
+            session
+                .client()
+                .set_notification_focus(input.conversation_id);
+            Ok(BindingResponse::unit())
+        }
+        "notification.get_settings" => {
+            let response = session.client().notification_settings().await?;
+            dispatch_support::json(response)
+        }
+        "notification.update_settings" => {
+            let input = dispatch_support::from_value::<
+                flare_im_core_sdk::model::notification::UpdateUserNotificationSettingsRequest,
+            >(request.clone(), "notification settings update")?;
+            let response = session.client().update_notification_settings(input).await?;
+            dispatch_support::json(response)
+        }
+        "notification.set_background_presenter" => {
+            let input = dispatch_support::from_value::<
+                flare_im_core_sdk::model::notification::SetBackgroundPresenterRequest,
+            >(request.clone(), "background presenter")?;
+            session
+                .client()
+                .set_background_presenter(input.attached)
+                .await?;
+            Ok(BindingResponse::unit())
+        }
+        "notification.set_snapshot_directory" => {
+            let input = dispatch_support::from_value::<
+                flare_im_core_sdk::model::notification::SetNotificationSnapshotDirectoryRequest,
+            >(request.clone(), "notification snapshot directory")?;
+            session
+                .client()
+                .set_notification_snapshot_directory(input.directory)
+                .await?;
+            Ok(BindingResponse::unit())
+        }
+        "notification.background_refresh" => {
+            let input = dispatch_support::from_value::<
+                flare_im_core_sdk::model::notification::BackgroundRefreshRequest,
+            >(request.clone(), "background refresh")?;
+            let response = session.client().background_refresh(input.budget_ms).await?;
             dispatch_support::json(response)
         }
         _ => Err(crate::binding_operation_not_supported(route)),

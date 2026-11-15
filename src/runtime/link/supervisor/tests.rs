@@ -34,6 +34,19 @@ struct Script {
     outbox: Vec<&'static str>,
     /// 非空时 `link_up` 要等到许可才往下走（模拟它排在别的事件之后）。
     link_up_gate: Option<Arc<tokio::sync::Semaphore>>,
+    /// 为真时所有建连都失败（不看脚本）。
+    unreachable: bool,
+    /// 每次建连请求带的前后台。
+    opened_foreground: Vec<bool>,
+    /// 每次建连请求带的设备状态（进 CONNECT 的那个）。
+    opened_states: Vec<DeviceLinkState>,
+    /// 上报过的设备状态，按调用顺序。
+    reports: Vec<DeviceLinkState>,
+    /// 关连接的方式，按调用顺序：`close` 或 `parked`。
+    closes: Vec<&'static str>,
+    hand_overs: usize,
+    /// 非空时托管交接要等到许可才返回（模拟冲刷与等应答的那段时间）。
+    hand_over_gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 #[derive(Clone, Default)]
@@ -77,6 +90,36 @@ impl FakeDriver {
     fn hold_link_up(&self) -> Arc<tokio::sync::Semaphore> {
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
         self.0.lock().unwrap().link_up_gate = Some(gate.clone());
+        gate
+    }
+
+    fn set_unreachable(&self, unreachable: bool) {
+        self.0.lock().unwrap().unreachable = unreachable;
+    }
+
+    fn opened_foreground(&self) -> Vec<bool> {
+        self.0.lock().unwrap().opened_foreground.clone()
+    }
+
+    fn opened_states(&self) -> Vec<DeviceLinkState> {
+        self.0.lock().unwrap().opened_states.clone()
+    }
+
+    fn reports(&self) -> Vec<DeviceLinkState> {
+        self.0.lock().unwrap().reports.clone()
+    }
+
+    fn closes(&self) -> Vec<&'static str> {
+        self.0.lock().unwrap().closes.clone()
+    }
+
+    fn hand_overs(&self) -> usize {
+        self.0.lock().unwrap().hand_overs
+    }
+
+    fn hold_hand_over(&self) -> Arc<tokio::sync::Semaphore> {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        self.0.lock().unwrap().hand_over_gate = Some(gate.clone());
         gate
     }
 }
@@ -138,7 +181,12 @@ impl LinkDriver for FakeDriver {
         script
             .opened
             .push((ap.clone(), request.epoch, request.token.clone()));
+        script.opened_foreground.push(request.foreground);
+        script.opened_states.push(request.device_state);
         script.ip_hints = request.target.ip_hints.clone();
+        if script.unreachable {
+            return Err(unreachable());
+        }
         script
             .opens
             .get_mut(&ap)
@@ -146,7 +194,29 @@ impl LinkDriver for FakeDriver {
             .unwrap_or_else(|| Ok(ok_report()))
     }
 
-    async fn close(&self) {}
+    async fn close(&self) {
+        self.0.lock().unwrap().closes.push("close");
+    }
+
+    async fn close_parked(&self) {
+        self.0.lock().unwrap().closes.push("parked");
+    }
+
+    fn report_device_state(&self, state: DeviceLinkState) {
+        self.0.lock().unwrap().reports.push(state);
+    }
+
+    async fn hand_over(&self) -> bool {
+        let gate = {
+            let mut script = self.0.lock().unwrap();
+            script.hand_overs += 1;
+            script.hand_over_gate.clone()
+        };
+        if let Some(gate) = gate {
+            let _ = gate.acquire().await;
+        }
+        true
+    }
 
     fn probe(&self) {
         self.0.lock().unwrap().probes += 1;
@@ -239,9 +309,20 @@ struct Harness {
     link: LinkHandle,
     bus: EventBus,
     rx: crate::kernel::event::EventReceiver,
+    /// 状态机读的那份设备可达状态：测试用它接上、卸下后台展示方。
+    reach: Arc<DeviceReach>,
+}
+
+fn reach_on(platform: &str) -> Arc<DeviceReach> {
+    Arc::new(DeviceReach::new(ReachProfile::for_platform(platform)))
 }
 
 fn harness() -> Harness {
+    harness_on("pc")
+}
+
+/// `platform`：CONNECT 里报的平台，决定进后台后链路的做法。
+fn harness_on(platform: &str) -> Harness {
     let driver = FakeDriver::default();
     let bus = EventBus::new();
     let rx = bus.subscribe_filter(SdkEventKind::Connection);
@@ -249,12 +330,20 @@ fn harness() -> Harness {
         Some(two_access_points()),
         AccessStoreSource::memory(),
     ));
-    let link = LinkHandle::spawn(Arc::new(driver.clone()), access, bus.clone(), true);
+    let reach = reach_on(platform);
+    let link = LinkHandle::spawn(
+        Arc::new(driver.clone()),
+        access,
+        bus.clone(),
+        true,
+        reach.clone(),
+    );
     Harness {
         driver,
         link,
         bus,
         rx,
+        reach,
     }
 }
 
@@ -309,6 +398,52 @@ impl Harness {
         }
     }
 
+    /// 等到出现满足条件的对外状态（最多 `within`），返回那次的状态。
+    async fn wait_status(
+        &mut self,
+        what: &str,
+        within: Duration,
+        accept: impl Fn(&ConnectionStatus) -> bool,
+    ) -> ConnectionStatus {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let event = tokio::time::timeout(remaining, self.rx.recv())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "no {what} within {within:?}; last status {:?}",
+                        self.link.status()
+                    )
+                })
+                .expect("bus open");
+            if let SdkEvent::Connection(ConnectionEvent::Status(status)) = event
+                && accept(&status)
+            {
+                return status;
+            }
+        }
+    }
+
+    /// 等到假驱动满足条件（最多 `within`）。
+    async fn wait_driver(&self, what: &str, within: Duration, met: impl Fn(&FakeDriver) -> bool) {
+        let deadline = tokio::time::Instant::now() + within;
+        while !met(&self.driver) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{what} did not happen; status {:?}",
+                self.link.status()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// 接上或卸下后台展示方，并像引擎那样告知状态机。
+    async fn set_background_presenter(&self, attached: bool) {
+        self.reach.set_background_presenter(attached);
+        self.link.device_state_changed().await;
+    }
+
     fn lose(&self, epoch: u64, reason: DisconnectReason) {
         self.link.signals().send(LinkSignal::Lost { epoch, reason });
     }
@@ -320,7 +455,9 @@ impl Harness {
 
 const SHORT: Duration = Duration::from_secs(3);
 
+mod parking;
 mod recovery;
+mod wake;
 
 #[tokio::test]
 async fn start_goes_online_and_announces_the_directory() {

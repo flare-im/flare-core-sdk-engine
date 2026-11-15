@@ -364,7 +364,13 @@ fn platform_map_adapter_module_keys() -> &'static [&'static str] {
         "capabilities",
         "views",
         "message_builder",
+        "notification",
     ]
+}
+
+/// HarmonyOS 还没有通知展示方：这些模块的方法在鸿蒙两端一律报能力不可用，不交给核心。
+fn harmony_unavailable_module(module: &Value) -> bool {
+    str_field(module, "key") == "notification"
 }
 
 fn find_module<'a>(spec: &'a Value, key: &str) -> Option<&'a Value> {
@@ -396,15 +402,111 @@ fn platform_map_adapter_targets(
             path: root
                 .join("packages/flare-core-harmony-arkts-sdk/src/main/ets/adapter/module")
                 .join(format!("Default{iface}.ets")),
-            body: emit_arkts_map_adapter(spec, module),
+            body: if harmony_unavailable_module(module) {
+                emit_arkts_unavailable_adapter(spec, module)
+            } else {
+                emit_arkts_map_adapter(spec, module)
+            },
         },
         GeneratedTextTarget {
             path: root
                 .join("packages/flare-core-harmony-cangjie-sdk/src/adapter/module")
                 .join(format!("Default{iface}.cj")),
-            body: emit_cangjie_map_adapter(spec, module),
+            body: if harmony_unavailable_module(module) {
+                emit_cangjie_unavailable_adapter(spec, module)
+            } else {
+                emit_cangjie_map_adapter(spec, module)
+            },
         },
     ]
+}
+
+/// 鸿蒙 ArkTS：每个方法都抛 `capabilityUnavailable`。
+fn emit_arkts_unavailable_adapter(spec: &Value, module: &Value) -> String {
+    let iface = ts_api_interface_name(module);
+    let key = ts_api_module_key(module);
+    let model_types = child_arr(module, "methods")
+        .iter()
+        .flat_map(|method| [str_field(method, "request"), str_field(method, "response")])
+        .filter(|type_name| is_known_ts_model_type(type_name, spec))
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    let mut lines = vec![
+        "// GENERATED. Do not edit by hand.".to_string(),
+        "import { NativeBridge } from '../../contract/BridgeContract';".to_string(),
+        "import { SdkErrorCodes } from '../../contract/SdkContract';".to_string(),
+        "import { FlareSdkException } from '../../bridge/FlareSdkException';".to_string(),
+        format!("import type {{ {iface} }} from '../../api/modules/{key}';"),
+    ];
+    if !model_types.is_empty() {
+        lines.push(format!(
+            "import type {{ {} }} from '../../model';",
+            model_types.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    lines.extend([
+        String::new(),
+        format!(
+            "/** HarmonyOS has no {key} presenter yet: these calls are not handed to the core. */"
+        ),
+        format!("export class Default{iface} implements {iface} {{"),
+        "  constructor(private readonly bridge: NativeBridge) {}".to_string(),
+    ]);
+    for method in child_arr(module, "methods") {
+        let name = str_field(method, "name");
+        let arg = arkts_adapter_arg(method, spec);
+        let res = arkts_api_type(str_field(method, "response"), spec);
+        lines.extend([
+            String::new(),
+            format!("  async {name}({arg}): Promise<{res}> {{"),
+            "    throw new FlareSdkException(".to_string(),
+            "      SdkErrorCodes.capabilityUnavailable,".to_string(),
+            format!("      '{key} is not available on HarmonyOS yet',"),
+            format!("      {},", json_quote(str_field(method, "operation"))),
+            "    );".to_string(),
+            "  }".to_string(),
+        ]);
+    }
+    lines.push("}".to_string());
+    lines.join("\n")
+}
+
+/// 鸿蒙仓颉：每个方法都抛 `capabilityUnavailable`。
+fn emit_cangjie_unavailable_adapter(spec: &Value, module: &Value) -> String {
+    let iface = ts_api_interface_name(module);
+    let key = ts_api_module_key(module);
+    let mut lines = vec![
+        "package flare_core_harmony_cangjie_sdk.adapter".to_string(),
+        String::new(),
+        "import flare_core_harmony_cangjie_sdk.contract.*".to_string(),
+        "import flare_core_harmony_cangjie_sdk.api.modules.*".to_string(),
+        "import flare_core_harmony_cangjie_sdk.model.*".to_string(),
+        String::new(),
+        "// GENERATED. Do not edit by hand.".to_string(),
+        format!("// HarmonyOS has no {key} presenter yet: these calls are not handed to the core."),
+        format!("public class Default{iface} <: {iface} {{"),
+        "    private let bridge: NativeBridge".to_string(),
+        String::new(),
+        "    public init(bridge: NativeBridge) {".to_string(),
+        "        this.bridge = bridge".to_string(),
+        "    }".to_string(),
+    ];
+    for method in child_arr(module, "methods") {
+        let name = cangjie_identifier(str_field(method, "name"));
+        let arg = cangjie_api_arg(method, spec);
+        let res = cangjie_api_type(str_field(method, "response"), spec);
+        lines.extend([
+            String::new(),
+            format!("    public func {name}({arg}): {res} {{"),
+            format!(
+                "        throw Exception(\"FlareSdkException(code=capabilityUnavailable, operation={}, message={key} is not available on HarmonyOS yet.)\")",
+                str_field(method, "operation")
+            ),
+            "    }".to_string(),
+        ]);
+    }
+    lines.push("}".to_string());
+    lines.join("\n")
 }
 
 fn kotlin_native_call_map_name(method: &Value) -> String {
@@ -1004,8 +1106,10 @@ mod tests {
             for target in platform_map_adapter_targets(&root, &spec, module) {
                 for method in child_arr(module, "methods") {
                     let name = str_field(method, "name");
+                    // Swift 关键字（如 `defer`）生成为反引号转义的方法名。
                     assert!(
-                        target.body.contains(&format!("{name}(")),
+                        target.body.contains(&format!("{name}("))
+                            || target.body.contains(&format!("`{name}`(")),
                         "{} missing {name}",
                         target.path.display()
                     );

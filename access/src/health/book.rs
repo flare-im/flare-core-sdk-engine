@@ -482,6 +482,25 @@ impl HealthBook {
         }
     }
 
+    /// 有外部证据表明网络已经可用（例如收到了推送）时调用：该网络下仍在冷却的接入点都提前转为
+    /// half-open，各放一次试探；试探失败照常以翻倍的冷却重新打开。返回提前了几个。
+    pub fn expedite_trials(&self, net: NetPrint, now_ms: i64) -> usize {
+        let mut state = self.lock();
+        let Some(net_state) = state.nets.get_mut(&net) else {
+            return 0;
+        };
+        let expedited = net_state
+            .aps
+            .values_mut()
+            .map(|health| health.breaker.expedite(now_ms))
+            .filter(|expedited| *expedited)
+            .count();
+        if expedited > 0 {
+            state.dirty = true;
+        }
+        expedited
+    }
+
     pub fn view(&self, ap: &str, net: NetPrint, now_ms: i64) -> HealthView {
         self.lock().view(ap, net, now_ms)
     }

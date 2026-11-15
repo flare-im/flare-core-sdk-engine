@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Payload of notification.clear: remove these notifications of the app.",
+  "properties": {
+    "all": {
+      "description": "Remove every notification of the app (the session ended); collapseIds is then empty.",
+      "type": "boolean"
+    },
+    "collapseIds": {
+      "description": "Collapse ids of the notifications to remove.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "collapseIds",
+    "all"
+  ],
+  "title": "NotificationClearEvent",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "NotificationClearEvent"
+}

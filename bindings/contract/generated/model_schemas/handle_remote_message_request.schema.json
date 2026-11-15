@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One remote push the platform push module received.",
+  "properties": {
+    "budgetMs": {
+      "description": "Background execution time the platform holds for this push, in milliseconds. Above zero\nthe engine also wakes the link for one incremental sync within it; the answer never waits\nfor that.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "payload": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "The push payload flattened to strings (snake_case keys): uid, tenant_id, conversation_id,\nmessage_id, seq, collapse_id, thread_id, disposition, alert_class, count, badge, title,\nbody, sound. Keys the engine does not know are ignored.",
+      "type": "object"
+    },
+    "provider": {
+      "description": "Push channel that delivered it: apns, fcm or getui.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider",
+    "payload"
+  ],
+  "title": "HandleRemoteMessageRequest",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "HandleRemoteMessageRequest"
+}

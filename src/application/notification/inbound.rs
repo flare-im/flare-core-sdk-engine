@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use crate::application::services::MessageDeduper;
 use crate::content::message_elem::Elem;
-use crate::domain::ConversationStore;
 use crate::kernel::event::{EventBus, MessageEvent, NotificationEvent, SdkEvent};
 use crate::model::IMMessage;
 
+use super::center::NotifyCenter;
 use super::registry::NotificationHandlerRegistry;
 use super::types::{
     InboundDelivery, InboundNotificationView, should_publish_notification_as_message,
@@ -32,12 +32,21 @@ pub fn partition_notification_durability(
     (durable, ephemeral)
 }
 
+/// 去重、业务分发之后的一条下行。
+enum Prepared {
+    /// 进时间线（通知类内容也可能同时进）。
+    Timeline(IMMessage),
+    /// 只作为通知送达，不进时间线。
+    NoticeOnly(IMMessage),
+}
+
 #[derive(Clone)]
 pub struct NotificationInboundPipeline {
     registry: Arc<NotificationHandlerRegistry>,
     message_deduper: MessageDeduper,
     bus: EventBus,
-    conversations: Option<Arc<dyn ConversationStore>>,
+    /// 链路在线时的提示决策点。引擎为各条连接的分发器装上；同步与单测的管道没有它，不提示。
+    notify: Option<Arc<NotifyCenter>>,
 }
 
 impl NotificationInboundPipeline {
@@ -50,13 +59,20 @@ impl NotificationInboundPipeline {
             registry,
             message_deduper,
             bus,
-            conversations: None,
+            notify: None,
         }
     }
 
-    pub(crate) fn with_conversations(mut self, conversations: Arc<dyn ConversationStore>) -> Self {
-        self.conversations = Some(conversations);
+    pub(crate) fn with_notify_center(mut self, notify: Arc<NotifyCenter>) -> Self {
+        self.notify = Some(notify);
         self
+    }
+
+    /// 服务端经 `sync:<用户>` 收件箱发来「用户设置变了」：交给提示决策点去重新读。
+    pub(crate) fn user_settings_changed(&self, payload: &[u8]) {
+        if let Some(notify) = &self.notify {
+            notify.on_user_settings_changed(payload);
+        }
     }
 
     pub fn registry(&self) -> &Arc<NotificationHandlerRegistry> {
@@ -64,7 +80,7 @@ impl NotificationInboundPipeline {
     }
 
     pub async fn finish_one(&self, message: IMMessage) {
-        let Some(message) = self
+        let Some(Prepared::Timeline(message)) = self
             .prepare_received_message(message, InboundDelivery::Live)
             .await
         else {
@@ -77,7 +93,7 @@ impl NotificationInboundPipeline {
         &self,
         message: IMMessage,
         delivery: InboundDelivery,
-    ) -> Option<IMMessage> {
+    ) -> Option<Prepared> {
         if !self.message_deduper.record_if_new(&message).await {
             return None;
         }
@@ -89,7 +105,7 @@ impl NotificationInboundPipeline {
             if view.is_system() {
                 // One System carrier drives business handling and normal timeline display.
                 // Publishing a NotificationEvent too would produce a second visual reminder.
-                return Some(message);
+                return Some(Prepared::Timeline(message));
             }
             let should_publish_as_message = should_publish_notification_as_message(&view);
             if delivery == InboundDelivery::Live {
@@ -98,10 +114,14 @@ impl NotificationInboundPipeline {
                         message: Box::new(message.clone()),
                     }));
             }
-            return should_publish_as_message.then_some(message);
+            return Some(if should_publish_as_message {
+                Prepared::Timeline(message)
+            } else {
+                Prepared::NoticeOnly(message)
+            });
         }
 
-        Some(message)
+        Some(Prepared::Timeline(message))
     }
 
     fn publish_received_message(&self, message: IMMessage) {
@@ -130,82 +150,32 @@ impl NotificationInboundPipeline {
         current_user_id: Option<&str>,
     ) {
         let mut received_messages = Vec::with_capacity(messages.len());
+        let mut notices = Vec::new();
         for message in messages {
-            if let Some(message) = self.prepare_received_message(message, delivery).await {
-                received_messages.push(message);
+            match self.prepare_received_message(message, delivery).await {
+                Some(Prepared::Timeline(message)) => received_messages.push(message),
+                Some(Prepared::NoticeOnly(message)) => notices.push(message),
+                None => {}
             }
         }
 
-        if received_messages.is_empty() {
-            return;
+        // 提示候选先挑出来（只拷贝要提示的那几条），时间线不必等提示决策读库。
+        let notify = current_user_id.zip(self.notify.as_ref());
+        let mut candidates = Vec::new();
+        if let Some((user_id, notify)) = notify {
+            candidates.extend(notify.live_candidates(&received_messages, user_id));
+            candidates.extend(notify.live_candidates(&notices, user_id));
         }
-
-        let sound = current_user_id.zip(self.conversations.as_ref());
-        // Let the timeline consume the normal event without waiting on sound-policy reads.
-        let candidates = sound.map(|(user_id, _)| {
-            received_messages
-                .iter()
-                .filter(|message| sound_candidate(message, user_id))
-                .map(|message| {
-                    let mentioned =
-                        message.mention_all || message.mention_users.iter().any(|id| id == user_id);
-                    (
-                        message.conversation_id.clone(),
-                        message.server_id.clone(),
-                        mentioned,
-                    )
-                })
-                .collect::<Vec<_>>()
-        });
-        self.bus
-            .publish(SdkEvent::Message(MessageEvent::ReceivedBatch {
-                messages: received_messages,
-            }));
-        if let (Some((_, store)), Some(candidates)) = (sound, candidates) {
-            let mut preferences = std::collections::HashMap::new();
-            for (conversation_id, message_id, mentioned) in candidates {
-                let preference = match preferences.entry(conversation_id.clone()) {
-                    std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
-                    std::collections::hash_map::Entry::Vacant(entry) => {
-                        let preference = match store.get(&conversation_id).await {
-                            Ok(row) => Some(row.map_or((false, false), |row| {
-                                (row.is_muted, row.is_mention_only.unwrap_or(false))
-                            })),
-                            Err(error) => {
-                                tracing::warn!(%error, %conversation_id, "read message sound preference failed");
-                                None
-                            }
-                        };
-                        *entry.insert(preference)
-                    }
-                };
-                if preference
-                    .is_some_and(|(muted, mention_only)| !muted && (!mention_only || mentioned))
-                {
-                    self.bus
-                        .publish(SdkEvent::Notification(NotificationEvent::MessageSound {
-                            conversation_id,
-                            message_id,
-                        }));
-                    break;
-                }
-            }
+        if !received_messages.is_empty() {
+            self.bus
+                .publish(SdkEvent::Message(MessageEvent::ReceivedBatch {
+                    messages: received_messages,
+                }));
+        }
+        if let Some((user_id, notify)) = notify {
+            notify.present_live(candidates, user_id).await;
         }
     }
-}
-
-fn sound_candidate(message: &IMMessage, user_id: &str) -> bool {
-    !user_id.is_empty()
-        && !message.sender_id.is_empty()
-        && message.sender_id != user_id
-        && !message.conversation_id.is_empty()
-        && !message.server_id.is_empty()
-        && !message.is_recalled
-        && message.status != flare_proto::common::MessageStatus::Deleted as i32
-        && !matches!(
-            message.content.as_ref(),
-            None | Some(Elem::System(_) | Elem::Notification(_))
-        )
 }
 
 #[cfg(test)]
@@ -300,102 +270,6 @@ mod tests {
             .expect("expected single callback")
             .expect("single callback channel closed");
         assert_eq!(single_id, "srv-1");
-    }
-
-    #[tokio::test]
-    async fn live_message_sound_respects_preferences_without_hiding_messages() {
-        use crate::content::message_elem::TextElem;
-        use crate::infrastructure::persistence::memory_im::in_memory_im_provider;
-        use crate::model::Conversation;
-
-        let bus = EventBus::new();
-        let mut events = bus.subscribe();
-        let stores = in_memory_im_provider();
-        let pipeline = test_pipeline(bus).with_conversations(stores.conversations.clone());
-        let message = |seq: u64, mentioned: bool| {
-            let mut message = plain_message(&format!("sound-{seq}"), seq);
-            message.content = Some(Elem::Text(TextElem {
-                text: "hello".into(),
-                mentions: vec![],
-            }));
-            if mentioned {
-                message.mention_users.push("me".into());
-            }
-            message
-        };
-        let settings = |muted, mention_only| Conversation {
-            conversation_id: "c1".into(),
-            is_muted: muted,
-            is_mention_only: Some(mention_only),
-            ..Default::default()
-        };
-
-        stores
-            .conversations
-            .save_one(&settings(true, false))
-            .await
-            .unwrap();
-        pipeline.finish_batch(vec![message(1, true)], "me").await;
-        assert!(
-            matches!(events.try_recv().unwrap(), SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) if messages.len() == 1)
-        );
-        assert!(events.try_recv().is_err());
-
-        stores
-            .conversations
-            .save_one(&settings(false, true))
-            .await
-            .unwrap();
-        pipeline.finish_batch(vec![message(2, false)], "me").await;
-        assert!(matches!(
-            events.try_recv().unwrap(),
-            SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
-        ));
-        assert!(events.try_recv().is_err());
-        pipeline
-            .finish_batch(
-                vec![message(3, false), message(4, true), message(5, true)],
-                "me",
-            )
-            .await;
-        assert!(
-            matches!(events.try_recv().unwrap(), SdkEvent::Message(MessageEvent::ReceivedBatch { messages }) if messages.len() == 3)
-        );
-        assert!(
-            matches!(events.try_recv().unwrap(), SdkEvent::Notification(NotificationEvent::MessageSound { message_id, .. }) if message_id == "sound-4")
-        );
-        assert!(events.try_recv().is_err());
-
-        stores
-            .conversations
-            .save_one(&settings(false, false))
-            .await
-            .unwrap();
-        pipeline
-            .finish_batch_with_delivery(vec![message(6, false)], InboundDelivery::CatchUp)
-            .await;
-        assert!(matches!(
-            events.try_recv().unwrap(),
-            SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
-        ));
-        assert!(events.try_recv().is_err());
-        pipeline.finish_batch(vec![message(6, false)], "me").await;
-        assert!(events.try_recv().is_err());
-        pipeline.finish_batch(vec![message(7, false)], "u1").await;
-        assert!(matches!(
-            events.try_recv().unwrap(),
-            SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
-        ));
-        assert!(events.try_recv().is_err());
-        pipeline.finish_batch(vec![message(8, false)], "me").await;
-        assert!(matches!(
-            events.try_recv().unwrap(),
-            SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
-        ));
-        assert!(matches!(
-            events.try_recv().unwrap(),
-            SdkEvent::Notification(NotificationEvent::MessageSound { .. })
-        ));
     }
 
     #[tokio::test]

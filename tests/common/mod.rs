@@ -330,6 +330,16 @@ impl ConversationWriter for MemoryConversationStore {
         Ok(())
     }
 
+    async fn set_notify_all(&self, conversation_id: &str, enabled: bool) -> Result<()> {
+        let mut data = self.data.write().await;
+        if let Some(conv) = data.get(conversation_id) {
+            let mut updated = conv.clone();
+            flare_im_core_sdk::model::set_notify_all(&mut updated, enabled);
+            data.insert(conversation_id.to_string(), updated);
+        }
+        Ok(())
+    }
+
     async fn set_archived(&self, conversation_id: &str, archived: bool) -> Result<()> {
         let mut data = self.data.write().await;
         if let Some(conv) = data.get(conversation_id) {

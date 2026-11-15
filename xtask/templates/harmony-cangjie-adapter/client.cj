@@ -23,6 +23,7 @@ public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImC
     private let capabilitiesApi: CapabilitiesApi
     private let eventsApi: EventsApi
     private let diagnosticsApi: DiagnosticsApi
+    private let notificationApi: NotificationApi
     private var platformLifecycle: ?PlatformLifecycle = None
 
     public prop connection: ConnectionApi {
@@ -97,6 +98,12 @@ public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImC
         }
     }
 
+    public prop notification: NotificationApi {
+        get() {
+            return notificationApi
+        }
+    }
+
     public init(bridge: NativeBridge) {
         this.bridge = bridge
         this.connectionApi = DefaultConnectionApi(bridge)
@@ -111,6 +118,7 @@ public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImC
         this.capabilitiesApi = DefaultCapabilitiesApi(bridge)
         this.eventsApi = DefaultEventsApi(bridge)
         this.diagnosticsApi = DefaultDiagnosticsApi(bridge)
+        this.notificationApi = DefaultNotificationApi(bridge)
     }
 
     public func create(requestJson: String): String {
@@ -206,6 +214,16 @@ public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImC
         let value = wireDecodeResponseObject(jsonObjectFromRaw(raw))
         let error = match (value.get("lastError")) { case Some(v) => if (v.toString() == "null") { None } else { Some(v.asString().getValue()) }; case None => None }
         return PushLifecycleStatus(configuredProviders: UInt32(jsonIntField(value, "configuredProviders", 0)), lastError: error, pendingRevocations: UInt32(jsonIntField(value, "pendingRevocations", 0)), registeredProviders: UInt32(jsonIntField(value, "registeredProviders", 0)), state: jsonStringField(value, "state", ""))
+    }
+
+    // HarmonyOS has no platform push module yet: remote pushes are not handed to the core here.
+    public func handleRemoteMessage(request: HandleRemoteMessageRequest): RemoteMessageOutcome {
+        throw Exception("FlareSdkException(code=capabilityUnavailable, operation=sdk.handle_remote_message, message=Remote push handling is not available on HarmonyOS yet.)")
+    }
+
+    // HarmonyOS has no platform push module yet: notification taps are not resolved here.
+    public func resolveNotificationTap(request: ResolveNotificationTapRequest): NotificationTapResult {
+        throw Exception("FlareSdkException(code=capabilityUnavailable, operation=sdk.resolve_notification_tap, message=Remote push handling is not available on HarmonyOS yet.)")
     }
 
     public func logout(): Unit {

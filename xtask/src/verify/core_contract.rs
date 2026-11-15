@@ -455,6 +455,7 @@ fn verify_event_coverage(errors: &mut Vec<String>, spec: &Value, core_events: &V
             "conversation" => Some("ConversationEventName"),
             "sync" => Some("SyncEventName"),
             "plugin" => Some("PluginEventName"),
+            "notification" => Some("NotificationEventName"),
             _ => None,
         };
         if let Some(enum_name) = enum_name

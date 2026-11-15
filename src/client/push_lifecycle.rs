@@ -34,6 +34,25 @@ pub struct PushTokenInput {
     pub platform: String,
     /// OS-issued token. Never log or persist outside protected native storage.
     pub token: String,
+    /// iOS bundle id or Android applicationId. The server sends APNs to this topic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_bundle: Option<String>,
+    /// APNs only: sandbox or production, the APNs host the token belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    /// BCP 47 language tag the server renders notification text in, e.g. zh-CN.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
+    /// IANA time zone, e.g. Asia/Shanghai.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_zone: Option<String>,
+    /// App version string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+    /// What the app can do with a push: dataMessages (Android FCM data messages) and
+    /// serviceExtension (iOS notification service extension). Unknown values are rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Vec<String>>,
 }
 impl std::fmt::Debug for PushTokenInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -137,14 +156,107 @@ fn failure(code: ErrorCode) -> FlareError {
 fn digest(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
+/// 登记的身份：令牌之外，登记附带的元数据也算在内。任何一项变了都和换了令牌一样，下一次对账时
+/// 撤销旧登记、按 CAS 重新登记，服务端才会按新的包名、环境、语言去推。
 fn input_digest(input: &PushTokenInput) -> String {
+    let field = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map_or_else(|| "-".to_owned(), |value| format!("+{value}"))
+    };
+    // 能力的先后不算变化。
+    let capabilities = input.capabilities.as_ref().map_or_else(
+        || "-".to_owned(),
+        |capabilities| {
+            let mut sorted = capabilities.clone();
+            sorted.sort();
+            format!("+{}", sorted.join(","))
+        },
+    );
     digest(&format!(
-        "{}:{}:{}",
-        input.provider, input.platform, input.token
+        "{}:{}:{}\0{}\0{}\0{}\0{}\0{}\0{}",
+        input.provider,
+        input.platform,
+        input.token,
+        field(&input.app_bundle),
+        field(&input.environment),
+        field(&input.locale),
+        field(&input.time_zone),
+        field(&input.app_version),
+        capabilities
     ))
+}
+/// PUT 登记的请求体：令牌与 CAS 字段之外，附带的元数据（有的才带）原样带上，键名与输入相同。
+fn binding_body(
+    input: &PushTokenInput,
+    binding_id: &str,
+    expected_version: &str,
+    expires_at_ms: i64,
+) -> serde_json::Value {
+    let mut body = serde_json::Map::new();
+    body.insert("provider".into(), input.provider.clone().into());
+    body.insert("platform".into(), input.platform.clone().into());
+    body.insert("token".into(), input.token.clone().into());
+    body.insert("bindingId".into(), binding_id.into());
+    body.insert("expectedVersion".into(), expected_version.into());
+    body.insert("expiresAtMs".into(), expires_at_ms.into());
+    for (key, value) in [
+        ("appBundle", &input.app_bundle),
+        ("environment", &input.environment),
+        ("locale", &input.locale),
+        ("timeZone", &input.time_zone),
+        ("appVersion", &input.app_version),
+    ] {
+        if let Some(value) = value {
+            body.insert(key.into(), value.clone().into());
+        }
+    }
+    if let Some(capabilities) = &input.capabilities {
+        body.insert("capabilities".into(), capabilities.clone().into());
+    }
+    serde_json::Value::Object(body)
 }
 fn valid_provider(provider: &str) -> bool {
     matches!(provider, "apns" | "fcm" | "getui")
+}
+/// 已知的推送能力：Android FCM 收数据消息、iOS 通知服务扩展。
+const KNOWN_CAPABILITIES: &[&str] = &["dataMessages", "serviceExtension"];
+/// 元数据只做轻校验：长度、字符集、取值在已知集合里。不认识的值直接拒绝，不静默丢弃。
+fn valid_metadata(input: &PushTokenInput) -> bool {
+    let plain = |value: &str, max: usize, extra: &[u8]| {
+        !value.is_empty()
+            && value.len() <= max
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || extra.contains(&b))
+    };
+    input
+        .app_bundle
+        .as_deref()
+        .is_none_or(|value| plain(value, 255, b"._-".as_slice()))
+        && match input.environment.as_deref() {
+            None => true,
+            // APNs 才分沙盒与生产，别的通道带了就是传错了。
+            Some("sandbox" | "production") => input.provider == "apns",
+            Some(_) => false,
+        }
+        && input
+            .locale
+            .as_deref()
+            .is_none_or(|value| plain(value, 35, b"-_".as_slice()))
+        && input
+            .time_zone
+            .as_deref()
+            .is_none_or(|value| plain(value, 64, b"/_-+".as_slice()))
+        && input.app_version.as_deref().is_none_or(|value| {
+            !value.trim().is_empty() && value.len() <= 64 && !value.chars().any(char::is_control)
+        })
+        && input.capabilities.as_deref().is_none_or(|capabilities| {
+            capabilities.iter().enumerate().all(|(index, capability)| {
+                KNOWN_CAPABILITIES.contains(&capability.as_str())
+                    && !capabilities[..index].contains(capability)
+            })
+        })
 }
 fn validate(input: &PushTokenInput) -> Result<()> {
     if cfg!(target_arch = "wasm32") {
@@ -163,6 +275,7 @@ fn validate(input: &PushTokenInput) -> Result<()> {
             .any(|c| c.is_control() || c.is_whitespace())
         || (input.provider == "apns"
             && (!input.token.bytes().all(|b| b.is_ascii_hexdigit()) || input.token.len() > 512))
+        || !valid_metadata(input)
     {
         return Err(failure(ErrorCode::InvalidParameter));
     }
@@ -483,7 +596,7 @@ impl PushLifecycle {
             }
             // The server refuses a deadline outside its own next ten minutes: count from its clock.
             let now = session.server_clock.now_ms();
-            let body = serde_json::json!({"provider":input.provider,"platform":input.platform,"token":input.token,"bindingId":id,"expectedVersion":view.version,"expiresAtMs":now+120_000});
+            let body = binding_body(&input, &id, &view.version, now + 120_000);
             let response: HttpApiResponse<Registered> =
                 io(session.http.put(&path(&session.device), &body)).await?;
             let response = unwrap_api_response(response, "register push binding")?;
