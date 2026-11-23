@@ -82,6 +82,25 @@ const MAX_RECORDED_PAYMENT_ORDERS: usize = 32;
 /// transient operation may have been accepted just before the expiry.
 const HELD_CONTINUATION_GRACE_MS: i64 = 10 * 60 * 1000;
 
+/// Link QR codes go through the app's trusted scan router. This bridge returns
+/// a bounded text code, without making the host navigate or exposing a URL token.
+fn valid_plugin_qr_text(text: &str) -> bool {
+    let value = text.trim();
+    !value.is_empty()
+        && value.len() <= 2048
+        && !text.chars().any(char::is_control)
+        && !value.starts_with("//")
+        && !value.split_once(':').is_some_and(|(scheme, _)| {
+            scheme
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+                && scheme
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"+.-".contains(&b))
+        })
+}
+
 // ---------- The host's part ----------
 
 /// What the host did with a request.
@@ -191,6 +210,10 @@ pub trait PluginCapabilityHost: Send + Sync {
         prompt: DocumentCapturePrompt,
     ) -> CapabilityHostAnswer<CapturedFile>;
     async fn pick_file(&self, prompt: FilePickPrompt) -> CapabilityHostAnswer<CapturedFile>;
+    /// Scan a QR code through the host. Hosts without a scanner may leave it unavailable.
+    async fn scan_code(&self, _plugin_id: &str) -> CapabilityHostAnswer<String> {
+        CapabilityHostAnswer::Unavailable
+    }
     /// `Done` carries the proof (a JSON object, at most 4 KiB) the payment
     /// provider checks.
     async fn confirm_payment(
@@ -350,6 +373,10 @@ impl PluginCapabilityHost for EventCapabilityHost {
     }
     async fn pick_file(&self, prompt: FilePickPrompt) -> CapabilityHostAnswer<CapturedFile> {
         self.ask("pickFile", prompt, "file").await
+    }
+    async fn scan_code(&self, plugin_id: &str) -> CapabilityHostAnswer<String> {
+        self.ask("scanCode", json!({"pluginId": plugin_id}), "text")
+            .await
     }
     async fn confirm_payment(
         &self,
@@ -739,7 +766,7 @@ impl CapabilityApi {
     // each crate that awaits it.
     #[inline(never)]
     pub fn plugin_capability_invoke(&self, request: Value) -> PluginCallFuture<'_> {
-        Box::pin(self.plugin_capability_invoke_now(request, false))
+        Box::pin(self.plugin_capability_invoke_now(request, false, None))
     }
 
     /// `plugin_capability_invoke` for a web bundle's `host.capability`: a
@@ -747,11 +774,20 @@ impl CapabilityApi {
     /// "location", location}`, and a confirmed payment answers with the
     /// order's operation result, never a page action's continuation.
     #[inline(never)]
-    pub(crate) fn bundle_capability_invoke(&self, request: Value) -> PluginCallFuture<'_> {
-        Box::pin(self.plugin_capability_invoke_now(request, true))
+    pub(crate) fn bundle_capability_invoke<'a>(
+        &'a self,
+        request: Value,
+        session_id: Option<&'a str>,
+    ) -> PluginCallFuture<'a> {
+        Box::pin(self.plugin_capability_invoke_now(request, true, session_id))
     }
 
-    async fn plugin_capability_invoke_now(&self, request: Value, bundle: bool) -> Result<Value> {
+    async fn plugin_capability_invoke_now(
+        &self,
+        request: Value,
+        bundle: bool,
+        bundle_session: Option<&str>,
+    ) -> Result<Value> {
         let request: CapabilityInvokeRequest =
             crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
         if !valid_id(&request.plugin_id)
@@ -782,6 +818,12 @@ impl CapabilityApi {
             NativeCapability::LocationOnce if bundle => {
                 request.into.is_none()
                     && matches!(request.params, Some(NativeParams::LocationOnce(_)))
+            }
+            NativeCapability::ScanCode => {
+                bundle_session.is_some()
+                    && request.params.is_none()
+                    && request.into.is_none()
+                    && request.order_id.is_none()
             }
             capability => {
                 request.order_id.is_none()
@@ -867,7 +909,7 @@ impl CapabilityApi {
                     }
                     None => None,
                 };
-                let (upload, location_input) = match request.into.as_deref() {
+                let (mut upload, location_input) = match request.into.as_deref() {
                     Some(into) if request.capability == NativeCapability::LocationOnce => {
                         let (_, input) =
                             self.resolve_into_input(&catalog, plugin, &request, &user, into)?;
@@ -879,6 +921,21 @@ impl CapabilityApi {
                     ),
                     None => (None, None),
                 };
+                if bundle && let Some(target) = upload.as_mut() {
+                    match request.capability {
+                        NativeCapability::Camera => {
+                            target.accept.retain(|mime| mime == "image/jpeg")
+                        }
+                        NativeCapability::SelectImage => {
+                            target.accept.retain(|mime| mime.starts_with("image/"))
+                        }
+                        _ => {}
+                    }
+                    if target.accept.is_empty() {
+                        return Err(capability_unavailable());
+                    }
+                }
+                self.require_bundle_device_session(bundle_session)?;
                 let host = self.capability_host().ok_or_else(capability_unavailable)?;
                 // Allowlist 3: the viewer.
                 if !self
@@ -893,7 +950,19 @@ impl CapabilityApi {
                 {
                     return Ok(json!({"kind": "denied"}));
                 }
+                self.require_bundle_device_session(bundle_session)?;
                 match request.capability {
+                    NativeCapability::ScanCode => {
+                        let answer = host.scan_code(&plugin.plugin_id).await;
+                        self.require_bundle_device_session(bundle_session)?;
+                        Ok(match answer {
+                            CapabilityHostAnswer::Done(text) if valid_plugin_qr_text(&text) => {
+                                json!({"kind": "scan", "text": text, "format": "qr"})
+                            }
+                            CapabilityHostAnswer::Cancelled => json!({"kind": "cancelled"}),
+                            _ => json!({"kind": "unavailable"}),
+                        })
+                    }
                     NativeCapability::PaymentConfirmation => {
                         let (order, provider) = order.ok_or_else(invalid)?;
                         self.confirm_payment(
@@ -971,6 +1040,7 @@ impl CapabilityApi {
                             };
                             match answer {
                                 CapabilityHostAnswer::Done(file) => {
+                                    self.require_bundle_device_session(bundle_session)?;
                                     self.upload_into(&request, &target, capability, file).await
                                 }
                                 CapabilityHostAnswer::Cancelled => Ok(json!({"kind": "cancelled"})),
@@ -986,6 +1056,20 @@ impl CapabilityApi {
                 }
             })
             .await
+    }
+
+    fn require_bundle_device_session(&self, session_id: Option<&str>) -> Result<()> {
+        if let Some(id) = session_id
+            && !self
+                .plugin_host
+                .bundles
+                .sessions
+                .with(id, |session| session.revoked().is_none())
+                .unwrap_or(false)
+        {
+            return Err(unavailable());
+        }
+        Ok(())
     }
 
     /// The page input an `into` names: of a page of the same plugin, of a

@@ -21,13 +21,17 @@ fn bundle_json() -> BundleManifest {
 }
 
 fn archive(filler: usize) -> Vec<u8> {
+    archive_with(filler, &bundle_json())
+}
+
+fn archive_with(filler: usize, manifest: &BundleManifest) -> Vec<u8> {
     let mut files = BTreeMap::new();
     files.insert(
         "index.html".to_owned(),
         b"<!doctype html><script src=\"app.js\"></script>".to_vec(),
     );
     files.insert("app.js".to_owned(), vec![b'x'; filler]);
-    write_archive(&bundle_json(), &files).unwrap()
+    write_archive(manifest, &files).unwrap()
 }
 
 /// The catalog entry of `bytes`: the tenant approved query, command and
@@ -365,6 +369,94 @@ async fn a_host_capability_needs_the_hosts_gesture_and_a_transient_operation_nee
     );
     assert_eq!(refused["error"]["code"], "permission_denied");
     assert!(f.calls_to("example.poll.pay").is_empty());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn qr_scanning_uses_the_grant_gesture_and_host_and_discards_late_results() {
+    use crate::kernel::event::{EventBus, PluginEvent, SdkEvent};
+    use flare_plugin_protocol::ui::NativeCapability;
+    let mut manifest = bundle_json();
+    manifest.capabilities.insert(NativeCapability::ScanCode);
+    let bytes = archive_with(16, &manifest);
+    let served = entry(&bytes);
+    let (mut f, root) = fixture_with(&bytes, served.clone()).await;
+    let mut declared = catalog(Some(&served), "0.2.0");
+    declared["plugins"][0]["extensions"]["nativeCapabilities"] = json!(["scanCode"]);
+    *f.catalog.lock().unwrap() = declared;
+    let profile = super::host_profile::parse_profile(
+        json!({"platform": "web", "nativeAllowlist": ["scanCode"],
+               "bundleRuntime": {"bridge": 1, "engine": "browser", "engineMajor": 120}}),
+        &super::host_profile::AppIdentity::default(),
+    )
+    .unwrap();
+    f.api.plugin_host.set(profile);
+    let bus = EventBus::new();
+    let mut events = bus.subscribe();
+    let messages =
+        Arc::new(crate::infrastructure::persistence::memory_im::MemoryMessageStore::new());
+    f.api = f.api.clone().with_message_state(messages, bus);
+    let session = greeted(&f).await;
+    let scan = |id| request(id, "host.capability", json!({"name": "scanCode"}));
+    let denied = answer(&bridge(&f, &session, scan("without-gesture"), false).await);
+    assert_eq!(denied["error"]["code"], "gesture_required");
+
+    for (id, raw, closing) in [
+        ("plain", "VISITOR-42", false),
+        ("link", "https://scan.example.com/l/secret", false),
+        ("late", "VISITOR-43", true),
+    ] {
+        let api = f.api.clone();
+        let session_id = session.clone();
+        let envelope = scan(id).to_string();
+        let running = tokio::spawn(async move {
+            api.plugin_bundle_bridge(json!({
+                "sessionId": session_id, "envelope": envelope, "userGesture": true,
+            }))
+            .await
+            .unwrap()
+        });
+        for (expected, result) in [
+            ("consent", json!({"decision": "once"})),
+            ("scanCode", json!({"text": raw})),
+        ] {
+            let (request_id, method) =
+                tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                    loop {
+                        if let Ok(SdkEvent::Plugin(PluginEvent::CapabilityRequest {
+                            request_id,
+                            method,
+                            ..
+                        })) = events.recv().await
+                        {
+                            break (request_id, method);
+                        }
+                    }
+                })
+                .await
+                .expect("the engine asks the host");
+            assert_eq!(method, expected);
+            if closing && expected == "scanCode" {
+                f.api
+                    .plugin_bundle_close(json!({"sessionId": session}))
+                    .await
+                    .unwrap();
+            }
+            assert!(
+                f.api
+                    .plugin_host
+                    .capability_host
+                    .requests
+                    .complete(request_id, result)
+            );
+        }
+        let response = answer(&running.await.unwrap());
+        match id {
+            "plain" => assert_eq!(response["result"], json!({"format": "qr", "text": raw})),
+            "link" => assert_eq!(response["error"]["code"], "unavailable"),
+            _ => assert_eq!(response["error"]["code"], "revoked"),
+        }
+    }
     let _ = std::fs::remove_dir_all(root);
 }
 

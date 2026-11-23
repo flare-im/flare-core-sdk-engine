@@ -323,7 +323,7 @@ pub enum PluginEvent {
     /// `crate::client::api::native::EventCapabilityHost`.
     CapabilityRequest {
         request_id: u64,
-        /// `consent`, `captureDocument`, `pickFile`, `confirmPayment` or `locateOnce`.
+        /// `consent`, `captureDocument`, `pickFile`, `scanCode`, `confirmPayment` or `locateOnce`.
         method: String,
         request: serde_json::Value,
     },

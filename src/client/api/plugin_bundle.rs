@@ -488,14 +488,22 @@ impl CapabilityApi {
             Admission::Answer(envelope) => return Ok(answered(&envelope)),
             Admission::Run { id, request } => (id, request),
         };
-        let Some(context) = sessions.with(&call.session_id, |s| s.context.clone()) else {
+        let Some((context, hello)) =
+            sessions.with(&call.session_id, |s| (s.context.clone(), s.hello().clone()))
+        else {
             return Ok(answered(&bundle::broker::failure(
                 Some(id),
                 BridgeErrorCode::Revoked,
             )));
         };
         let outcome = self
-            .run_bridge_request(&context, request, call.user_gesture)
+            .run_bridge_request(
+                &context,
+                &call.session_id,
+                &hello,
+                request,
+                call.user_gesture,
+            )
             .await;
         match outcome {
             Outcome::Host { method, params } => {
@@ -512,7 +520,18 @@ impl CapabilityApi {
                 Ok(json!({"host": {"id": id, "method": method.name(), "params": params}}))
             }
             Outcome::Done(result) => {
-                sessions.with(&call.session_id, |s| s.finish(&id));
+                let live = sessions
+                    .with(&call.session_id, |s| {
+                        s.finish(&id);
+                        s.revoked().is_none()
+                    })
+                    .unwrap_or(false);
+                if !live {
+                    return Ok(answered(&bundle::broker::failure(
+                        Some(id),
+                        BridgeErrorCode::Revoked,
+                    )));
+                }
                 let envelope = match result {
                     Ok(value) => BridgeEnvelope::success(id, value),
                     Err(error) => BridgeEnvelope::failure(Some(id), error),
@@ -528,6 +547,8 @@ impl CapabilityApi {
     fn run_bridge_request<'a>(
         &'a self,
         context: &'a SessionContext,
+        session_id: &'a str,
+        hello: &'a HelloResult,
         request: BridgeRequest,
         user_gesture: bool,
     ) -> Running<'a> {
@@ -589,8 +610,14 @@ impl CapabilityApi {
                 }
                 Box::pin(async move {
                     Outcome::Done(
-                        self.bundle_capability(context, params.name, params.params)
-                            .await,
+                        self.bundle_capability(
+                            context,
+                            session_id,
+                            hello,
+                            params.name,
+                            params.params,
+                        )
+                        .await,
                     )
                 })
             }
@@ -701,6 +728,8 @@ impl CapabilityApi {
     async fn bundle_capability(
         &self,
         context: &SessionContext,
+        session_id: &str,
+        hello: &HelloResult,
         name: NativeCapability,
         params: Option<Value>,
     ) -> std::result::Result<Value, BridgeError> {
@@ -726,13 +755,35 @@ impl CapabilityApi {
                     request["params"] = params;
                 }
             }
+            NativeCapability::Camera
+            | NativeCapability::SelectImage
+            | NativeCapability::SelectFile => {
+                if hello.presentation != BridgePresentation::Page {
+                    return Err(BridgeError::new(BridgeErrorCode::Unavailable));
+                }
+                let mut params = Fields::new(params.unwrap_or(Value::Null), &["into"])
+                    .ok_or_else(|| BridgeError::new(BridgeErrorCode::InvalidParams))?;
+                let into = params
+                    .string("into")
+                    .filter(|id| valid_id(id))
+                    .ok_or_else(|| BridgeError::new(BridgeErrorCode::InvalidParams))?;
+                request["page"] =
+                    json!({"pluginId": context.plugin_id, "page": context.contribution_id});
+                request["into"] = json!(into);
+                request["locale"] = json!(hello.locale);
+                request["arguments"] = json!(hello.arguments);
+            }
+            NativeCapability::ScanCode if params.is_none() => {}
+            NativeCapability::ScanCode => {
+                return Err(BridgeError::new(BridgeErrorCode::InvalidParams));
+            }
             _ => return Err(BridgeError::new(BridgeErrorCode::Unavailable)),
         }
         if let Some(conversation) = &context.conversation_id {
             request["conversationId"] = Value::String(conversation.clone());
         }
         let mut outcome = self
-            .bundle_capability_invoke(request)
+            .bundle_capability_invoke(request, Some(session_id))
             .await
             .map_err(|e| bundle::broker::bridge_error_of(&e))?;
         match outcome.get("kind").and_then(Value::as_str) {
@@ -747,6 +798,8 @@ impl CapabilityApi {
                 Ok(json!({ "data": response["data"] }))
             }
             Some("location") => Ok(json!({ "location": outcome["location"] })),
+            Some("input") => Ok(outcome["value"].take()),
+            Some("scan") => Ok(json!({"text": outcome["text"], "format": outcome["format"]})),
             Some("denied" | "cancelled") => Err(BridgeError::new(BridgeErrorCode::Cancelled)),
             _ => Err(BridgeError::new(BridgeErrorCode::Unavailable)),
         }

@@ -619,9 +619,12 @@ async fn a_bundle_gets_a_location_without_a_page_input_and_its_payment_result() 
     );
     let fix = f
         .api
-        .bundle_capability_invoke(json!({"pluginId": "example.poll",
+        .bundle_capability_invoke(
+            json!({"pluginId": "example.poll",
             "capability": "locationOnce", "params": {"precision": "coarse"},
-            "platform": "web", "userGesture": true}))
+            "platform": "web", "userGesture": true}),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -651,7 +654,7 @@ async fn a_bundle_gets_a_location_without_a_page_input_and_its_payment_result() 
     f.answer("example.poll.pay_confirm", vec![json!({"currency": "USD"})]);
     let paid = f
         .api
-        .bundle_capability_invoke(payment_request("order-1"))
+        .bundle_capability_invoke(payment_request("order-1"), None)
         .await
         .unwrap();
     assert_eq!(paid["kind"], "operation", "{paid}");
