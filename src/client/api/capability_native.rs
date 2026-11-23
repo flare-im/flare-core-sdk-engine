@@ -921,13 +921,16 @@ impl CapabilityApi {
                     ),
                     None => (None, None),
                 };
-                if bundle && let Some(target) = upload.as_mut() {
+                if let Some(target) = upload.as_mut() {
                     match request.capability {
-                        NativeCapability::Camera => {
+                        NativeCapability::Camera if bundle => {
                             target.accept.retain(|mime| mime == "image/jpeg")
                         }
-                        NativeCapability::SelectImage => {
+                        NativeCapability::SelectImage if bundle => {
                             target.accept.retain(|mime| mime.starts_with("image/"))
+                        }
+                        NativeCapability::Microphone => {
+                            target.accept.retain(|mime| mime.starts_with("audio/"))
                         }
                         _ => {}
                     }
@@ -1025,6 +1028,7 @@ impl CapabilityApi {
                                 (
                                     NativeCapability::SelectImage
                                     | NativeCapability::Camera
+                                    | NativeCapability::Microphone
                                     | NativeCapability::SelectFile,
                                     _,
                                 ) => {
@@ -1049,7 +1053,7 @@ impl CapabilityApi {
                                 }
                             }
                         }
-                        // clipboardWrite, microphone, a pick without into:
+                        // clipboardWrite or a pick without into:
                         // the host goes on with it.
                         None => Ok(json!({"kind": "host", "capability": capability})),
                     },

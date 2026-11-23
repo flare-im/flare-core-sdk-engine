@@ -756,6 +756,7 @@ impl CapabilityApi {
                 }
             }
             NativeCapability::Camera
+            | NativeCapability::Microphone
             | NativeCapability::SelectImage
             | NativeCapability::SelectFile => {
                 if hello.presentation != BridgePresentation::Page {
