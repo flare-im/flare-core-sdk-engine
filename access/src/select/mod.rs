@@ -10,7 +10,8 @@ pub mod score;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 pub use failback::{FailbackDecision, FailbackHold, FailbackInput, evaluate_failback};
-pub use protocol::{ProtocolPlan, plan_protocols};
+use protocol::plan_protocols_for_mode;
+pub use protocol::{ProtocolMode, ProtocolPlan, plan_protocols};
 pub use score::{ApInput, FilterReason, PinOutcome, RankParams, Ranking, TagGroup, pick, rank};
 
 use crate::directory::{AccessPointEntry, DirectorySnapshot, EndpointDirectory};
@@ -225,6 +226,14 @@ impl Selector {
 
     /// 取候选。热路径：一次目录加载、一次健康簿加锁、一次随机抽样，分配量与接入点数成正比。
     pub fn select(&self, request: &SelectRequest<'_>) -> Selection {
+        self.select_with_protocol_mode(request, ProtocolMode::Adaptive)
+    }
+
+    pub fn select_with_protocol_mode(
+        &self,
+        request: &SelectRequest<'_>,
+        protocol_mode: ProtocolMode,
+    ) -> Selection {
         let snapshot = self.directory.snapshot();
         let pinned = self.pinned(request.now_ms);
         let unit = self
@@ -237,6 +246,7 @@ impl Selector {
             request,
             pinned.as_ref().map(|pin| &*pin.ap_id),
             unit,
+            protocol_mode,
         )
     }
 
@@ -246,6 +256,7 @@ impl Selector {
         request: &SelectRequest<'_>,
         pinned: Option<&str>,
         unit: f64,
+        protocol_mode: ProtocolMode,
     ) -> Selection {
         let entries = snapshot.access_points();
         let views = self.health.views(
@@ -262,12 +273,13 @@ impl Selector {
             .iter()
             .map(|entry| {
                 (request.service == ServiceClass::Im).then(|| {
-                    plan_protocols(
+                    plan_protocols_for_mode(
                         entry,
                         policy,
                         self.health.protocol_winner(&entry.id, request.net),
                         udp_blocked,
                         self.options.quic_supported,
+                        protocol_mode,
                     )
                 })
             })
@@ -347,6 +359,14 @@ impl Selector {
 
     /// 恢复切回判定：找出不带粘性时的最优 IM 接入点，与当前接入点比较。
     pub fn evaluate_failback(&self, request: &FailbackRequest<'_>) -> FailbackVerdict {
+        self.evaluate_failback_with_protocol_mode(request, ProtocolMode::Adaptive)
+    }
+
+    pub fn evaluate_failback_with_protocol_mode(
+        &self,
+        request: &FailbackRequest<'_>,
+        protocol_mode: ProtocolMode,
+    ) -> FailbackVerdict {
         let snapshot = self.directory.snapshot();
         let entries = snapshot.access_points();
         let views = self.health.views(
@@ -367,12 +387,13 @@ impl Selector {
                 priority: entry.priority,
                 status: entry.status,
                 tags: &entry.tags,
-                offers_service: !plan_protocols(
+                offers_service: !plan_protocols_for_mode(
                     entry,
                     snapshot.policy(),
                     None,
                     udp_blocked,
                     self.options.quic_supported,
+                    protocol_mode,
                 )
                 .is_empty(),
                 excluded: false,
@@ -529,6 +550,52 @@ mod tests {
             .find(|c| &*c.ap_id == "ap-cne1-bgp")
             .unwrap();
         assert_eq!(bgp.protocols.as_ref().unwrap().order, vec![Protocol::Ws]);
+    }
+
+    #[test]
+    fn explicit_protocol_modes_override_learned_winner_and_filter_endpoints() {
+        let (selector, health) = selector(vec![0.0; 4]);
+        health.record(
+            "ap-cne1-ct",
+            NetPrint::UNKNOWN,
+            Observation::handshake_ok(Protocol::Ws, 90),
+            NOW_MS,
+        );
+        health.note_quic_silence(NetPrint::UNKNOWN, NOW_MS);
+        health.note_quic_silence(NetPrint::UNKNOWN, NOW_MS);
+        let im = request(ServiceClass::Im, &[], None, &[], NOW_MS + 1);
+
+        let quic = selector.select_with_protocol_mode(&im, ProtocolMode::Only(Protocol::Quic));
+        assert_eq!(quic.candidates.len(), 2);
+        assert!(
+            quic.candidates.iter().all(|candidate| {
+                candidate.protocols.as_ref().unwrap().order == [Protocol::Quic]
+            })
+        );
+        let ws = selector.select_with_protocol_mode(&im, ProtocolMode::Only(Protocol::Ws));
+        assert_eq!(ws.candidates.len(), 3);
+        assert!(
+            ws.candidates
+                .iter()
+                .all(|candidate| { candidate.protocols.as_ref().unwrap().order == [Protocol::Ws] })
+        );
+        let race = selector.select_with_protocol_mode(&im, ProtocolMode::Race);
+        let ct = race
+            .candidates
+            .iter()
+            .find(|c| &*c.ap_id == "ap-cne1-ct")
+            .unwrap();
+        let plan = ct.protocols.as_ref().unwrap();
+        assert_eq!(plan.order, [Protocol::Quic, Protocol::Ws]);
+        assert!(!plan.from_winner && !plan.udp_blocked);
+        let http = request(ServiceClass::CoreApi, &[], None, &[], NOW_MS + 1);
+        let http = selector.select_with_protocol_mode(&http, ProtocolMode::Only(Protocol::Quic));
+        assert_eq!(http.candidates.len(), 3);
+        assert!(
+            http.candidates
+                .iter()
+                .all(|candidate| candidate.protocols.is_none())
+        );
     }
 
     #[test]

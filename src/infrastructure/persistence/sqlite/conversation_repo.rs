@@ -12,8 +12,7 @@ use crate::content::message_elem::{
 };
 use crate::domain::{
     ConversationReader, ConversationWriter, MemberKey, ParticipantDisplaySnapshot, ReadPosition,
-    business_name, local_cleared_through_seq, preserve_local_remark,
-    preserve_local_single_chat_channel, set_local_cleared_through_seq,
+    business_name, local_cleared_through_seq, set_local_cleared_through_seq,
 };
 use crate::model::conversation::{ConversationLocalState, ConversationType};
 use crate::model::search::escaped_like_contains;
@@ -21,6 +20,22 @@ use crate::model::{Conversation, ConversationListQuery, decode_content_bytes};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
 use super::identity_repair;
+
+async fn retention_hides_preview_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    conversation_id: &str,
+    message_id: Option<&str>,
+) -> Result<bool> {
+    let state = sqlx::query_scalar::<_, Vec<u8>>("SELECT retention_state FROM messages WHERE conversation_id = ? AND ((server_id = ? AND server_id != '') OR (server_id = '' AND client_msg_id = ?)) LIMIT 1")
+        .bind(conversation_id).bind(message_id).bind(message_id).fetch_optional(&mut **tx).await.map_err(sqlx_err)?;
+    let Some(bytes) = state.filter(|bytes| !bytes.is_empty()) else {
+        return Ok(false);
+    };
+    let state =
+        <flare_proto::common::MessageRetentionState as prost::Message>::decode(bytes.as_slice())
+            .map_err(|error| FlareError::localized(ErrorCode::DatabaseError, error.to_string()))?;
+    Ok(crate::domain::retention_hides_content(&state))
+}
 
 /// 与 schema 中 conversations 表列顺序一致的 i32 枚举（由 SDK 会话类型 policy 统一维护）。
 fn conversation_type_to_i32(t: &ConversationType) -> i32 {
@@ -162,8 +177,19 @@ impl SqliteConversationRepo {
         self.delete_invalid_conversation_rows().await?;
         self.repair_missing_message_previews_from_content().await?;
         identity_repair::repair_single_chat_message_aliases(&self.pool).await?;
+        // Seek to the next distinct conversation in the index. Most conversations
+        // already have a projection and need no visit to their message bodies.
         sqlx::query(
-            r#"WITH latest_messages AS (
+            r#"WITH RECURSIVE conversation_ids(conversation_id) AS (
+                   SELECT MIN(conversation_id) FROM messages
+                   UNION ALL
+                   SELECT (
+                       SELECT MIN(conversation_id) FROM messages
+                       WHERE conversation_id > ids.conversation_id
+                   )
+                   FROM conversation_ids ids
+                   WHERE ids.conversation_id IS NOT NULL
+               ), latest_messages AS (
                    SELECT
                        m.conversation_id,
                        CASE
@@ -186,18 +212,11 @@ impl SqliteConversationRepo {
                            WHEN m.conversation_seq > 0 THEN COALESCE(NULLIF(m.created_at, 0), NULLIF(m.client_created_at, 0), NULLIF(m.sort_ts, 0), 0)
                            ELSE max(max(COALESCE(m.sort_ts, 0), COALESCE(m.created_at, 0)), COALESCE(m.client_created_at, 0))
                        END AS effective_at
-                   FROM messages m
-                   WHERE TRIM(COALESCE(m.conversation_id, '')) != ''
-                     AND COALESCE(m.is_recalled, 0) = 0
-                     AND NOT EXISTS (
-                         SELECT 1
-                         FROM conversations c
-                         WHERE c.conversation_id = m.conversation_id
-                     )
-                     AND m.rowid = (
+                   FROM conversation_ids ids
+                   JOIN messages m ON m.rowid = (
                          SELECT s.rowid
                          FROM messages s
-                         WHERE s.conversation_id = m.conversation_id
+                         WHERE s.conversation_id = ids.conversation_id
                            AND COALESCE(s.is_recalled, 0) = 0
                          ORDER BY
                              CASE
@@ -222,6 +241,11 @@ impl SqliteConversationRepo {
                              END DESC,
                              s.rowid DESC
                          LIMIT 1
+                   )
+                   WHERE TRIM(COALESCE(ids.conversation_id, '')) != ''
+                     AND NOT EXISTS (
+                         SELECT 1 FROM conversations c
+                         WHERE c.conversation_id = ids.conversation_id
                      )
                )
                INSERT OR IGNORE INTO conversations (
@@ -316,6 +340,13 @@ impl SqliteConversationRepo {
     }
 
     fn select_with_latest_visible_message(where_clause: &str) -> String {
+        // The common confirmed-message path can seek by conversation and sequence.
+        // Preserve the timestamp rule for unsequenced rows in a separate branch.
+        let preview_sql = |alias: &str| {
+            format!(
+                "COALESCE(NULLIF(TRIM({alias}.text), ''), NULLIF(TRIM(CASE WHEN json_valid(COALESCE({alias}.attributes, '')) THEN json_extract({alias}.attributes, '$.contentText') END), ''))"
+            )
+        };
         format!(
             r#"SELECT c.conversation_id, c.conversation_type, c.business_type, c.channel_id,
                       c.members_count, c.display_name, c.avatar_url, c.remark, c.description,
@@ -355,43 +386,78 @@ impl SqliteConversationRepo {
                               ELSE max(max(COALESCE(sort_ts, 0), COALESCE(created_at, 0)), COALESCE(client_created_at, 0))
                           END AS effective_at
                    FROM messages
-               ) lm ON lm.rowid = (
-                   SELECT m.rowid
-                   FROM messages m
-                   WHERE m.conversation_id = c.conversation_id
-                     AND (m.conversation_seq = 0 OR m.conversation_seq > COALESCE(c.visible_after_seq, 0))
-                     AND COALESCE(
-                         NULLIF(TRIM(m.text), ''),
-                         NULLIF(TRIM(CASE WHEN json_valid(COALESCE(m.attributes, '')) THEN json_extract(m.attributes, '$.contentText') ELSE NULL END), '')
-                     ) IS NOT NULL
-                   ORDER BY
-                            CASE
-                                WHEN m.conversation_seq = 0
-                                 AND max(max(COALESCE(m.sort_ts, 0), COALESCE(m.created_at, 0)), COALESCE(m.client_created_at, 0)) >
-                                     COALESCE((
-                                         SELECT max(COALESCE(NULLIF(s.created_at, 0), NULLIF(s.client_created_at, 0), NULLIF(s.sort_ts, 0), 0))
-                                         FROM messages s
-                                         WHERE s.conversation_id = m.conversation_id
-                                           AND s.conversation_seq > 0
-                                           AND COALESCE(
-                                               NULLIF(TRIM(s.text), ''),
-                                               NULLIF(TRIM(CASE WHEN json_valid(COALESCE(s.attributes, '')) THEN json_extract(s.attributes, '$.contentText') ELSE NULL END), '')
-                                           ) IS NOT NULL
-                                     ), 0)
-                                THEN 3
-                                WHEN m.conversation_seq > 0
-                                THEN 2
-                                ELSE 0
-                            END DESC,
-                            CASE WHEN m.conversation_seq > 0 THEN m.conversation_seq ELSE 0 END DESC,
-                            CASE
-                                WHEN m.conversation_seq > 0 THEN COALESCE(NULLIF(m.created_at, 0), NULLIF(m.client_created_at, 0), NULLIF(m.sort_ts, 0), 0)
-                                ELSE max(max(COALESCE(m.sort_ts, 0), COALESCE(m.created_at, 0)), COALESCE(m.client_created_at, 0))
-                            END DESC
-                   LIMIT 1
+               ) lm ON lm.rowid = COALESCE(
+                   (
+                       SELECT pending.rowid
+                       FROM messages pending
+                       WHERE pending.conversation_id = c.conversation_id
+                         AND pending.conversation_seq = 0
+                         AND {pending_preview} IS NOT NULL
+                         AND {pending_time} > COALESCE((
+                             SELECT MAX({stored_time})
+                             FROM messages stored
+                             WHERE stored.conversation_id = c.conversation_id
+                               AND stored.conversation_seq > 0
+                               AND {stored_preview} IS NOT NULL
+                         ), 0)
+                       ORDER BY {pending_time} DESC LIMIT 1
+                   ),
+                   (
+                       SELECT stored.rowid
+                       FROM messages stored
+                       WHERE stored.conversation_id = c.conversation_id
+                         AND stored.conversation_seq > MAX(COALESCE(c.visible_after_seq, 0), 0)
+                         AND {stored_preview} IS NOT NULL
+                       ORDER BY stored.conversation_seq DESC, {stored_time} DESC LIMIT 1
+                   ),
+                   (
+                       SELECT pending.rowid
+                       FROM messages pending
+                       WHERE pending.conversation_id = c.conversation_id
+                         AND pending.conversation_seq = 0
+                         AND {pending_preview} IS NOT NULL
+                       ORDER BY {pending_time} DESC LIMIT 1
+                   )
                )
-               {where_clause}"#
+               {where_clause}"#,
+            pending_preview = preview_sql("pending"),
+            pending_time = "max(max(COALESCE(pending.sort_ts, 0), COALESCE(pending.created_at, 0)), COALESCE(pending.client_created_at, 0))",
+            stored_preview = preview_sql("stored"),
+            stored_time = "COALESCE(NULLIF(stored.created_at, 0), NULLIF(stored.client_created_at, 0), NULLIF(stored.sort_ts, 0), 0)",
         )
+    }
+
+    async fn select_by_ids(
+        &self,
+        conversation_ids: &[String],
+        include_latest_message: bool,
+    ) -> Result<Vec<Conversation>> {
+        let ids: Vec<_> = conversation_ids
+            .iter()
+            .map(String::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .collect();
+        if include_latest_message && !ids.is_empty() {
+            self.ensure_legacy_repair().await?;
+        }
+        let mut out = Vec::with_capacity(ids.len());
+        for ids in ids.chunks(super::SQLITE_IN_CHUNK) {
+            let placeholders = super::in_placeholders(ids.len());
+            let where_clause = format!("WHERE c.conversation_id IN ({placeholders})");
+            let sql = if include_latest_message {
+                Self::select_with_latest_visible_message(&where_clause)
+            } else {
+                format!("SELECT c.* FROM conversations c {where_clause}")
+            };
+            let mut query = sqlx::query(&sql);
+            for id in ids {
+                query = query.bind(*id);
+            }
+            for row in query.fetch_all(&self.pool).await.map_err(sqlx_err)? {
+                out.push(self.row_to_conversation(&row)?);
+            }
+        }
+        Ok(out)
     }
 
     fn row_to_conversation(&self, row: &sqlx::sqlite::SqliteRow) -> Result<Conversation> {
@@ -538,33 +604,11 @@ impl ConversationReader for SqliteConversationRepo {
 
     /// I7：单条 IN 查询批量点查（分块守 SQLite 绑定变量上限）。
     async fn get_many(&self, conversation_ids: &[String]) -> Result<Vec<Conversation>> {
-        let ids: Vec<&String> = conversation_ids
-            .iter()
-            .filter(|id| !id.trim().is_empty())
-            .collect();
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        self.ensure_legacy_repair().await?;
-        let mut out = Vec::with_capacity(ids.len());
-        for chunk in ids.chunks(super::SQLITE_IN_CHUNK) {
-            let placeholders = super::in_placeholders(chunk.len());
-            let sql = Self::select_with_latest_visible_message(&format!(
-                "WHERE c.conversation_id IN ({placeholders})"
-            ));
-            let mut query = sqlx::query(&sql);
-            for conversation_id in chunk {
-                query = query.bind(conversation_id.as_str());
-            }
-            let rows = query
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-            for row in rows {
-                out.push(self.row_to_conversation(&row)?);
-            }
-        }
-        Ok(out)
+        self.select_by_ids(conversation_ids, true).await
+    }
+
+    async fn get_stored_many(&self, conversation_ids: &[String]) -> Result<Vec<Conversation>> {
+        self.select_by_ids(conversation_ids, false).await
     }
 
     /// 列表：与 idx_conversations_sort 一致 — is_archived → is_pinned DESC → last_message_at DESC
@@ -701,6 +745,47 @@ impl ConversationReader for SqliteConversationRepo {
 
 #[async_trait]
 impl ConversationWriter for SqliteConversationRepo {
+    async fn commit_message_projection(
+        &self,
+        expected: &Conversation,
+        projected: &Conversation,
+    ) -> Result<bool> {
+        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
+        let sql = Self::select_with_latest_visible_message("WHERE c.conversation_id = ?");
+        let row = sqlx::query(&sql)
+            .bind(&expected.conversation_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(sqlx_err)?;
+        let Some(row) = row else { return Ok(false) };
+        let current = self.row_to_conversation(&row)?;
+        if !crate::domain::message_projection_matches(&current, expected) {
+            return Ok(false);
+        }
+        let ext = serde_json::to_string(&projected.ext)
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        let preview = if retention_hides_preview_tx(
+            &mut tx,
+            &projected.conversation_id,
+            projected.last_message_id.as_deref(),
+        )
+        .await?
+        {
+            None
+        } else {
+            projected.last_message_preview.as_deref()
+        };
+        sqlx::query("UPDATE conversations SET unread_count=?, last_read_seq=?, max_seq=?,             mention_count=?, mention_me=?, last_message_id=?, last_sender_id=?, last_message_at=?,             last_message_preview=?, ext=? WHERE conversation_id=?")
+            .bind(projected.unread_count as i64).bind(projected.last_read_seq as i64)
+            .bind(projected.max_seq as i64).bind(projected.mention_count as i64).bind(projected.mention_me)
+            .bind(&projected.last_message_id).bind(&projected.last_sender_id)
+            .bind(projected.last_message_at.map(|v| v as i64)).bind(preview)
+            .bind(ext).bind(&projected.conversation_id)
+            .execute(&mut *tx).await.map_err(sqlx_err)?;
+        tx.commit().await.map_err(sqlx_err)?;
+        Ok(true)
+    }
+
     async fn save_batch(&self, conversations: &[Conversation]) -> Result<()> {
         for conversation in conversations {
             if conversation.conversation_id.trim().is_empty() {
@@ -718,10 +803,7 @@ impl ConversationWriter for SqliteConversationRepo {
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         for c in conversations {
             let existing = sqlx::query(
-                r#"SELECT last_read_seq, max_seq, unread_count,
-                          last_message_id, last_sender_id, last_message_at, last_message_preview,
-                          is_pinned, is_muted, is_mention_only, is_archived, visible_after_seq, ext, draft,
-                          remark, channel_id, conversation_type, member_preview
+                r#"SELECT *
                    FROM conversations
                    WHERE conversation_id = ?"#,
             )
@@ -736,176 +818,21 @@ impl ConversationWriter for SqliteConversationRepo {
                 .and_then(|row| row.try_get::<Option<String>, _>("member_preview").ok())
                 .flatten();
 
-            let mut merged = c.clone();
-            if let Some(row) = existing {
-                let prev_max_seq = row.try_get::<i64, _>("max_seq").unwrap_or(0).max(0) as u64;
-                let prev_unread = row.try_get::<i64, _>("unread_count").unwrap_or(0).max(0) as u32;
-                let raw_prev_last_read =
-                    row.try_get::<i64, _>("last_read_seq").unwrap_or(0).max(0) as u64;
-                let local_read =
-                    ReadPosition::from_parts(prev_max_seq, raw_prev_last_read, prev_unread);
-                let merged_read = ReadPosition::merge_with_incoming_summary(
-                    local_read,
-                    ReadPosition::from_conversation(c),
-                );
-                merged.last_read_seq = merged_read.last_read_seq;
-                merged.unread_count = merged_read.unread_count;
-                merged.max_seq = merged.max_seq.max(merged_read.max_seq);
-                let prev_last_message_id = row
-                    .try_get::<Option<String>, _>("last_message_id")
-                    .unwrap_or(None);
-                let prev_last_sender_id = row
-                    .try_get::<Option<String>, _>("last_sender_id")
-                    .unwrap_or(None);
-                let prev_last_message_at = row
-                    .try_get::<Option<i64>, _>("last_message_at")
-                    .unwrap_or(None)
-                    .map(|t| t.max(0) as u64);
-                let prev_last_message_preview = row
-                    .try_get::<Option<String>, _>("last_message_preview")
-                    .unwrap_or(None);
-                let prev_is_pinned = row.try_get::<i32, _>("is_pinned").unwrap_or(0) != 0;
-                let prev_is_muted = row.try_get::<i32, _>("is_muted").unwrap_or(0) != 0;
-                let prev_mention_only = row
-                    .try_get::<Option<i32>, _>("is_mention_only")
-                    .map_err(sqlx_err)?
-                    .map(|value| value != 0);
-                merged.is_mention_only = merged.is_mention_only.or(prev_mention_only);
-                let prev_is_archived = row.try_get::<i32, _>("is_archived").unwrap_or(0) != 0;
-                let prev_draft = row.try_get::<Option<String>, _>("draft").unwrap_or(None);
-                let prev_ext_json = row.try_get::<Option<String>, _>("ext").unwrap_or(None);
-                let prev_ext: std::collections::HashMap<String, String> = prev_ext_json
-                    .as_deref()
-                    .and_then(|raw| serde_json::from_str(raw).ok())
-                    .unwrap_or_default();
-                let prev_clear_floor = local_cleared_through_seq(&prev_ext);
-                let prev_settings_version = prev_ext
-                    .get(crate::model::EXT_USER_SETTINGS_VERSION)
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(0);
-                let incoming_settings_version = merged
-                    .ext
-                    .get(crate::model::EXT_USER_SETTINGS_VERSION)
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(0);
-                let prev_dirty = prev_ext
-                    .get(crate::model::EXT_SETTINGS_DIRTY)
-                    .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+            let local = existing
+                .as_ref()
+                .map(|row| self.row_to_conversation(row))
+                .transpose()?;
+            let mut merged = crate::domain::merge_incoming_conversation_summary(local.as_ref(), c);
 
-                if prev_dirty && incoming_settings_version <= prev_settings_version {
-                    merged.is_pinned = prev_is_pinned;
-                    merged.is_muted = prev_is_muted;
-                    merged.is_mention_only = prev_mention_only;
-                    merged.is_archived = prev_is_archived;
-                    merged.draft = prev_draft;
-                    merged.ext = prev_ext;
-                } else if incoming_settings_version >= prev_settings_version {
-                    for (k, v) in prev_ext {
-                        merged.ext.entry(k).or_insert(v);
-                    }
-                    merged.ext.insert(
-                        crate::model::EXT_SETTINGS_DIRTY.to_string(),
-                        "0".to_string(),
-                    );
-                } else {
-                    merged.is_pinned = prev_is_pinned;
-                    merged.is_muted = prev_is_muted;
-                    merged.is_mention_only = prev_mention_only;
-                    merged.is_archived = prev_is_archived;
-                    merged.draft = prev_draft;
-                    merged.ext = prev_ext;
-                }
-
-                let confirmed_floor = local_cleared_through_seq(&c.ext).max(prev_clear_floor);
-                set_local_cleared_through_seq(&mut merged.ext, confirmed_floor);
-
-                let prev_has_last_message = prev_last_message_id
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|v| !v.is_empty())
-                    || prev_last_message_preview
-                        .as_deref()
-                        .map(str::trim)
-                        .is_some_and(|v| !v.is_empty())
-                    || prev_last_message_at.unwrap_or_default() > 0;
-                let incoming_has_last_message = c
-                    .last_message_id
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|v| !v.is_empty())
-                    || c.last_message_preview
-                        .as_deref()
-                        .map(str::trim)
-                        .is_some_and(|v| !v.is_empty())
-                    || c.last_message_at.unwrap_or_default() > 0;
-                let incoming_preview_is_empty = c
-                    .last_message_preview
-                    .as_deref()
-                    .map(str::trim)
-                    .is_none_or(str::is_empty);
-                // 会话摘要只是服务端投影；本地消息表同步出来的最新消息更权威。
-                // 避免服务端摘要滞后时把会话列表预览回滚到旧消息或空消息。
-                if prev_has_last_message
-                    && (c.max_seq <= prev_max_seq
-                        || !incoming_has_last_message
-                        || incoming_preview_is_empty)
-                {
-                    merged.last_message_id = prev_last_message_id;
-                    merged.last_sender_id = prev_last_sender_id;
-                    merged.last_message_at = prev_last_message_at;
-                    merged.last_message_preview = prev_last_message_preview;
-                }
-
-                let prev_remark = row.try_get::<Option<String>, _>("remark").unwrap_or(None);
-                merged.remark =
-                    preserve_local_remark(merged.remark.as_deref(), prev_remark.as_deref());
-
-                let prev_channel_id = row
-                    .try_get::<Option<String>, _>("channel_id")
-                    .unwrap_or(None);
-                let prev_conv_type = row.try_get::<i32, _>("conversation_type").unwrap_or(0);
-                merged.channel_id = preserve_local_single_chat_channel(
-                    i32_to_conversation_type(prev_conv_type),
-                    &merged.channel_id,
-                    prev_channel_id.as_deref().unwrap_or_default(),
-                );
-            } else {
-                let merged_read = ReadPosition::merge_with_incoming_summary(
-                    ReadPosition::default(),
-                    ReadPosition::from_conversation(c),
-                );
-                merged.last_read_seq = merged_read.last_read_seq;
-                merged.unread_count = merged_read.unread_count;
-                merged.max_seq = merged.max_seq.max(merged_read.max_seq);
+            if retention_hides_preview_tx(
+                &mut tx,
+                &merged.conversation_id,
+                merged.last_message_id.as_deref(),
+            )
+            .await?
+            {
+                merged.last_message_preview = None;
             }
-
-            // Server-visible history boundary is authoritative from the incoming summary.
-            // Local clear is preserved by its explicit local_cleared_through_seq marker.
-            let local_cleared_floor = crate::domain::sync_visibility_floor(&merged);
-            merged.visible_after_seq = local_cleared_floor;
-            if local_cleared_floor > 0 {
-                merged.last_read_seq = merged.last_read_seq.max(local_cleared_floor);
-                merged.max_seq = merged.max_seq.max(local_cleared_floor);
-                if c.max_seq <= local_cleared_floor {
-                    merged.last_message_id = None;
-                    merged.last_sender_id = None;
-                    merged.last_message_at = None;
-                    merged.last_message_preview = None;
-                    merged.last_message = None;
-                    merged.unread_count = 0;
-                }
-            }
-            // unread 上界：最多为“最大 seq - 已读 seq”
-            merged.unread_count = merged
-                .unread_count
-                .min(ReadPosition::from_conversation(&merged).unread_upper_bound());
-
-            // 名字列只存业务名：等于自己 id（对端、群或会话 id）的值不是名字。
-            merged.display_name = business_name(
-                &merged.display_name,
-                &[&merged.channel_id, &merged.conversation_id],
-            );
-
             let ext_json = serde_json::to_string(&merged.ext).unwrap_or_default();
             // 成员预览：来源不带就沿用库里已有的，绝不清空。
             // 并非每条会话更新都携带 member_preview（未读变化、草稿、置顶等
@@ -1106,6 +1033,13 @@ impl ConversationWriter for SqliteConversationRepo {
         last_message_preview: Option<&str>,
         max_seq: u64,
     ) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
+        let preview =
+            if retention_hides_preview_tx(&mut tx, conversation_id, Some(last_message_id)).await? {
+                None
+            } else {
+                Some(last_message_preview.unwrap_or(""))
+            };
         sqlx::query(
             r#"UPDATE conversations SET
                last_message_id = ?, last_sender_id = ?, last_message_at = ?, last_message_preview = ?,
@@ -1119,14 +1053,15 @@ impl ConversationWriter for SqliteConversationRepo {
         .bind(last_message_id)
         .bind(last_sender_id)
         .bind(last_message_at as i64)
-        .bind(last_message_preview.unwrap_or(""))
+        .bind(preview)
         .bind(max_seq as i64)
         .bind(conversation_id)
         .bind(max_seq as i64)
         .bind(last_message_at as i64)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        tx.commit().await.map_err(sqlx_err)?;
         Ok(())
     }
 
@@ -2139,6 +2074,7 @@ mod tests {
     async fn read_model_uses_latest_visible_message_when_summary_preview_is_stale() {
         let repo = repo().await;
         let mut summary = conversation("conv-1", 12, "stale-summary");
+        summary.remark = Some("local title".to_string());
         summary.last_message_id = Some("msg-11".to_string());
         summary.last_sender_id = Some("u1".to_string());
         summary.last_message_at = Some(11_000);
@@ -2169,6 +2105,21 @@ mod tests {
         .await
         .unwrap();
 
+        let ids = ["conv-1".to_string(), "missing".to_string()];
+        let snapshots = repo.get_stored_many(&ids).await.unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].remark.as_deref(), Some("local title"));
+        assert_eq!(
+            snapshots[0].last_message_preview.as_deref(),
+            Some("stale-summary")
+        );
+
+        let hydrated = repo.get_many(&ids).await.unwrap();
+        assert_eq!(hydrated.len(), 1);
+        assert_eq!(
+            hydrated[0].last_message_preview.as_deref(),
+            Some("latest-visible")
+        );
         let loaded = repo.get("conv-1").await.unwrap().unwrap();
         assert_eq!(loaded.last_message_id.as_deref(), Some("msg-12"));
         assert_eq!(loaded.last_sender_id.as_deref(), Some("u2"));
@@ -2378,5 +2329,86 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(message_conversation_id, "cid-canonical");
+    }
+    #[tokio::test]
+    async fn sqlite_and_memory_share_summary_merge_under_reordered_updates() {
+        use crate::infrastructure::persistence::memory_im::MemoryConversationStore;
+        use crate::model::{EXT_SETTINGS_DIRTY, EXT_USER_SETTINGS_VERSION};
+        let sql = repo().await;
+        let memory = MemoryConversationStore::new();
+        let mut local = conversation("chat", 20, "latest");
+        local.last_read_seq = 12;
+        local.unread_count = 4;
+        local.mention_count = 2;
+        local.mention_me = true;
+        local.remark = Some("local remark".into());
+        local.is_pinned = true;
+        local.draft = Some("offline draft".into());
+        local.ext.insert(EXT_SETTINGS_DIRTY.into(), "1".into());
+        local
+            .ext
+            .insert(EXT_USER_SETTINGS_VERSION.into(), "5".into());
+        crate::domain::set_local_cleared_through_seq(&mut local.ext, 10);
+        let mut stale = conversation("chat", 15, "older");
+        stale.last_read_seq = 11;
+        let mut newer = conversation("chat", 24, "newer");
+        newer.last_read_seq = 18;
+        newer.unread_count = 3;
+        newer
+            .ext
+            .insert(EXT_USER_SETTINGS_VERSION.into(), "6".into());
+        for incoming in [local, stale.clone(), newer, stale] {
+            sql.save_one(&incoming).await.unwrap();
+            memory.save_one(&incoming).await.unwrap();
+            let a = sql.get("chat").await.unwrap().unwrap();
+            let b = memory.get("chat").await.unwrap().unwrap();
+            assert_eq!(
+                (
+                    a.max_seq,
+                    a.last_read_seq,
+                    a.unread_count,
+                    a.mention_count,
+                    a.mention_me
+                ),
+                (
+                    b.max_seq,
+                    b.last_read_seq,
+                    b.unread_count,
+                    b.mention_count,
+                    b.mention_me
+                )
+            );
+            assert_eq!(
+                (
+                    &a.ext,
+                    &a.remark,
+                    &a.draft,
+                    a.is_pinned,
+                    a.visible_after_seq,
+                    &a.last_message_id,
+                    &a.last_message_preview
+                ),
+                (
+                    &b.ext,
+                    &b.remark,
+                    &b.draft,
+                    b.is_pinned,
+                    b.visible_after_seq,
+                    &b.last_message_id,
+                    &b.last_message_preview
+                )
+            );
+        }
+        let final_row = sql.get("chat").await.unwrap().unwrap();
+        assert_eq!(
+            (
+                final_row.max_seq,
+                final_row.last_read_seq,
+                final_row.unread_count
+            ),
+            (24, 18, 3)
+        );
+        assert_eq!(final_row.last_message_id.as_deref(), Some("msg-24"));
+        assert_eq!(final_row.remark.as_deref(), Some("local remark"));
     }
 }

@@ -83,6 +83,86 @@ async fn session_active_sync_is_false_for_prepared_but_disconnected_user() {
 }
 
 #[tokio::test]
+async fn prepare_preserves_network_recovery_reported_during_session_replacement() {
+    use crate::client::LoginDbKind;
+    use crate::extension::{ExtensionLifecycle, ExtensionLifecycleContext};
+    use crate::shared::error::Result;
+    use tokio::sync::Notify;
+
+    #[derive(Default)]
+    struct PauseLogout {
+        entered: Notify,
+        resume: Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl ExtensionLifecycle for PauseLogout {
+        fn namespace(&self) -> &str {
+            "test.pause_logout"
+        }
+
+        async fn on_logout(&self, context: &ExtensionLifecycleContext) -> Result<()> {
+            if context.current_user_id() == Some("alice") {
+                self.entered.notify_one();
+                self.resume.notified().await;
+            }
+            Ok(())
+        }
+    }
+
+    let pause = Arc::new(PauseLogout::default());
+    let client = crate::client::IMClientBuilder::new()
+        .stores(in_memory_empty_im_provider())
+        .add_extension_lifecycle_arc(pause.clone())
+        .build()
+        .expect("build SDK");
+    client
+        .prepare(
+            "alice",
+            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+        )
+        .await
+        .expect("prepare first local session");
+    client
+        .notify_network_change(NetworkChangeEvent::default())
+        .await
+        .expect("report offline");
+
+    let preparing = {
+        let client = client.clone();
+        tokio::spawn(async move {
+            client
+                .prepare("bob", LoginDbKind::IndexedDb(in_memory_empty_im_provider()))
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(2), pause.entered.notified())
+        .await
+        .expect("replacement reached old session teardown");
+    client
+        .notify_network_change(NetworkChangeEvent {
+            available: true,
+            interface: Some("wifi".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("report online during prepare");
+    pause.resume.notify_one();
+    preparing
+        .await
+        .expect("prepare task")
+        .expect("prepare next session");
+
+    let current = client.inner.read().await;
+    let network = current
+        .last_network
+        .as_ref()
+        .expect("latest network report");
+    assert!(network.available);
+    assert_eq!(network.interface.as_deref(), Some("wifi"));
+}
+
+#[tokio::test]
 async fn network_change_without_session_only_updates_the_fingerprint() {
     let client = IMClient::new();
     client
@@ -1092,4 +1172,85 @@ async fn logout_deletes_the_stored_refresh_token() {
     let inner = client.inner.read().await;
     assert!(inner.refresh_token.is_none());
     assert!(inner.refresh_token_vault.is_none());
+}
+
+#[cfg(feature = "lifecycle-sqlite")]
+#[tokio::test]
+async fn encrypted_prepare_uses_the_merged_tenant_for_keys_and_data() {
+    use crate::storage::{SecureKeyDescriptor, SecureKeyStore, VolatileSecureKeyStore};
+    let root = std::env::temp_dir().join(format!("flare-prepare-tenant-{}", uuid::Uuid::new_v4()));
+    let keys = Arc::new(VolatileSecureKeyStore::new());
+    for tenant in ["tenant-a", "tenant-b"] {
+        let client = crate::client::IMClientBuilder::new()
+            .stores(crate::storage::in_memory_im_provider())
+            .config(crate::client::SdkConfig {
+                tenant_id: Some(tenant.into()),
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+        client
+            .init(
+                None,
+                Some(SdkConfigOverlay {
+                    data_url: Some(format!("file://{}", root.display())),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        if let Err(error) = client
+            .prepare(
+                "same-user",
+                crate::client::lifecycle::LoginDbKind::encrypted_sqlite(keys.clone()),
+            )
+            .await
+        {
+            assert!(error.to_string().contains("SQLCipher"), "{error}");
+        }
+        assert!(
+            keys.get_secret(&SecureKeyDescriptor::local_database(
+                "flare-im-core-sdk",
+                tenant,
+                "same-user"
+            ))
+            .await
+            .unwrap()
+            .is_some()
+        );
+        assert!(
+            crate::shared::util::paths::resolve_user_db_path(
+                &root,
+                "flare-im-core-sdk",
+                tenant,
+                "same-user"
+            )
+            .parent()
+            .unwrap()
+            .is_dir()
+        );
+        client.disconnect().await.unwrap();
+    }
+    assert!(
+        keys.get_secret(&SecureKeyDescriptor::local_database(
+            "flare-im-core-sdk",
+            "0",
+            "same-user"
+        ))
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        !crate::shared::util::paths::resolve_user_db_path(
+            &root,
+            "flare-im-core-sdk",
+            "0",
+            "same-user"
+        )
+        .parent()
+        .unwrap()
+        .exists()
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }

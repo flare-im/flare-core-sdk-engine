@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use flare_access::{Protocol, select::ProtocolMode};
+
 use crate::kernel::event::ConnectionStatus;
 use crate::runtime::link::{
     AccessPointDto, AccessRuntime, AccessStatusDto, RecoveryImportDto, RefreshReportDto,
@@ -58,6 +60,49 @@ impl IMClient {
         Ok(())
     }
 
+    /// Applies a host-selected IM transport policy without replacing the session or the directory.
+    pub async fn set_protocol_mode(&self, mode: &str) -> Result<()> {
+        let mode = match mode {
+            "race" => ProtocolMode::Race,
+            "ws" => ProtocolMode::Only(Protocol::Ws),
+            "quic" if cfg!(all(feature = "quic", not(target_arch = "wasm32"))) => {
+                ProtocolMode::Only(Protocol::Quic)
+            }
+            "quic" => {
+                return Err(FlareError::localized(
+                    ErrorCode::OperationNotSupported,
+                    "QUIC is unavailable in this build",
+                ));
+            }
+            _ => {
+                return Err(FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    "protocol mode must be ws, quic, or race",
+                ));
+            }
+        };
+        let link = {
+            let g = self.inner.read().await;
+            let access = g.access.as_ref().ok_or_else(Self::uninitialised_access)?;
+            let changed = access.set_protocol_mode(mode);
+            g.engine
+                .as_ref()
+                .map(|engine| engine.link())
+                .filter(|link| {
+                    if Arc::ptr_eq(access, link.access()) {
+                        changed
+                    } else {
+                        link.access().set_protocol_mode(mode)
+                    }
+                })
+                .cloned()
+        };
+        if let Some(link) = link {
+            link.protocol_mode_changed().await;
+        }
+        Ok(())
+    }
+
     /// 按服务路由的 HTTP 客户端，给业务 SDK（社交 SDK 等）用：基址跟随 IM 当前接入点，失败按
     /// 重试表换点并回写健康簿；非幂等写请求用 [`HttpClient::post_idempotent`] 带幂等键，同一次
     /// 用户动作的重试复用同一个键。鉴权头取共享的 HTTP 上下文（与媒体、能力同一份）。
@@ -99,13 +144,17 @@ impl IMClient {
         })
     }
 
+    fn uninitialised_access() -> FlareError {
+        FlareError::localized(
+            ErrorCode::ConfigurationError,
+            "access is not initialised; call init with sdkConfig.access first",
+        )
+    }
+
     async fn require_access(&self) -> Result<Arc<AccessRuntime>> {
-        self.access_runtime().await.ok_or_else(|| {
-            FlareError::localized(
-                ErrorCode::ConfigurationError,
-                "access is not initialised; call init with sdkConfig.access first",
-            )
-        })
+        self.access_runtime()
+            .await
+            .ok_or_else(Self::uninitialised_access)
     }
 
     /// 接入状态：清单 serial、来源、是否过期、开发模式、当前 Region/Cell/接入点/协议、手动固定。

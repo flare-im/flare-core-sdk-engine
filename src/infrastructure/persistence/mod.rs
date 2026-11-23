@@ -19,15 +19,11 @@ pub mod timeline_coverage;
 /// 待发送队列：内存 + 后端分层（推荐与 sqlite 组合使用）
 pub mod layered;
 
-/// IndexedDB 便捷接入：实现 domain Reader/Writer 或 MessageStorageBackend + MessageBackendAdapter
-pub mod indexeddb_adapter;
-
 #[cfg(feature = "storage-sqlite")]
 pub mod sqlite;
 
 pub use db::StoreProvider;
 pub use empty_stores::MemorySyncCursorStore;
-pub use indexeddb_adapter::{MessageBackendAdapter, MessageStorageBackend};
 pub use layered::LayeredPendingSendStore;
 pub use memory::{MemoryPendingSendStore, MemoryUserProfileStore};
 pub use memory_im::in_memory_im_provider;
@@ -47,3 +43,8 @@ pub use sqlite::{
 };
 
 pub(crate) mod search;
+
+#[cfg(test)]
+mod message_store_regression_tests;
+
+pub mod message_snapshot;

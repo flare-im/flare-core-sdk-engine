@@ -140,6 +140,7 @@ fn check_access_point(
         im_ws: path_of(&ws),
         im_quic: quic.as_ref().map(|(url, _)| PortService {
             port: url.port().unwrap_or(443),
+            host: None,
         }),
         core_api: path_of(&core),
         social_api: path_of(&social),
@@ -293,7 +294,10 @@ mod tests {
             snapshot.manifest().regions[0].cells[0].access_points[0]
                 .services
                 .im_quic,
-            Some(PortService { port: 60052 })
+            Some(PortService {
+                port: 60052,
+                host: None
+            })
         );
     }
 

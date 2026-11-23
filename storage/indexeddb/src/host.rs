@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use flare_im_core_sdk::model::Conversation;
 use flare_im_core_sdk::model::IMMessage;
-use flare_im_core_sdk::storage::PendingSendVo;
+use flare_im_core_sdk::storage::{PendingSendVo, StoredMessage, StoredPendingSend};
 use flare_im_core_sdk::{ErrorCode, FlareError, Result};
 use js_sys::Function;
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,9 @@ thread_local! {
 #[derive(Clone)]
 struct StorageHost {
     load_snapshot: Function,
+    read_messages: Option<Function>,
     save_message: Function,
+    save_messages: Option<Function>,
     save_conversation: Function,
     save_cursor: Function,
     save_pending_send: Function,
@@ -35,20 +37,59 @@ struct StorageHost {
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct SnapshotPayload {
     #[serde(default)]
-    pub messages: Vec<IMMessage>,
+    pub messages: Vec<StoredMessage>,
     #[serde(default)]
     pub conversations: Vec<Conversation>,
     #[serde(default)]
     pub cursors: std::collections::HashMap<String, String>,
     #[serde(default, rename = "pendingSends")]
-    pub pending_sends: Vec<PendingSendVo>,
+    pub pending_sends: Vec<StoredPendingSend>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PersistMessageArgs<'a> {
     user_id: &'a str,
-    message: &'a IMMessage,
+    message: &'a StoredMessage,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistMessagesArgs<'a> {
+    user_id: &'a str,
+    messages: &'a [StoredMessage],
+}
+
+#[derive(Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub(crate) enum MessageRead {
+    Ids {
+        ids: Vec<String>,
+    },
+    Timeline {
+        conversation_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        before_seq: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        after_seq: Option<f64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        oldest_seq: Option<f64>,
+    },
+    All,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadMessagesArgs<'a> {
+    user_id: &'a str,
+    #[serde(flatten)]
+    query: MessageRead,
 }
 
 #[derive(Serialize)]
@@ -70,7 +111,7 @@ struct PersistCursorArgs<'a> {
 #[serde(rename_all = "camelCase")]
 struct PersistPendingSendArgs<'a> {
     user_id: &'a str,
-    entry: &'a PendingSendVo,
+    entry: &'a StoredPendingSend,
 }
 
 #[derive(Serialize)]
@@ -121,7 +162,9 @@ impl StorageHost {
     fn from_js(host: &JsValue) -> Result<Self> {
         Ok(Self {
             load_snapshot: host_method(host, "loadSnapshot")?,
+            read_messages: optional_host_method(host, "readMessages"),
             save_message: host_method(host, "saveMessage")?,
+            save_messages: optional_host_method(host, "saveMessages"),
             save_conversation: host_method(host, "saveConversation")?,
             save_cursor: host_method(host, "saveCursor")?,
             save_pending_send: host_method(host, "savePendingSend")?,
@@ -134,22 +177,28 @@ impl StorageHost {
 
 /// `host[name]` bound to `host`; an invalid parameter when the host lacks it.
 fn host_method(host: &JsValue, name: &str) -> Result<Function> {
+    optional_host_method(host, name).ok_or_else(|| {
+        FlareError::localized(
+            ErrorCode::InvalidParameter,
+            format!("storage host has no {name} method"),
+        )
+    })
+}
+
+fn optional_host_method(host: &JsValue, name: &str) -> Option<Function> {
     js_sys::Reflect::get(host, &JsValue::from_str(name))
         .ok()
         .and_then(|value| value.dyn_into::<Function>().ok())
         .map(|method| method.bind0(host))
-        .ok_or_else(|| {
-            FlareError::localized(
-                ErrorCode::InvalidParameter,
-                format!("storage host has no {name} method"),
-            )
-        })
 }
 
 /// Installs the JS storage host: one object with the methods `loadSnapshot`,
 /// `saveMessage`, `saveConversation`, `saveCursor`, `savePendingSend`,
 /// `deleteMessage`, `deleteConversation` and `deletePendingSend`. A host missing
-/// any of them is refused and the installed one stays.
+/// any of them is refused and the installed one stays. The optional
+/// `saveMessages` method resolves after committing a batch of message rows.
+/// When `readMessages` is provided, `loadSnapshot` receives `metadataOnly: true`
+/// and the host reads message windows or IDs separately on demand.
 pub fn set_storage_host(host: &JsValue) -> Result<()> {
     let host = StorageHost::from_js(host)?;
     STORAGE_HOST.with(|slot| {
@@ -168,12 +217,23 @@ pub fn storage_host_configured() -> bool {
     STORAGE_HOST.with(|slot| slot.borrow().is_some())
 }
 
+pub(crate) fn loads_messages_on_demand() -> bool {
+    STORAGE_HOST.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|host| host.read_messages.is_some())
+    })
+}
+
 pub async fn load_snapshot(user_id: &str) -> Result<SnapshotPayload> {
     let host = STORAGE_HOST.with(|slot| slot.borrow().clone());
     let Some(host) = host else {
         return Ok(SnapshotPayload::default());
     };
-    let payload = to_host_value(&serde_json::json!({ "userId": user_id }), "storage load")?;
+    let payload = to_host_value(
+        &serde_json::json!({ "userId": user_id, "metadataOnly": host.read_messages.is_some() }),
+        "storage load",
+    )?;
     let raw = call_host_string(&host.load_snapshot, &payload).await?;
     if raw.trim().is_empty() {
         return Ok(SnapshotPayload::default());
@@ -182,13 +242,54 @@ pub async fn load_snapshot(user_id: &str) -> Result<SnapshotPayload> {
         .map_err(|e| FlareError::system(format!("decode storage snapshot failed: {e}")))
 }
 
+pub(crate) async fn read_messages(user_id: &str, query: MessageRead) -> Result<Vec<IMMessage>> {
+    let host = STORAGE_HOST.with(|slot| slot.borrow().clone());
+    let Some(read) = host.as_ref().and_then(|host| host.read_messages.as_ref()) else {
+        return Ok(Vec::new());
+    };
+    let payload = to_host_value(&ReadMessagesArgs { user_id, query }, "read messages")?;
+    let raw = call_host_string(read, &payload).await?;
+    let rows: Vec<StoredMessage> = flare_im_core_sdk::json::from_str(&raw)
+        .map_err(|e| FlareError::system(format!("decode stored message rows failed: {e}")))?;
+    rows.into_iter().map(TryInto::try_into).collect()
+}
+
 pub async fn persist_message(user_id: &str, message: &IMMessage) -> Result<()> {
     let host = STORAGE_HOST.with(|slot| slot.borrow().clone());
     let Some(host) = host else {
         return Ok(());
     };
-    let payload = to_host_value(&PersistMessageArgs { user_id, message }, "persist message")?;
+    let stored = StoredMessage::from(message.clone());
+    let payload = to_host_value(
+        &PersistMessageArgs {
+            user_id,
+            message: &stored,
+        },
+        "persist message",
+    )?;
     call_host_void(&host.save_message, &payload).await
+}
+
+pub(crate) async fn persist_messages(user_id: &str, messages: Vec<IMMessage>) -> Result<()> {
+    let host = STORAGE_HOST.with(|slot| slot.borrow().clone());
+    let Some(host) = host else {
+        return Ok(());
+    };
+    if let Some(save_messages) = &host.save_messages {
+        let stored: Vec<_> = messages.into_iter().map(StoredMessage::from).collect();
+        let payload = to_host_value(
+            &PersistMessagesArgs {
+                user_id,
+                messages: &stored,
+            },
+            "persist messages",
+        )?;
+        return call_host_void(save_messages, &payload).await;
+    }
+    for message in &messages {
+        persist_message(user_id, message).await?;
+    }
+    Ok(())
 }
 
 pub async fn persist_conversation(user_id: &str, conversation: &Conversation) -> Result<()> {
@@ -227,8 +328,12 @@ pub async fn persist_pending_send(user_id: &str, entry: &PendingSendVo) -> Resul
     let Some(host) = host else {
         return Ok(());
     };
+    let stored = StoredPendingSend::from(entry.clone());
     let payload = to_host_value(
-        &PersistPendingSendArgs { user_id, entry },
+        &PersistPendingSendArgs {
+            user_id,
+            entry: &stored,
+        },
         "persist pending send",
     )?;
     call_host_void(&host.save_pending_send, &payload).await

@@ -490,6 +490,14 @@ mod tests {
                 .routed_http_client(flare_access::ServiceClass::CoreApi)
                 .await
                 .unwrap();
+            // Initialization ran offline to avoid waiting for a transport
+            // handshake. Bring the network up to exercise the HTTP request.
+            im.notify_network_change(NetworkChangeEvent {
+                available: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
             let request = tokio::spawn(async move {
                 http.post::<_, serde_json::Value>("/owner-probe", &serde_json::json!({}))
                     .await
@@ -498,6 +506,12 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
+            im.notify_network_change(NetworkChangeEvent {
+                available: false,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
             let _ = im
                 .login(
                     next_user,

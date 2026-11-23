@@ -1,6 +1,7 @@
 pub mod id;
 mod identity;
 mod local_clear;
+mod message_projection;
 mod models;
 mod read;
 mod read_position;
@@ -12,6 +13,11 @@ pub use identity::{ConversationIdRewrite, ConversationIdentityService};
 pub use local_clear::{
     EXT_LOCAL_CLEARED_THROUGH_SEQ, filter_messages_after_clear, local_cleared_through_seq,
     message_visible_after_clear, set_local_cleared_through_seq, sync_visibility_floor,
+};
+pub use message_projection::{
+    EXT_MESSAGE_PROJECTION, MessageProjectionReceipt, copy_message_projection,
+    message_projection_coverage, message_projection_matches, message_projection_receipt,
+    preserve_message_projection,
 };
 pub use models::ConversationReadDecision;
 pub use read::ConversationReadService;

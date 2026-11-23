@@ -138,6 +138,9 @@ pub struct PathService {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PortService {
     pub port: u16,
+    /// Direct UDP hostname when HTTPS and WebSocket use a different ingress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -454,6 +457,17 @@ fn validate_access_point(ap: &AccessPoint, field: &str) -> Result<(), ManifestEr
                 "path must start with '/' and contain no whitespace, '?' or '#'",
             ));
         }
+    }
+    if let Some(host) = services
+        .im_quic
+        .as_ref()
+        .and_then(|quic| quic.host.as_deref())
+        && !is_valid_public_host(host)
+    {
+        return Err(invalid(
+            format!("{field}.services.imQuic.host"),
+            "invalid QUIC host",
+        ));
     }
     if let Some(quic) = &services.im_quic
         && quic.port == 0

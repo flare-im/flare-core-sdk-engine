@@ -10,9 +10,9 @@ impl MessageLocatorService {
         store: &dyn MessageStore,
         message_id: &str,
     ) -> Result<Option<IMMessage>> {
-        match store.get_by_client_msg_id(message_id).await? {
+        match store.get(message_id).await? {
             Some(message) => Ok(Some(message)),
-            None => store.get(message_id).await,
+            None => store.get_by_client_msg_id(message_id).await,
         }
     }
 

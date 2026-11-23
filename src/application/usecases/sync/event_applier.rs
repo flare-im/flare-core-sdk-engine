@@ -1,7 +1,7 @@
 use flare_proto::common::{MessageStatus, event::Payload as DomainEventPayload};
 use prost::Message;
 
-use crate::application::services::EventDeduper;
+use crate::application::services::{EventClaim, EventDeduper};
 use crate::domain::{EditApplyResult, OperationApplyResult, SyncPolicy, local_cleared_through_seq};
 use crate::infrastructure::persistence::StoreProvider;
 use crate::kernel::event::{ConversationEvent, EventBus, ExtensionEvent, MessageEvent, SdkEvent};
@@ -42,15 +42,24 @@ impl SyncEventApplier {
     ) -> Vec<bool> {
         let mut outcomes = Vec::with_capacity(events.len());
         for event in events {
-            if !self.event_deduper.record_if_new(event).await {
-                outcomes.push(true);
-                continue;
-            }
+            let reservation = match self.event_deduper.claim(event) {
+                EventClaim::Applied => {
+                    outcomes.push(true);
+                    continue;
+                }
+                EventClaim::InFlight => {
+                    outcomes.push(false);
+                    continue;
+                }
+                EventClaim::New(reservation) => reservation,
+            };
             match self.apply_event(user_id, event, mode).await {
-                Ok(true) => outcomes.push(true),
+                Ok(true) => {
+                    reservation.complete();
+                    outcomes.push(true);
+                }
                 Ok(false) => {
                     outcomes.push(false);
-                    self.event_deduper.forget(event).await;
                     tracing::warn!(
                         conversation_id = %event.conversation_id,
                         seq = event.conversation_seq,
@@ -60,7 +69,6 @@ impl SyncEventApplier {
                 }
                 Err(error) => {
                     outcomes.push(false);
-                    self.event_deduper.forget(event).await;
                     tracing::warn!(
                         conversation_id = %event.conversation_id,
                         seq = event.conversation_seq,
@@ -617,7 +625,7 @@ impl SyncEventApplier {
 #[cfg(all(test, feature = "storage-sqlite"))]
 mod tests {
     use super::{ReplayMode, SyncEventApplier};
-    use crate::application::services::EventDeduper;
+    use crate::application::services::{EventClaim, EventDeduper};
     use crate::domain::{
         ConversationReader, ConversationWriter, MessageReader, MessageWriter, SyncCursorReader,
         SyncCursorVo, SyncCursorWriter,
@@ -646,6 +654,14 @@ mod tests {
 
     #[async_trait]
     impl ConversationWriter for NoopConversationStore {
+        async fn commit_message_projection(
+            &self,
+            _expected: &crate::model::Conversation,
+            _projected: &crate::model::Conversation,
+        ) -> Result<bool> {
+            Ok(true)
+        }
+
         async fn save_batch(&self, _conversations: &[crate::model::Conversation]) -> Result<()> {
             Ok(())
         }
@@ -740,6 +756,98 @@ mod tests {
         async fn save_raw(&self, _key: &str, _cursor: &str) -> Result<()> {
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn an_in_flight_recall_stays_outside_the_sync_cursor_and_can_retry_after_failure() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlite_init_schema(&pool).await.unwrap();
+        let message_repo = Arc::new(SqliteMessageRepo::new(pool));
+        let stores = StoreProvider {
+            plugin_commands: None,
+            plugin_consents: None,
+            plugin_bundle_storage: None,
+            messages: message_repo.clone(),
+            conversations: Arc::new(NoopConversationStore),
+            conversation_participants: None,
+            cursors: Arc::new(NoopSyncCursorStore),
+            timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+            pending_send_reader: None,
+            pending_send_writer: None,
+            upload_manifest_store: None,
+            media_cache_store: None,
+            media_cache_admin: None,
+            user_file_download_store: None,
+            user_profiles_reader: None,
+            user_profiles_writer: None,
+        };
+        let deduper = EventDeduper::new(Some(32));
+        let applier = SyncEventApplier::new(stores, EventBus::new(), deduper.clone());
+        let event = flare_proto::common::Event {
+            event_id: "recall-in-flight".into(),
+            conversation_id: "conv-1".into(),
+            conversation_seq: 2,
+            payload: Some(flare_proto::common::event::Payload::Recall(
+                flare_proto::common::MessageRecallEvent {
+                    server_msg_id: "server-1".into(),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        let EventClaim::New(owner) = deduper.claim(&event) else {
+            panic!("live owner")
+        };
+        assert_eq!(
+            applier
+                .apply_events(
+                    "u1",
+                    std::slice::from_ref(&event),
+                    ReplayMode::CriticalEvents
+                )
+                .await,
+            [false]
+        );
+        drop(owner);
+        // The first attempt failed because the message was missing.
+        assert_eq!(
+            applier
+                .apply_events(
+                    "u1",
+                    std::slice::from_ref(&event),
+                    ReplayMode::CriticalEvents
+                )
+                .await,
+            [false]
+        );
+        let message = crate::model::IMMessage::new(flare_proto::common::Message {
+            server_id: "server-1".into(),
+            client_msg_id: "client-1".into(),
+            conversation_id: "conv-1".into(),
+            conversation_seq: 1,
+            ..Default::default()
+        });
+        message_repo.save_one(&message).await.unwrap();
+        assert_eq!(
+            applier
+                .apply_events(
+                    "u1",
+                    std::slice::from_ref(&event),
+                    ReplayMode::CriticalEvents
+                )
+                .await,
+            [true]
+        );
+        assert_eq!(
+            message_repo.get("server-1").await.unwrap().unwrap().status,
+            flare_proto::common::MessageStatus::Recalled as i32
+        );
+        assert_eq!(
+            applier
+                .apply_events("u1", &[event], ReplayMode::CriticalEvents)
+                .await,
+            [true]
+        );
     }
 
     #[tokio::test]

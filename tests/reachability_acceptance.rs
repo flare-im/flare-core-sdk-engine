@@ -1037,7 +1037,13 @@ async fn r09_quiet_hours_deliver_quietly_except_mentions() {
         .await
         .expect("group")
         .conversation_id;
-    let mention_id = send(&sender, &group, &format!("r09 @{b}"), &[b.clone()]).await;
+    let mention_id = send(
+        &sender,
+        &group,
+        &format!("r09 @{b}"),
+        std::slice::from_ref(&b),
+    )
+    .await;
     let (_, mention_seq) = persisted(&mention_id).await;
     let mention = wait_task(&b, &phone, Duration::from_secs(10), |t| {
         t.envelope.conversation_seq == mention_seq && t.envelope.conversation_id == group
@@ -1118,7 +1124,13 @@ async fn r10_large_group_pushes_only_subscribers_and_mentions() {
         t.envelope.conversation_seq == normal_seq
     })
     .await;
-    let mention_id = send(&sender, &group, &format!("r10 @{b}"), &[b.clone()]).await;
+    let mention_id = send(
+        &sender,
+        &group,
+        &format!("r10 @{b}"),
+        std::slice::from_ref(&b),
+    )
+    .await;
     let (_, mention_seq) = persisted(&mention_id).await;
     let to_mentioned = wait_task(&b, &phone_b, Duration::from_secs(15), |t| {
         t.envelope.conversation_seq == mention_seq

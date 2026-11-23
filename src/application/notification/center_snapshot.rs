@@ -361,6 +361,12 @@ impl NotifyCenter {
         if self.ended() {
             return;
         }
+        if timeout(SNAPSHOT_READ_CAP, self.restore_settings())
+            .await
+            .is_err()
+        {
+            return;
+        }
         let conversations = match timeout(SNAPSHOT_READ_CAP, self.stores.conversations.list()).await
         {
             Ok(Ok(conversations)) => conversations,

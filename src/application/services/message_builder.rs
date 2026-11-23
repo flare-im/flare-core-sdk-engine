@@ -3,11 +3,14 @@
 use crate::content::MessageBuilder;
 use crate::content::message_elem::{elem_plain_text, elem_to_message_content};
 use crate::content::url_safety::is_safe_remote_url;
-use crate::content::{BuiltContent, ContentBuilder, DEFAULT_STICKER_DISPLAY_SIDE};
+use crate::content::{
+    BuiltContent, ContentBuilder, DEFAULT_STICKER_DISPLAY_SIDE, MentionCandidate, TextMention,
+    resolve_mentions,
+};
 use crate::model::message::IMMessage;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 use flare_proto::common::{ForwardItem, ForwardMode, ImageInfo};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub struct MessageBuilderService;
 
@@ -151,27 +154,58 @@ impl MessageBuilderService {
         mention_all: bool,
         mention_user_ids: &[String],
     ) -> Result<IMMessage> {
-        let text_str = text.as_ref();
-        let mut content_builder = ContentBuilder::text(text_str);
-        if mention_all {
-            let len = text_str.chars().count().min(i32::MAX as usize) as i32;
-            content_builder = content_builder.mention_all(0, len.max(1));
+        let text = text.as_ref();
+        let candidates: Vec<_> = mention_user_ids
+            .iter()
+            .map(|id| MentionCandidate {
+                user_id: id.clone(),
+                display_names: Vec::new(),
+            })
+            .collect();
+        Self::build_resolved_text(
+            conversation_id,
+            sender_id,
+            text,
+            channel_id,
+            mention_all,
+            resolve_mentions(text, &candidates),
+        )
+    }
+
+    pub(crate) fn build_resolved_text(
+        conversation_id: impl Into<String>,
+        sender_id: impl Into<String>,
+        text: &str,
+        channel_id: Option<&str>,
+        explicit_mention_all: bool,
+        mentions: Vec<TextMention>,
+    ) -> Result<IMMessage> {
+        let mut content = ContentBuilder::text(text);
+        let mut mention_all = false;
+        let mut mention_users = Vec::new();
+        for mention in mentions {
+            if let Some(user_id) = mention.user_id {
+                if !mention_users.contains(&user_id) {
+                    mention_users.push(user_id.clone());
+                }
+                content = content.mention_user(user_id, mention.start, mention.length);
+            } else {
+                mention_all = true;
+                content = content.mention_all(mention.start, mention.length);
+            }
         }
-        let mention_spans = mention_spans_for_text(text_str, mention_user_ids);
-        for (user_id, start, length) in &mention_spans {
-            content_builder = content_builder.mention_user(user_id, *start, *length);
+        if explicit_mention_all && !mention_all {
+            let length = text.chars().count().min(i32::MAX as usize) as i32;
+            content = content.mention_all(0, length.max(1));
         }
-        let content = content_builder.build();
-        let mut builder = MessageBuilder::new(conversation_id, sender_id).content(content);
+
+        let mut builder = MessageBuilder::new(conversation_id, sender_id).content(content.build());
         if let Some(channel_id) = channel_id {
             builder = builder.channel(channel_id).single_chat();
         }
         let mut message = IMMessage::new(builder.build()?);
-        message.mention_all = mention_all;
-        message.mention_users = mention_spans
-            .into_iter()
-            .map(|(user_id, _, _)| user_id)
-            .collect();
+        message.mention_all = mention_all || explicit_mention_all;
+        message.mention_users = mention_users;
         Ok(message)
     }
 
@@ -742,26 +776,6 @@ impl MessageBuilderService {
             None,
         )
     }
-}
-
-fn mention_spans_for_text(text: &str, mention_user_ids: &[String]) -> Vec<(String, i32, i32)> {
-    let mut spans = Vec::new();
-    let mut seen = HashSet::new();
-    for user_id in mention_user_ids {
-        let user_id = user_id.trim();
-        if user_id.is_empty() || !seen.insert(user_id.to_string()) {
-            continue;
-        }
-        let token = format!("@{user_id}");
-        let Some(start_byte) = text.find(&token) else {
-            continue;
-        };
-        let start = text[..start_byte].chars().count().min(i32::MAX as usize) as i32;
-        let length = token.chars().count().min(i32::MAX as usize) as i32;
-        spans.push((user_id.to_string(), start, length.max(1)));
-    }
-    spans.sort_by_key(|(_, start, _)| *start);
-    spans
 }
 
 fn forward_item_from_source(source: &IMMessage) -> Result<ForwardItem> {
@@ -1463,6 +1477,39 @@ mod tests {
         assert_eq!(text.mentions[1].user_id, "12");
         assert_eq!(text.mentions[1].start, 11);
         assert_eq!(text.mentions[1].length, 3);
+    }
+
+    #[test]
+    fn nickname_mentions_survive_the_wire_round_trip() {
+        let source = "😀 @林 夏 请确认，@林 夏。联系 foo@林 夏";
+        let roster = [MentionCandidate {
+            user_id: "u_receiver".into(),
+            display_names: vec!["林 夏".into()],
+        }];
+        let sent = MessageBuilderService::build_resolved_text(
+            "conv-mentions",
+            "sender-1",
+            source,
+            None,
+            false,
+            resolve_mentions(source, &roster),
+        )
+        .unwrap();
+        let received = IMMessage::new(sent.to_proto());
+        assert_eq!(received.mention_users, ["u_receiver"]);
+        let Some(Elem::Text(text)) = received.content else {
+            panic!("expected text content");
+        };
+        assert_eq!(text.text, source);
+        assert_eq!(text.mentions.len(), 2);
+        assert_eq!(text.mentions[0].start, 2);
+        assert!(text.mentions.iter().all(|mention| {
+            text.text
+                .chars()
+                .skip(mention.start as usize)
+                .take(mention.length as usize)
+                .eq("@林 夏".chars())
+        }));
     }
 
     #[test]

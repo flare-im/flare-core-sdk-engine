@@ -740,6 +740,42 @@ async fn a_source_that_rolled_back_stays_demoted_for_a_day() {
 }
 
 #[tokio::test]
+async fn independent_storage_recovers_the_directory_when_the_old_cell_is_offline() {
+    use crate::types::ServiceKind;
+
+    let lab = Lab::start(10).await;
+    lab.net.fail(MIRROR_A, FetchError::Unreachable);
+    lab.net.fail(WELL_KNOWN, FetchError::Timeout);
+    let mut replacement = manifest(11);
+    let ap = &mut replacement["regions"][0]["cells"][0]["accessPoints"][0];
+    ap["host"] = json!("replacement.example.org");
+    ap["services"]["imQuic"] = json!({"port":60441,"host":"udp.example.org"});
+    lab.net
+        .serve(MIRROR_B, ACCESS_FILE, signed_manifest(&replacement));
+    let report = lab.refresh(RefreshMode::Recovering).await;
+    assert_eq!(report.outcome, RefreshOutcome::Adopted);
+    assert_eq!(
+        report.adoptions[0].source,
+        ManifestSource::Https {
+            url: MIRROR_B.into()
+        }
+    );
+    let (restarted, _) = boot(&config(Some(10)), &lab.store).await;
+    let directory = restarted.directory().snapshot();
+    let (index, _) = directory.access_point("ap-cne1-ct").unwrap();
+    assert_eq!(
+        directory.endpoint(index, ServiceKind::ImQuic),
+        Some("quic://udp.example.org:60441")
+    );
+    assert!(
+        directory
+            .endpoint(index, ServiceKind::ImWs)
+            .unwrap()
+            .starts_with("wss://replacement.example.org/")
+    );
+}
+
+#[tokio::test]
 async fn t2_failures_fall_back_to_the_access_point_then_to_doh_pointers() {
     // T2 全失败 → T3。
     let lab = Lab::start(10).await;

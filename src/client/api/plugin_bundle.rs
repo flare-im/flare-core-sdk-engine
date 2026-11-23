@@ -713,6 +713,7 @@ impl CapabilityApi {
             self.record_payment_order(
                 Some(context.viewer.as_str()),
                 &context.plugin_id,
+                None,
                 &response.data,
             );
         }

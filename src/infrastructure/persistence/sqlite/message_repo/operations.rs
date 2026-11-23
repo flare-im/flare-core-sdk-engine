@@ -11,12 +11,12 @@ impl MessageStore for SqliteMessageRepo {
         // 读改写必须同事务：SELECT（lastEditEventSeq 判定）与 UPDATE 之间若允许并发
         // 编辑事件交错，旧事件可能覆盖新事件。WAL 下并发写会以 BUSY 失败并走事件重放。
         let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
-        let row = sqlx::query(
-            r#"SELECT attributes
+        let row = sqlx::query(&format!(
+            r#"SELECT attributes, retention_state
                FROM messages
-               WHERE server_id = ? OR client_msg_id = ?
-               LIMIT 1"#,
-        )
+               WHERE {MESSAGE_ID_MATCH}
+               LIMIT 1"#
+        ))
         .bind(message_id)
         .bind(message_id)
         .fetch_optional(&mut *tx)
@@ -44,6 +44,13 @@ impl MessageStore for SqliteMessageRepo {
             attributes.insert("lastEditEventSeq".to_string(), seq.to_string());
         }
 
+        let retention: Option<MessageRetentionState> =
+            decode_optional_proto(row.try_get("retention_state").map_err(sqlx_err)?);
+        let new_content = if retention.as_ref().is_some_and(retention_hides_content) {
+            Vec::new()
+        } else {
+            new_content
+        };
         let now_ms = now_ms_i64();
         let text = text_for_sqlite_from_content_bytes(&new_content);
         let search_text = search_text_for_content_bytes(&new_content).or_else(|| text.clone());
@@ -60,11 +67,11 @@ impl MessageStore for SqliteMessageRepo {
         attributes.insert("messageFsmState".to_string(), "EDITED".to_string());
         attributes.insert("lastEditedAt".to_string(), now_ms.to_string());
 
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             r#"UPDATE messages
                SET encoded_content = ?, is_edited = 1, text = ?, updated_at = ?, attributes = ?
-               WHERE server_id = ? OR client_msg_id = ?"#,
-        )
+               WHERE {MESSAGE_ID_MATCH}"#
+        ))
         .bind(&new_content)
         .bind(text.as_deref())
         .bind(now_ms)
@@ -76,11 +83,11 @@ impl MessageStore for SqliteMessageRepo {
         .map_err(sqlx_err)?
         .rows_affected();
         if rows > 0 {
-            let rows = sqlx::query(
+            let rows = sqlx::query(&format!(
                 r#"SELECT server_id, conversation_id
                    FROM messages
-                   WHERE server_id = ? OR client_msg_id = ?"#,
-            )
+                   WHERE {MESSAGE_ID_MATCH}"#
+            ))
             .bind(message_id)
             .bind(message_id)
             .fetch_all(&mut *tx)
@@ -171,64 +178,15 @@ impl MessageStore for SqliteMessageRepo {
         emoji: &str,
         action: i32,
     ) -> Result<()> {
-        if message_server_id.is_empty() || user_id.is_empty() || emoji.is_empty() {
-            return Ok(());
-        }
-        let add_action = ReactionAction::Add as i32;
-        let remove_action = ReactionAction::Remove as i32;
-        if action != add_action && action != remove_action {
-            return Ok(());
-        }
-        let now = now_ms_i64();
-        if action == remove_action {
-            sqlx::query(
-                r#"DELETE FROM message_reactions
-                   WHERE message_server_id = ? AND emoji = ? AND user_id = ?"#,
-            )
-            .bind(message_server_id)
-            .bind(emoji)
-            .bind(user_id)
-            .execute(&self.pool)
-            .await
-            .map_err(sqlx_err)?;
-            debug!(
-                conversation_id = %conversation_id,
-                message_server_id = %message_server_id,
-                user_id = %user_id,
-                emoji = %emoji,
-                action = action,
-                "apply_reaction remove"
-            );
-            // `message.list` can start from the denormalized `reactionsJson` stored on the
-            // message row before the view assembler hydrates the normalized reaction table.
-            // Add already refreshes that snapshot below; remove must do the same or the deleted
-            // self reaction survives every reload until a later server event happens to repair it.
-            refresh_reactions_json_snapshot(&self.pool, message_server_id).await?;
-            return Ok(());
-        }
-        sqlx::query(
-            r#"INSERT OR REPLACE INTO message_reactions
-               (message_server_id, conversation_id, emoji, user_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)"#,
+        self.apply_reaction_event(
+            conversation_id,
+            message_server_id,
+            user_id,
+            emoji,
+            action,
+            None,
         )
-        .bind(message_server_id)
-        .bind(conversation_id)
-        .bind(emoji)
-        .bind(user_id)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .map_err(sqlx_err)?;
-        debug!(
-            conversation_id = %conversation_id,
-            message_server_id = %message_server_id,
-            user_id = %user_id,
-            emoji = %emoji,
-            action = action,
-            "apply_reaction add"
-        );
-        refresh_reactions_json_snapshot(&self.pool, message_server_id).await?;
+        .await?;
         Ok(())
     }
 
@@ -250,65 +208,85 @@ impl MessageStore for SqliteMessageRepo {
             return Ok(OperationApplyResult::NotFound);
         }
 
-        let seq_key = format!("lastReactionEventSeq:{user_id}:{emoji}");
-        let applied = apply_message_extra_with_seq(
-            &self.pool,
-            message_server_id,
-            &seq_key,
-            event_seq,
-            |_| {},
-        )
-        .await?;
-        if applied == OperationApplyResult::IgnoredStale {
-            return Ok(OperationApplyResult::IgnoredStale);
-        }
-
-        let now = now_ms_i64();
-        if action == remove_action {
-            sqlx::query(
-                r#"DELETE FROM message_reactions
-                   WHERE message_server_id = ? AND emoji = ? AND user_id = ?"#,
-            )
+        let sequence = event_seq
+            .filter(|seq| *seq > 0)
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| {
+                FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    "reaction event sequence exceeds SQLite range",
+                )
+            })?;
+        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
+        let row = sqlx::query(&format!("SELECT * FROM messages WHERE {MESSAGE_ID_MATCH}"))
             .bind(message_server_id)
-            .bind(emoji)
-            .bind(user_id)
-            .execute(&self.pool)
+            .bind(message_server_id)
+            .fetch_optional(&mut *tx)
             .await
             .map_err(sqlx_err)?;
-            debug!(
-                conversation_id = %conversation_id,
-                message_server_id = %message_server_id,
-                user_id = %user_id,
-                emoji = %emoji,
-                action = action,
-                "apply_reaction_event remove"
-            );
-            refresh_reactions_json_snapshot(&self.pool, message_server_id).await?;
+        let exists = row.is_some();
+        let mut message = match row {
+            Some(row) => self.row_to_immessage(&row)?,
+            None => {
+                let mut message = IMMessage::new(Default::default());
+                message.server_id = message_server_id.to_owned();
+                message.conversation_id = conversation_id.to_owned();
+                message
+            }
+        };
+        if message.conversation_id != conversation_id {
+            return Ok(OperationApplyResult::NotFound);
+        }
+        if !exists {
+            let previous: Option<i64> = sqlx::query_scalar("SELECT event_seq FROM message_reactions WHERE message_server_id = ? AND emoji = ? AND user_id = ?")
+                .bind(message_server_id).bind(emoji).bind(user_id).fetch_optional(&mut *tx).await.map_err(sqlx_err)?;
+            let previous = previous.unwrap_or(0);
+            if sequence.is_some_and(|seq| seq <= previous) {
+                return Ok(OperationApplyResult::IgnoredStale);
+            }
+            let now = now_ms_i64();
+            sqlx::query("INSERT INTO message_reactions(message_server_id, conversation_id, emoji, user_id, created_at, updated_at, event_seq, is_removed) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(message_server_id, emoji, user_id) DO UPDATE SET conversation_id=excluded.conversation_id, updated_at=excluded.updated_at, event_seq=excluded.event_seq, is_removed=excluded.is_removed")
+                .bind(message_server_id).bind(conversation_id).bind(emoji).bind(user_id).bind(now).bind(now)
+                .bind(sequence.unwrap_or(previous)).bind(action == remove_action)
+                .execute(&mut *tx).await.map_err(sqlx_err)?;
+            tx.commit().await.map_err(sqlx_err)?;
             return Ok(OperationApplyResult::Applied);
         }
-        sqlx::query(
-            r#"INSERT OR REPLACE INTO message_reactions
-               (message_server_id, conversation_id, emoji, user_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(message_server_id)
-        .bind(conversation_id)
-        .bind(emoji)
-        .bind(user_id)
-        .bind(now)
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .map_err(sqlx_err)?;
-        debug!(
-            conversation_id = %conversation_id,
-            message_server_id = %message_server_id,
-            user_id = %user_id,
-            emoji = %emoji,
-            action = action,
-            "apply_reaction_event add"
-        );
-        refresh_reactions_json_snapshot(&self.pool, message_server_id).await?;
+        let pending = merge_orphan_reactions_tx(&mut tx, &mut message).await?;
+        let seq_key = format!("lastReactionEventSeq:{user_id}:{emoji}");
+        if !advance_message_event(&mut message.attributes, &seq_key, event_seq) {
+            return Ok(OperationApplyResult::IgnoredStale);
+        }
+        message.apply_reaction_change(user_id, emoji, action);
+        if action == remove_action {
+            sqlx::query("DELETE FROM message_reactions WHERE message_server_id = ? AND emoji = ? AND user_id = ?")
+                .bind(&message.server_id).bind(emoji).bind(user_id).execute(&mut *tx).await.map_err(sqlx_err)?;
+        } else {
+            let now = now_ms_i64();
+            sqlx::query("INSERT OR REPLACE INTO message_reactions(message_server_id, conversation_id, emoji, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(&message.server_id).bind(&message.conversation_id).bind(emoji).bind(user_id).bind(now).bind(now)
+                .execute(&mut *tx).await.map_err(sqlx_err)?;
+        }
+        sqlx::query("UPDATE messages SET attributes = ? WHERE server_id = ?")
+            .bind(extra_to_json(&message.attributes))
+            .bind(&message.server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(sqlx_err)?;
+        if pending {
+            sqlx::query(
+                "DELETE FROM message_reactions WHERE message_server_id = ? AND is_removed != 0",
+            )
+            .bind(&message.server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(sqlx_err)?;
+            sqlx::query("UPDATE message_reactions SET event_seq = 0 WHERE message_server_id = ? AND event_seq > 0")
+                .bind(&message.server_id).execute(&mut *tx).await.map_err(sqlx_err)?;
+        }
+        tx.commit().await.map_err(sqlx_err)?;
+        debug!(conversation_id, message_server_id = %message.server_id, user_id, emoji, action, "apply_reaction_event");
         Ok(OperationApplyResult::Applied)
     }
 
@@ -317,12 +295,12 @@ impl MessageStore for SqliteMessageRepo {
         message_id: &str,
         event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             r#"SELECT server_id, attributes
                FROM messages
-               WHERE server_id = ? OR client_msg_id = ?
-               LIMIT 1"#,
-        )
+               WHERE {MESSAGE_ID_MATCH}
+               LIMIT 1"#
+        ))
         .bind(message_id)
         .bind(message_id)
         .fetch_optional(&self.pool)
@@ -372,24 +350,15 @@ impl MessageStore for SqliteMessageRepo {
         set_mark: bool,
         event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
-        let seq_key = format!("lastMarkEventSeq:{mark_type}");
-        apply_message_extra_with_seq(&self.pool, message_id, &seq_key, event_seq, |attributes| {
-            if set_mark {
-                attributes.insert("markType".to_string(), mark_type.to_string());
-                if let Some(c) = color {
-                    if !c.trim().is_empty() {
-                        attributes.insert("markColor".to_string(), c.trim().to_string());
-                    } else {
-                        attributes.remove("markColor");
-                    }
-                } else {
-                    attributes.remove("markColor");
-                }
-            } else {
-                attributes.remove("markType");
-                attributes.remove("markColor");
-            }
-        })
+        apply_message_extra_with_seq(
+            &self.pool,
+            message_id,
+            "lastMarkEventSeq",
+            event_seq,
+            |attributes| {
+                write_message_mark(attributes, mark_type, color, set_mark);
+            },
+        )
         .await
     }
 
@@ -405,10 +374,10 @@ impl MessageStore for SqliteMessageRepo {
         }
         // 版本比较与 UPDATE 同事务，避免两个并发动作结果交错时旧版本覆盖新版本。
         let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             r#"SELECT server_id, attributes FROM messages
-               WHERE server_id = ? OR client_msg_id = ?"#,
-        )
+               WHERE {MESSAGE_ACTION_ID_MATCH}"#
+        ))
         .bind(message_id)
         .bind(message_id)
         .fetch_all(&mut *tx)
@@ -453,10 +422,10 @@ impl MessageStore for SqliteMessageRepo {
         }
         // 版本比较与 UPDATE 同事务：实时事件、同步重放和本人调用结果可能并发到达，旧版本不能盖住新版本。
         let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             r#"SELECT server_id, attributes FROM messages
-               WHERE server_id = ? OR client_msg_id = ?"#,
-        )
+               WHERE {MESSAGE_ACTION_ID_MATCH}"#
+        ))
         .bind(message_id)
         .bind(message_id)
         .fetch_all(&mut *tx)
@@ -497,39 +466,15 @@ impl MessageStore for SqliteMessageRepo {
         scheduled_at: i64,
         event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
-        let applied = apply_message_extra_with_seq(
-            &self.pool,
+        self.apply_retention(
             message_id,
-            "lastRetentionScheduledEventSeq",
+            RetentionEventKind::Scheduled,
+            Some(policy),
+            state,
+            scheduled_at,
             event_seq,
-            |attributes| {
-                attributes.insert("retention_event".to_string(), "scheduled".to_string());
-            },
         )
-        .await?;
-        if !matches!(applied, OperationApplyResult::Applied) {
-            return Ok(applied);
-        }
-        let rows = sqlx::query(
-            r#"UPDATE messages
-               SET retention_policy = ?,
-                   retention_state = ?,
-                   updated_at = ?
-               WHERE (server_id = ? OR client_msg_id = ?)"#,
-        )
-        .bind(policy.encode_to_vec())
-        .bind(state.encode_to_vec())
-        .bind(scheduled_at)
-        .bind(message_id)
-        .bind(message_id)
-        .execute(&self.pool)
         .await
-        .map_err(sqlx_err)?
-        .rows_affected();
-        if rows == 0 {
-            return Ok(OperationApplyResult::NotFound);
-        }
-        Ok(OperationApplyResult::Applied)
     }
 
     async fn apply_retention_expired_event(
@@ -539,62 +484,15 @@ impl MessageStore for SqliteMessageRepo {
         expired_at: i64,
         event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
-        let applied = apply_message_extra_with_seq(
-            &self.pool,
+        self.apply_retention(
             message_id,
-            "lastRetentionExpiredEventSeq",
+            RetentionEventKind::Expired,
+            None,
+            state,
+            expired_at,
             event_seq,
-            |attributes| {
-                attributes.insert("retention_event".to_string(), "expired".to_string());
-                attributes.insert(
-                    "retention_placeholder".to_string(),
-                    "该消息已过期".to_string(),
-                );
-            },
         )
-        .await?;
-        if !matches!(applied, OperationApplyResult::Applied) {
-            return Ok(applied);
-        }
-        let now_ms = now_ms_i64();
-        let rows = if retention_hides_content(state) {
-            sqlx::query(
-                r#"UPDATE messages
-                   SET retention_state = ?,
-                       encoded_content = ?,
-                       text = NULL,
-                       updated_at = ?
-                   WHERE (server_id = ? OR client_msg_id = ?)"#,
-            )
-            .bind(state.encode_to_vec())
-            .bind(Vec::<u8>::new())
-            .bind(now_ms.max(expired_at))
-            .bind(message_id)
-            .bind(message_id)
-            .execute(&self.pool)
-            .await
-            .map_err(sqlx_err)?
-            .rows_affected()
-        } else {
-            sqlx::query(
-                r#"UPDATE messages
-                   SET retention_state = ?,
-                       updated_at = ?
-                   WHERE (server_id = ? OR client_msg_id = ?)"#,
-            )
-            .bind(state.encode_to_vec())
-            .bind(now_ms.max(expired_at))
-            .bind(message_id)
-            .bind(message_id)
-            .execute(&self.pool)
-            .await
-            .map_err(sqlx_err)?
-            .rows_affected()
-        };
-        if rows == 0 {
-            return Ok(OperationApplyResult::NotFound);
-        }
-        Ok(OperationApplyResult::Applied)
+        .await
     }
 
     async fn apply_retention_purged_event(
@@ -604,45 +502,15 @@ impl MessageStore for SqliteMessageRepo {
         purged_at: i64,
         event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
-        let applied = apply_message_extra_with_seq(
-            &self.pool,
+        self.apply_retention(
             message_id,
-            "lastRetentionPurgedEventSeq",
+            RetentionEventKind::Purged,
+            None,
+            state,
+            purged_at,
             event_seq,
-            |attributes| {
-                attributes.insert("retention_event".to_string(), "purged".to_string());
-                attributes.insert(
-                    "retention_placeholder".to_string(),
-                    "该消息已清理".to_string(),
-                );
-            },
         )
-        .await?;
-        if !matches!(applied, OperationApplyResult::Applied) {
-            return Ok(applied);
-        }
-        let now_ms = now_ms_i64();
-        let rows = sqlx::query(
-            r#"UPDATE messages
-               SET retention_state = ?,
-                   encoded_content = ?,
-                   text = NULL,
-                   updated_at = ?
-               WHERE (server_id = ? OR client_msg_id = ?)"#,
-        )
-        .bind(state.encode_to_vec())
-        .bind(Vec::<u8>::new())
-        .bind(now_ms.max(purged_at))
-        .bind(message_id)
-        .bind(message_id)
-        .execute(&self.pool)
         .await
-        .map_err(sqlx_err)?
-        .rows_affected();
-        if rows == 0 {
-            return Ok(OperationApplyResult::NotFound);
-        }
-        Ok(OperationApplyResult::Applied)
     }
 
     async fn list_reactions(
@@ -664,7 +532,7 @@ impl MessageStore for SqliteMessageRepo {
         id_keys.dedup();
 
         let mut alias_qb = QueryBuilder::<Sqlite>::new(
-            "SELECT server_id, client_msg_id FROM messages WHERE server_id IN (",
+            "SELECT server_id, client_msg_id, is_local FROM messages WHERE server_id IN (",
         );
         let mut alias_sep_a = alias_qb.separated(", ");
         for id in &id_keys {
@@ -675,42 +543,44 @@ impl MessageStore for SqliteMessageRepo {
         for id in &id_keys {
             alias_sep_b.push_bind(id);
         }
-        alias_qb.push(")");
+        alias_qb.push(") AND is_local = 1");
         let alias_rows = alias_qb
             .build()
             .fetch_all(&self.pool)
             .await
             .map_err(sqlx_err)?;
 
-        let mut canonical: HashMap<String, String> = HashMap::new();
+        let mut servers = HashMap::new();
+        let mut clients: HashMap<String, Option<String>> = HashMap::new();
         for row in alias_rows {
             let sid: String = row.try_get("server_id").map_err(sqlx_err)?;
             let cid: String = row.try_get("client_msg_id").map_err(sqlx_err)?;
-            let sid_t = sid.trim();
-            let cid_t = cid.trim();
-            if !sid_t.is_empty() {
-                canonical.insert(sid_t.to_string(), sid_t.to_string());
-            }
-            if !cid_t.is_empty() {
-                canonical.insert(cid_t.to_string(), sid_t.to_string());
+            servers.insert(sid.clone(), sid.clone());
+            if row.try_get::<i32, _>("is_local").map_err(sqlx_err)? != 0 && !cid.is_empty() {
+                clients
+                    .entry(cid)
+                    .and_modify(|target| *target = None)
+                    .or_insert(Some(sid));
             }
         }
-
+        let resolved: HashMap<_, _> = id_keys
+            .iter()
+            .map(|id| {
+                let target = servers
+                    .get(id)
+                    .or_else(|| clients.get(id).and_then(Option::as_ref))
+                    .unwrap_or(id);
+                (id.clone(), target.clone())
+            })
+            .collect();
         let mut qb = QueryBuilder::<Sqlite>::new(
-            "SELECT message_server_id, emoji, user_id FROM message_reactions WHERE message_server_id IN (",
+            "SELECT message_server_id, emoji, user_id FROM message_reactions WHERE is_removed = 0 AND message_server_id IN (",
         );
         let mut separated = qb.separated(", ");
-        for id in &id_keys {
+        for id in resolved.values() {
             separated.push_bind(id);
         }
-        qb.push(
-            ") OR message_server_id IN (SELECT client_msg_id FROM messages WHERE server_id IN (",
-        );
-        let mut sid_sep = qb.separated(", ");
-        for id in &id_keys {
-            sid_sep.push_bind(id);
-        }
-        qb.push(")) ORDER BY updated_at ASC");
+        qb.push(") ORDER BY updated_at ASC");
         let rows = qb.build().fetch_all(&self.pool).await.map_err(sqlx_err)?;
 
         let mut grouped: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
@@ -718,10 +588,7 @@ impl MessageStore for SqliteMessageRepo {
             let msg_id: String = row.try_get("message_server_id").map_err(sqlx_err)?;
             let emoji: String = row.try_get("emoji").map_err(sqlx_err)?;
             let user_id: String = row.try_get("user_id").map_err(sqlx_err)?;
-            let resolved_id = canonical
-                .get(msg_id.trim())
-                .cloned()
-                .unwrap_or_else(|| msg_id.trim().to_string());
+            let resolved_id = msg_id.trim().to_string();
             if resolved_id.is_empty() {
                 continue;
             }
@@ -748,7 +615,14 @@ impl MessageStore for SqliteMessageRepo {
             reactions.sort_by(|a, b| a.emoji.cmp(&b.emoji));
             out.insert(msg_id, reactions);
         }
-        Ok(out)
+        Ok(resolved
+            .into_iter()
+            .filter_map(|(requested, canonical)| {
+                out.get(&canonical)
+                    .cloned()
+                    .map(|reactions| (requested, reactions))
+            })
+            .collect())
     }
 
     async fn set_message_flag(
@@ -760,10 +634,10 @@ impl MessageStore for SqliteMessageRepo {
         if message_id.trim().is_empty() || flag_key.trim().is_empty() {
             return Ok(());
         }
-        let rows = sqlx::query(
+        let rows = sqlx::query(&format!(
             r#"SELECT server_id, attributes FROM messages
-               WHERE server_id = ? OR client_msg_id = ?"#,
-        )
+               WHERE {MESSAGE_ACTION_ID_MATCH}"#
+        ))
         .bind(message_id)
         .bind(message_id)
         .fetch_all(&self.pool)
@@ -800,76 +674,14 @@ impl MessageStore for SqliteMessageRepo {
         mark_type: i32,
         color: Option<&str>,
     ) -> Result<()> {
-        let rows = sqlx::query(
-            r#"SELECT server_id, attributes FROM messages
-               WHERE server_id = ? OR client_msg_id = ?"#,
-        )
-        .bind(message_id)
-        .bind(message_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(sqlx_err)?;
-
-        if rows.is_empty() {
-            return Ok(());
-        }
-
-        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
-        for row in rows {
-            let server_id: String = row.try_get("server_id").map_err(sqlx_err)?;
-            let extra_raw: Option<String> = row.try_get("attributes").map_err(sqlx_err)?;
-            let mut attributes = parse_extra(extra_raw.as_deref());
-            attributes.insert("markType".to_string(), mark_type.to_string());
-            if let Some(c) = color {
-                if !c.trim().is_empty() {
-                    attributes.insert("markColor".to_string(), c.trim().to_string());
-                } else {
-                    attributes.remove("markColor");
-                }
-            } else {
-                attributes.remove("markColor");
-            }
-            sqlx::query("UPDATE messages SET attributes = ? WHERE server_id = ?")
-                .bind(extra_to_json(&attributes))
-                .bind(server_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(sqlx_err)?;
-        }
-        tx.commit().await.map_err(sqlx_err)?;
+        self.apply_mark_event(message_id, mark_type, color, true, None)
+            .await?;
         Ok(())
     }
 
-    async fn clear_message_mark(&self, message_id: &str, _mark_type: i32) -> Result<()> {
-        let rows = sqlx::query(
-            r#"SELECT server_id, attributes FROM messages
-               WHERE server_id = ? OR client_msg_id = ?"#,
-        )
-        .bind(message_id)
-        .bind(message_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(sqlx_err)?;
-
-        if rows.is_empty() {
-            return Ok(());
-        }
-
-        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
-        for row in rows {
-            let server_id: String = row.try_get("server_id").map_err(sqlx_err)?;
-            let extra_raw: Option<String> = row.try_get("attributes").map_err(sqlx_err)?;
-            let mut attributes = parse_extra(extra_raw.as_deref());
-            attributes.remove("markType");
-            attributes.remove("markColor");
-            sqlx::query("UPDATE messages SET attributes = ? WHERE server_id = ?")
-                .bind(extra_to_json(&attributes))
-                .bind(server_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(sqlx_err)?;
-        }
-        tx.commit().await.map_err(sqlx_err)?;
+    async fn clear_message_mark(&self, message_id: &str, mark_type: i32) -> Result<()> {
+        self.apply_mark_event(message_id, mark_type, None, false, None)
+            .await?;
         Ok(())
     }
 
@@ -990,5 +802,68 @@ impl MessageStore for SqliteMessageRepo {
 
         tx.commit().await.map_err(sqlx_err)?;
         Ok(mismatched_client_ids)
+    }
+}
+
+impl SqliteMessageRepo {
+    async fn apply_retention(
+        &self,
+        message_id: &str,
+        kind: RetentionEventKind,
+        policy: Option<&MessageRetentionPolicy>,
+        state: &MessageRetentionState,
+        at: i64,
+        event_seq: Option<u64>,
+    ) -> Result<OperationApplyResult> {
+        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
+        let rows = sqlx::query(&format!("SELECT * FROM messages WHERE {MESSAGE_ID_MATCH}"))
+            .bind(message_id)
+            .bind(message_id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(sqlx_err)?;
+        if rows.is_empty() {
+            return Ok(OperationApplyResult::NotFound);
+        }
+        let mut applied = false;
+        for row in rows {
+            let mut message = self.row_to_immessage(&row)?;
+            if apply_retention_event(&mut message, kind, policy, state, at, event_seq)
+                != OperationApplyResult::Applied
+            {
+                continue;
+            }
+            sqlx::query("UPDATE messages SET attributes = ?, retention_policy = ?, retention_state = ?, encoded_content = ?, text = ?, quote_preview = ?, extensions = ?, updated_at = ? WHERE server_id = ?")
+                .bind(extra_to_json(&message.attributes))
+                .bind(encode_optional_proto(&message.retention_policy))
+                .bind(encode_optional_proto(&message.retention_state))
+                .bind(&message.encoded_content)
+                .bind(message_preview_for_storage(&message))
+                .bind(&message.quote_preview)
+                .bind(extensions_to_json(&message.extensions))
+                .bind(message.updated_at as i64)
+                .bind(&message.server_id)
+                .execute(&mut *tx).await.map_err(sqlx_err)?;
+            if message.encoded_content.is_empty() {
+                delete_message_fts_by_server_id_tx(&mut tx, &message.server_id).await?;
+            }
+            if message
+                .retention_state
+                .as_ref()
+                .is_some_and(retention_hides_content)
+            {
+                sqlx::query("UPDATE conversations SET last_message_preview = NULL WHERE conversation_id = ? AND last_message_id = ?")
+                    .bind(&message.conversation_id)
+                    .bind(if message.server_id.is_empty() { &message.client_msg_id } else { &message.server_id })
+                    .execute(&mut *tx).await.map_err(sqlx_err)?;
+            }
+            applied = true;
+        }
+        tx.commit().await.map_err(sqlx_err)?;
+        Ok(if applied {
+            OperationApplyResult::Applied
+        } else {
+            OperationApplyResult::IgnoredStale
+        })
     }
 }

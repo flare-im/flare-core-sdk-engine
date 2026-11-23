@@ -185,22 +185,14 @@ impl SyncApplyUseCase {
         )
         .await?;
         // 快照行携带服务端权威已读/未读，直接覆盖本地摘要（LWW：快照即最新状态）。
-        if let Err(error) = self
-            .stores
+        self.stores
             .conversations
             .update_unread(
                 &row.conversation_id,
                 row.unread_count.max(0) as u32,
                 row.last_read_seq,
             )
-            .await
-        {
-            tracing::warn!(
-                conversation_id = %row.conversation_id,
-                error = %error,
-                "快照切换：覆盖本地未读/已读失败（消息已落库，游标仍可推进）"
-            );
-        }
+            .await?;
         self.record_coverage(&row.conversation_id, proven).await;
         Ok(row.last_conversation_seq)
     }
@@ -599,6 +591,14 @@ impl SyncApplyUseCase {
         if target_seq == 0 {
             return Ok(0);
         }
+        let coverage = self
+            .stores
+            .conversations
+            .get(conversation_id)
+            .await?
+            .map(|conversation| crate::domain::message_projection_coverage(&conversation))
+            .transpose()?
+            .unwrap_or_default();
 
         const PAGE_LIMIT: u32 = 512;
         let mut before_seq = target_seq.saturating_add(1);
@@ -618,8 +618,13 @@ impl SyncApplyUseCase {
                 .filter(|seq| *seq > 0)
                 .min()
                 .unwrap_or(0);
-            seqs.extend(page.into_iter().map(|message| message.conversation_seq));
-            if min_seq <= floor_seq.saturating_add(1) || seqs.len() < PAGE_LIMIT as usize {
+            let page_len = page.len();
+            seqs.extend(
+                page.into_iter()
+                    .map(|message| message.conversation_seq)
+                    .filter(|seq| coverage.range_containing(*seq).is_some()),
+            );
+            if min_seq <= floor_seq.saturating_add(1) || page_len < PAGE_LIMIT as usize {
                 break;
             }
             before_seq = min_seq;

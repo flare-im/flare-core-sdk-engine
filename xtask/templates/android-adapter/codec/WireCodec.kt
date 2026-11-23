@@ -2195,8 +2195,8 @@ private fun viewDeltaRowKeys(value: Any?, field: String): List<String> {
 }
 
 /**
- * Timeline deltas work by row key (`clientMsgId`, else `serverId`, else
- * `seq:<conversationId>:<conversationSeq>`): remove, upsert in place, prepend, append, then reorder
+ * Timeline deltas use the message `timelineKey` (server ID for confirmed rows;
+ * ACK migrates the local row identity): remove, upsert in place, prepend, append, then reorder
  * when present. Conversation-list deltas keep the indexed `ops`.
  */
 fun viewDeltaFromJson(value: Any?): ViewDelta {

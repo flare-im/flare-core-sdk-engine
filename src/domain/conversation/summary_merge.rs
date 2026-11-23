@@ -57,6 +57,10 @@ pub fn merge_incoming_conversation_summary(
     merged.max_seq = merged.max_seq.max(merged_read.max_seq);
 
     if let Some(local) = local {
+        if incoming.max_seq <= local.max_seq && incoming.last_read_seq <= local.last_read_seq {
+            merged.mention_count = local.mention_count;
+            merged.mention_me = local.mention_me;
+        }
         let confirmed_floor =
             local_cleared_through_seq(&local.ext).max(local_cleared_through_seq(&merged.ext));
         merge_user_settings(local, &mut merged);
@@ -96,6 +100,7 @@ pub fn merge_incoming_conversation_summary(
     merged.unread_count = merged
         .unread_count
         .min(ReadPosition::from_conversation(&merged).unread_upper_bound());
+    super::preserve_message_projection(local, &mut merged);
     merged
 }
 

@@ -272,7 +272,15 @@ pub(super) fn merge_live(window: &mut TimelineWindow, incoming: &[IMMessage]) ->
         .filter(|message| message.conversation_id.trim() == window.conversation_id)
     {
         let key = message.row_key();
-        if let Some(&index) = index_by_key.get(&key) {
+        let index = index_by_key.get(&key).copied().or_else(|| {
+            window
+                .messages
+                .iter()
+                .position(|row| row.matches_local_send(message))
+        });
+        if let Some(index) = index {
+            index_by_key.remove(&window.messages[index].row_key());
+            index_by_key.insert(key, index);
             if row_changed(&window.messages[index], message) {
                 window.messages[index] = message.clone();
                 changed = true;
@@ -319,9 +327,13 @@ pub(super) fn apply_reread_rows(
         if !targets.contains(&key) {
             return true;
         }
-        match fresh.get(&key) {
+        match fresh
+            .get(&key)
+            .copied()
+            .or_else(|| rows.iter().find(|row| message.matches_local_send(row)))
+        {
             Some(row) => {
-                *message = (*row).clone();
+                *message = row.clone();
                 true
             }
             None => false,
@@ -379,6 +391,45 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_row_keys_do_not_alias_and_ack_migrates_only_its_local_row() {
+        let mut first = IMMessage::new(ProtoMessage {
+            server_id: "s1".into(),
+            client_msg_id: "shared".into(),
+            conversation_id: "c".into(),
+            sender_id: "alice".into(),
+            conversation_seq: 1,
+            ..Default::default()
+        });
+        let mut second = first.clone();
+        second.server_id = "s2".into();
+        second.sender_id = "bob".into();
+        second.conversation_seq = 2;
+        let mut window = TimelineWindow {
+            conversation_id: "c".into(),
+            conversation: None,
+            messages: vec![first.clone()],
+            has_older: false,
+            attached_to_latest: true,
+            anchor_key: None,
+        };
+        assert!(merge_live(&mut window, &[second.clone()]));
+        assert_eq!(window.messages.len(), 2);
+        first.server_id = "shared".into();
+        first.conversation_seq = 0;
+        first.local_state.is_local = true;
+        let local_key = first.row_key();
+        window.messages = vec![first.clone(), second];
+        let mut ack = first.clone();
+        ack.server_id = "s3".into();
+        ack.conversation_seq = 3;
+        ack.local_state.is_local = false;
+        apply_reread_rows(&mut window, &HashSet::from([local_key]), &[ack], 0);
+        assert_eq!(window.messages.len(), 2);
+        assert_eq!(window.messages[0].server_id, "s2");
+        assert_eq!(window.messages[1].server_id, "s3");
+    }
+
+    #[test]
     fn rows_added_at_both_ends_are_prepend_and_append() {
         let old = window(vec![row("b", 2), row("c", 3)]);
         let new = window(vec![row("a", 1), row("b", 2), row("c", 3), row("d", 4)]);
@@ -393,8 +444,8 @@ mod tests {
         else {
             panic!("timeline delta");
         };
-        assert_eq!(keys(&prepend), vec!["a"]);
-        assert_eq!(keys(&append), vec!["d"]);
+        assert_eq!(keys(&prepend), vec!["server:s-a"]);
+        assert_eq!(keys(&append), vec!["server:s-d"]);
         assert!(upsert.is_empty() && remove.is_empty() && reorder.is_none());
     }
 
@@ -408,8 +459,15 @@ mod tests {
         else {
             panic!("timeline delta");
         };
-        assert_eq!(keys(&append), vec!["b"]);
-        assert_eq!(reorder, Some(vec!["a".into(), "b".into(), "c".into()]));
+        assert_eq!(keys(&append), vec!["server:s-b"]);
+        assert_eq!(
+            reorder,
+            Some(vec![
+                "server:s-a".into(),
+                "server:s-b".into(),
+                "server:s-c".into()
+            ])
+        );
     }
 
     #[test]
@@ -427,7 +485,7 @@ mod tests {
         else {
             panic!("timeline delta");
         };
-        assert_eq!(keys(&upsert), vec!["a"]);
+        assert_eq!(keys(&upsert), vec!["server:s-a"]);
     }
 
     #[test]
@@ -450,23 +508,23 @@ mod tests {
         let mut detached = window(vec![row("a", 1)]);
         detached.attached_to_latest = false;
         assert!(!merge_live(&mut detached, &[row("b", 2)]));
-        assert_eq!(keys(&detached.messages), vec!["a"]);
+        assert_eq!(keys(&detached.messages), vec!["server:s-a"]);
 
         let mut attached = window(vec![row("a", 5)]);
         assert!(merge_live(&mut attached, &[row("old", 1), row("b", 6)]));
-        assert_eq!(keys(&attached.messages), vec!["a", "b"]);
+        assert_eq!(keys(&attached.messages), vec!["server:s-a", "server:s-b"]);
     }
 
     #[test]
     fn trimming_the_newer_end_detaches_the_window() {
         let mut full = window(vec![row("a", 1), row("b", 2), row("c", 3)]);
         full.trim_newer_end(2);
-        assert_eq!(keys(&full.messages), vec!["a", "b"]);
+        assert_eq!(keys(&full.messages), vec!["server:s-a", "server:s-b"]);
         assert!(!full.attached_to_latest);
         let mut tail = window(vec![row("a", 1), row("b", 2), row("c", 3)]);
         tail.has_older = false;
         tail.trim_older_end(2);
-        assert_eq!(keys(&tail.messages), vec!["b", "c"]);
+        assert_eq!(keys(&tail.messages), vec!["server:s-b", "server:s-c"]);
         assert!(tail.has_older);
     }
 }

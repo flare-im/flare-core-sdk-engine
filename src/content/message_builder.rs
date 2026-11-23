@@ -117,6 +117,8 @@ impl MessageBuilder {
         // 前端按时间排序时会把待发消息误排到更早的对方消息之前。
         let created_at = now_millis() as i64;
         Ok(Message {
+            last_edit_seq: 0,
+            reaction_states: Vec::new(),
             server_id: String::new(),
             conversation_id: self.conversation_id,
             client_msg_id: crate::shared::util::id::generate_client_msg_id(),

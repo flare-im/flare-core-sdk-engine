@@ -47,22 +47,10 @@ impl MessageReader for SqliteMessageRepo {
     }
 
     async fn get_by_client_msg_id(&self, client_msg_id: &str) -> Result<Option<IMMessage>> {
-        let row = sqlx::query(&format!(
-            r#"SELECT {} FROM messages
-               WHERE client_msg_id = ?
-               ORDER BY
-                 CASE WHEN server_id = client_msg_id THEN 1 ELSE 0 END ASC,
-                 conversation_seq DESC,
-                 sort_ts DESC,
-                 updated_at DESC
-               LIMIT 1"#,
-            MESSAGE_SELECT_COLS
-        ))
-        .bind(client_msg_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-        row.map(|r| self.row_to_immessage(&r)).transpose()
+        Ok(self
+            .get_by_client_msg_ids(&[client_msg_id.to_owned()])
+            .await?
+            .pop())
     }
 
     async fn get_by_client_msg_ids(&self, client_msg_ids: &[String]) -> Result<Vec<IMMessage>> {
@@ -77,12 +65,8 @@ impl MessageReader for SqliteMessageRepo {
             let sql = format!(
                 r#"SELECT {} FROM messages
                    WHERE client_msg_id IN ({})
-                   ORDER BY
-                     client_msg_id ASC,
-                     CASE WHEN server_id = client_msg_id THEN 1 ELSE 0 END ASC,
-                     conversation_seq DESC,
-                     sort_ts DESC,
-                     updated_at DESC"#,
+                   GROUP BY client_msg_id
+                   HAVING COUNT(*) = 1"#,
                 MESSAGE_SELECT_COLS, placeholders
             );
             let mut query = sqlx::query(&sql);
@@ -109,6 +93,9 @@ impl MessageReader for SqliteMessageRepo {
         before_seq: u64,
         limit: u32,
     ) -> Result<Vec<IMMessage>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         identity_repair::repair_single_chat_message_alias_for_conversation(
             &self.pool,
             conversation_id,
@@ -117,45 +104,43 @@ impl MessageReader for SqliteMessageRepo {
         // 与 `before_seq_for_sqlite` 一致：`0` / `>= i64::MAX` 表示「最新一页」游标。
         let is_latest_window = before_seq == 0 || before_seq >= i64::MAX as u64;
         let bound = before_seq_for_sqlite(before_seq);
-        let cleared_floor = self.local_cleared_floor(conversation_id).await?;
+        let cleared_floor = u64_to_i64_saturating(self.local_cleared_floor(conversation_id).await?);
 
         let rows = if is_latest_window {
             // 本地待 ACK 消息保持在最新窗口顶部；已分配 conversation_seq 的消息以服务端 seq 为权威。
             // 不能再用 max(sort_ts, created_at, client_created_at) 作为主排序，否则设备时钟偏移会让 ACK 后的旧消息长期顶在首屏。
-            let sql = if cleared_floor > 0 {
-                format!(
-                    r#"SELECT {} FROM messages
-                   WHERE conversation_id = ? AND conversation_seq < ? AND (conversation_seq = 0 OR conversation_seq > ?)
-                   ORDER BY
-                     CASE WHEN conversation_seq = 0 AND is_local = 1 THEN 1 ELSE 0 END DESC,
-                     CASE WHEN conversation_seq > 0 THEN conversation_seq ELSE 0 END DESC,
-                     CASE
-                       WHEN conversation_seq > 0 THEN COALESCE(NULLIF(created_at, 0), NULLIF(client_created_at, 0), NULLIF(sort_ts, 0), 0)
-                       ELSE max(max(sort_ts, created_at), client_created_at)
-                     END DESC
-                   LIMIT ?"#,
-                    MESSAGE_SELECT_COLS
-                )
-            } else {
-                format!(
-                    r#"SELECT {} FROM messages
-                   WHERE conversation_id = ? AND conversation_seq < ?
-                   ORDER BY
-                     CASE WHEN conversation_seq = 0 AND is_local = 1 THEN 1 ELSE 0 END DESC,
-                     CASE WHEN conversation_seq > 0 THEN conversation_seq ELSE 0 END DESC,
-                     CASE
-                       WHEN conversation_seq > 0 THEN COALESCE(NULLIF(created_at, 0), NULLIF(client_created_at, 0), NULLIF(sort_ts, 0), 0)
-                       ELSE max(max(sort_ts, created_at), client_created_at)
-                     END DESC
-                   LIMIT ?"#,
-                    MESSAGE_SELECT_COLS
-                )
-            };
-            let mut q = sqlx::query(&sql).bind(conversation_id).bind(bound);
-            if cleared_floor > 0 {
-                q = q.bind(cleared_floor as i64);
-            }
-            q.bind(limit as i32).fetch_all(&self.pool).await
+            // Keep each branch on the conversation/seq index. Sorting the CASE expressions over
+            // the full conversation made a small first page scan all of its history.
+            let sql = format!(
+                r#"WITH local_pending AS (
+                       SELECT {cols}, 2 AS window_rank, 0 AS window_seq,
+                              max(max(sort_ts, created_at), client_created_at) AS window_time
+                       FROM messages WHERE conversation_id = ?1 AND conversation_seq = 0 AND is_local = 1
+                       ORDER BY window_time DESC LIMIT ?4
+                   ), confirmed AS (
+                       SELECT {cols}, 1 AS window_rank, conversation_seq AS window_seq,
+                              COALESCE(NULLIF(created_at, 0), NULLIF(client_created_at, 0), NULLIF(sort_ts, 0), 0) AS window_time
+                       FROM messages WHERE conversation_id = ?1 AND conversation_seq > ?3 AND conversation_seq < ?2
+                       ORDER BY conversation_seq DESC, window_time DESC LIMIT ?4
+                   ), other_unsequenced AS (
+                       SELECT {cols}, 0 AS window_rank, 0 AS window_seq,
+                              max(max(sort_ts, created_at), client_created_at) AS window_time
+                       FROM messages WHERE conversation_id = ?1 AND conversation_seq = 0 AND is_local != 1
+                       ORDER BY window_time DESC LIMIT ?4
+                   )
+                   SELECT * FROM local_pending
+                   UNION ALL SELECT * FROM confirmed
+                   UNION ALL SELECT * FROM other_unsequenced
+                   ORDER BY window_rank DESC, window_seq DESC, window_time DESC LIMIT ?4"#,
+                cols = MESSAGE_SELECT_COLS,
+            );
+            sqlx::query(&sql)
+                .bind(conversation_id)
+                .bind(bound)
+                .bind(cleared_floor)
+                .bind(i64::from(limit))
+                .fetch_all(&self.pool)
+                .await
         } else {
             // 翻页只拉已分配 conversation_seq 的历史消息，避免 `conversation_seq == 0` 的待发送行在第二页重复出现。
             let sql = if cleared_floor > 0 {
@@ -175,9 +160,9 @@ impl MessageReader for SqliteMessageRepo {
             };
             let mut q = sqlx::query(&sql).bind(conversation_id).bind(bound);
             if cleared_floor > 0 {
-                q = q.bind(cleared_floor as i64);
+                q = q.bind(cleared_floor);
             }
-            q.bind(limit as i32).fetch_all(&self.pool).await
+            q.bind(i64::from(limit)).fetch_all(&self.pool).await
         }
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         let mut out = Vec::with_capacity(rows.len());
@@ -212,7 +197,7 @@ impl MessageReader for SqliteMessageRepo {
         let rows = sqlx::query(&sql)
             .bind(conversation_id)
             .bind(low)
-            .bind(limit as i32)
+            .bind(i64::from(limit))
             .fetch_all(&self.pool)
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;

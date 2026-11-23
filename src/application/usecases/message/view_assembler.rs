@@ -67,10 +67,9 @@ impl MessageViewAssembler {
     }
 
     async fn get_visible_message(&self, message_id: &str) -> Result<Option<IMMessage>> {
-        let message = match self.store.get_by_client_msg_id(message_id).await? {
-            Some(message) => Some(message),
-            None => self.store.get(message_id).await?,
-        };
+        let message = crate::domain::MessageLocatorService
+            .find_by_any_id(self.store.as_ref(), message_id)
+            .await?;
         let Some(message) = message else {
             return Ok(None);
         };
@@ -85,9 +84,9 @@ impl MessageViewAssembler {
             return Ok(0);
         };
         Ok(store
-            .get(conversation_id)
+            .get_stored_many(&[conversation_id.to_owned()])
             .await?
-            .as_ref()
+            .first()
             .map_or(0, sync_visibility_floor))
     }
 
@@ -106,7 +105,7 @@ impl MessageViewAssembler {
             return Ok(());
         }
         let floors: HashMap<_, _> = store
-            .get_many(&ids)
+            .get_stored_many(&ids)
             .await?
             .into_iter()
             .map(|conversation| {
@@ -132,6 +131,27 @@ impl MessageViewAssembler {
             .get_by_conversation(conversation_id, before_seq, limit)
             .await?;
         let floor = self.history_visibility_floor(conversation_id).await?;
+        views.retain(|message| message_visible_after_clear(message, floor));
+        self.hydrate_messages_for_view(&mut views).await?;
+        Ok(views)
+    }
+
+    /// Refresh the current window and probe only the next older row when supported.
+    pub async fn latest_window_through(
+        &self,
+        conversation_id: &str,
+        oldest_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<IMMessage>> {
+        let floor = self.history_visibility_floor(conversation_id).await?;
+        let mut views = self
+            .store
+            .get_latest_window_through(
+                conversation_id,
+                oldest_seq.max(floor.saturating_add(1)),
+                limit,
+            )
+            .await?;
         views.retain(|message| message_visible_after_clear(message, floor));
         self.hydrate_messages_for_view(&mut views).await?;
         Ok(views)
@@ -182,7 +202,7 @@ impl MessageViewAssembler {
     }
 
     /// 批量投影发送者名：所有发送者的资料**单次** `get_many`，群与频道会话的成员昵称单次
-    /// `member_nicknames`（另一次 `get_many` 读这些会话行里的成员预览），按 map 回填。
+    /// `member_nicknames`（另一次本地快照批量读会话行里的成员预览），按 map 回填。
     /// 取代此前的逐条查询（N+1：每条消息一次 SQLite 查询），是打开大时间线慢/超时的主因。
     ///
     /// `sender` 走人名解析链；旧字段 `sender_display_name` 只在资料里有真名字时写入资料名，
@@ -209,7 +229,7 @@ impl MessageViewAssembler {
             .await;
         let rows: HashMap<String, Conversation> = match conversations {
             Some(store) if !group_conversation_ids.is_empty() => store
-                .get_many(&group_conversation_ids)
+                .get_stored_many(&group_conversation_ids)
                 .await
                 .unwrap_or_default()
                 .into_iter()
@@ -275,15 +295,11 @@ impl MessageViewAssembler {
     }
 
     async fn hydrate_reactions_for_messages(&self, views: &mut [IMMessage]) -> Result<()> {
-        let mut message_ids: Vec<String> = Vec::with_capacity(views.len() * 2);
+        let mut message_ids: Vec<String> = Vec::with_capacity(views.len());
         for message in views.iter() {
             let sid = message.server_id.trim();
             if !sid.is_empty() {
                 message_ids.push(sid.to_string());
-            }
-            let cid = message.client_msg_id.trim();
-            if !cid.is_empty() {
-                message_ids.push(cid.to_string());
             }
         }
         message_ids.sort();
@@ -294,19 +310,7 @@ impl MessageViewAssembler {
         let reaction_map = self.store.list_reactions(&message_ids).await?;
         for view in views.iter_mut() {
             let sid = view.server_id.trim();
-            let cid = view.client_msg_id.trim();
-            let reactions = if !sid.is_empty() {
-                reaction_map.get(sid)
-            } else {
-                None
-            }
-            .or_else(|| {
-                if cid.is_empty() {
-                    None
-                } else {
-                    reaction_map.get(cid)
-                }
-            });
+            let reactions = reaction_map.get(sid);
             if let Some(reactions) = reactions {
                 view.reactions = reactions.clone();
             }

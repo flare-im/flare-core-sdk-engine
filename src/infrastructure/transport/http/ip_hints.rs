@@ -3,19 +3,22 @@
 //!
 //! 只替换解析结果，URL 不变：TLS SNI 与证书校验仍按主机名，SPKI 钉扎照常生效。
 
-use std::net::IpAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use flare_core::client::dial::{self, DohCache};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 
-type HintLookup = Box<dyn Fn(&str) -> Vec<IpAddr> + Send + Sync>;
+type HintLookup = Arc<dyn Fn(&str) -> Vec<IpAddr> + Send + Sync>;
 
+#[derive(Clone)]
 pub(crate) struct IpHintResolver {
     hints: HintLookup,
     doh: Option<Arc<DohCache>>,
     connect_timeout: Duration,
+    preferred: Arc<Mutex<HashMap<String, (IpAddr, Instant)>>>,
 }
 
 impl IpHintResolver {
@@ -25,9 +28,10 @@ impl IpHintResolver {
         connect_timeout: Duration,
     ) -> Self {
         Self {
-            hints: Box::new(hints),
+            hints: Arc::new(hints),
             doh: None,
             connect_timeout,
+            preferred: Arc::default(),
         }
     }
 
@@ -35,6 +39,39 @@ impl IpHintResolver {
     pub(crate) fn with_doh(mut self, doh: Option<Arc<DohCache>>) -> Self {
         self.doh = doh;
         self
+    }
+
+    pub(crate) async fn addresses_for(&self, host: &str) -> std::io::Result<Vec<SocketAddr>> {
+        let hints = (self.hints)(host);
+        let mut addresses = dial::resolve(host, 0, &hints, self.doh.as_ref(), self.connect_timeout)
+            .await?
+            .addresses;
+        let preferred = self
+            .preferred
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((ip, until)) = preferred.get(host)
+            && *until > Instant::now()
+            && let Some(index) = addresses.iter().position(|address| address.ip() == *ip)
+        {
+            let address = addresses.remove(index);
+            addresses.insert(0, address);
+        }
+        Ok(addresses)
+    }
+
+    pub(crate) fn remember_address(&self, host: &str, ip: IpAddr) {
+        let mut preferred = self
+            .preferred
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if preferred.len() >= 32 {
+            preferred.clear();
+        }
+        preferred.insert(
+            host.to_owned(),
+            (ip, Instant::now() + Duration::from_secs(60)),
+        );
     }
 
     /// 只对 `host` 生效：请求重定向到别的主机时不用这组 IP。
@@ -59,14 +96,11 @@ impl IpHintResolver {
 
 impl Resolve for IpHintResolver {
     fn resolve(&self, name: Name) -> Resolving {
-        let ip_hints = (self.hints)(name.as_str());
-        let doh = self.doh.clone();
-        let connect_timeout = self.connect_timeout;
+        let resolver = self.clone();
         Box::pin(async move {
             // 端口填 0：reqwest 换成 URL 的端口。
-            let chosen =
-                dial::resolve(name.as_str(), 0, &ip_hints, doh.as_ref(), connect_timeout).await?;
-            let addresses: Addrs = Box::new(chosen.addresses.into_iter());
+            let addresses: Addrs =
+                Box::new(resolver.addresses_for(name.as_str()).await?.into_iter());
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(addresses)
         })
     }

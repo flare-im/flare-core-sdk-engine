@@ -231,6 +231,17 @@ watcher is the only reconnect path. Branch on the error code, not the message:
 Typing indicators are best effort: while disconnected they are dropped and the
 call still returns `Ok`.
 
+### Network recovery
+
+Platform adapters report availability through `connection.notify_network_change`;
+the shared link supervisor owns recovery. On an unavailable → available edge,
+an active session without a surviving connection can move cooling access points
+to half-open and try them once. It retains existing trial ownership and cooldown
+history; a failed trial still reopens the circuit. Repeated available reports do
+not bypass cooldown, and terminal authentication states still require their
+existing recovery action. A surviving connection is probed before resuming its
+outbox. Apps observe connection status and keep drafts; they add no retry loop.
+
 ## Bindings
 
 | Binding | Directory | Verification |

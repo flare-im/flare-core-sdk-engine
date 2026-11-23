@@ -6,6 +6,15 @@ use crate::shared::error::Result;
 /// 媒体文件本地缓存端口：持久化 file_id 与落盘路径对照（通常由 SQLite + 文件系统实现）。
 #[async_trait]
 pub trait MediaCacheStore: Send + Sync {
+    /// Remember a local upload source by its assigned remote ID, independently of cached bytes.
+    async fn remember_upload_source(&self, _file_id: &str, _path: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn upload_source(&self, _file_id: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// 返回仍存在于磁盘上的缓存；文件缺失时清理脏行并返回 `None`。
     async fn get_cached(&self, file_id: &str) -> Result<Option<MediaCacheEntryVo>>;
 

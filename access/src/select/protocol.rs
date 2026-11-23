@@ -4,6 +4,15 @@ use crate::directory::AccessPointEntry;
 use crate::manifest::ClientPolicy;
 use crate::types::{Protocol, ServiceKind};
 
+/// Transport policy supplied by the host for IM connections.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolMode {
+    #[default]
+    Adaptive,
+    Race,
+    Only(Protocol),
+}
+
 /// 交给传输层的建连计划。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtocolPlan {
@@ -37,15 +46,39 @@ pub fn plan_protocols(
     udp_blocked: bool,
     quic_supported: bool,
 ) -> ProtocolPlan {
+    plan_protocols_for_mode(
+        ap,
+        policy,
+        winner,
+        udp_blocked,
+        quic_supported,
+        ProtocolMode::Adaptive,
+    )
+}
+
+pub(super) fn plan_protocols_for_mode(
+    ap: &AccessPointEntry,
+    policy: &ClientPolicy,
+    winner: Option<Protocol>,
+    udp_blocked: bool,
+    quic_supported: bool,
+    mode: ProtocolMode,
+) -> ProtocolPlan {
+    let udp_blocked = udp_blocked && mode == ProtocolMode::Adaptive;
+    let (order, winner) = match mode {
+        ProtocolMode::Adaptive => (policy.protocol_order.as_slice(), winner),
+        ProtocolMode::Race => (&[Protocol::Quic, Protocol::Ws][..], None),
+        ProtocolMode::Only(Protocol::Quic) => (&[Protocol::Quic][..], None),
+        ProtocolMode::Only(Protocol::Ws) => (&[Protocol::Ws][..], None),
+    };
     let available = |protocol: Protocol| match protocol {
         Protocol::Quic => quic_supported && !udp_blocked && ap.endpoints.has(ServiceKind::ImQuic),
         Protocol::Ws => ap.endpoints.has(ServiceKind::ImWs),
     };
-    let mut order: Vec<Protocol> = policy
-        .protocol_order
+    let mut order: Vec<Protocol> = order
         .iter()
         .copied()
-        .filter(|protocol| available(*protocol))
+        .filter(|protocol| policy.protocol_order.contains(protocol) && available(*protocol))
         .collect();
     let mut from_winner = false;
     if let Some(winner) = winner

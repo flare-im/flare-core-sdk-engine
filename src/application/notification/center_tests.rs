@@ -30,9 +30,12 @@ struct Harness {
 }
 
 fn harness(surface: Option<AlertSurface>) -> Harness {
+    harness_with_stores(surface, in_memory_im_provider())
+}
+
+fn harness_with_stores(surface: Option<AlertSurface>, stores: StoreProvider) -> Harness {
     let bus = EventBus::new();
     let events = bus.subscribe_filter(EventFilter::Kind(SdkEventKind::Notification));
-    let stores = in_memory_im_provider();
     let reach = Arc::new(Reach(Mutex::new(surface)));
     let alerts = Arc::new(AlertLedger::new());
     alerts.scope("0");
@@ -427,6 +430,53 @@ fn settings_never_go_back_to_an_older_version() {
     h.center.adopt_settings(newer.clone(), false);
     assert_eq!(h.center.adopt_settings(older.clone(), false), newer);
     assert_eq!(h.center.adopt_settings(older.clone(), true), older);
+}
+
+#[cfg(feature = "lifecycle-sqlite")]
+#[tokio::test]
+async fn notification_settings_survive_offline_restart_and_stay_with_the_account() {
+    use crate::shared::util::sqlite_store::{
+        open_sqlite_store_provider, sqlite_database_url_from_path,
+    };
+    let base = std::env::temp_dir().join(format!("flare-notify-settings-{}", uuid::Uuid::new_v4()));
+    tokio::fs::create_dir_all(&base).await.unwrap();
+    let url = sqlite_database_url_from_path(&base.join("user.db"));
+    let current = UserNotificationSettings {
+        preview: NotificationPreview::Hidden,
+        quiet_hours: Some(QuietHours {
+            start_minute: 1320,
+            end_minute: 420,
+            weekdays: 0,
+            allow_mentions: true,
+        }),
+        settings_version: 6,
+        ..Default::default()
+    };
+    {
+        let stores = open_sqlite_store_provider(&url, None).await.unwrap();
+        let started = harness_with_stores(None, stores);
+        started.center.bind_settings_scope("tenant", "alice");
+        started.center.commit_settings(current.clone(), true).await;
+    }
+    {
+        let stores = open_sqlite_store_provider(&url, None).await.unwrap();
+        let restored = harness_with_stores(None, stores.clone());
+        restored.center.bind_settings_scope("tenant", "alice");
+        assert_eq!(restored.center.settings().await.unwrap(), current);
+        assert!(restored.center.refresh_settings().await.is_err());
+        let old = UserNotificationSettings {
+            settings_version: 5,
+            ..Default::default()
+        };
+        assert_eq!(restored.center.commit_settings(old, false).await, current);
+
+        for (tenant, user) in [("tenant", "bob"), ("other-tenant", "alice")] {
+            let other = harness_with_stores(None, stores.clone());
+            other.center.bind_settings_scope(tenant, user);
+            assert!(other.center.restore_settings().await.is_none());
+        }
+    }
+    let _ = tokio::fs::remove_dir_all(base).await;
 }
 
 /// 角标只在数值变了时报，强制时照报；会话结束时撤掉全部通知、角标归零，只做一次。

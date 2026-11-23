@@ -14,6 +14,10 @@ use web_sys::{AbortController, Headers, Request, RequestInit, RequestMode, Respo
 use super::{HTTP_REQUEST_TIMEOUT, http_error_from_response_status, request_timed_out};
 use crate::shared::error::{FlareError, Result};
 
+/// An object PUT can take longer than a control request on a slow uplink.
+const OBJECT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const BROWSER_FILE_PART_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+
 /// `fetch` 的总时限：到点由 `AbortController` 中止请求（连同读响应体）。drop 时撤销定时器。
 ///
 /// 浏览器的 `fetch` 自己不超时：网络卡住（切网、弱网、半开的 TCP）时请求会一直挂着，等它的
@@ -342,25 +346,49 @@ pub async fn fetch_bytes(
 ) -> Result<Vec<u8>> {
     let (bytes, _) = fetch_bytes_with_headers(
         method,
-        url,
-        query,
+        append_query(url, query),
         body,
         content_type,
         context_headers,
         extra_headers,
+        HTTP_REQUEST_TIMEOUT,
     )
     .await?;
     Ok(bytes)
 }
 
-pub async fn fetch_bytes_with_headers(
+pub async fn put_object_bytes(
+    url: String,
+    body: Vec<u8>,
+    extra_headers: &HashMap<String, String>,
+    browser_file_part: bool,
+) -> Result<HashMap<String, String>> {
+    let timeout = if browser_file_part {
+        BROWSER_FILE_PART_TIMEOUT
+    } else {
+        OBJECT_UPLOAD_TIMEOUT
+    };
+    let (_, headers) = fetch_bytes_with_headers(
+        "PUT",
+        url,
+        Some(body),
+        None,
+        HashMap::new(),
+        Some(extra_headers),
+        timeout,
+    )
+    .await?;
+    Ok(headers)
+}
+
+async fn fetch_bytes_with_headers(
     method: &str,
     url: String,
-    query: Option<&HashMap<String, String>>,
     body: Option<Vec<u8>>,
     content_type: Option<&str>,
     context_headers: HashMap<String, String>,
     extra_headers: Option<&HashMap<String, String>>,
+    timeout: Duration,
 ) -> Result<(Vec<u8>, HashMap<String, String>)> {
     // 浏览器 `fetch` 全程持有 `JsFuture`/`web_sys` 句柄，其 future 本质 `!Send`。
     // 若让它直接冒泡到 SyncTask::execute，会连带把 IMClient（`Arc<RwLock<Inner>>`，
@@ -368,7 +396,6 @@ pub async fn fetch_bytes_with_headers(
     // 搬进 `spawn_local`，对外只等待 oneshot 接收端（`Result<_, FlareError>` 是 Send），
     // 从而返回一个 Send future —— transport 边界一处收口，上层维持 Send + Sync。
     let method = method.to_string();
-    let url = append_query(url, query);
     let content_type = content_type.map(|s| s.to_string());
     let extra_headers = extra_headers.cloned();
 
@@ -381,6 +408,7 @@ pub async fn fetch_bytes_with_headers(
             content_type.as_deref(),
             context_headers,
             extra_headers.as_ref(),
+            timeout,
         )
         .await;
         // 接收端被丢弃（调用方取消）时忽略发送失败。
@@ -399,6 +427,7 @@ async fn fetch_bytes_with_headers_local(
     content_type: Option<&str>,
     context_headers: HashMap<String, String>,
     extra_headers: Option<&HashMap<String, String>>,
+    timeout: Duration,
 ) -> Result<(Vec<u8>, HashMap<String, String>)> {
     let window =
         web_sys::window().ok_or_else(|| FlareError::system("browser window unavailable"))?;
@@ -421,10 +450,10 @@ async fn fetch_bytes_with_headers_local(
         init.set_body(array.as_ref());
     }
 
-    let deadline = FetchDeadline::arm(&window, &init, HTTP_REQUEST_TIMEOUT)?;
+    let deadline = FetchDeadline::arm(&window, &init, timeout)?;
     match fetch_and_read(&window, &init, method, &url).await {
         // 到点被中止的请求，fetch / 读响应体报的是 AbortError；按超时上报，与原生超时同类。
-        Err(_) if deadline.fired() => Err(request_timed_out(method, &url, HTTP_REQUEST_TIMEOUT)),
+        Err(_) if deadline.fired() => Err(request_timed_out(method, &url, timeout)),
         outcome => outcome,
     }
 }

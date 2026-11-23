@@ -176,7 +176,11 @@ impl MessageSendUseCase {
         on_progress: Option<UploadProgressCallback>,
     ) -> Result<SendAck> {
         let (_actor, mut message) = self.prepare_outbound_identity(message).await?;
-        let sort_ts = message.client_created_at.max(message.created_at);
+        if message.local_state.is_local && message.server_id == message.client_msg_id {
+            // The stored local row ID is not a server-assigned ID on a retry.
+            message.server_id.clear();
+        }
+        let sort_ts = message.timeline_sort_ts();
         message.status = MessageStatus::Created as i32;
         message.local_state = MessageLocalState {
             sending: true,
@@ -193,11 +197,16 @@ impl MessageSendUseCase {
             .await?;
 
         let client_msg_id = message.client_msg_id.clone();
-        let progress = self.upload_progress_callback(client_msg_id.clone(), on_progress);
-        let normalized = match self
+        let uploading = Arc::new(tokio::sync::Mutex::new(true));
+        let progress =
+            self.upload_progress_callback(client_msg_id.clone(), on_progress, uploading.clone());
+        let result = self
             .normalize_message_media_with_progress(message.clone(), Some(progress))
-            .await
-        {
+            .await;
+        // Drain an in-flight progress write before publishing the result. A later retry resets the
+        // same row to zero, so no task from this attempt may update it after this point.
+        *uploading.lock().await = false;
+        let normalized = match result {
             Ok(mut normalized) => {
                 normalized.status = MessageStatus::Created as i32;
                 normalized.local_state = MessageLocalState {
@@ -286,6 +295,7 @@ impl MessageSendUseCase {
         &self,
         client_msg_id: String,
         external: Option<UploadProgressCallback>,
+        uploading: Arc<tokio::sync::Mutex<bool>>,
     ) -> UploadProgressCallback {
         let store = self.store.clone();
         let conversation_store = self.conversation_store.clone();
@@ -308,7 +318,12 @@ impl MessageSendUseCase {
             let store = store.clone();
             let conversation_store = conversation_store.clone();
             let bus = bus.clone();
+            let uploading = uploading.clone();
             spawn_background(async move {
+                let active = uploading.lock().await;
+                if !*active {
+                    return;
+                }
                 let Ok(Some(mut current)) = store.get_by_client_msg_id(&client_msg_id).await else {
                     return;
                 };
@@ -344,6 +359,17 @@ impl MessageSendUseCase {
                     if let Some(source) = extract_media_source(&file.file_id)
                         .or_else(|| extract_media_source(&file.url))
                     {
+                        #[cfg(target_arch = "wasm32")]
+                        let source = if matches!(source.kind, MediaSourceKind::Blob) {
+                            source.with_metadata(MediaMetadata {
+                                file_name: file.file_name.clone(),
+                                mime_type: file.mime_type.clone(),
+                                size: u64::try_from(file.file_size).unwrap_or_default(),
+                                ..Default::default()
+                            })
+                        } else {
+                            source
+                        };
                         let uploaded = self
                             .upload_media_source(source, on_progress.clone())
                             .await?;
@@ -1172,9 +1198,18 @@ mod tests {
 
     impl TestHarness {
         fn new(media_result: MediaResult) -> Self {
-            let messages: Arc<dyn MessageStore> = Arc::new(MemoryMessageStore::new());
-            let conversations: Arc<dyn ConversationStore> =
-                Arc::new(MemoryConversationStore::new());
+            Self::with_stores(
+                media_result,
+                Arc::new(MemoryMessageStore::new()),
+                Arc::new(MemoryConversationStore::new()),
+            )
+        }
+
+        fn with_stores(
+            media_result: MediaResult,
+            messages: Arc<dyn MessageStore>,
+            conversations: Arc<dyn ConversationStore>,
+        ) -> Self {
             let queue = Arc::new(CapturingReliableQueue::default());
             let media = Arc::new(ControlledMediaService::new(media_result));
             let sender = Arc::new(PacketSender::new(
@@ -1209,7 +1244,7 @@ mod tests {
     }
 
     struct ControlledMediaService {
-        result: MediaResult,
+        result: Mutex<MediaResult>,
         started_tx: watch::Sender<bool>,
         started_rx: watch::Receiver<bool>,
         release_tx: Mutex<Option<oneshot::Sender<()>>>,
@@ -1221,7 +1256,7 @@ mod tests {
             let (release_tx, release_rx) = oneshot::channel();
             let (started_tx, started_rx) = watch::channel(false);
             Self {
-                result,
+                result: Mutex::new(result),
                 started_tx,
                 started_rx,
                 release_tx: Mutex::new(Some(release_tx)),
@@ -1267,7 +1302,7 @@ mod tests {
             if let Some(rx) = self.release_rx.lock().await.take() {
                 let _ = rx.await;
             }
-            match &self.result {
+            match &*self.result.lock().await {
                 MediaResult::Uploaded(uploaded) => {
                     if let Some(progress) = &progress {
                         progress(crate::application::UploadProgress {
@@ -2079,7 +2114,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_with_media_marks_same_optimistic_message_failed_when_upload_fails() {
+    async fn send_with_media_retries_the_same_message_after_upload_fails() {
         let harness = TestHarness::new(MediaResult::Failed);
         let message = local_file_message("/tmp/fail.png");
         let client_msg_id = message.client_msg_id.clone();
@@ -2112,5 +2147,165 @@ mod tests {
         };
         assert_eq!(file.file_id, "/tmp/fail.png");
         assert_eq!(file.url, "/tmp/fail.png");
+
+        let sort_ts = stored.local_state.sort_ts;
+        *harness.media.result.lock().await = MediaResult::Uploaded(UploadedMedia {
+            file_id: "retry-upload".into(),
+            file_name: "fail.png".into(),
+            mime_type: "image/png".into(),
+            size: 100,
+            url: None,
+            cdn_url: None,
+        });
+        let ack = harness.usecase.send_with_media(stored, None).await.unwrap();
+        assert_eq!(ack.client_msg_id, client_msg_id);
+        let [sent] = harness
+            .queue
+            .enqueued()
+            .await
+            .try_into()
+            .ok()
+            .expect("exactly one queued send");
+        let sent: IMMessage = sent;
+        assert_eq!(sent.client_msg_id, client_msg_id);
+        assert_eq!(sent.local_state.sort_ts, sort_ts);
+        assert_eq!(sent.local_state.upload_progress, 100);
+    }
+
+    #[cfg(feature = "storage-sqlite")]
+    #[tokio::test]
+    async fn failed_uploads_survive_sqlite_reopen_and_retry_the_original_row() {
+        use super::upload_progress_percent;
+        use crate::domain::MessageReader;
+        use crate::infrastructure::persistence::sqlite::{
+            SqliteConversationRepo, SqliteMessageRepo, init_schema,
+        };
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let path =
+            std::env::temp_dir().join(format!("flare-file-retry-{}.db", uuid::Uuid::new_v4()));
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .connect_with(options.clone())
+            .await
+            .unwrap();
+        init_schema(&pool).await.unwrap();
+        let harness = TestHarness::with_stores(
+            MediaResult::Failed,
+            Arc::new(SqliteMessageRepo::new(pool.clone())),
+            Arc::new(SqliteConversationRepo::new(pool.clone())),
+        );
+        let first = local_file_message("/tmp/first-file.txt");
+        let second = local_file_message("/tmp/second-file.txt");
+        let first_key = format!("client:{}", first.client_msg_id);
+        let second_key = format!("client:{}", second.client_msg_id);
+        harness.media.finish_upload().await;
+        for message in [first.clone(), second] {
+            let error = harness
+                .usecase
+                .send_with_media(message, None)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("controlled upload failed"));
+        }
+        let failed_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT client_msg_id FROM messages WHERE is_local = 1 AND failed = 1",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            failed_ids.len(),
+            2,
+            "both failures must be written to SQLite"
+        );
+
+        // Exercise an upgrade with one surviving failure from the old SQLite writer.
+        sqlx::query("UPDATE messages SET server_id = '' WHERE client_msg_id = ?")
+            .bind(&first.client_msg_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        drop(harness);
+        pool.close().await;
+
+        let pool = SqlitePoolOptions::new()
+            .connect_with(options)
+            .await
+            .unwrap();
+        let messages = Arc::new(SqliteMessageRepo::new(pool.clone()));
+        let recovered = messages
+            .get_by_client_msg_id(&first.client_msg_id)
+            .await
+            .unwrap()
+            .expect("the second failed upload must not overwrite the first");
+        assert_eq!(recovered.timeline_key(), first_key);
+        assert!(recovered.local_state.failed);
+        let Elem::File(file) = recovered.content.as_ref().unwrap() else {
+            panic!("expected the original file");
+        };
+        assert_eq!(file.file_id, "/tmp/first-file.txt");
+        let conversation_id = recovered.conversation_id.clone();
+        let sort_ts = recovered.local_state.sort_ts;
+        let harness = TestHarness::with_stores(
+            MediaResult::Uploaded(UploadedMedia {
+                file_id: "uploaded-file".into(),
+                file_name: "first-file.txt".into(),
+                mime_type: "text/plain".into(),
+                size: 100,
+                url: None,
+                cdn_url: None,
+            }),
+            messages.clone(),
+            Arc::new(SqliteConversationRepo::new(pool.clone())),
+        );
+        let progress = Arc::new(AtomicU32::new(0));
+        let callback = progress.clone();
+        let send = harness.usecase.send_with_media(
+            recovered,
+            Some(Arc::new(move |update| {
+                callback.store(upload_progress_percent(&update), Ordering::Relaxed);
+            })),
+        );
+        tokio::pin!(send);
+        tokio::select! {
+            _ = harness.media.wait_until_upload_started() => {}
+            result = &mut send => panic!("retry finished before upload could be inspected: {result:?}"),
+        }
+        let uploading = messages
+            .get_by_client_msg_id(&first.client_msg_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(uploading.timeline_key(), first_key);
+        assert!(uploading.local_state.uploading);
+        assert!(!uploading.local_state.failed);
+        assert_eq!(progress.load(Ordering::Relaxed), 50);
+        harness.media.finish_upload().await;
+        let ack = send.await.unwrap();
+        assert_eq!(ack.client_msg_id, first.client_msg_id);
+        let rows = messages
+            .get_by_conversation(&conversation_id, 0, 10)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        let sent = rows
+            .iter()
+            .find(|row| row.timeline_key() == first_key)
+            .unwrap();
+        assert_eq!(sent.local_state.upload_progress, 100);
+        assert_eq!(sent.local_state.sort_ts, sort_ts);
+        assert!(
+            rows.iter()
+                .any(|row| row.timeline_key() == second_key && row.local_state.failed)
+        );
+        let queued = harness.queue.enqueued().await;
+        assert_eq!(queued.len(), 1);
+        assert!(queued[0].server_id.is_empty());
+        pool.close().await;
+        std::fs::remove_file(path).unwrap();
     }
 }

@@ -1358,8 +1358,8 @@ List<String> viewDeltaRowKeys(Object? value, String field) {
   return value.cast<String>().toList(growable: false);
 }
 
-/// Timeline deltas work by row key (`clientMsgId`, else `serverId`, else
-/// `seq:<conversationId>:<conversationSeq>`): remove, upsert in place,
+/// Timeline deltas use the message `timelineKey` (server ID for confirmed rows;
+/// ACK migrates the local row identity): remove, upsert in place,
 /// prepend, append, then reorder when present. Conversation-list deltas keep
 /// the indexed `ops`.
 ViewDelta viewDeltaFromJson(Object? value) {

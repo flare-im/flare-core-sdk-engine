@@ -46,7 +46,7 @@ pub(crate) mod native;
 pub use native::{
     CapabilityConsentPrompt, CapabilityHostAnswer, CapabilityHostRequests, CapturedFile,
     ConsentDecision, DocumentCapturePrompt, FilePickPrompt, LocationFix, LocationPrompt,
-    PaymentConfirmationPrompt, PluginCapabilityHost,
+    PaymentConfirmationError, PaymentConfirmationPrompt, PaymentSettled, PluginCapabilityHost,
 };
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_native_tests.rs"]
@@ -952,6 +952,7 @@ impl CapabilityApi {
                         Ok(self.operation_outcome(
                             user_id.as_deref(),
                             &request.message.plugin_id,
+                            None,
                             &response,
                         ))
                     }

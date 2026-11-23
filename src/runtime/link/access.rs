@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use flare_access::kernel::{AccessPointStatus, ManifestUpdate};
 use flare_access::probe::{ProbeReport, ProbeTransport, ProbeTrigger, Prober};
-use flare_access::select::PinnedAccessPoint;
+use flare_access::select::{PinnedAccessPoint, ProtocolMode};
 use flare_access::store::{AcceptError, MemoryAccessStore};
 use flare_access::{
     AccessConfig, AccessKernel, AccessStore, AccessWarning, ApId, BootstrapReport, DirectoryChange,
@@ -123,6 +123,7 @@ struct NetContext {
     print: NetPrint,
     tags: Vec<String>,
     interface: Option<String>,
+    unavailable: bool,
 }
 
 /// 装配一次后留下的摘要（`access://changed` 与诊断用）。
@@ -158,6 +159,7 @@ pub struct AccessRuntime {
     config: Option<AccessConfig>,
     store_source: Mutex<Option<AccessStoreSource>>,
     options: KernelOptions,
+    protocol_mode: Mutex<ProtocolMode>,
     kernel: tokio::sync::OnceCell<Arc<AccessKernel>>,
     loaded: Mutex<Option<LoadedDirectory>>,
     net: Mutex<NetContext>,
@@ -230,6 +232,7 @@ impl AccessRuntime {
             options: KernelOptions {
                 quic_supported: cfg!(all(feature = "quic", not(target_arch = "wasm32"))),
             },
+            protocol_mode: Mutex::new(ProtocolMode::Adaptive),
             kernel: tokio::sync::OnceCell::new(),
             loaded: Mutex::new(None),
             net: Mutex::new(NetContext::default()),
@@ -464,9 +467,30 @@ impl AccessRuntime {
 
     /// 平台报告的网络（`interface` + `fingerprintHint`）。返回网络指纹是否变了。
     pub fn set_network(&self, interface: Option<&str>, hint: Option<&str>) -> bool {
+        self.update_network(None, interface, hint)
+    }
+
+    pub(crate) fn report_network(
+        &self,
+        available: bool,
+        interface: Option<&str>,
+        hint: Option<&str>,
+    ) -> bool {
+        self.update_network(Some(available), interface, hint)
+    }
+
+    fn update_network(
+        &self,
+        available: Option<bool>,
+        interface: Option<&str>,
+        hint: Option<&str>,
+    ) -> bool {
         let print = NetPrint::from_parts(interface, hint);
         let mut net = lock(&self.net);
         let changed = net.print != print;
+        if let Some(available) = available {
+            net.unavailable = !available;
+        }
         net.print = print;
         net.interface = interface.map(str::to_owned);
         #[cfg(not(target_arch = "wasm32"))]
@@ -474,6 +498,10 @@ impl AccessRuntime {
             doh.cache.clear();
         }
         changed
+    }
+
+    pub(crate) fn network_unavailable(&self) -> bool {
+        lock(&self.net).unavailable
     }
 
     /// 按网络学到的后台心跳间隔。
@@ -507,6 +535,14 @@ impl AccessRuntime {
         lock(&self.current).clone()
     }
 
+    pub fn set_protocol_mode(&self, mode: ProtocolMode) -> bool {
+        std::mem::replace(&mut *lock(&self.protocol_mode), mode) != mode
+    }
+
+    pub(crate) fn protocol_mode(&self) -> ProtocolMode {
+        *lock(&self.protocol_mode)
+    }
+
     /// 取候选。REST 传 `current = None` 时自动跟随 IM 当前接入点（同 AP 优先，落在同一 Cell）。
     pub fn select(
         &self,
@@ -518,14 +554,17 @@ impl AccessRuntime {
         let tags = self.net_tags();
         let following = self.current().map(|link| link.access_point_id);
         let current = current.or(following.as_deref());
-        kernel.selector().select(&SelectRequest {
-            service,
-            net: self.net(),
-            net_tags: &tags,
-            current,
-            exclude,
-            now_ms: now_ms(),
-        })
+        kernel.selector().select_with_protocol_mode(
+            &SelectRequest {
+                service,
+                net: self.net(),
+                net_tags: &tags,
+                current,
+                exclude,
+                now_ms: now_ms(),
+            },
+            *lock(&self.protocol_mode),
+        )
     }
 
     /// 宿主报告前后台（链路状态机转来）。
@@ -537,8 +576,13 @@ impl AccessRuntime {
     ///
     /// 后台的失败按「设备无网络」记：系统在后台拦下应用的网络时，链路重连、心跳和请求都会失败，
     /// 计入熔断的话回到前台时接入点仍在冷却，用户的第一个操作直接报「没有可达的接入点」。
+    /// 宿主已报告断网时也一样，避免断网期间的请求触发接入点熔断。
     pub fn record(&self, ap: &str, observation: Observation) {
-        let observation = if self.background.load(Ordering::Relaxed)
+        let (net, unavailable) = {
+            let net = lock(&self.net);
+            (net.print, net.unavailable)
+        };
+        let observation = if (unavailable || self.background.load(Ordering::Relaxed))
             && matches!(observation.outcome, Outcome::Failure(_))
         {
             Observation::new(observation.kind, Outcome::Neutral(NeutralReason::NoNetwork))
@@ -546,9 +590,7 @@ impl AccessRuntime {
             observation
         };
         if let Some(kernel) = self.kernel_now() {
-            let effect = kernel
-                .health()
-                .record(ap, self.net(), observation, now_ms());
+            let effect = kernel.health().record(ap, net, observation, now_ms());
             if let Some(transition) = effect.breaker {
                 tracing::info!(
                     access_point = ap,
@@ -590,9 +632,8 @@ impl AccessRuntime {
         last_switch_ms: i64,
     ) -> flare_access::select::FailbackVerdict {
         let tags = self.net_tags();
-        kernel
-            .selector()
-            .evaluate_failback(&flare_access::select::FailbackRequest {
+        kernel.selector().evaluate_failback_with_protocol_mode(
+            &flare_access::select::FailbackRequest {
                 net: self.net(),
                 net_tags: &tags,
                 current,
@@ -600,7 +641,9 @@ impl AccessRuntime {
                 last_activity_ms,
                 last_switch_ms,
                 now_ms: now_ms(),
-            })
+            },
+            *lock(&self.protocol_mode),
+        )
     }
 
     /// 当前网络下某接入点的健康记录是否不佳（熔断非闭合，或近期失败率过半）：网络切换后据此决定换不换入口。
@@ -1171,6 +1214,35 @@ mod tests {
             !reachable(&runtime),
             "foreground failures open the breakers"
         );
+    }
+
+    #[tokio::test]
+    async fn offline_requests_do_not_cool_down_the_same_network_on_recovery() {
+        use crate::infrastructure::transport::http::router::HttpRouter;
+        use crate::shared::error::ErrorCode;
+        use flare_access::FailureClass;
+
+        let runtime = Arc::new(AccessRuntime::new(
+            Some(development()),
+            AccessStoreSource::memory(),
+        ));
+        runtime.kernel().await.expect("development directory");
+        let router = HttpRouter::new(runtime.clone(), ServiceClass::CoreApi);
+        runtime.report_network(false, Some("wifi"), None);
+        assert!(matches!(
+            router.route(&[], None).await,
+            Err(error) if error.code() == Some(ErrorCode::NetworkUnreachable)
+        ));
+
+        for _ in 0..10 {
+            let failure = Observation::http(Outcome::Failure(FailureClass::HttpConnectFailed));
+            runtime.record("development", failure);
+            runtime.record("ap-b", failure);
+        }
+
+        runtime.report_network(true, Some("wifi"), None);
+        assert!(router.route(&[], None).await.is_ok());
+        assert!(!runtime.is_unhealthy("development"));
     }
 
     #[test]

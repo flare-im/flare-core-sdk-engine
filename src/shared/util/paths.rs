@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use sha2::{Digest, Sha256};
+
 use crate::FlareError;
 use crate::shared::error::ErrorCode;
 use crate::shared::error::Result;
@@ -95,19 +97,27 @@ pub fn resolve_sdk_data_root(data_url: Option<&str>) -> Result<PathBuf> {
     }
 }
 
-/// `data_root` 下按用户隔离的 SQLite 文件路径（`users/{sanitized_user_id}/flare_im_sdk.db`）。
-///
-/// 用户目录统一放在 `users/` 命名空间下，避免用户 ID 与 SDK 根目录下的其他文件或旧异常文件冲突。
-pub fn resolve_user_db_path(base: &std::path::Path, user_id: &str) -> PathBuf {
-    let user_dir = sanitize_user_id_for_dir(user_id);
-    let user_data_dir = base.join("users").join(user_dir);
-    user_data_dir.join("flare_im_sdk.db")
+/// Opaque partition for local data; length prefixes prevent ambiguous identities.
+pub fn local_storage_scope(namespace: &str, tenant_id: &str, user_id: &str) -> String {
+    let mut digest = Sha256::new();
+    let tenant_id = super::normalize_tenant_id(tenant_id);
+    for segment in [namespace.trim(), tenant_id.as_str(), user_id.trim()] {
+        digest.update((segment.len() as u64).to_be_bytes());
+        digest.update(segment.as_bytes());
+    }
+    format!("v2-{}", hex::encode(digest.finalize()))
 }
 
-/// 用户媒体缓存目录（`{user_data}/media_cache`），与 [`resolve_user_db_path`] 同级。
-pub fn resolve_user_media_cache_dir(base: &std::path::Path, user_id: &str) -> PathBuf {
-    let db = resolve_user_db_path(base, user_id);
-    resolve_media_cache_dir_next_to_db(&db)
+/// Unscoped legacy databases stay untouched: their tenant cannot be inferred safely.
+pub fn resolve_user_db_path(
+    base: &std::path::Path,
+    namespace: &str,
+    tenant_id: &str,
+    user_id: &str,
+) -> PathBuf {
+    base.join("scopes")
+        .join(local_storage_scope(namespace, tenant_id, user_id))
+        .join("flare_im_sdk.db")
 }
 
 /// 与 SQLite 数据库文件**同目录**下的 `media_cache`（默认缓存根，与库文件并列）。
@@ -122,6 +132,34 @@ pub fn resolve_media_cache_dir_next_to_db(db_file: &std::path::Path) -> PathBuf 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_storage_partition_separates_namespace_tenant_and_user() {
+        let base = std::path::Path::new("/data");
+        let a = resolve_user_db_path(base, "core", "app-a", "same-user");
+        assert_ne!(a, resolve_user_db_path(base, "core", "app-b", "same-user"));
+        assert_ne!(
+            a,
+            resolve_user_db_path(base, "social", "app-a", "same-user")
+        );
+        assert_ne!(a, resolve_user_db_path(base, "core", "app-a", "other-user"));
+        assert_ne!(
+            local_storage_scope("a:b", "c", "u"),
+            local_storage_scope("a", "b:c", "u")
+        );
+        assert_ne!(
+            local_storage_scope("core", "a/b", "u"),
+            local_storage_scope("core", "a_b", "u")
+        );
+        assert_eq!(
+            a,
+            resolve_user_db_path(base, " core ", "app-a", " same-user ")
+        );
+        assert_eq!(
+            local_storage_scope("core", "default", "u"),
+            local_storage_scope("core", "0", "u")
+        );
+    }
 
     #[test]
     fn parse_file_data_url_decodes_encoded_path() {

@@ -122,7 +122,10 @@ async fn a_profile_change_upserts_only_the_rows_its_person_sent() {
     else {
         panic!("timeline delta");
     };
-    assert_eq!(keys(upsert), vec!["m1", "m3", "m4", "m6"]);
+    assert_eq!(
+        keys(upsert),
+        vec!["server:s1", "server:s3", "server:s4", "server:s6"]
+    );
     for fresh in upsert {
         assert_eq!(fresh.sender, DisplayName::named("Bob", NameSource::Profile));
     }
@@ -146,7 +149,10 @@ async fn a_profile_change_upserts_only_the_rows_its_person_sent() {
     let ViewDelta::Timeline { upsert, .. } = timeline_delta(&updates[0]) else {
         panic!("timeline delta");
     };
-    assert_eq!(keys(upsert), vec!["m1", "m3", "m4", "m6"]);
+    assert_eq!(
+        keys(upsert),
+        vec!["server:s1", "server:s3", "server:s4", "server:s6"]
+    );
     assert_eq!(
         upsert[0].sender,
         DisplayName::named("Bobby", NameSource::Alias)
@@ -231,7 +237,7 @@ async fn a_member_nickname_renames_rows_only_in_its_conversation() {
     h.open().await;
     assert_eq!(
         keys(&h.window_rows().await),
-        vec!["c1-m1", "c1-m2", "c1-m3"]
+        vec!["server:c1-s1", "server:c1-s2", "server:c1-s3"]
     );
     let other = h
         .view
@@ -280,7 +286,10 @@ async fn a_member_nickname_renames_rows_only_in_its_conversation() {
     let ViewDelta::Timeline { upsert, .. } = timeline_delta(&updates[0]) else {
         panic!("timeline delta");
     };
-    assert_eq!(keys(upsert), vec!["c1-m1", "c1-m2", "c1-m3"]);
+    assert_eq!(
+        keys(upsert),
+        vec!["server:c1-s1", "server:c1-s2", "server:c1-s3"]
+    );
     assert_eq!(
         upsert[0].sender,
         DisplayName::named("Group Bob", NameSource::MemberNickname)
@@ -310,7 +319,7 @@ async fn names_written_through_the_extension_store_reach_the_open_views() {
     let ViewDelta::Timeline { upsert, .. } = timeline_delta(&updates[0]) else {
         panic!("timeline delta");
     };
-    assert_eq!(keys(upsert), vec!["m1", "m2", "m3"]);
+    assert_eq!(keys(upsert), vec!["server:s1", "server:s2", "server:s3"]);
     assert_eq!(
         upsert[0].sender,
         DisplayName::named("Bob", NameSource::Profile)

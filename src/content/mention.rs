@@ -56,85 +56,86 @@ fn is_cjk_punctuation(c: char) -> bool {
     matches!(c as u32, 0x3000..=0x303F | 0xFF00..=0xFF0F | 0xFF1A..=0xFF20)
 }
 
-/// 从正文解析提及。
-///
-/// 匹配采用**最长优先**：`@张三丰` 不会被 `@张三` 抢走。
-pub fn parse_mentions(text: &str, candidates: &[MentionCandidate]) -> ParsedMentions {
-    let chars: Vec<char> = text.chars().collect();
-    let mut result = ParsedMentions::default();
-    let mut seen: Vec<String> = Vec::new();
+/// A resolved token and its range in Unicode scalar values, as used on the wire.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TextMention {
+    /// `None` is an explicit @all token.
+    pub user_id: Option<String>,
+    pub start: i32,
+    pub length: i32,
+}
 
-    // 候选记号表：记号 -> Some(user_id) 表示提及某人，None 表示 @全员。
-    let mut tokens: Vec<(String, Option<String>)> = Vec::new();
-    for token in MENTION_ALL_TOKENS {
-        tokens.push((token.to_string(), None));
-    }
+/// 从正文解析提及。匹配采用最长优先，范围与接收端的高亮位置一致。
+pub(crate) fn resolve_mentions(text: &str, candidates: &[MentionCandidate]) -> Vec<TextMention> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut tokens: Vec<(Vec<char>, Option<&str>)> = MENTION_ALL_TOKENS
+        .iter()
+        .map(|token| (token.chars().collect(), None))
+        .collect();
     for candidate in candidates {
         let id = candidate.user_id.trim();
-        if !id.is_empty() {
-            tokens.push((id.to_string(), Some(id.to_string())));
+        if id.is_empty() {
+            continue;
         }
+        tokens.push((id.chars().collect(), Some(id)));
         for name in &candidate.display_names {
             let name = name.trim();
-            if !name.is_empty() {
-                tokens.push((name.to_string(), Some(id.to_string())));
+            if !name.is_empty() && name != id {
+                tokens.push((name.chars().collect(), Some(id)));
             }
         }
     }
-    // 长记号优先，避免前缀吃掉更长的匹配。
-    tokens.sort_by_key(|a| std::cmp::Reverse(a.0.chars().count()));
+    tokens.sort_by_key(|(token, _)| std::cmp::Reverse(token.len()));
 
-    let mut i = 0usize;
+    let mut mentions = Vec::new();
+    let mut i = 0;
     while i < chars.len() {
-        if chars[i] != '@' {
+        if chars[i] != '@' || !is_mention_boundary(i.checked_sub(1).map(|prev| chars[prev])) {
             i += 1;
             continue;
         }
-        let prev = if i == 0 { None } else { Some(chars[i - 1]) };
-        if !is_mention_boundary(prev) {
+        let tail = &chars[i + 1..];
+        let Some((token, user_id)) = tokens.iter().find(|(token, _)| {
+            tail.get(..token.len()).is_some_and(|head| {
+                head.iter()
+                    .zip(token)
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b))
+                    && ends_mention(&tail[token.len()..])
+            })
+        }) else {
             i += 1;
             continue;
-        }
-        // 取出 `@` 之后的记号（到第一个非记号字符为止）。
-        let mut end = i + 1;
-        while end < chars.len() && is_token_char(chars[end]) {
-            end += 1;
-        }
-        let raw: String = chars[i + 1..end].iter().collect();
-        if raw.is_empty() {
-            i += 1;
-            continue;
-        }
-
-        let mut matched_len = 0usize;
-        for (token, target) in &tokens {
-            if token.chars().count() > raw.chars().count() {
-                continue;
-            }
-            let head: String = raw.chars().take(token.chars().count()).collect();
-            if !head.eq_ignore_ascii_case(token) {
-                continue;
-            }
-            match target {
-                None => result.mention_all = true,
-                Some(user_id) => {
-                    if !seen.iter().any(|id| id == user_id) {
-                        seen.push(user_id.clone());
-                    }
-                }
-            }
-            matched_len = token.chars().count();
-            break;
-        }
-
-        i = if matched_len > 0 {
-            i + 1 + matched_len
-        } else {
-            end.max(i + 1)
         };
+        let length = token.len() + 1;
+        mentions.push(TextMention {
+            user_id: user_id.map(str::to_owned),
+            start: i as i32,
+            length: length as i32,
+        });
+        i += length;
     }
+    mentions
+}
 
-    result.user_ids = seen;
+fn ends_mention(tail: &[char]) -> bool {
+    match tail {
+        ['.', next, ..] => !is_token_char(*next),
+        ['.'] => true,
+        [next, ..] => !is_token_char(*next),
+        [] => true,
+    }
+}
+
+/// `user_ids` 按正文出现顺序去重。消息构建同时使用解析得到的原文范围。
+pub fn parse_mentions(text: &str, candidates: &[MentionCandidate]) -> ParsedMentions {
+    let mut result = ParsedMentions::default();
+    for mention in resolve_mentions(text, candidates) {
+        match mention.user_id {
+            Some(id) if !result.user_ids.contains(&id) => result.user_ids.push(id),
+            None => result.mention_all = true,
+            _ => {}
+        }
+    }
     result
 }
 

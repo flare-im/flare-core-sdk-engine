@@ -266,10 +266,13 @@ fn expand_home_cell(manifest: &AccessManifest) -> (Arc<str>, Vec<AccessPointEntr
             );
             endpoints.set(
                 ServiceKind::ImQuic,
-                services
-                    .im_quic
-                    .as_ref()
-                    .map(|quic| format!("quic://{}:{}", ap.host, quic.port)),
+                services.im_quic.as_ref().map(|quic| {
+                    format!(
+                        "quic://{}:{}",
+                        quic.host.as_deref().unwrap_or(&ap.host),
+                        quic.port
+                    )
+                }),
             );
             for kind in [
                 ServiceKind::CoreApi,

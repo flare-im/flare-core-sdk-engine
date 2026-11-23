@@ -51,146 +51,189 @@ impl ConversationProjectionApplier {
             return Ok(());
         }
 
-        let mut previous_by_conversation: std::collections::HashMap<String, Option<Conversation>> =
+        let mut grouped: std::collections::HashMap<&str, Vec<&IMMessage>> =
             std::collections::HashMap::new();
         for message in messages {
-            if message.conversation_id.trim().is_empty() {
-                continue;
-            }
-            if previous_by_conversation.contains_key(&message.conversation_id) {
-                continue;
-            }
-            let previous = self
-                .stores
-                .conversations
-                .get(&message.conversation_id)
-                .await
-                .ok()
-                .flatten();
-            previous_by_conversation.insert(message.conversation_id.clone(), previous);
-        }
-
-        let mut latest_per_conversation: std::collections::HashMap<String, &IMMessage> =
-            std::collections::HashMap::new();
-        for message in messages {
-            if message.conversation_id.trim().is_empty() {
-                continue;
-            }
-            match latest_per_conversation.get(&message.conversation_id) {
-                Some(previous)
-                    if IMMessage::compare_for_latest_window_desc(previous, message).is_le() => {}
-                _ => {
-                    latest_per_conversation.insert(message.conversation_id.clone(), message);
-                }
+            if !message.conversation_id.trim().is_empty() {
+                grouped
+                    .entry(&message.conversation_id)
+                    .or_default()
+                    .push(message);
             }
         }
-
-        for (conversation_id, latest) in latest_per_conversation {
-            let previous = previous_by_conversation
-                .get(&conversation_id)
-                .cloned()
-                .flatten();
-            let previous_unread = previous.as_ref().map(|c| c.unread_count).unwrap_or(0);
-            let previous_read = previous
-                .as_ref()
-                .map(ReadPosition::from_conversation)
-                .unwrap_or_default()
-                .normalize_for_unread_delta();
+        for (conversation_id, messages) in grouped {
+            let Some(latest) = messages
+                .iter()
+                .min_by(|a, b| IMMessage::compare_for_latest_window_desc(a, b))
+            else {
+                continue;
+            };
             self.ensure_or_repair_conversation_shell(latest, current_user_id)
                 .await?;
-
-            let previous_max_seq = previous
-                .as_ref()
-                .map(|conversation| conversation.max_seq)
-                .unwrap_or(0);
-            let previous_materialized_max_seq = self
-                .stores
-                .conversations
-                .get_local_max_seq(&conversation_id)
-                .await
-                .unwrap_or(0);
-            let should_update_summary =
-                previous.is_none() || latest.conversation_seq >= previous_materialized_max_seq;
-            let conversation_max_seq = previous
-                .as_ref()
-                .map(|conversation| conversation.max_seq.max(latest.conversation_seq))
-                .unwrap_or(latest.conversation_seq);
-            if should_update_summary {
-                let _ = self
+            let mut committed = false;
+            for _ in 0..3 {
+                let previous = self
                     .stores
                     .conversations
-                    .update_last_message(
-                        &conversation_id,
-                        latest.server_id(),
-                        latest.sender_id(),
-                        latest.display_time_ms(),
-                        latest.text_for_storage().as_deref(),
-                        latest.conversation_seq,
-                    )
-                    .await;
-            }
-
-            if !current_user_id.is_empty() {
+                    .get(conversation_id)
+                    .await?
+                    .unwrap_or_else(|| Conversation {
+                        conversation_id: conversation_id.to_owned(),
+                        ..Default::default()
+                    });
+                let has_receipt = previous
+                    .ext
+                    .contains_key(crate::domain::EXT_MESSAGE_PROJECTION);
+                let previous_read = ReadPosition::from_conversation(&previous);
+                let previous_read = if has_receipt {
+                    previous_read
+                } else {
+                    previous_read.normalize_for_unread_delta()
+                };
+                let previous_receipt = crate::domain::message_projection_receipt(&previous)?;
+                // Local counts can have holes; only a summary supplies an inferred prefix.
+                let summary_seq = if has_receipt {
+                    previous_receipt.summary_seq
+                } else {
+                    previous_read
+                        .last_read_seq
+                        .saturating_add(previous_read.unread_count as u64)
+                };
+                let mut coverage =
+                    crate::domain::TimelineCoverage::from_ranges(previous_receipt.ranges);
+                // A proven cursor folds interleaved operation gaps into one receipt range.
+                if let Some(cursor) = self
+                    .stores
+                    .cursors
+                    .get_conversation_cursor(current_user_id, conversation_id)
+                    .await?
+                    && let Some(range) = crate::domain::SeqRange::new(1, cursor.last_seq)
+                {
+                    coverage.insert(range);
+                }
+                let mut ids = std::collections::HashSet::new();
+                let pending: Vec<&IMMessage> = messages
+                    .iter()
+                    .copied()
+                    .filter(|message| {
+                        coverage
+                            .range_containing(message.conversation_seq)
+                            .is_none()
+                            && ids.insert(if message.server_id.is_empty() {
+                                message.client_msg_id.as_str()
+                            } else {
+                                message.server_id.as_str()
+                            })
+                    })
+                    .collect();
+                let mut projected = previous.clone();
+                let materialized_max = self
+                    .stores
+                    .conversations
+                    .get_local_max_seq(conversation_id)
+                    .await?
+                    .max(previous_receipt.materialized_seq);
+                if latest.conversation_seq >= materialized_max {
+                    projected.last_message_id = Some(latest.server_id().to_string());
+                    projected.last_sender_id = Some(latest.sender_id().to_string());
+                    projected.last_message_at = Some(latest.display_time_ms());
+                    projected.last_message_preview = latest.text_for_storage();
+                    projected.last_message = Some(MessagePreviewElem {
+                        message_id: latest.server_id.clone(),
+                        sender_id: latest.sender_id.clone(),
+                        r#type: latest.message_type,
+                        text: latest.text_for_storage().unwrap_or_default(),
+                        time: latest.display_time_ms(),
+                    });
+                }
+                projected.max_seq = projected.max_seq.max(latest.conversation_seq);
                 let unread_delta = self.unread_delta_for_conversation(
-                    messages,
-                    &conversation_id,
+                    &pending,
+                    conversation_id,
                     current_user_id,
                     previous_read,
                     unread_mode,
+                    summary_seq,
                 );
                 if unread_delta > 0 {
-                    let next_unread = previous_unread.saturating_add(unread_delta);
-                    let next_read_seq = Self::read_seq_for_unread_window(
+                    projected.unread_count = projected.unread_count.saturating_add(unread_delta);
+                    projected.last_read_seq = Self::read_seq_for_unread_window(
                         previous_read,
-                        conversation_max_seq,
-                        next_unread,
+                        projected.max_seq,
+                        projected.unread_count,
                     );
-                    let _ = self
-                        .stores
-                        .conversations
-                        .update_unread(&conversation_id, next_unread, next_read_seq)
-                        .await;
-                    if let Ok(Some(updated)) = self.stores.conversations.get(&conversation_id).await
-                        && updated.unread_count != previous_unread
-                    {
+                }
+                let mention_delta = Self::mention_delta_for_conversation(
+                    &pending,
+                    conversation_id,
+                    current_user_id,
+                    previous_read,
+                    unread_mode,
+                    summary_seq,
+                );
+                if mention_delta > 0 {
+                    projected.mention_me = true;
+                    projected.mention_count = projected.mention_count.saturating_add(mention_delta);
+                }
+                for message in &pending {
+                    if let Some(range) = crate::domain::SeqRange::new(
+                        message.conversation_seq,
+                        message.conversation_seq,
+                    ) {
+                        coverage.insert(range);
+                    }
+                }
+                // Read/cleared history no longer needs individual receipts.
+                coverage = coverage.with_visibility_floor(
+                    previous
+                        .last_read_seq
+                        .max(crate::domain::sync_visibility_floor(&previous)),
+                );
+                projected.ext.insert(
+                    crate::domain::EXT_MESSAGE_PROJECTION.into(),
+                    serde_json::to_string(&crate::domain::MessageProjectionReceipt {
+                        ranges: coverage.ranges().to_vec(),
+                        summary_seq,
+                        materialized_seq: materialized_max.max(
+                            messages
+                                .iter()
+                                .map(|m| m.conversation_seq)
+                                .max()
+                                .unwrap_or(0),
+                        ),
+                    })
+                    .map_err(|e| {
+                        crate::shared::error::FlareError::localized(
+                            crate::shared::error::ErrorCode::DatabaseError,
+                            e.to_string(),
+                        )
+                    })?,
+                );
+                if self
+                    .stores
+                    .conversations
+                    .commit_message_projection(&previous, &projected)
+                    .await?
+                {
+                    if projected.unread_count != previous.unread_count {
                         self.bus.publish(SdkEvent::Conversation(
                             ConversationEvent::UnreadCountChanged {
-                                conversation_id: conversation_id.clone(),
-                                unread_count: updated.unread_count,
+                                conversation_id: conversation_id.to_owned(),
+                                unread_count: projected.unread_count,
                             },
                         ));
                     }
-                }
-                let mention_delta = Self::mention_delta_for_conversation(
-                    messages,
-                    &conversation_id,
-                    current_user_id,
-                    previous_read,
-                    unread_mode,
-                );
-                if mention_delta > 0
-                    && let Ok(Some(mut updated)) =
-                        self.stores.conversations.get(&conversation_id).await
-                {
-                    updated.mention_me = true;
-                    updated.mention_count = updated.mention_count.saturating_add(mention_delta);
-                    self.stores.conversations.save_one(&updated).await?;
-                }
-            } else {
-                let is_new_message = latest.conversation_seq > previous_max_seq;
-                let is_self_message = latest.sender_id() == current_user_id;
-                if is_new_message && !is_self_message {
-                    let last_read_seq = previous.as_ref().map(|c| c.last_read_seq).unwrap_or(0);
-                    let unread_count = previous_unread.saturating_add(1);
-                    let _ = self
-                        .stores
-                        .conversations
-                        .update_unread(&conversation_id, unread_count, last_read_seq)
-                        .await;
+                    committed = true;
+                    break;
                 }
             }
+            if !committed {
+                return Err(crate::shared::error::FlareError::localized(
+                    crate::shared::error::ErrorCode::DatabaseError,
+                    "conversation projection changed; retry message application",
+                ));
+            }
         }
-
         Ok(())
     }
 
@@ -205,35 +248,41 @@ impl ConversationProjectionApplier {
 
     fn unread_delta_for_conversation(
         &self,
-        messages: &[IMMessage],
+        messages: &[&IMMessage],
         conversation_id: &str,
         current_user_id: &str,
         previous_read: ReadPosition,
         unread_mode: UnreadApplyMode,
+        summary_seq: u64,
     ) -> u32 {
         messages
             .iter()
             .filter(|message| message.conversation_id == conversation_id)
             .filter(|message| message.sender_id() != current_user_id)
             .filter(|message| !message.is_recalled)
-            .filter(|message| Self::should_count_unread(message, previous_read, unread_mode))
+            .filter(|message| {
+                Self::should_count_unread(message, previous_read, unread_mode, summary_seq)
+            })
             .count()
             .min(u32::MAX as usize) as u32
     }
 
     fn mention_delta_for_conversation(
-        messages: &[IMMessage],
+        messages: &[&IMMessage],
         conversation_id: &str,
         current_user_id: &str,
         previous_read: ReadPosition,
         unread_mode: UnreadApplyMode,
+        summary_seq: u64,
     ) -> u32 {
         messages
             .iter()
             .filter(|message| message.conversation_id == conversation_id)
             .filter(|message| message.sender_id() != current_user_id)
             .filter(|message| !message.is_recalled)
-            .filter(|message| Self::should_count_unread(message, previous_read, unread_mode))
+            .filter(|message| {
+                Self::should_count_unread(message, previous_read, unread_mode, summary_seq)
+            })
             .filter(|message| Self::mentions_current_user(message, current_user_id))
             .count()
             .min(u32::MAX as usize) as u32
@@ -255,10 +304,8 @@ impl ConversationProjectionApplier {
         message: &IMMessage,
         previous_read: ReadPosition,
         unread_mode: UnreadApplyMode,
+        accounted_through: u64,
     ) -> bool {
-        let accounted_through = previous_read
-            .last_read_seq
-            .saturating_add(previous_read.unread_count as u64);
         match unread_mode {
             UnreadApplyMode::SyncReplay => {
                 message.conversation_seq > previous_read.last_read_seq
@@ -432,6 +479,29 @@ mod tests {
 
     #[async_trait]
     impl ConversationWriter for MemoryConversationStore {
+        async fn commit_message_projection(
+            &self,
+            expected: &Conversation,
+            projected: &Conversation,
+        ) -> Result<bool> {
+            let seq = crate::domain::message_projection_receipt(projected)?.materialized_seq;
+            let mut data = self.data.write().await;
+            let Some(current) = data.get_mut(&expected.conversation_id) else {
+                return Ok(false);
+            };
+            if !crate::domain::message_projection_matches(current, expected) {
+                return Ok(false);
+            }
+            crate::domain::copy_message_projection(current, projected);
+            drop(data);
+            let mut materialized = self.materialized_max_seq.write().await;
+            let value = materialized
+                .entry(projected.conversation_id.clone())
+                .or_default();
+            *value = (*value).max(seq);
+            Ok(true)
+        }
+
         async fn save_batch(&self, conversations: &[Conversation]) -> Result<()> {
             let mut data = self.data.write().await;
             for conversation in conversations {
@@ -1222,5 +1292,112 @@ mod tests {
         let updated = conversations.get("conv-1").await.unwrap().unwrap();
         assert_eq!(updated.last_message_id.as_deref(), Some("server-new"));
         assert_eq!(updated.max_seq, 9);
+    }
+    #[cfg(feature = "storage-sqlite")]
+    #[tokio::test]
+    async fn failed_projection_is_replayed_after_message_storage_and_survives_a_new_applier() {
+        use crate::application::notification::{
+            InboundDelivery, NotificationHandlerRegistry, NotificationInboundPipeline,
+        };
+        use crate::application::services::{EventDeduper, MessageDeduper};
+        use crate::application::usecases::SyncApplyUseCase;
+        use crate::infrastructure::persistence::{
+            SqliteConversationRepo, SqliteMessageRepo, in_memory_im_provider, sqlite_init_schema,
+        };
+        use flare_proto::common::{
+            Message, MessageContent, SingleConversationSyncRes, SyncSliceItem, TextContent,
+            message_content::Content, sync_slice_item::Payload,
+        };
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlite_init_schema(&pool).await.unwrap();
+        let mut stores = in_memory_im_provider();
+        stores.messages = Arc::new(SqliteMessageRepo::new(pool.clone()));
+        stores.conversations = Arc::new(SqliteConversationRepo::new(pool.clone()));
+        let make_applier = || {
+            let bus = EventBus::new();
+            SyncApplyUseCase::new(
+                stores.clone(),
+                bus.clone(),
+                EventDeduper::new(Some(32)),
+                NotificationInboundPipeline::new(
+                    Arc::new(NotificationHandlerRegistry::new()),
+                    MessageDeduper::new(Some(32)),
+                    bus,
+                ),
+            )
+        };
+        let response = SingleConversationSyncRes {
+            conversation_id: "conv-1".into(),
+            max_conversation_seq: 1,
+            items: vec![SyncSliceItem {
+                conversation_seq: 1,
+                payload: Some(Payload::Message(Message {
+                    server_id: "server-1".into(),
+                    client_msg_id: "client-1".into(),
+                    conversation_id: "conv-1".into(),
+                    channel_id: "group-1".into(),
+                    conversation_type: flare_proto::common::ConversationType::Group as i32,
+                    sender_id: "u2".into(),
+                    conversation_seq: 1,
+                    content: Some(MessageContent {
+                        content: Some(Content::Text(TextContent {
+                            text: "hello".into(),
+                            mentions: vec![flare_proto::common::Mention {
+                                r#type: flare_proto::common::MentionType::User as i32,
+                                user_id: "u1".into(),
+                                ..Default::default()
+                            }],
+                        })),
+                    }),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        sqlx::query("CREATE TRIGGER reject_projection BEFORE UPDATE OF mention_count ON conversations WHEN NEW.mention_count > OLD.mention_count BEGIN SELECT RAISE(ABORT, 'projection unavailable'); END")
+            .execute(&pool).await.unwrap();
+        make_applier()
+            .apply_single_conversation_page("conv-1", "u1", 0, &response, InboundDelivery::Live)
+            .await
+            .expect_err("projection failure reaches the sync caller");
+        assert!(stores.messages.get("server-1").await.unwrap().is_some());
+        let failed = stores.conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!((failed.unread_count, failed.mention_count), (0, 0));
+        assert!(
+            !failed
+                .ext
+                .contains_key(crate::domain::EXT_MESSAGE_PROJECTION)
+        );
+        sqlx::query("DROP TRIGGER reject_projection")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let applier = make_applier();
+        let applied = applier
+            .apply_single_conversation_page("conv-1", "u1", 0, &response, InboundDelivery::Live)
+            .await
+            .unwrap();
+        assert_eq!(applied.max_seq, 1);
+        let committed = stores.conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!((committed.unread_count, committed.mention_count), (1, 1));
+        // A server snapshot cannot overwrite the local receipt.
+        let mut summary = conversation_summary(1, 0, 0);
+        summary.ext.insert(
+            crate::domain::EXT_MESSAGE_PROJECTION.into(),
+            "[{\"from\":1,\"to\":999}]".into(),
+        );
+        stores.conversations.save_one(&summary).await.unwrap();
+        let merged = stores.conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!(
+            merged.ext.get(crate::domain::EXT_MESSAGE_PROJECTION),
+            committed.ext.get(crate::domain::EXT_MESSAGE_PROJECTION)
+        );
+        make_applier()
+            .apply_single_conversation_page("conv-1", "u1", 0, &response, InboundDelivery::Live)
+            .await
+            .unwrap();
+        let replayed = stores.conversations.get("conv-1").await.unwrap().unwrap();
+        assert_eq!((replayed.unread_count, replayed.mention_count), (1, 1));
     }
 }

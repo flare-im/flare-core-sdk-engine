@@ -359,6 +359,14 @@ impl ConversationViewAssembler {
     }
 
     pub async fn list_by_query(&self, query: &ConversationListQuery) -> Result<Vec<Conversation>> {
+        let summaries = self.list_summaries_by_query(query).await?;
+        Ok(self.hydrate_conversations(summaries).await)
+    }
+
+    pub async fn list_summaries_by_query(
+        &self,
+        query: &ConversationListQuery,
+    ) -> Result<Vec<Conversation>> {
         let mut summaries = self.store.list_by_query(query).await?;
         if let Some(cursor) = query
             .cursor
@@ -392,7 +400,7 @@ impl ConversationViewAssembler {
         if let Some(limit) = query.normalized_limit() {
             list.truncate(limit as usize);
         }
-        Ok(self.hydrate_conversations(list).await)
+        Ok(list)
     }
 
     pub async fn get(&self, conversation_id: &str) -> Result<Option<Conversation>> {

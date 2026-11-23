@@ -194,6 +194,15 @@ pub const API_OPERATIONS: &[ApiOperation] = &[
         dev_only: false,
     },
     ApiOperation {
+        id: "connection.set_protocol_mode",
+        module: "session",
+        core: Some("IMClient::set_protocol_mode"),
+        c_symbol: Some("flare_sdk_invoke_json"),
+        c_dispatch_op: None,
+        tauri: None,
+        dev_only: false,
+    },
+    ApiOperation {
         id: "access.get_status",
         module: "session",
         core: Some("IMClient::access_status"),

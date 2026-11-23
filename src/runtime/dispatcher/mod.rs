@@ -21,7 +21,7 @@ use crate::application::notification::{
 use crate::application::projections::ConversationProjectionApplier;
 use crate::application::services::IncomingMessageConverger;
 use crate::application::services::MessageDeduper;
-use crate::application::services::{EventDedupeKey, EventDeduper};
+use crate::application::services::{EventClaim, EventDeduper, EventReservation};
 use crate::domain::{DEFAULT_SYNC_LIMIT, SyncCursorVo, local_cleared_through_seq};
 use crate::infrastructure::persistence::StoreProvider;
 use crate::infrastructure::protocol::{DeliveryAcks, DownlinkPayload};
@@ -492,21 +492,19 @@ async fn local_waterline_reached_with_stores(
     let Some(stores) = stores else {
         return false;
     };
-    if stores
-        .conversations
-        .get(conversation_id)
-        .await
-        .map(|conversation| {
-            conversation
-                .map(|conversation| {
-                    crate::domain::sync_visibility_floor(&conversation) >= target_seq
-                })
-                .unwrap_or(false)
-        })
-        .unwrap_or(false)
-    {
-        return true;
-    }
+    let coverage = match stores.conversations.get(conversation_id).await {
+        Ok(Some(conversation)) => {
+            if crate::domain::sync_visibility_floor(&conversation) >= target_seq {
+                return true;
+            }
+            match crate::domain::message_projection_coverage(&conversation) {
+                Ok(coverage) => coverage,
+                Err(_) => return false,
+            }
+        }
+        Ok(None) => crate::domain::TimelineCoverage::default(),
+        Err(_) => return false,
+    };
 
     let user_id = user_id.trim();
     if user_id.is_empty() {
@@ -532,9 +530,10 @@ async fn local_waterline_reached_with_stores(
             .get_by_conversation(conversation_id, target_seq.saturating_add(1), 1)
             .await
             .map(|messages| {
-                messages
-                    .iter()
-                    .any(|message| message.conversation_seq == target_seq)
+                messages.iter().any(|message| {
+                    message.conversation_seq == target_seq
+                        && coverage.range_containing(target_seq).is_some()
+                })
             })
             .unwrap_or(false);
     }
@@ -552,7 +551,7 @@ async fn local_waterline_reached_with_stores(
             messages
                 .iter()
                 .map(|message| message.conversation_seq)
-                .filter(|seq| *seq > cursor_seq)
+                .filter(|seq| *seq > cursor_seq && coverage.range_containing(*seq).is_some())
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();

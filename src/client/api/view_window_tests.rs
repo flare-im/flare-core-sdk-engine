@@ -37,9 +37,9 @@ fn keys(rows: &[IMMessage]) -> Vec<String> {
     rows.iter().map(IMMessage::row_key).collect()
 }
 
-/// 发送确认前后行键都是 `client_msg_id`：确认是同一个键的原位更新，不是删掉旧行再插入新行。
+/// ACK 把本地键显式迁移到服务端键，窗口只保留同一发送的已确认行。
 #[tokio::test]
-async fn the_ack_keeps_the_row_key_and_updates_the_row_in_place() {
+async fn the_ack_migrates_the_local_identity_without_duplicating_the_row() {
     let h = Harness::new(setup(40, 50, &[[1, 50]])).await;
     h.open().await;
     h.send("cm-a").await;
@@ -47,7 +47,7 @@ async fn the_ack_keeps_the_row_key_and_updates_the_row_in_place() {
     let ViewDelta::Timeline { append, .. } = timeline_delta(&sent[0]) else {
         panic!("timeline delta");
     };
-    assert_eq!(keys(append), vec!["cm-a"]);
+    assert_eq!(keys(append), vec!["client:cm-a"]);
 
     h.ack("cm-a", 51).await;
     let acked = h.take_updates();
@@ -62,10 +62,11 @@ async fn the_ack_keeps_the_row_key_and_updates_the_row_in_place() {
     else {
         panic!("timeline delta");
     };
-    assert!(prepend.is_empty() && append.is_empty() && remove.is_empty());
-    assert_eq!(keys(upsert), vec!["cm-a"]);
-    assert_eq!(upsert[0].conversation_seq, 51);
-    assert_eq!(upsert[0].server_id, "s51");
+    assert!(prepend.is_empty() && upsert.is_empty());
+    assert_eq!(remove, &vec!["client:cm-a"]);
+    assert_eq!(keys(append), vec!["server:s51"]);
+    assert_eq!(append[0].conversation_seq, 51);
+    assert_eq!(append[0].server_id, "s51");
     let state = h.state().await;
     assert_eq!(state.seqs, seqs(11, 51));
     assert!(state.pending.is_empty());
@@ -143,7 +144,7 @@ async fn a_reaction_rereads_exactly_one_row() {
     let ViewDelta::Timeline { upsert, remove, .. } = timeline_delta(&updates[0]) else {
         panic!("timeline delta");
     };
-    assert_eq!(keys(upsert), vec!["m10"]);
+    assert_eq!(keys(upsert), vec!["server:s10"]);
     assert!(upsert[0].is_edited);
     assert!(remove.is_empty());
 
@@ -179,7 +180,7 @@ async fn a_deleted_message_leaves_the_window_by_key() {
     let ViewDelta::Timeline { remove, upsert, .. } = timeline_delta(&updates[0]) else {
         panic!("timeline delta");
     };
-    assert_eq!(remove, &vec!["m7".to_string()]);
+    assert_eq!(remove, &vec!["server:s7".to_string()]);
     assert!(upsert.is_empty());
     assert!(!h.state().await.seqs.contains(&7));
 }
@@ -432,7 +433,7 @@ async fn produced_delta_cases() -> Vec<Value> {
     record(
         &h,
         &mut cases,
-        "the ack updates the pending row under the same key",
+        "the ack migrates the pending row identity",
         async {
             h.ack("cm-a", 6).await;
         },
@@ -600,7 +601,7 @@ async fn timeline_delta_vectors_are_what_the_core_produces() {
         let file = json!({
             "schemaVersion": 1,
             "description": DELTA_VECTORS_DESCRIPTION,
-            "rowKey": "clientMsgId when non-empty, else serverId when non-empty, else seq:<conversationId>:<conversationSeq>",
+            "rowKey": "the core-provided timelineKey; ACK migrates the local row identity",
             "applyRules": DELTA_APPLY_RULES,
             "cases": produced,
         });
@@ -674,5 +675,5 @@ fn the_page_response_only_names_the_revision() {
         server_id: "s-1".into(),
         ..Default::default()
     });
-    assert_eq!(message.row_key(), "cm-1");
+    assert_eq!(message.row_key(), "server:s-1");
 }

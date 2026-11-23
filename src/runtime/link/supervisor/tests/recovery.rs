@@ -185,6 +185,102 @@ async fn lab(seed: Option<&Value>) -> Lab {
     }
 }
 
+async fn cooling_single_access_point() -> Lab {
+    let value = manifest(1, &[("ap-a", "active")]);
+    let lab = lab(Some(&value)).await;
+    let kernel = lab.access.kernel().await.unwrap();
+    for _ in 0..10 {
+        lab.access.record(
+            "ap-a",
+            flare_access::Observation::http(flare_access::Outcome::Failure(
+                flare_access::FailureClass::HttpConnectFailed,
+            )),
+        );
+    }
+    assert!(matches!(
+        kernel
+            .health()
+            .view("ap-a", lab.access.net(), now_ms())
+            .breaker,
+        flare_access::health::BreakerView::Open { .. }
+    ));
+    lab
+}
+
+#[tokio::test]
+async fn returning_network_trials_a_cooling_access_point_without_waiting_for_cooldown() {
+    let mut lab = cooling_single_access_point().await;
+    lab.h
+        .link
+        .start("alice", Tokens::new("t1", []))
+        .await
+        .unwrap();
+    lab.h.wait_phase(ConnectionPhase::Reconnecting, SHORT).await;
+    lab.h.link.network_changed(false, false).await;
+    lab.h
+        .wait_phase(ConnectionPhase::WaitingForNetwork, SHORT)
+        .await;
+    lab.h.link.network_changed(true, false).await;
+    lab.h.wait_phase(ConnectionPhase::Online, SHORT).await;
+    assert_eq!(lab.h.driver.opened().len(), 1, "one recovery trial");
+    lab.h.link.stop().await;
+}
+
+#[tokio::test]
+async fn repeated_available_reports_do_not_skip_a_cooling_access_point() {
+    let mut lab = cooling_single_access_point().await;
+    lab.h
+        .link
+        .start("alice", Tokens::new("t1", []))
+        .await
+        .unwrap();
+    lab.h.wait_phase(ConnectionPhase::Reconnecting, SHORT).await;
+    lab.h.link.network_changed(true, false).await;
+    lab.h.wait_phase(ConnectionPhase::Connecting, SHORT).await;
+    lab.h.wait_phase(ConnectionPhase::Reconnecting, SHORT).await;
+    assert!(lab.h.driver.opened().is_empty());
+    assert!(matches!(
+        lab.access
+            .kernel_now()
+            .unwrap()
+            .health()
+            .view("ap-a", lab.access.net(), now_ms())
+            .breaker,
+        flare_access::health::BreakerView::Open { .. }
+    ));
+    lab.h.link.stop().await;
+}
+
+#[tokio::test]
+async fn returning_network_does_not_steal_an_in_flight_half_open_trial() {
+    let mut lab = cooling_single_access_point().await;
+    lab.h
+        .link
+        .start("alice", Tokens::new("t1", []))
+        .await
+        .unwrap();
+    lab.h.wait_phase(ConnectionPhase::Reconnecting, SHORT).await;
+    lab.h.link.network_changed(false, false).await;
+    lab.h
+        .wait_phase(ConnectionPhase::WaitingForNetwork, SHORT)
+        .await;
+    let kernel = lab.access.kernel_now().unwrap();
+    let net = lab.access.net();
+    assert_eq!(kernel.health().expedite_trials(net, now_ms()), 1);
+    assert!(kernel.health().claim_trial("ap-a", net, now_ms()));
+    lab.h.link.network_changed(true, false).await;
+    lab.h.wait_phase(ConnectionPhase::Connecting, SHORT).await;
+    lab.h.wait_phase(ConnectionPhase::Reconnecting, SHORT).await;
+    assert!(lab.h.driver.opened().is_empty());
+    assert!(matches!(
+        kernel.health().view("ap-a", net, now_ms()).breaker,
+        flare_access::health::BreakerView::HalfOpen {
+            trial_available: false
+        }
+    ));
+    lab.h.link.stop().await;
+}
+
 impl Lab {
     async fn next_changed(&mut self, serial: u64, within: Duration) -> AccessChanged {
         let deadline = tokio::time::Instant::now() + within;

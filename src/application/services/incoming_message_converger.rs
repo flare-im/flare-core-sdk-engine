@@ -53,6 +53,7 @@ impl IncomingMessageConverger {
         }
         for message in &mut messages {
             MessageDeliveryService::normalize_incoming_server_state(message);
+            crate::domain::enforce_retention_visibility(message);
         }
         let local_by_client = self.local_by_client_msg_id(&messages).await?;
         let local_by_server = self.local_by_server_id(&messages).await?;
@@ -90,13 +91,41 @@ impl IncomingMessageConverger {
                     }
                 }
                 IncomingMessageConvergenceDecision::DropDuplicate => {
-                    if let Some(local) = local_by_server
-                        && message.status > local.status
-                        && !message.server_id.trim().is_empty()
+                    let mut message = message;
+                    let projected = match self
+                        .conversation_store
+                        .get(&message.conversation_id)
+                        .await?
                     {
-                        self.message_store
-                            .update_status(&message.server_id, message.status)
-                            .await?;
+                        Some(conversation) => {
+                            crate::domain::message_projection_coverage(&conversation)?
+                                .range_containing(message.conversation_seq)
+                                .is_some()
+                        }
+                        None => false,
+                    };
+                    if let Some(local) = local_by_server {
+                        crate::domain::merge_message_event_state(&mut message, local);
+                        message.status = message.status.max(local.status);
+                        message.is_read |= local.is_read;
+                        message.is_recalled |= local.is_recalled;
+                        if message.status != local.status
+                            || message.retention_state != local.retention_state
+                            || message.retention_policy != local.retention_policy
+                            || message.encoded_content != local.encoded_content
+                            || message.attributes != local.attributes
+                            || message.extensions != local.extensions
+                        {
+                            self.message_store.save_one(&message).await?;
+                            self.bus.publish(SdkEvent::Conversation(
+                                crate::kernel::event::ConversationEvent::Synced {
+                                    conversation_ids: vec![message.conversation_id.clone()],
+                                },
+                            ));
+                        }
+                    }
+                    if !projected {
+                        out.push(message);
                     }
                 }
             }
@@ -171,20 +200,27 @@ fn canonicalize_incoming_messages(
 ) -> (Vec<IMMessage>, Vec<ConversationIdRewrite>) {
     let mut seen = HashSet::new();
     let mut rewrites = Vec::new();
-    let mut out = Vec::with_capacity(messages.len());
+    let mut out: Vec<IMMessage> = Vec::with_capacity(messages.len());
+    let mut by_server: HashMap<String, usize> = HashMap::new();
     for mut message in messages {
-        let Some(rewrite) = ConversationIdentityService::canonicalize_single_chat_message(
+        if let Some(rewrite) = ConversationIdentityService::canonicalize_single_chat_message(
             &mut message,
             current_user_id,
-        ) else {
-            out.push(message);
-            continue;
-        };
-        let key = (rewrite.from.clone(), rewrite.to.clone());
-        if seen.insert(key) {
-            rewrites.push(rewrite);
+        ) {
+            let key = (rewrite.from.clone(), rewrite.to.clone());
+            if seen.insert(key) {
+                rewrites.push(rewrite);
+            }
         }
-        out.push(message);
+        if let Some(&index) = by_server.get(&message.server_id) {
+            crate::domain::merge_message_event_state(&mut message, &out[index]);
+            out[index] = message;
+        } else {
+            if !message.server_id.trim().is_empty() {
+                by_server.insert(message.server_id.clone(), out.len());
+            }
+            out.push(message);
+        }
     }
     (out, rewrites)
 }
@@ -248,6 +284,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_snapshots_in_one_batch_reach_consumers_only_once() {
+        let mut original = IMMessage::new(ProtoMessage {
+            server_id: "m".into(),
+            conversation_id: "c".into(),
+            conversation_type: ProtoConversationType::Group as i32,
+            ..Default::default()
+        });
+        original.encoded_content = crate::content::ContentBuilder::text("private")
+            .build()
+            .encode();
+        let mut purged = original.clone();
+        purged.retention_state = Some(flare_proto::common::MessageRetentionState {
+            lifecycle: 5,
+            content_visibility: 4,
+            ..Default::default()
+        });
+        let messages = Arc::new(MemoryMessageStore::new());
+        let converger = IncomingMessageConverger::new(
+            messages,
+            Arc::new(MemoryConversationStore::new()),
+            EventBus::new(),
+            None,
+        );
+        let output = converger
+            .converge_messages("me", vec![purged, original])
+            .await
+            .unwrap();
+        assert_eq!(output.len(), 1);
+        assert!(output[0].encoded_content.is_empty());
+        assert_eq!(output[0].retention_state.as_ref().unwrap().lifecycle, 5);
+    }
+
+    #[tokio::test]
     async fn canonicalizes_single_chat_messages_and_migrates_existing_local_rows() {
         let current_user = "me";
         let peer = "peer";
@@ -298,7 +367,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_server_message_refreshes_lower_local_status() {
+    async fn an_unprojected_stored_message_refreshes_status_and_stays_replayable() {
         let current_user = "me";
         let peer = "peer";
         let conversation_id = generate_single_chat_conversation_id(current_user, peer);
@@ -319,12 +388,89 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(fresh.is_empty());
+        assert_eq!(fresh.len(), 1, "stored alone does not mean projected");
         let stored = messages
             .get_by_message_ids(&["server-1".to_string()])
             .await
             .unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].status, MessageStatus::Sent as i32);
+    }
+
+    #[tokio::test]
+    async fn projected_duplicate_applies_redaction_without_receiving_or_unreading_again() {
+        let conversation_id = generate_single_chat_conversation_id("me", "peer");
+        let conversations = Arc::new(MemoryConversationStore::new());
+        let messages = Arc::new(MemoryMessageStore::with_conversations(
+            conversations.clone(),
+        ));
+        let mut local = single_message("server", &conversation_id, "peer", 7);
+        local.encoded_content = crate::content::ContentBuilder::text("private")
+            .build()
+            .encode();
+        local.is_read = true;
+        messages.save_one(&local).await.unwrap();
+        conversations
+            .save_one(&Conversation {
+                conversation_id: conversation_id.clone(),
+                last_read_seq: 7,
+                max_seq: 9,
+                unread_count: 2,
+                last_message_id: Some("server".into()),
+                last_message_preview: Some("private".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let bus = EventBus::new();
+        let mut events = bus.subscribe();
+        let converger =
+            IncomingMessageConverger::new(messages.clone(), conversations.clone(), bus, None);
+        let mut snapshot = local.clone();
+        snapshot.is_read = false;
+        snapshot.encoded_content.clear();
+        snapshot.retention_state = Some(flare_proto::common::MessageRetentionState {
+            lifecycle: flare_proto::common::MessageRetentionLifecycle::Expired as i32,
+            content_visibility: flare_proto::common::ContentVisibility::Redacted as i32,
+            ..Default::default()
+        });
+        assert!(
+            converger
+                .converge_messages("me", vec![snapshot.clone()])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let stored = messages.get("server").await.unwrap().unwrap();
+        assert!(stored.encoded_content.is_empty());
+        assert!(stored.is_read);
+        assert_eq!(stored.retention_state, snapshot.retention_state);
+        let conversation = conversations.get(&conversation_id).await.unwrap().unwrap();
+        assert_eq!(conversation.unread_count, 2);
+        assert!(conversation.last_message_preview.is_none());
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+                .await
+                .unwrap(),
+            Ok(crate::kernel::event::SdkEvent::Conversation(
+                crate::kernel::event::ConversationEvent::Synced { .. }
+            ))
+        ));
+        assert!(
+            converger
+                .converge_messages("me", vec![local])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            messages
+                .get("server")
+                .await
+                .unwrap()
+                .unwrap()
+                .encoded_content
+                .is_empty()
+        );
     }
 }

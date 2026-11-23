@@ -282,6 +282,22 @@ impl ConversationReader for MemoryConversationStore {
 
 #[async_trait]
 impl ConversationWriter for MemoryConversationStore {
+    async fn commit_message_projection(
+        &self,
+        expected: &Conversation,
+        projected: &Conversation,
+    ) -> Result<bool> {
+        let mut data = self.data.write().await;
+        let Some(current) = data.get_mut(&expected.conversation_id) else {
+            return Ok(false);
+        };
+        if !flare_im_core_sdk::storage::message_projection_matches(current, expected) {
+            return Ok(false);
+        }
+        flare_im_core_sdk::storage::copy_message_projection(current, projected);
+        Ok(true)
+    }
+
     async fn save_batch(&self, conversations: &[Conversation]) -> Result<()> {
         let mut data = self.data.write().await;
         for conv in conversations {

@@ -108,6 +108,58 @@ async fn load_older_reads_a_full_page_inside_a_range_without_a_request() {
     assert_eq!(h.server.take_requests(), vec![]);
 }
 
+#[tokio::test]
+async fn load_older_reads_adjacent_cached_rows_without_coverage_or_network() {
+    let h = Harness::new(Setup {
+        page_size: 4,
+        max_seq: 12,
+        visible_after_seq: 0,
+        server: &[[1, 12]],
+        local: &[[5, 12]],
+        coverage: &[],
+    })
+    .await;
+    h.open().await;
+    assert_eq!(h.load_older().await.unwrap(), 4);
+    assert_eq!(h.window().await, (seqs(5, 12), true));
+    assert!(h.server.take_requests().is_empty());
+    assert!(h.coverage().await.is_empty());
+}
+
+#[tokio::test]
+async fn disconnected_paging_shows_a_detached_cached_segment_and_keeps_the_gap() {
+    let h = Harness::new(Setup {
+        page_size: 4,
+        max_seq: 20,
+        visible_after_seq: 3,
+        server: &[[4, 20]],
+        local: &[[1, 8], [17, 20]],
+        coverage: &[[1, 8], [17, 20]],
+    })
+    .await;
+    h.open().await;
+    h.server
+        .backfill_pages
+        .lock()
+        .unwrap()
+        .push_back(Err(crate::FlareError::localized(
+            ErrorCode::NotConnected,
+            "fixture is offline",
+        )));
+    assert_eq!(h.load_older().await.unwrap(), 4);
+    assert_eq!(h.window().await, (seqs(5, 8), true));
+    let cached = h.state().await;
+    assert!(cached.has_newer);
+    assert!(!cached.attached_to_latest);
+    assert_eq!(h.server.take_requests(), vec![Req::Before(17, 4)]);
+    assert_eq!(h.coverage().await, vec![[1, 8], [17, 20]]);
+    assert_eq!(h.load_older().await.unwrap(), 1);
+    assert_eq!(h.window().await, (seqs(4, 8), false));
+    assert_eq!(h.load_newer().await.unwrap(), 4);
+    assert_eq!(h.window().await, (seqs(4, 12), false));
+    assert_eq!(h.server.take_requests(), vec![Req::After(8, 4)]);
+}
+
 /// 读到区间边界：以边界为锚回填缺的行数，再在扩展后的区间内读满。
 #[tokio::test]
 async fn load_older_backfills_at_the_range_boundary() {
@@ -444,6 +496,16 @@ fn vectors() -> Vectors {
 async fn run_step(h: &Harness, step: &Step, at: &str) -> Result<()> {
     match step.action.as_str() {
         "open" => return h.try_open().await,
+        "settleForeground" => {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while h.view.inner.foreground_pull.lock().contains(CONVERSATION) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the foreground pull settles");
+            h.settle().await;
+        }
         "openAround" => return h.open_around(step.message_id.as_deref(), step.seq).await,
         "loadOlder" => return h.load_older().await.map(|_| ()),
         "loadNewer" => return h.load_newer().await.map(|_| ()),

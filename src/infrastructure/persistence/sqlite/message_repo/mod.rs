@@ -15,9 +15,11 @@ use tracing::debug;
 use crate::content::message_elem::{TextElem, elem_preview_storage_payload};
 use crate::domain::{
     EditApplyResult, MessageDeliveryService, MessageReader, MessageStore, MessageWriter,
-    OperationApplyResult, carry_plugin_message_state, encode_plugin_message_state,
-    local_cleared_through_seq, merge_message_event_attributes, message_visible_after_clear,
-    validate_plugin_shared_state, write_plugin_message_state, write_plugin_shared_state,
+    OperationApplyResult, RetentionEventKind, advance_message_event, apply_retention_event,
+    encode_plugin_message_state, enforce_retention_visibility, local_cleared_through_seq,
+    merge_message_event_state, message_attribute_seq, message_visible_after_clear,
+    retention_hides_content, validate_plugin_shared_state, write_message_mark,
+    write_plugin_message_state, write_plugin_shared_state,
 };
 use crate::model::conversation::ConversationType;
 use crate::model::message::{
@@ -33,7 +35,7 @@ use crate::shared::error::{ErrorCode, FlareError, Result};
 use crate::shared::util::time::now_millis;
 use flare_plugin_protocol::state::{SharedState, SharedStateOrder};
 use flare_plugin_protocol::ui::PluginMessageState;
-use flare_proto::common::{ContentVisibility, MessageStatus, MessageType};
+use flare_proto::common::{MessageStatus, MessageType};
 
 use super::identity_repair;
 
@@ -91,13 +93,6 @@ where
     M::decode(bytes.as_slice()).ok()
 }
 
-fn retention_hides_content(state: &MessageRetentionState) -> bool {
-    matches!(
-        ContentVisibility::try_from(state.content_visibility).ok(),
-        Some(ContentVisibility::Hidden | ContentVisibility::Redacted | ContentVisibility::Purged)
-    )
-}
-
 fn parse_mention_users(s: Option<&str>) -> Vec<String> {
     let s = match s {
         Some(x) if !x.is_empty() => x,
@@ -132,9 +127,12 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
 ///
 /// 取 `max(IMMessage::timeline_sort_ts, 墙钟)`，避免仅保留较小入队时间而弱于历史消息、被 `LIMIT` 裁掉。
 fn effective_sort_ts_for_persist(message: &IMMessage) -> i64 {
+    let sort_ts = message.timeline_sort_ts();
+    if message.conversation_seq == 0 && message.local_state.is_local && sort_ts > 0 {
+        return u64_to_i64_saturating(sort_ts);
+    }
     let wall = now_ms_i64().max(0) as u64;
-    let merged = message.timeline_sort_ts().max(wall);
-    u64_to_i64_saturating(merged)
+    u64_to_i64_saturating(sort_ts.max(wall))
 }
 
 fn message_preview_for_storage(message: &IMMessage) -> Option<String> {
@@ -164,6 +162,11 @@ fn message_search_text_for_storage(message: &IMMessage) -> Option<String> {
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
 }
+
+// Resolve server IDs first; a client ID fallback must identify exactly one row.
+const MESSAGE_ID_MATCH: &str = "rowid = (SELECT rowid FROM messages WHERE server_id = ? AND server_id != '' UNION ALL SELECT MIN(rowid) FROM messages WHERE client_msg_id = ? AND client_msg_id != '' AND is_local = 1 HAVING COUNT(*) = 1 LIMIT 1)";
+
+const MESSAGE_ACTION_ID_MATCH: &str = "rowid = (SELECT rowid FROM messages WHERE server_id = ? AND server_id != '' UNION ALL SELECT MIN(rowid) FROM messages WHERE client_msg_id = ? AND client_msg_id != '' HAVING COUNT(*) = 1 LIMIT 1)";
 
 async fn delete_message_fts_by_server_id_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -249,6 +252,51 @@ async fn upsert_message_fts_rows_tx(
     Ok(())
 }
 
+async fn merge_orphan_reactions_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    message: &mut IMMessage,
+) -> Result<bool> {
+    let explicit =
+        message.attributes.contains_key("reactionsJson") || !message.reactions.is_empty();
+    let filter = if explicit { "AND event_seq > 0" } else { "" };
+    let pending = sqlx::query(&format!("SELECT emoji, user_id, event_seq, is_removed FROM message_reactions WHERE message_server_id = ? AND conversation_id = ? {filter}"))
+        .bind(&message.server_id).bind(&message.conversation_id).fetch_all(&mut **tx).await.map_err(sqlx_err)?;
+    let has_pending = !pending.is_empty();
+    for row in pending {
+        let emoji: String = row.try_get("emoji").map_err(sqlx_err)?;
+        let user: String = row.try_get("user_id").map_err(sqlx_err)?;
+        let seq =
+            u64::try_from(row.try_get::<i64, _>("event_seq").map_err(sqlx_err)?).map_err(|_| {
+                FlareError::localized(ErrorCode::DatabaseError, "negative reaction event sequence")
+            })?;
+        let key = format!("lastReactionEventSeq:{user}:{emoji}");
+        if (seq > 0 && seq > message_attribute_seq(&message.attributes, &key))
+            || (seq == 0 && !explicit)
+        {
+            let removed = row.try_get::<i32, _>("is_removed").map_err(sqlx_err)? != 0;
+            message.apply_reaction_change(
+                &user,
+                &emoji,
+                if removed {
+                    ReactionAction::Remove
+                } else {
+                    ReactionAction::Add
+                } as i32,
+            );
+            if seq > 0 {
+                message.attributes.insert(key, seq.to_string());
+            }
+        }
+    }
+    if has_pending {
+        message
+            .attributes
+            .entry("reactionsJson".into())
+            .or_insert_with(|| "[]".into());
+    }
+    Ok(has_pending)
+}
+
 async fn merge_reactions_to_server_id_tx(
     tx: &mut Transaction<'_, Sqlite>,
     old_server_id: &str,
@@ -264,12 +312,16 @@ async fn merge_reactions_to_server_id_tx(
 
     let now = now_ms_i64();
     sqlx::query(
-        r#"INSERT OR REPLACE INTO message_reactions (
-               message_server_id, conversation_id, emoji, user_id, created_at, updated_at
+        r#"INSERT INTO message_reactions (
+               message_server_id, conversation_id, emoji, user_id, created_at, updated_at, event_seq, is_removed
            )
-           SELECT ?, ?, emoji, user_id, created_at, ?
+           SELECT ?, ?, emoji, user_id, created_at, ?, event_seq, is_removed
            FROM message_reactions
-           WHERE message_server_id = ?"#,
+           WHERE message_server_id = ?
+            ON CONFLICT(message_server_id, emoji, user_id) DO UPDATE SET
+                conversation_id = excluded.conversation_id, updated_at = excluded.updated_at,
+                event_seq = excluded.event_seq, is_removed = excluded.is_removed
+            WHERE excluded.event_seq > message_reactions.event_seq"#,
     )
     .bind(target_server_id)
     .bind(target_conversation_id)
@@ -292,6 +344,7 @@ async fn remove_conflicting_client_msg_rows_tx(
     client_msg_id: &str,
     target_server_id: &str,
     target_conversation_id: &str,
+    target_sender_id: &str,
 ) -> Result<()> {
     let client_msg_id = client_msg_id.trim();
     let target_server_id = target_server_id.trim();
@@ -302,10 +355,12 @@ async fn remove_conflicting_client_msg_rows_tx(
     let rows = sqlx::query(
         r#"SELECT server_id
            FROM messages
-           WHERE client_msg_id = ? AND server_id <> ?"#,
+           WHERE client_msg_id = ? AND server_id <> ? AND conversation_id = ? AND sender_id = ?"#,
     )
     .bind(client_msg_id)
     .bind(target_server_id)
+    .bind(target_conversation_id)
+    .bind(target_sender_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(sqlx_err)?;
@@ -322,9 +377,11 @@ async fn remove_conflicting_client_msg_rows_tx(
         .await?;
     }
 
-    sqlx::query("DELETE FROM messages WHERE client_msg_id = ? AND server_id <> ?")
+    sqlx::query("DELETE FROM messages WHERE client_msg_id = ? AND server_id <> ? AND conversation_id = ? AND sender_id = ?")
         .bind(client_msg_id)
         .bind(target_server_id)
+    .bind(target_conversation_id)
+    .bind(target_sender_id)
         .execute(&mut **tx)
         .await
         .map_err(sqlx_err)?;
@@ -335,6 +392,8 @@ async fn remove_conflicting_local_client_msg_rows_tx(
     tx: &mut Transaction<'_, Sqlite>,
     client_msg_id: &str,
     target_server_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
 ) -> Result<()> {
     let client_msg_id = client_msg_id.trim();
     let target_server_id = target_server_id.trim();
@@ -346,10 +405,13 @@ async fn remove_conflicting_local_client_msg_rows_tx(
         r#"SELECT server_id
            FROM messages
            WHERE client_msg_id = ? AND server_id <> ?
-             AND is_local = 1 AND failed = 0 AND sending = 1"#,
+             AND is_local = 1 AND conversation_id = ? AND sender_id = ?
+             AND (server_id = '' OR (failed = 0 AND sending = 1))"#,
     )
     .bind(client_msg_id)
     .bind(target_server_id)
+    .bind(conversation_id)
+    .bind(sender_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(sqlx_err)?;
@@ -362,10 +424,13 @@ async fn remove_conflicting_local_client_msg_rows_tx(
     sqlx::query(
         r#"DELETE FROM messages
            WHERE client_msg_id = ? AND server_id <> ?
-             AND is_local = 1 AND failed = 0 AND sending = 1"#,
+             AND is_local = 1 AND conversation_id = ? AND sender_id = ?
+             AND (server_id = '' OR (failed = 0 AND sending = 1))"#,
     )
     .bind(client_msg_id)
     .bind(target_server_id)
+    .bind(conversation_id)
+    .bind(sender_id)
     .execute(&mut **tx)
     .await
     .map_err(sqlx_err)?;
@@ -380,17 +445,6 @@ async fn insert_message_rows_tx(
         return Ok(());
     }
 
-    let mut merged_attributes_json = Vec::with_capacity(rows.len());
-    for row in rows {
-        let incoming = parse_extra(Some(&row.attributes_json));
-        let existing_attributes = existing_message_attributes_tx(tx, row).await?;
-        let merged = match existing_attributes {
-            Some(raw) => merge_message_event_attributes(incoming, parse_extra(Some(&raw))),
-            None => incoming,
-        };
-        merged_attributes_json.push(extra_to_json(&merged));
-    }
-
     let mut qb = QueryBuilder::<Sqlite>::new(
         r#"INSERT OR REPLACE INTO messages (
            server_id, conversation_id, client_msg_id, sender_id, source, conversation_seq, created_at, client_created_at,
@@ -402,7 +456,7 @@ async fn insert_message_rows_tx(
            sending, failed, is_local, sort_ts, uploading, upload_progress)
         "#,
     );
-    qb.push_values(rows.iter().enumerate(), |mut b, (index, row)| {
+    qb.push_values(rows.iter(), |mut b, row| {
         let m = row.message;
         b.push_bind(&m.server_id)
             .push_bind(&m.conversation_id)
@@ -430,7 +484,7 @@ async fn insert_message_rows_tx(
             .push_bind(&m.thread_id)
             .push_bind(&row.mention_users_json)
             .push_bind(if m.mention_all { 1i32 } else { 0 })
-            .push_bind(&merged_attributes_json[index])
+            .push_bind(&row.attributes_json)
             .push_bind(&row.extensions_json)
             .push_bind(m.version as i64)
             .push_bind(m.updated_at as i64)
@@ -446,56 +500,15 @@ async fn insert_message_rows_tx(
     Ok(())
 }
 
-async fn existing_message_attributes_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    row: &MessagePersistRow<'_>,
-) -> Result<Option<String>> {
-    let server_id = row.message.server_id.trim();
-    let client_msg_id = row.message.client_msg_id.trim();
-    let existing = if !server_id.is_empty() && !client_msg_id.is_empty() {
-        sqlx::query(
-            r#"SELECT attributes FROM messages
-               WHERE server_id = ? OR client_msg_id = ?
-               LIMIT 1"#,
-        )
-        .bind(server_id)
-        .bind(client_msg_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(sqlx_err)?
-    } else if !server_id.is_empty() {
-        sqlx::query("SELECT attributes FROM messages WHERE server_id = ? LIMIT 1")
-            .bind(server_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(sqlx_err)?
-    } else if !client_msg_id.is_empty() {
-        sqlx::query("SELECT attributes FROM messages WHERE client_msg_id = ? LIMIT 1")
-            .bind(client_msg_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(sqlx_err)?
-    } else {
-        None
-    };
-
-    if let Some(row) = existing {
-        let raw: Option<String> = row.try_get("attributes").map_err(sqlx_err)?;
-        Ok(raw)
-    } else {
-        Ok(None)
-    }
-}
-
 async fn delete_message_fts_by_message_id_tx(
     tx: &mut Transaction<'_, Sqlite>,
     message_id: &str,
 ) -> Result<()> {
-    let rows = sqlx::query(
+    let rows = sqlx::query(&format!(
         r#"SELECT server_id
            FROM messages
-           WHERE server_id = ? OR client_msg_id = ?"#,
-    )
+           WHERE {MESSAGE_ID_MATCH}"#
+    ))
     .bind(message_id)
     .bind(message_id)
     .fetch_all(&mut **tx)
@@ -771,88 +784,6 @@ fn extensions_to_json(ext: &HashMap<String, Vec<u8>>) -> String {
 
 fn now_ms_i64() -> i64 {
     now_millis().min(i64::MAX as u64) as i64
-}
-
-async fn refresh_reactions_json_snapshot(pool: &SqlitePool, message_id: &str) -> Result<()> {
-    let id = message_id.trim();
-    if id.is_empty() {
-        return Ok(());
-    }
-    let message_row = sqlx::query(
-        r#"SELECT server_id, attributes FROM messages
-           WHERE server_id = ? OR client_msg_id = ?
-           LIMIT 1"#,
-    )
-    .bind(id)
-    .bind(id)
-    .fetch_optional(pool)
-    .await
-    .map_err(sqlx_err)?;
-    let Some(row) = message_row else {
-        return Ok(());
-    };
-    let server_id: String = row.try_get("server_id").map_err(sqlx_err)?;
-    if server_id.trim().is_empty() {
-        return Ok(());
-    }
-
-    let reaction_rows = sqlx::query(
-        r#"SELECT emoji, user_id
-           FROM message_reactions
-           WHERE message_server_id = ?
-           ORDER BY updated_at ASC"#,
-    )
-    .bind(server_id.trim())
-    .fetch_all(pool)
-    .await
-    .map_err(sqlx_err)?;
-
-    let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
-    for rr in reaction_rows {
-        let emoji: String = rr.try_get("emoji").map_err(sqlx_err)?;
-        let user_id: String = rr.try_get("user_id").map_err(sqlx_err)?;
-        if emoji.trim().is_empty() || user_id.trim().is_empty() {
-            continue;
-        }
-        grouped
-            .entry(emoji.trim().to_string())
-            .or_default()
-            .push(user_id.trim().to_string());
-    }
-    let mut reactions: Vec<ReactionEntry> = grouped
-        .into_iter()
-        .map(|(emoji, mut user_ids)| {
-            user_ids.sort();
-            user_ids.dedup();
-            ReactionEntry {
-                emoji,
-                count: user_ids.len() as u32,
-                user_ids,
-            }
-        })
-        .collect();
-    reactions.sort_by(|a, b| a.emoji.cmp(&b.emoji));
-    debug!(
-        message_id = %id,
-        server_id = %server_id,
-        reaction_group_count = reactions.len(),
-        "refresh_reactions_json_snapshot"
-    );
-
-    let extra_raw: Option<String> = row.try_get("attributes").map_err(sqlx_err)?;
-    let mut attributes = parse_extra(extra_raw.as_deref());
-    if reactions.is_empty() {
-        attributes.remove("reactionsJson");
-    } else if let Ok(raw) = serde_json::to_string(&reactions) {
-        attributes.insert("reactionsJson".to_string(), raw);
-    }
-    sqlx::query("UPDATE messages SET attributes = ? WHERE server_id = ?")
-        .bind(extra_to_json(&attributes))
-        .bind(server_id)
-        .execute(pool)
-        .await
-        .map_err(sqlx_err)?;
-    Ok(())
 }
 
 async fn upsert_conversation_snapshot_tx(
@@ -1237,10 +1168,7 @@ fn is_stale_operation(
     else {
         return false;
     };
-    let current_event_seq = attributes
-        .get(seq_key)
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(0);
+    let current_event_seq = message_attribute_seq(attributes, seq_key);
     current_event_seq > 0 && incoming_event_seq <= current_event_seq
 }
 
@@ -1256,10 +1184,10 @@ where
 {
     // 读改写必须同事务：seq 判定（is_stale_operation）与 UPDATE 交错会让旧事件覆盖新事件。
     let mut tx = pool.begin().await.map_err(sqlx_err)?;
-    let rows = sqlx::query(
+    let rows = sqlx::query(&format!(
         r#"SELECT server_id, attributes FROM messages
-           WHERE server_id = ? OR client_msg_id = ?"#,
-    )
+           WHERE {MESSAGE_ID_MATCH}"#
+    ))
     .bind(message_id)
     .bind(message_id)
     .fetch_all(&mut *tx)

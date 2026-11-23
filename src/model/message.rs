@@ -55,10 +55,24 @@ pub(crate) const PLUGIN_STATE_VERSION_KEY: &str = "pluginStateVersion";
 /// 本人层计算时依据的共享层版本（`PluginMessageState::based_on_version`）；没有时不写。
 pub(crate) const PLUGIN_STATE_BASED_ON_KEY: &str = "pluginStateBasedOnVersion";
 
-fn strip_plugin_message_state(attributes: &mut HashMap<String, String>) {
+fn strip_local_message_state(attributes: &mut HashMap<String, String>) {
     attributes.remove(PLUGIN_STATE_JSON_KEY);
     attributes.remove(PLUGIN_STATE_VERSION_KEY);
     attributes.remove(PLUGIN_STATE_BASED_ON_KEY);
+    attributes.retain(|key, _| {
+        !matches!(
+            key.as_str(),
+            "serverReactions"
+                | "lastEditEventSeq"
+                | "lastDeleteEventSeq"
+                | "lastPinEventSeq"
+                | "lastMarkEventSeq"
+                | "lastRetentionScheduledEventSeq"
+                | "lastRetentionExpiredEventSeq"
+                | "lastRetentionPurgedEventSeq"
+        ) && !key.starts_with("lastMarkEventSeq:")
+            && !key.starts_with("lastReactionEventSeq:")
+    });
     // The view-only read summary never crosses the wire either way.
     attributes.remove(super::receipt::READ_SUMMARY_JSON_KEY);
 }
@@ -112,10 +126,6 @@ fn write_reactions_to_attributes(
     attributes: &mut HashMap<String, String>,
     reactions: &[ReactionEntry],
 ) {
-    if reactions.is_empty() {
-        attributes.remove(REACTIONS_JSON_KEY);
-        return;
-    }
     if let Ok(s) = serde_json::to_string(reactions) {
         attributes.insert(REACTIONS_JSON_KEY.to_string(), s);
     }
@@ -399,7 +409,10 @@ impl IMMessage {
             .map(|decoded| decoded.text_preview())
             .unwrap_or_default();
         let mut attributes = message.attributes.clone();
-        strip_plugin_message_state(&mut attributes);
+        strip_local_message_state(&mut attributes);
+        if message.last_edit_seq > 0 {
+            attributes.insert("lastEditEventSeq".into(), message.last_edit_seq.to_string());
+        }
         if content.is_none()
             && let Some(ref decoded) = decoded_opt
         {
@@ -443,7 +456,7 @@ impl IMMessage {
                 message.conversation_type,
             )),
         );
-        Self {
+        let mut view = Self {
             server_id: message.server_id,
             conversation_id: message.conversation_id,
             client_msg_id: message.client_msg_id,
@@ -487,7 +500,26 @@ impl IMMessage {
                 upload_progress: 0,
                 sort_ts: created_at,
             },
+        };
+        for state in message.reaction_states {
+            if state.event_seq > 0 {
+                let key = format!("lastReactionEventSeq:{}:{}", state.user_id, state.emoji);
+                if crate::domain::message_attribute_seq(&view.attributes, &key) >= state.event_seq {
+                    continue;
+                }
+                view.attributes.insert(key, state.event_seq.to_string());
+                view.apply_reaction_change(
+                    &state.user_id,
+                    &state.emoji,
+                    if state.active {
+                        ReactionAction::Add
+                    } else {
+                        ReactionAction::Remove
+                    } as i32,
+                );
+            }
         }
+        view
     }
 
     /// wire 上的 `sender`。字段还是默认值（「无名」且没有 id 尾）而消息有发送者 id 或发送时快照时，
@@ -602,12 +634,14 @@ impl IMMessage {
             thread_id: self.thread_id.clone(),
             content,
             status: self.status,
+            last_edit_seq: 0,
+            reaction_states: Vec::new(),
             retention_policy: self.retention_policy.clone(),
             retention_state: self.retention_state.clone(),
             offline_push_info: self.offline_push_info.clone(),
             attributes: {
                 let mut attributes = self.attributes.clone();
-                strip_plugin_message_state(&mut attributes);
+                strip_local_message_state(&mut attributes);
                 strip_plugin_shared_state(&mut attributes);
                 attributes
             },
@@ -757,6 +791,12 @@ impl IMMessage {
     /// 服务端已持久化消息以 `server_id` 为权威；`client_msg_id` 只用于尚未 ACK 的本地行。
     /// 下行历史中不同 `server_id` 可能带相同 `client_msg_id`，不能因此被视为同一时间线行。
     pub fn timeline_key(&self) -> String {
+        if self.conversation_seq == 0
+            && self.local_state.is_local
+            && !self.client_msg_id.trim().is_empty()
+        {
+            return format!("client:{}", self.client_msg_id);
+        }
         if !self.server_id.trim().is_empty() {
             return format!("server:{}", self.server_id);
         }
@@ -769,19 +809,18 @@ impl IMMessage {
         format!("ts:{}:{}", self.conversation_id, self.timeline_sort_ts())
     }
 
-    /// 时间线视图的行键：`client_msg_id`，没有时 `server_id`，两者都没有时 `seq:<会话>:<seq>`。
-    ///
-    /// 发送确认前后都有 `client_msg_id`，所以一行从待发送到已确认键不变，宿主原位更新而不是
-    /// 删掉重建；收到的别人的消息也带发送方的 `client_msg_id`。与 Kit 推行键的规则
-    /// （`clientMsgId || serverId`）相同。只用于视图：存储层去重仍用 [`Self::timeline_key`]。
+    /// 时间线增量与消息 JSON 复用同一 canonical timelineKey；ACK 显式替换本地行身份。
     pub fn row_key(&self) -> String {
-        if !self.client_msg_id.is_empty() {
-            return self.client_msg_id.clone();
-        }
-        if !self.server_id.is_empty() {
-            return self.server_id.clone();
-        }
-        format!("seq:{}:{}", self.conversation_id, self.conversation_seq)
+        self.timeline_key()
+    }
+
+    pub(crate) fn matches_local_send(&self, confirmed: &Self) -> bool {
+        self.conversation_seq == 0
+            && self.local_state.is_local
+            && !self.client_msg_id.trim().is_empty()
+            && self.client_msg_id == confirmed.client_msg_id
+            && self.conversation_id == confirmed.conversation_id
+            && self.sender_id == confirmed.sender_id
     }
 
     /// 时间线/最新窗口排序时间。
@@ -899,6 +938,54 @@ mod tests {
     use crate::content::message_elem::{Elem, LinkCardElem, TextElem};
     use flare_proto::common::Message as ProtoMessage;
     use std::collections::HashMap;
+
+    #[test]
+    fn only_the_typed_server_edit_watermark_is_trusted() {
+        let mut wire = ProtoMessage {
+            last_edit_seq: 20,
+            ..Default::default()
+        };
+        wire.attributes
+            .insert("lastEditEventSeq".into(), "999".into());
+        let message = IMMessage::new(wire);
+        assert_eq!(message.attributes["lastEditEventSeq"], "20");
+        let sent = message.to_proto();
+        assert_eq!(sent.last_edit_seq, 0);
+        assert!(!sent.attributes.contains_key("lastEditEventSeq"));
+    }
+
+    #[test]
+    fn event_clocks_are_local_state_and_cannot_be_supplied_over_the_wire() {
+        let mut proto = ProtoMessage::default();
+        proto
+            .attributes
+            .insert("lastMarkEventSeq".into(), "1000".into());
+        proto
+            .attributes
+            .insert("lastReactionEventSeq:u:👍".into(), "1000".into());
+        proto
+            .attributes
+            .insert("lastEditEventSeq".into(), "1000".into());
+        proto.attributes.insert("markType".into(), "2".into());
+        let mut message = IMMessage::new(proto);
+        assert!(!message.attributes.contains_key("lastMarkEventSeq"));
+        assert!(!message.attributes.contains_key("lastReactionEventSeq:u:👍"));
+        assert!(!message.attributes.contains_key("lastEditEventSeq"));
+        assert_eq!(
+            message.attributes.get("markType").map(String::as_str),
+            Some("2")
+        );
+        message
+            .attributes
+            .insert("lastMarkEventSeq".into(), "20".into());
+        let local: IMMessage =
+            serde_json::from_value(serde_json::to_value(&message).unwrap()).unwrap();
+        assert_eq!(
+            local.attributes.get("lastMarkEventSeq").map(String::as_str),
+            Some("20")
+        );
+        assert!(!local.to_proto().attributes.contains_key("lastMarkEventSeq"));
+    }
 
     #[test]
     fn reaction_entry_parses_both_userids_and_user_ids() {
@@ -1186,17 +1273,16 @@ mod tests {
     }
 
     #[test]
-    fn row_key_stays_the_client_id_across_the_ack() {
-        let mut pending = message("client-1", "", 0, 100);
-        assert_eq!(pending.row_key(), "client-1");
-        pending.server_id = "server-1".to_string();
+    fn row_keys_keep_confirmed_identities_separate_and_migrate_the_ack() {
+        let mut pending = message("client-1", "client-1", 0, 100);
+        pending.local_state.is_local = true;
+        assert_eq!(pending.row_key(), "client:client-1");
+        pending.server_id = "server-1".into();
         pending.conversation_seq = 9;
-        assert_eq!(pending.row_key(), "client-1");
-
-        let received = message("", "server-2", 10, 100);
-        assert_eq!(received.row_key(), "server-2");
-        let bare = message("", "", 11, 100);
-        assert_eq!(bare.row_key(), format!("seq:{}:11", bare.conversation_id));
+        assert_eq!(pending.row_key(), "server:server-1");
+        let other = message("client-1", "server-2", 10, 100);
+        assert_ne!(pending.row_key(), other.row_key());
+        assert_eq!(other.row_key(), other.timeline_key());
     }
 
     #[test]

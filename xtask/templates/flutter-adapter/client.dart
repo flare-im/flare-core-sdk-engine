@@ -1594,6 +1594,66 @@ final class _DefaultCapabilitiesApi implements CapabilitiesApi {
   }
 
   @override
+  Future<Map<String, Object?>> pluginBundleOpen(
+    PluginUiEvaluationRequest request,
+  ) {
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.capabilityPluginBundleOpen,
+      pluginUiEvaluationRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<Map<String, Object?>> pluginBundleBridge(
+    PluginUiEvaluationRequest request,
+  ) {
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.capabilityPluginBundleBridge,
+      pluginUiEvaluationRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<Map<String, Object?>> pluginBundleHostResult(
+    PluginUiEvaluationRequest request,
+  ) {
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.capabilityPluginBundleHostResult,
+      pluginUiEvaluationRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<Map<String, Object?>> pluginBundleHostEvent(
+    PluginUiEvaluationRequest request,
+  ) {
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.capabilityPluginBundleHostEvent,
+      pluginUiEvaluationRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<Map<String, Object?>> pluginBundleClose(
+    PluginUiEvaluationRequest request,
+  ) {
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.capabilityPluginBundleClose,
+      pluginUiEvaluationRequestToMap(request),
+    );
+  }
+
+  @override
+  Future<Map<String, Object?>> pluginBundlePrefetch(
+    PluginUiEvaluationRequest request,
+  ) {
+    return _bridge.invoke<Map<String, Object?>>(
+      NativeCallMap.capabilityPluginBundlePrefetch,
+      pluginUiEvaluationRequestToMap(request),
+    );
+  }
+
+  @override
   Future<Map<String, Object?>> pluginCapabilityConsents(
     PluginUiEvaluationRequest request,
   ) {

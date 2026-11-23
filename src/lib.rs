@@ -86,11 +86,11 @@ pub mod plugin {
 /// module is for SDK storage adapters such as SQLite or IndexedDB.
 pub mod storage {
     pub use crate::domain::{
-        ConversationReader, ConversationStore, ConversationWriter, MediaCacheAdmin,
-        MediaCacheEntryVo, MediaCacheStatsVo, MediaCacheStore, MessageReader, MessageStore,
-        MessageWriter, OperationApplyResult, PendingSendReader, PendingSendVo, PendingSendWriter,
-        SeqRange, SyncCursorReader, SyncCursorVo, SyncCursorWriter, TimelineCoverage,
-        TimelineCoverageStore, UserFileDownloadStore, UserReader, UserWriter,
+        ConversationReader, ConversationStore, ConversationWriter, EditApplyResult,
+        MediaCacheAdmin, MediaCacheEntryVo, MediaCacheStatsVo, MediaCacheStore, MessageReader,
+        MessageStore, MessageWriter, OperationApplyResult, PendingSendReader, PendingSendVo,
+        PendingSendWriter, SeqRange, SyncCursorReader, SyncCursorVo, SyncCursorWriter,
+        TimelineCoverage, TimelineCoverageStore, UserFileDownloadStore, UserReader, UserWriter,
         set_local_cleared_through_seq,
     };
     pub use crate::domain::{MemberKey, ParticipantDisplaySnapshot, stored_name_is_an_id};
@@ -104,8 +104,12 @@ pub mod storage {
         PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,
     };
     pub use crate::domain::{PluginConsent, PluginConsentScope, PluginConsentStore};
+    pub use crate::domain::{copy_message_projection, message_projection_matches};
     pub use crate::infrastructure::persistence::memory_im::{
         MemoryConversationStore, MemoryMessageStore,
+    };
+    pub use crate::infrastructure::persistence::message_snapshot::{
+        StoredMessage, StoredPendingSend,
     };
     #[cfg(feature = "storage-sqlite")]
     pub use crate::infrastructure::persistence::sqlite::SqlitePluginCommandRepo;
@@ -122,6 +126,7 @@ pub mod storage {
     };
     /// A namespace's quota: keys and encoded values together.
     pub use flare_plugin_protocol::bridge::MAX_BRIDGE_STORAGE_BYTES as MAX_PLUGIN_BUNDLE_STORAGE_BYTES;
+    pub use flare_proto::common::{MessageRetentionPolicy, MessageRetentionState};
 }
 
 pub use client::*;
@@ -237,7 +242,7 @@ pub mod prelude {
     pub use crate::shared::error::{ErrorCode, FlareError, Result};
     #[cfg(feature = "lifecycle-sqlite")]
     pub use crate::shared::util::sqlite_store::ensure_core_sqlite_schema_registered;
-    pub use crate::shared::util::{generate_core_token, resolve_user_db_path};
+    pub use crate::shared::util::{generate_core_token, local_storage_scope, resolve_user_db_path};
     #[cfg(feature = "lifecycle-sqlite")]
     pub use crate::shared::util::{
         open_sqlite_store_for_user_with_secure_key_store,

@@ -11,8 +11,8 @@ use serde_json::{Map, json};
 
 use super::native::{
     CapabilityConsentPrompt, CapabilityHostAnswer, CapturedFile, ConsentDecision,
-    DocumentCapturePrompt, FilePickPrompt, LocationFix, LocationPrompt, PaymentConfirmationPrompt,
-    PluginCapabilityHost,
+    DocumentCapturePrompt, FilePickPrompt, LocationFix, LocationPrompt, PaymentConfirmationError,
+    PaymentConfirmationPrompt, PaymentSettled, PluginCapabilityHost,
 };
 use super::page_tests::Fixture;
 use super::*;
@@ -27,6 +27,12 @@ struct FakeHost {
     consents: SyncMutex<Vec<String>>,
     captures: AtomicUsize,
     payments: AtomicUsize,
+    /// What each payment request said was wrong with the last credential.
+    payment_errors: SyncMutex<Vec<Option<PaymentConfirmationError>>>,
+    settled: SyncMutex<Vec<PaymentSettled>>,
+    /// Held by a test to keep the payment panel open; `asked` says it is up.
+    panel: tokio::sync::Mutex<()>,
+    asked: tokio::sync::Notify,
     proof: SyncMutex<CapabilityHostAnswer<Map<String, Value>>>,
     file: CapturedFile,
     fix: LocationFix,
@@ -39,6 +45,10 @@ impl FakeHost {
             consents: SyncMutex::new(Vec::new()),
             captures: AtomicUsize::new(0),
             payments: AtomicUsize::new(0),
+            payment_errors: SyncMutex::new(Vec::new()),
+            settled: SyncMutex::new(Vec::new()),
+            panel: tokio::sync::Mutex::new(()),
+            asked: tokio::sync::Notify::new(),
             proof: SyncMutex::new(CapabilityHostAnswer::Done(
                 json!({"method": "paymentPassword", "password": "123456"})
                     .as_object()
@@ -91,10 +101,17 @@ impl PluginCapabilityHost for FakeHost {
     }
     async fn confirm_payment(
         &self,
-        _: PaymentConfirmationPrompt,
+        prompt: PaymentConfirmationPrompt,
     ) -> CapabilityHostAnswer<Map<String, Value>> {
         self.payments.fetch_add(1, Ordering::SeqCst);
+        self.payment_errors.lock().unwrap().push(prompt.error);
+        // No permit kept: only a test waiting right now hears the panel is up.
+        self.asked.notify_waiters();
+        let _open = self.panel.lock().await;
         self.proof.lock().unwrap().clone()
+    }
+    async fn payment_settled(&self, settled: PaymentSettled) {
+        self.settled.lock().unwrap().push(settled);
     }
     async fn locate_once(&self, _: LocationPrompt) -> CapabilityHostAnswer<LocationFix> {
         CapabilityHostAnswer::Done(self.fix.clone())
@@ -675,10 +692,10 @@ async fn an_operation_result_with_an_order_hands_it_to_the_host_and_records_it()
     };
     let outcome = f
         .api
-        .operation_outcome(Some("u1"), "example.poll", &response);
+        .operation_outcome(Some("u1"), "example.poll", None, &response);
     assert_eq!(outcome["kind"], "operation");
     assert_eq!(outcome["confirmation"]["orderId"], "order-1");
-    let recorded = f
+    let (recorded, _) = f
         .api
         .plugin_host
         .capability_host
@@ -694,7 +711,7 @@ async fn an_operation_result_with_an_order_hands_it_to_the_host_and_records_it()
     // Another plugin's operation is not this plugin's order.
     assert!(
         f.api
-            .operation_outcome(Some("u1"), "example.other", &response)
+            .operation_outcome(Some("u1"), "example.other", None, &response)
             .get("confirmation")
             .is_none()
     );
@@ -1072,6 +1089,68 @@ async fn a_pay_actions_continuation_runs_only_after_its_order_is_confirmed() {
     );
 }
 
+/// Two presses of a pay action hand the same order out twice and confirm it
+/// twice, the second after the first paid (a double tap): the first to pay
+/// must not take the order the second press handed out, whether that press
+/// came before the first confirmation looked the order up or while its panel
+/// was open. The second is answered by the provider and the plugin, which
+/// apply an order once; the continuation runs once; with both used up the
+/// order is forgotten.
+#[tokio::test]
+async fn an_order_handed_out_twice_is_confirmed_twice_whichever_pays_first() {
+    let f = Fixture::new().await;
+    let host = FakeHost::new();
+    setup(
+        &f,
+        &["paymentConfirmation"],
+        &["paymentConfirmation"],
+        host.clone(),
+    );
+    f.answer("example.pay.ticket", vec![ticket()]);
+    f.answer("example.poll.pay_confirm", vec![json!({"currency": "USD"})]);
+    for order_id in ["order-1", "order-2"] {
+        let mut handed = order(now_ms() + 60_000);
+        handed["orderId"] = json!(order_id);
+        f.answer("example.poll.hide", vec![json!({"confirmation": handed})]);
+        press(&f, "pay").await;
+        let first = if order_id == "order-1" {
+            // The second press before the first confirmation looks it up.
+            press(&f, "pay").await;
+            f.api
+                .plugin_capability_invoke(payment_request(order_id))
+                .await
+        } else {
+            // The second press while the first confirmation's panel is open.
+            let panel = host.panel.lock().await;
+            let mut first = f.api.plugin_capability_invoke(payment_request(order_id));
+            tokio::select! {
+                _ = &mut first => panic!("the panel is still open"),
+                () = host.asked.notified() => {}
+            }
+            press(&f, "pay").await;
+            drop(panel);
+            first.await
+        };
+        let first = first.unwrap();
+        assert_eq!(first["kind"], "host", "the continuation runs: {first}");
+        let second = f
+            .api
+            .plugin_capability_invoke(payment_request(order_id))
+            .await
+            .unwrap();
+        assert_eq!(second["kind"], "operation", "{second}");
+        assert_eq!(second["response"]["success"], true, "{second}");
+        assert!(
+            f.api
+                .plugin_capability_invoke(payment_request(order_id))
+                .await
+                .is_err(),
+            "both handed-out orders are used up"
+        );
+    }
+    assert_eq!(f.calls_to("example.poll.pay_confirm").len(), 4);
+}
+
 #[tokio::test]
 async fn a_held_continuation_belongs_to_its_viewer_and_order_only() {
     use super::native::{HeldPaymentKey, PaymentContinuations};
@@ -1079,9 +1158,11 @@ async fn a_held_continuation_belongs_to_its_viewer_and_order_only() {
     let held = PaymentContinuations::default();
     let origin = PageContinuationOrigin {
         plugin_id: "example.poll".into(),
+        page: "example.poll.wallet".into(),
         platform: flare_plugin_protocol::manifest::ClientPlatform::Web,
         conversation_id: None,
         user_gesture: true,
+        locale: String::new(),
     };
     let transition: flare_plugin_protocol::ui::UiPageTransition =
         serde_json::from_value(json!({"page": "example.poll.history", "input": {}})).unwrap();
@@ -1120,4 +1201,140 @@ async fn a_held_continuation_belongs_to_its_viewer_and_order_only() {
         );
     }
     assert!(held.len() <= 32);
+}
+
+/// The host's `confirmPayment` gets the order as the engine recorded it, the
+/// payer's shortfall and top-up page included (docs/plugin-experience.md 4.3).
+#[test]
+fn the_host_gets_the_orders_shortfall_and_top_up() {
+    let mut raw = order(now_ms() + 60_000);
+    raw["shortfall"] = json!("6.64");
+    raw["topUp"] = json!({"kind": "page", "page": "example.wallet.page.recharge",
+        "pluginId": "example.wallet"});
+    let order = flare_plugin_protocol::ui::PaymentConfirmationOrder::from_result(
+        "example.poll",
+        &json!({"confirmation": raw.clone()}),
+    )
+    .unwrap();
+    let request = serde_json::to_value(PaymentConfirmationPrompt {
+        plugin_id: "example.poll".into(),
+        order,
+        error: None,
+    })
+    .unwrap();
+    assert_eq!(request["order"], raw);
+    assert!(
+        request.get("error").is_none(),
+        "a first request names no refusal"
+    );
+}
+
+/// A refused credential goes back to the host's panel with the provider's
+/// code, for another try, a bounded number of times; then the refusal ends
+/// the confirmation as before. Every confirmation ends with one settle.
+#[tokio::test]
+async fn a_refused_credential_is_asked_again_with_why_then_settles() {
+    let f = Fixture::new().await;
+    let host = FakeHost::new();
+    setup(
+        &f,
+        &["paymentConfirmation"],
+        &["paymentConfirmation"],
+        host.clone(),
+    );
+    receive_order(&f, order(now_ms() + 60_000)).await;
+    f.errors.lock().unwrap().insert(
+        "example.pay.ticket".into(),
+        (422, "PAYMENT_PASSWORD_INVALID".into()),
+    );
+    let refused = f
+        .api
+        .plugin_capability_invoke(payment_request("order-1"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        crate::extension::capability::plugin_errors::plugin_rejection_code(&refused),
+        Some("PAYMENT_PASSWORD_INVALID")
+    );
+    let why = Some(PaymentConfirmationError {
+        key: "sdk.plugin.rejected".into(),
+        code: Some("PAYMENT_PASSWORD_INVALID".into()),
+        message: None,
+    });
+    let mut asked = vec![None];
+    asked.extend(std::iter::repeat_n(why, 4));
+    assert_eq!(*host.payment_errors.lock().unwrap(), asked);
+    assert_eq!(f.calls_to("example.pay.ticket").len(), 5);
+    assert!(f.calls_to("example.poll.pay_confirm").is_empty());
+    assert_eq!(
+        *host.settled.lock().unwrap(),
+        [PaymentSettled {
+            plugin_id: "example.poll".into(),
+            order_id: "order-1".into()
+        }]
+    );
+
+    // A platform failure is no refusal of the credential: it ends at once.
+    host.payment_errors.lock().unwrap().clear();
+    f.errors.lock().unwrap().insert(
+        "example.pay.ticket".into(),
+        (409, "BUSINESS_CONFLICT".into()),
+    );
+    assert!(
+        f.api
+            .plugin_capability_invoke(payment_request("order-1"))
+            .await
+            .is_err()
+    );
+    assert_eq!(*host.payment_errors.lock().unwrap(), [None]);
+    assert_eq!(host.settled.lock().unwrap().len(), 2);
+}
+
+/// The page that asked for the payment words the provider's refusal of the
+/// credential (docs/plugin-experience.md R8, 4.3): the host's panel gets
+/// those words with the code, in the confirmation's language.
+#[tokio::test]
+async fn a_refused_credential_comes_back_with_the_asking_pages_words() {
+    let f = Fixture::new().await;
+    let host = FakeHost::new();
+    setup(
+        &f,
+        &["paymentConfirmation"],
+        &["paymentConfirmation"],
+        host.clone(),
+    );
+    {
+        let mut catalog = f.catalog.lock().unwrap();
+        let pay = catalog["plugins"][0]["extensions"]["contributions"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|c| c["id"] == "example.poll.pay")
+            .unwrap();
+        pay["schema"]["errors"] = json!({"PAYMENT_PASSWORD_INVALID": "支付密码错误，请重新输入"});
+        pay["schema"]["translations"] = json!({"en-US": {"title": "Pay", "fields": [],
+            "texts": {"支付密码错误，请重新输入": "Wrong payment password. Try again."}}});
+    }
+    receive_order(&f, order(now_ms() + 60_000)).await;
+    f.errors.lock().unwrap().insert(
+        "example.pay.ticket".into(),
+        (422, "PAYMENT_PASSWORD_INVALID".into()),
+    );
+    let mut request = payment_request("order-1");
+    request["locale"] = json!("en-US");
+    assert!(f.api.plugin_capability_invoke(request).await.is_err());
+    let asked = host.payment_errors.lock().unwrap().clone();
+    assert_eq!(asked.len(), 5);
+    assert_eq!(asked[0], None);
+    for why in &asked[1..] {
+        let why = why.as_ref().unwrap();
+        assert_eq!(why.code.as_deref(), Some("PAYMENT_PASSWORD_INVALID"));
+        assert_eq!(
+            why.message.as_deref(),
+            Some("Wrong payment password. Try again.")
+        );
+    }
+    // The wire form names it only when there are words.
+    let wire = serde_json::to_value(asked[1].as_ref().unwrap()).unwrap();
+    assert_eq!(wire["message"], "Wrong payment password. Try again.");
 }

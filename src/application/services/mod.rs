@@ -10,7 +10,7 @@ pub(crate) mod plugin_state_refetch;
 pub(crate) mod plugin_viewer_schedule;
 pub(crate) mod read_summaries;
 
-pub(crate) use event_deduper::{EventDedupeKey, EventDeduper};
+pub(crate) use event_deduper::{EventClaim, EventDeduper, EventReservation};
 pub(crate) use incoming_message_converger::IncomingMessageConverger;
 pub(crate) use local_identity_repair::LocalIdentityRepairService;
 pub use message_builder::{

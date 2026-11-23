@@ -140,44 +140,29 @@ pub async fn sqlite_security_config_from_secure_key_store(
 /// 在 `data_root` 下按用户目录打开库（路径规则见 [`crate::shared::util::paths::resolve_user_db_path`]）。
 pub async fn open_sqlite_store_for_user(
     base_data_dir: &std::path::Path,
+    namespace: &str,
+    tenant_id: &str,
     user_id: &str,
 ) -> Result<StoreProvider> {
-    let db_path = resolve_user_db_path(base_data_dir, user_id);
-    let cache_dir = resolve_media_cache_dir_next_to_db(&db_path);
-    if let Some(parent) = db_path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            FlareError::localized(
-                ErrorCode::ConfigurationError,
-                format!(
-                    "sqlite database directory create_dir_all failed: path={}, error={}",
-                    parent.display(),
-                    e
-                ),
-            )
-        })?;
-    }
-    tokio::fs::create_dir_all(&cache_dir).await.map_err(|e| {
-        FlareError::localized(
-            ErrorCode::ConfigurationError,
-            format!(
-                "media cache directory create_dir_all failed: path={}, error={}",
-                cache_dir.display(),
-                e
-            ),
-        )
-    })?;
-    tracing::info!(db = %db_path.display(), cache = %cache_dir.display(), "Opening SQLite store");
-    let database_url = sqlite_database_url_from_path(&db_path);
-    open_sqlite_store_provider(&database_url, Some(&cache_dir)).await
+    open_sqlite_store_for_user_with_security(
+        base_data_dir,
+        namespace,
+        tenant_id,
+        user_id,
+        SqliteSecurityConfig::default(),
+    )
+    .await
 }
 
 /// 在 `data_root` 下按用户目录打开加密 SQLite 库。
 pub async fn open_sqlite_store_for_user_with_security(
     base_data_dir: &std::path::Path,
+    namespace: &str,
+    tenant_id: &str,
     user_id: &str,
     security: SqliteSecurityConfig,
 ) -> Result<StoreProvider> {
-    let db_path = resolve_user_db_path(base_data_dir, user_id);
+    let db_path = resolve_user_db_path(base_data_dir, namespace, tenant_id, user_id);
     let cache_dir = resolve_media_cache_dir_next_to_db(&db_path);
     if let Some(parent) = db_path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|e| {
@@ -227,7 +212,14 @@ pub async fn open_sqlite_store_for_user_with_secure_key_store(
         key_name.unwrap_or("local_database.v1"),
     );
     let security = sqlite_security_config_from_secure_key_store(key_store, &descriptor).await?;
-    open_sqlite_store_for_user_with_security(base_data_dir, user_id, security).await
+    open_sqlite_store_for_user_with_security(
+        base_data_dir,
+        key_namespace,
+        tenant_id,
+        user_id,
+        security,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -240,17 +232,12 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("flare im sdk data root {}", std::process::id()));
         {
-            let _stores = open_sqlite_store_for_user(&root, "hugo")
+            let _stores = open_sqlite_store_for_user(&root, "flare-im-core-sdk", "0", "hugo")
                 .await
                 .expect("open store");
         }
 
-        assert!(
-            root.join("users")
-                .join("hugo")
-                .join("flare_im_sdk.db")
-                .exists()
-        );
+        assert!(resolve_user_db_path(&root, "flare-im-core-sdk", "0", "hugo").exists());
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 

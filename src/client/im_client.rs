@@ -595,8 +595,12 @@ impl IMClient {
             store,
             trust,
         ));
+        if let Some(previous) = &g.access {
+            access.set_protocol_mode(previous.protocol_mode());
+        }
         if let Some(network) = g.last_network.as_ref() {
-            access.set_network(
+            access.report_network(
+                network.available,
                 network.interface.as_deref(),
                 network.fingerprint_hint.as_deref(),
             );

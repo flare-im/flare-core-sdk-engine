@@ -125,6 +125,12 @@
           "tauri": "sdk_invoke_json"
         },
         {
+          "id": "connection.set_protocol_mode",
+          "core": "IMClient::set_protocol_mode",
+          "c": "flare_sdk_invoke_json",
+          "tauri": null
+        },
+        {
           "id": "access.get_status",
           "core": "IMClient::access_status",
           "c": "flare_sdk_invoke_json",

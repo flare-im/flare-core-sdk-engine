@@ -109,6 +109,7 @@ struct TimelineViewRegistration {
     order: u64,
     revision: u64,
     window: TimelineWindow,
+    cached_open: bool,
 }
 
 struct ConversationListViewRegistration {
@@ -179,6 +180,9 @@ fn evict_oldest<T: OrderedViewRegistration>(views: &mut HashMap<String, T>, limi
 /// 再在缺口处把错误交给宿主（Kit 显示 `olderError` / `newerError` 与重试）。
 struct PageRead {
     messages: Vec<IMMessage>,
+    /// This page starts below an unfilled gap. Show it as a separate cached
+    /// window so paging forward can still fill the gap when the link returns.
+    detached: bool,
     /// 往旧：窗口之下还有没有；往新不用。
     has_older: bool,
     /// 往新：接上了最新（`messages` 之后再并入 `head` 里的头部未证实行与待发送行）。
@@ -191,6 +195,7 @@ impl PageRead {
     fn older(messages: Vec<IMMessage>, has_older: bool) -> Self {
         Self {
             messages,
+            detached: false,
             has_older,
             reached_latest: false,
             head: Vec::new(),
@@ -201,6 +206,7 @@ impl PageRead {
     fn newer(messages: Vec<IMMessage>) -> Self {
         Self {
             messages,
+            detached: false,
             has_older: true,
             reached_latest: false,
             head: Vec::new(),
@@ -253,13 +259,37 @@ impl ViewApi {
         if !conversation_id.is_empty() {
             self.inner.attention.open_timeline(&conversation_id);
         }
+        let mut cached_open = false;
         let window = match request.anchor.filter(anchor_is_set) {
             Some(anchor) => {
                 self.window_around(&conversation_id, page_size, &anchor)
                     .await?
             }
-            None => self.open_latest_window(&conversation_id, page_size).await?,
+            None => {
+                let local = self.latest_window(&conversation_id, page_size).await?;
+                if local.oldest_seq().is_none() && local.has_older {
+                    if let Some(mut cached) = self
+                        .cached_history_window(&conversation_id, page_size)
+                        .await?
+                    {
+                        cached_open = true;
+                        cached.messages.extend(local.messages);
+                        cached
+                    } else if local.messages.is_empty() {
+                        self.complete_latest_window(local, page_size).await?
+                    } else {
+                        local
+                    }
+                } else {
+                    local
+                }
+            }
         };
+        let repair_first = cached_open
+            || (window.attached_to_latest
+                && window.anchor_key.is_none()
+                && window.oldest_seq().is_none()
+                && window.has_older);
         let snapshot = window.snapshot();
         let registered = self.inner.views.write().await.insert_timeline(
             view_id.clone(),
@@ -268,18 +298,58 @@ impl ViewApi {
                 order,
                 revision: 1,
                 window,
+                cached_open,
             },
         );
         // Register before starting the foreground pull: its events must have a view to refresh.
         // A known local window still returns without waiting for this background freshness read.
         if registered && !conversation_id.is_empty() {
-            self.spawn_foreground_pull(&conversation_id);
+            self.spawn_foreground_pull(&conversation_id, repair_first);
         }
         Ok(ViewOpenResponse {
             view_id,
             revision: 1,
             snapshot: ViewSnapshot::Timeline(snapshot),
         })
+    }
+
+    /// The newest cached segment below an unfilled head. Keep it detached until
+    /// the gap is filled so opening offline never advances the read position.
+    async fn cached_history_window(
+        &self,
+        conversation_id: &str,
+        page_size: u32,
+    ) -> Result<Option<TimelineWindow>> {
+        let api = &self.inner.conversation_api;
+        let before = i64::MAX as u64 - 1;
+        let (mut messages, more) = api
+            .timeline_rows_in_range(conversation_id, 1, before, page_size as usize)
+            .await?;
+        let Some(last_seq) = messages.first().map(|row| row.conversation_seq) else {
+            return Ok(None);
+        };
+        let (conversation, coverage) = api.timeline_paging_state(conversation_id).await?;
+        let start = coverage
+            .range_containing(last_seq)
+            .map_or(last_seq, |range| range.from);
+        let row_count = messages.len();
+        let visible_from = conversation.as_ref().map_or(start, |row| {
+            start.max(crate::domain::sync_visibility_floor(row).saturating_add(1))
+        });
+        messages.retain(|row| row.conversation_seq >= visible_from);
+        let Some(oldest) = messages.last().map(|message| message.conversation_seq) else {
+            return Ok(None);
+        };
+        let has_older = coverage.has_older(oldest, more || messages.len() < row_count);
+        messages.sort_by(IMMessage::compare_for_timeline_asc);
+        Ok(Some(TimelineWindow {
+            conversation_id: conversation_id.to_string(),
+            conversation,
+            messages,
+            has_older,
+            attached_to_latest: false,
+            anchor_key: None,
+        }))
     }
 
     /// An empty latest covered range can contain only non-message events while an older visible
@@ -295,9 +365,18 @@ impl ViewApi {
         page_size: u32,
     ) -> Result<TimelineWindow> {
         let window = self.latest_window(conversation_id, page_size).await?;
+        self.complete_latest_window(window, page_size).await
+    }
+
+    async fn complete_latest_window(
+        &self,
+        window: TimelineWindow,
+        page_size: u32,
+    ) -> Result<TimelineWindow> {
         if window.oldest_seq().is_some() || !window.has_older {
             return Ok(window);
         }
+        let conversation_id = &window.conversation_id;
         let page = match crate::shared::util::time::timeout(
             Duration::from_secs(crate::shared::util::REQUEST_TIMEOUT_SECS),
             self.read_older_page(conversation_id, None, page_size as usize),
@@ -327,7 +406,7 @@ impl ViewApi {
 
     /// I5：打开会话触发一次该会话定向补拉（fire-and-forget）。best-effort：
     /// 未接线/未连接时静默降级为纯 attention hint（等下一轮收敛）；single-flight 在途去重。
-    fn spawn_foreground_pull(&self, conversation_id: &str) {
+    fn spawn_foreground_pull(&self, conversation_id: &str, repair_first: bool) {
         let Some(session_sync) = self.inner.session_sync.clone() else {
             return;
         };
@@ -337,6 +416,11 @@ impl ViewApi {
         let conversation_id = conversation_id.to_string();
         let inner = Arc::downgrade(&self.inner);
         spawn_background(async move {
+            if repair_first && let Some(inner) = inner.upgrade() {
+                // Local outbox rows already paint. Fill the missing history off the open path.
+                let api = Self { inner };
+                api.repair_empty_foreground_windows(&conversation_id).await;
+            }
             if let Err(error) = session_sync.request_message_sync(&conversation_id).await {
                 tracing::debug!(
                     conversation_id = %conversation_id,
@@ -351,7 +435,9 @@ impl ViewApi {
                 let api = Self {
                     inner: inner.clone(),
                 };
-                api.repair_empty_foreground_windows(&conversation_id).await;
+                if !repair_first {
+                    api.repair_empty_foreground_windows(&conversation_id).await;
+                }
                 api.reread_windows(&ViewRefreshTarget::conversation(&conversation_id))
                     .await;
                 inner.foreground_pull.finish(&conversation_id);
@@ -366,12 +452,14 @@ impl ViewApi {
         let targets = self
             .timeline_views(|_, view| {
                 (view.window.conversation_id == conversation_id
-                    && view.window.attached_to_latest
-                    && view.window.oldest_seq().is_none())
-                .then_some(view.page_size)
+                    && (view.cached_open
+                        || (view.window.attached_to_latest
+                            && view.window.anchor_key.is_none()
+                            && view.window.oldest_seq().is_none())))
+                .then_some((view.page_size, view.cached_open))
             })
             .await;
-        for (view_id, page_size) in targets {
+        for (view_id, (page_size, cached_open)) in targets {
             let mut latest = match self.open_latest_window(conversation_id, page_size).await {
                 Ok(latest) => latest,
                 Err(error) => {
@@ -384,10 +472,19 @@ impl ViewApi {
                 let Some(view) = views.timelines.get_mut(&view_id) else {
                     continue;
                 };
-                if !view.window.attached_to_latest || view.window.oldest_seq().is_some() {
-                    continue;
+                if cached_open {
+                    if !view.cached_open {
+                        continue;
+                    }
+                } else {
+                    if !view.window.attached_to_latest
+                        || view.window.anchor_key.is_some()
+                        || view.window.oldest_seq().is_some()
+                    {
+                        continue;
+                    }
+                    merge_live(&mut latest, &view.window.messages);
                 }
-                merge_live(&mut latest, &view.window.messages);
                 commit_timeline(&view_id, view, latest, CompareRows::All)
             };
             self.publish(update);
@@ -575,9 +672,9 @@ impl ViewApi {
     /// 1. `O-1` 落在某段区间 `[r, ..]` 里：读本地 seq 在 `[r, O-1]` 内、由新到旧的 `L` 行；
     ///    不够 `L` 行而 `r = 1` 就是到了起点；`r > 1` 则以 `before = r` 回填缺的行数，区间扩展后
     ///    在新的区间内接着读。
-    /// 2. `O-1` 不在任何区间里（窗口紧挨着一个洞）：以 `before = O` 回填，写入区间后再读本地。
-    /// 3. 回填失败（离线、超时、服务端错误）：先把区间内已经读到的连续行并入窗口，再返回错误。
-    ///    这些行由区间证明与窗口连续，不算越过缺口；缺口之下的本地行不读。
+    /// 2. 区间之外先读取能直接接上窗口的本地连续行，再从第一个缺失位置请求回填。
+    /// 3. 断网时返回已经读取的连续行。如果一条也接不上，显示缺口下面独立的一段本地历史；
+    ///    将窗口标为脱离最新，让向新翻页仍能补齐缺口。其他回填错误保留已有行，并交给宿主。
     /// 4. 窗口里没有已发送的行：以会话已知最新 seq 之上一位为 `O`。
     ///
     /// 并入的行只经 `view.updated` 推出；返回值只有并入了几行与包含这一页的版本号。
@@ -617,6 +714,12 @@ impl ViewApi {
                 (0, registration.revision, None)
             } else {
                 let mut next = registration.window.clone();
+                if page.detached {
+                    next.messages.clear();
+                    next.attached_to_latest = false;
+                    next.anchor_key = None;
+                    registration.cached_open = false;
+                }
                 let loaded = prepend_older(&mut next, &page.messages);
                 next.has_older = page.has_older;
                 next.trim_newer_end(MAX_TIMELINE_WINDOW_MESSAGES);
@@ -635,8 +738,7 @@ impl ViewApi {
         })
     }
 
-    /// 读窗口之下的一页（规则见 [`Self::load_older_timeline`]）。只读区间内的本地行；
-    /// 碰到区间边界就回填；回填失败时带上已经读到的行与错误返回。
+    /// 读窗口之下的一页，优先使用本地行。完整规则见 [`Self::load_older_timeline`]。
     async fn read_older_page(
         &self,
         conversation_id: &str,
@@ -645,6 +747,11 @@ impl ViewApi {
     ) -> Result<PageRead> {
         let api = &self.inner.conversation_api;
         let (conversation, mut coverage) = api.timeline_paging_state(conversation_id).await?;
+        let visible_from = conversation
+            .as_ref()
+            .map(crate::domain::sync_visibility_floor)
+            .unwrap_or(0)
+            .saturating_add(1);
         let window_oldest = match oldest_seq {
             Some(seq) => seq,
             None => conversation
@@ -661,7 +768,7 @@ impl ViewApi {
                 .last()
                 .map(|message| message.conversation_seq)
                 .unwrap_or(window_oldest);
-            if lowest <= 1 {
+            if lowest <= visible_from {
                 return Ok(PageRead::older(messages, false));
             }
             let before = match coverage.range_containing(lowest - 1) {
@@ -669,13 +776,13 @@ impl ViewApi {
                     let (rows, more) = api
                         .timeline_rows_in_range(
                             conversation_id,
-                            range.from,
+                            range.from.max(visible_from),
                             lowest,
                             limit - messages.len(),
                         )
                         .await?;
                     messages.extend(rows);
-                    if messages.len() >= limit || range.from == 1 {
+                    if messages.len() >= limit || range.from <= visible_from {
                         let oldest = messages
                             .last()
                             .map(|message| message.conversation_seq)
@@ -689,11 +796,78 @@ impl ViewApi {
             if backfills == MAX_FETCHES_PER_PAGE {
                 return Ok(PageRead::older(messages, true));
             }
+            // Older clients can have durable rows without a coverage entry.
+            // A materialized adjacent sequence fills that one position for
+            // this read. Leave the persisted coverage for server proofs.
+            let (cached, more) = if oldest_seq.is_some() {
+                api.timeline_rows_in_range(
+                    conversation_id,
+                    visible_from,
+                    before,
+                    limit - messages.len(),
+                )
+                .await?
+            } else {
+                // First-screen repair needs server coverage before rereading
+                // the latest window can discover these durable rows.
+                (Vec::new(), false)
+            };
+            let mut expected = before - 1;
+            let adjacent = cached
+                .iter()
+                .take_while(|row| {
+                    if row.conversation_seq != expected {
+                        return false;
+                    }
+                    expected -= 1;
+                    true
+                })
+                .count();
+            if adjacent > 0 {
+                messages.extend(cached.into_iter().take(adjacent));
+                if messages.len() == limit {
+                    return Ok(PageRead::older(messages, expected >= visible_from));
+                }
+                continue;
+            }
             backfills += 1;
             if let Err(error) = self
                 .backfill_before(conversation_id, before, limit - messages.len())
                 .await
             {
+                if matches!(
+                    error.code(),
+                    Some(ErrorCode::NotConnected | ErrorCode::NetworkUnreachable)
+                ) {
+                    if !messages.is_empty() {
+                        return Ok(PageRead::older(messages, true));
+                    }
+                    if oldest_seq.is_some()
+                        && let Some(newest) = cached.first()
+                    {
+                        let lower = coverage
+                            .range_containing(newest.conversation_seq)
+                            .map_or(newest.conversation_seq, |range| range.from);
+                        let mut lower = lower;
+                        let count = cached
+                            .iter()
+                            .take_while(|row| {
+                                if row.conversation_seq < lower.saturating_sub(1) {
+                                    return false;
+                                }
+                                lower = lower.min(row.conversation_seq);
+                                true
+                            })
+                            .count();
+                        let hidden = count < cached.len();
+                        let mut page = PageRead::older(
+                            cached.into_iter().take(count).collect(),
+                            coverage.has_older(lower, more || hidden),
+                        );
+                        page.detached = true;
+                        return Ok(page);
+                    }
+                }
                 return Ok(PageRead::older(messages, true).failed(error));
             }
             let (_, extended) = api.timeline_paging_state(conversation_id).await?;
@@ -1146,7 +1320,12 @@ impl ViewApi {
                 let own_send = incoming.iter().any(is_local_pending_send);
                 let reset = (!view.window.attached_to_latest && own_send)
                     || (view.window.attached_to_latest && view.window.oldest_seq().is_none());
-                Some((view.window.conversation_id.clone(), view.page_size, reset))
+                Some((
+                    view.window.conversation_id.clone(),
+                    view.page_size,
+                    reset,
+                    view.cached_open,
+                ))
             })
             .await;
         if targets.is_empty() {
@@ -1154,7 +1333,12 @@ impl ViewApi {
         }
 
         let mut hydrated: HashMap<String, (Vec<IMMessage>, Option<Conversation>)> = HashMap::new();
-        for (view_id, (conversation_id, page_size, reset)) in targets {
+        for (view_id, (conversation_id, page_size, reset, cached_open)) in targets {
+            if cached_open {
+                self.reread_windows(&ViewRefreshTarget::conversation(&conversation_id))
+                    .await;
+                continue;
+            }
             if reset {
                 match self.latest_window(&conversation_id, page_size).await {
                     Ok(latest) => self.replace_window(&view_id, latest).await,
@@ -1434,13 +1618,34 @@ impl ViewApi {
                             view.window.conversation_id.clone(),
                             view.page_size,
                             view.window.attached_to_latest,
+                            view.cached_open,
                             view.window.oldest_seq(),
                             view.window.newest_seq(),
                         )
                     })
             })
             .await;
-        for (view_id, (conversation_id, page_size, attached, oldest, newest)) in targets {
+        for (view_id, (conversation_id, page_size, attached, cached_open, oldest, newest)) in
+            targets
+        {
+            let mut pending = None;
+            if cached_open && let Ok(latest) = self.latest_window(&conversation_id, page_size).await
+            {
+                if latest.oldest_seq().is_some() || !latest.has_older {
+                    let update = {
+                        let mut views = self.inner.views.write().await;
+                        views.timelines.get_mut(&view_id).and_then(|view| {
+                            if !view.cached_open {
+                                return None;
+                            }
+                            commit_timeline(&view_id, view, latest, CompareRows::All)
+                        })
+                    };
+                    self.publish(update);
+                    continue;
+                }
+                pending = Some(latest.messages);
+            }
             let (Some(oldest), Some(newest)) = (oldest, newest) else {
                 if attached {
                     match self.latest_window(&conversation_id, page_size).await {
@@ -1460,7 +1665,10 @@ impl ViewApi {
                 self.reread_detached(&conversation_id, oldest, newest).await
             };
             match reread {
-                Ok((conversation, messages, has_older)) => {
+                Ok((conversation, mut messages, has_older)) => {
+                    if let Some(pending) = pending {
+                        messages.extend(pending);
+                    }
                     let window = TimelineWindow {
                         conversation_id: conversation_id.clone(),
                         conversation,
@@ -1774,6 +1982,12 @@ fn commit_timeline(
     compare: CompareRows<'_>,
 ) -> Option<ViewUpdate> {
     let change = timeline_change(&registration.window, &next, compare);
+    if next.attached_to_latest
+        || next.oldest_seq() != registration.window.oldest_seq()
+        || next.newest_seq() != registration.window.newest_seq()
+    {
+        registration.cached_open = false;
+    }
     registration.window = next;
     match change {
         TimelineChange::None => None,
@@ -1801,6 +2015,7 @@ fn replace_timeline(
     next: TimelineWindow,
 ) -> ViewUpdate {
     registration.window = next;
+    registration.cached_open = false;
     registration.revision += 1;
     timeline_snapshot_update(view_id, registration)
 }
@@ -2345,6 +2560,7 @@ mod tests {
             page_size: 50,
             order,
             revision: 1,
+            cached_open: false,
             window: TimelineWindow {
                 conversation_id: conversation_id.to_string(),
                 conversation: None,

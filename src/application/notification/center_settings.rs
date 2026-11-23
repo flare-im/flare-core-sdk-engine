@@ -10,9 +10,60 @@ impl NotifyCenter {
     // 用户级通知设置
     // ---------------------------------------------------------------------------------------
 
-    /// 当前的用户级通知设置：手上有就用手上的（上线时读过、变更信号会刷新），没有就去读。
-    pub(crate) async fn settings(&self) -> Result<UserNotificationSettings> {
+    /// The notification settings projection belongs to one authenticated account.
+    /// Store its versioned value alongside the other durable sync projections.
+    pub(crate) fn bind_settings_scope(&self, tenant: &str, user: &str) {
+        let key = format!("notification_settings:{}:{tenant}:{user}", tenant.len());
+        if self.settings_scope.set(key).is_ok() {
+            let center = self.me.clone();
+            spawn_background(async move {
+                if let Some(center) = center.upgrade() {
+                    center.restore_settings().await;
+                }
+            });
+        }
+    }
+
+    pub(super) async fn restore_settings(&self) -> Option<UserNotificationSettings> {
         if let Some(settings) = self.cached_settings() {
+            return Some(settings);
+        }
+        let key = self.settings_scope.get()?;
+        let _io = self.settings_io.lock().await;
+        if let Some(settings) = self.cached_settings() {
+            return Some(settings);
+        }
+        let raw = match self.stores.cursors.get_raw(key).await {
+            Ok(value) => value?,
+            Err(error) => {
+                tracing::debug!(%error, "cannot restore user notification settings");
+                return None;
+            }
+        };
+        let settings = serde_json::from_str(&raw).ok()?;
+        Some(self.adopt_settings(settings, false))
+    }
+
+    pub(super) async fn commit_settings(
+        &self,
+        settings: UserNotificationSettings,
+        written: bool,
+    ) -> UserNotificationSettings {
+        let _io = self.settings_io.lock().await;
+        let settings = self.adopt_settings(settings, written);
+        if !self.ended()
+            && let Some(key) = self.settings_scope.get()
+            && let Ok(payload) = serde_json::to_string(&settings)
+            && let Err(error) = self.stores.cursors.save_raw(key, &payload).await
+        {
+            tracing::debug!(%error, "cannot store user notification settings");
+        }
+        settings
+    }
+
+    /// 从内存或本地库读上次确认的设置。上线和变更信号会刷新它。
+    pub(crate) async fn settings(&self) -> Result<UserNotificationSettings> {
+        if let Some(settings) = self.restore_settings().await {
             return Ok(settings);
         }
         self.refresh_settings().await
@@ -20,6 +71,7 @@ impl NotifyCenter {
 
     /// 向服务端读一次。手上的版本更新时（读的同时本机刚改过）保留手上的。
     pub(crate) async fn refresh_settings(&self) -> Result<UserNotificationSettings> {
+        self.restore_settings().await;
         let response = self.sync.request_user_notification_settings().await?;
         let settings = match response.payload {
             Some(SyncResPayload::GetUserNotificationSettings(res)) => {
@@ -27,7 +79,7 @@ impl NotifyCenter {
             }
             _ => return Err(unexpected_response()),
         };
-        Ok(self.adopt_settings(settings, false))
+        Ok(self.commit_settings(settings, false).await)
     }
 
     /// 部分更新，返回写入后的完整设置。
@@ -66,7 +118,7 @@ impl NotifyCenter {
             }
             _ => return Err(unexpected_response()),
         };
-        Ok(self.adopt_settings(settings, true))
+        Ok(self.commit_settings(settings, true).await)
     }
 
     pub(super) fn adopt_settings(

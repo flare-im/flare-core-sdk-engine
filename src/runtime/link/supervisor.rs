@@ -87,6 +87,7 @@ pub(crate) enum LinkCommand {
     },
     /// 横幅「立即重试」：重置退避，立即一轮。
     ReconnectNow,
+    ProtocolModeChanged,
     Network {
         available: bool,
         /// 网络指纹变了（切了 Wi-Fi / 蜂窝）。
@@ -340,6 +341,10 @@ impl LinkHandle {
 
     pub async fn reconnect_now(&self) {
         self.command(LinkCommand::ReconnectNow).await;
+    }
+
+    pub async fn protocol_mode_changed(&self) {
+        self.command(LinkCommand::ProtocolModeChanged).await;
     }
 
     pub async fn network_changed(&self, available: bool, changed: bool) {
@@ -712,6 +717,19 @@ impl Supervisor {
                     _ => {}
                 }
             }
+            LinkCommand::ProtocolModeChanged => {
+                if self.session.is_some()
+                    && self.network_available
+                    && !matches!(self.phase, LinkPhase::Terminated | LinkPhase::Parked)
+                {
+                    if let Some(kernel) = self.access.kernel_now() {
+                        kernel.health().expedite_trials(self.access.net(), now_ms());
+                    }
+                    self.backoff.reset();
+                    self.failed_rounds = 0;
+                    self.switch_away(Vec::new(), SwitchReason::Manual).await;
+                }
+            }
             LinkCommand::Network { available, changed } => {
                 self.on_network(available, changed).await;
             }
@@ -844,6 +862,7 @@ impl Supervisor {
     }
 
     async fn on_network(&mut self, available: bool, changed: bool) {
+        let restored = available && !self.network_available;
         self.network_available = available;
         if self.session.is_none() || self.phase == LinkPhase::Terminated {
             return;
@@ -909,6 +928,15 @@ impl Supervisor {
             self.phase,
             LinkPhase::Suspended | LinkPhase::Backoff | LinkPhase::Recovering
         ) {
+            // The device is reachable again: let cooling access points try once,
+            // as a push wake does. Retain half-open ownership and failure cooldown;
+            // repeated available reports must not keep bypassing the circuit.
+            if restored && let Some(kernel) = self.access.kernel_now() {
+                let expedited = kernel.health().expedite_trials(self.access.net(), now_ms());
+                if expedited > 0 {
+                    tracing::debug!(expedited, "network recovery expedites access point trials");
+                }
+            }
             // 换了网络，之前的失败不再说明问题：重置退避，按新网络的健康记录立即选路。
             // 后台用完重连预算停下的，也从这里重新开始。
             self.backoff.reset();

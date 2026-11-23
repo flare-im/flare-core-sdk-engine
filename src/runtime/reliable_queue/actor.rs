@@ -538,13 +538,17 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
             let enqueued_at_ms = next_enqueue_ms(st, id::now_millis());
             let mut optimistic = msg.clone();
             optimistic.server_id = msg.client_msg_id.clone();
+            let sort_ts = match msg.local_state.sort_ts {
+                0 => enqueued_at_ms,
+                sort_ts => sort_ts,
+            };
             optimistic.local_state = MessageLocalState {
                 sending: true,
                 failed: false,
                 is_local: true,
                 uploading: false,
-                upload_progress: 0,
-                sort_ts: enqueued_at_ms,
+                upload_progress: msg.local_state.upload_progress,
+                sort_ts,
             };
             let entry = PendingSendVo {
                 client_msg_id: msg.client_msg_id.clone(),

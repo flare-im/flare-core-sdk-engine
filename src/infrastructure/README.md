@@ -191,7 +191,6 @@ infrastructure/
 │   ├── conversation_store.rs   ← ConversationStore trait
 │   ├── memory.rs                ← 内存兜底（UserProfile / PendingSend 等）
 │   ├── layered.rs               ← PendingSend 分层
-│   ├── indexeddb_adapter.rs     ← IndexedDB 接入抽象
 │   └── sqlite/
 │       ├── mod.rs
 │       ├── schema.rs            ← messages / conversations / pending_sends / sync_cursors 等表

@@ -44,7 +44,19 @@ pub(super) fn compute_bytes_fingerprints(data: &[u8]) -> (String, String, Option
     } else {
         &data[data.len().saturating_sub(tail_len)..]
     };
-    let full_sha256 = hex::encode(Sha256::digest(data));
+    let (fingerprint, head_tail_sha256) = compute_head_tail_fingerprints(file_size, head, tail);
+    (
+        fingerprint,
+        head_tail_sha256,
+        Some(hex::encode(Sha256::digest(data))),
+    )
+}
+
+pub(super) fn compute_head_tail_fingerprints(
+    file_size: u64,
+    head: &[u8],
+    tail: &[u8],
+) -> (String, String) {
     let head_hash = hex::encode(Sha256::digest(head));
     let tail_hash = hex::encode(Sha256::digest(tail));
     let head_tail_sha256 = hex::encode(Sha256::digest(
@@ -53,7 +65,7 @@ pub(super) fn compute_bytes_fingerprints(data: &[u8]) -> (String, String, Option
     let fingerprint = hex::encode(Sha256::digest(
         format!("{file_size}:{head_hash}:{tail_hash}").as_bytes(),
     ));
-    (fingerprint, head_tail_sha256, Some(full_sha256))
+    (fingerprint, head_tail_sha256)
 }
 
 pub(super) fn build_upload_parts_from_manifest(

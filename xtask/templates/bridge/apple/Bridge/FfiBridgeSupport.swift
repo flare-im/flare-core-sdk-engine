@@ -14,7 +14,7 @@ enum FfiJson {
 
     static func decode(_ raw: String) -> Any? {
         guard !raw.isEmpty, let data = raw.data(using: .utf8) else { return nil }
-        return try? JSONSerialization.jsonObject(with: data)
+        return try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
     }
 
     static func asMap(_ value: Any?) -> [String: Any] {

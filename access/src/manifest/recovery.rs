@@ -65,7 +65,10 @@ fn standard_services() -> Services {
     };
     Services {
         im_ws: path("/ws"),
-        im_quic: Some(PortService { port: 443 }),
+        im_quic: Some(PortService {
+            port: 443,
+            host: None,
+        }),
         core_api: path("/api"),
         social_api: path("/social-api"),
         media: path("/flare-media"),

@@ -10,6 +10,8 @@ use super::http_client_wasm as wasm_http;
 use super::http_error_from_response_status;
 #[cfg(not(target_arch = "wasm32"))]
 use super::ip_hints::IpHintResolver;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::shared::error::ErrorCode;
 use crate::shared::error::{FlareError, Result};
 use base64::Engine as _;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1257,6 +1259,59 @@ mod tests {
             TlsConfig::none().with_ca_cert(path),
         );
         assert!(missing.tls_config_error.is_some());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn an_https_connect_failure_tries_another_address_for_the_original_host() {
+        use std::time::Duration;
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        let host = "im-gateway.invalid";
+        let primary = TcpListener::bind("[::1]:0").await.unwrap();
+        let first = primary.local_addr().unwrap();
+        let alternate = TcpListener::bind(("127.0.0.1", first.port()))
+            .await
+            .unwrap();
+        let expect_tls = |listener: TcpListener| {
+            tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut header = [0; 5];
+                stream.read_exact(&mut header).await.unwrap();
+                assert_eq!(
+                    &header[..2],
+                    &[0x16, 0x03],
+                    "TLS must precede any HTTP data"
+                );
+            })
+        };
+        let received_primary = expect_tls(primary);
+        let received_alternate = expect_tls(alternate);
+        let mut client = super::HttpClient::new(format!("https://{host}:{}", first.port()));
+        client.client = reqwest::Client::builder()
+            .no_proxy()
+            .resolve(host, first)
+            .build()
+            .unwrap();
+        client.ip_hint_resolver = Some(std::sync::Arc::new(super::IpHintResolver::for_host(
+            host,
+            vec![first.ip(), "127.0.0.1".parse().unwrap()],
+            Duration::from_secs(2),
+        )));
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.get::<serde_json::Value>("/probe", None),
+        )
+        .await
+        .expect("failed connectors must terminate");
+        assert!(result.is_err(), "both test endpoints close during TLS");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            received_primary.await.unwrap();
+            received_alternate.await.unwrap();
+        })
+        .await
+        .expect("both addresses must receive a handshake");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2785,17 +2840,17 @@ impl HttpClient {
             )
             .await;
         }
-        let (_, headers) = wasm_http::fetch_bytes_with_headers(
-            "PUT",
-            url.to_string(),
-            None,
-            Some(data.to_vec()),
-            None,
-            HashMap::new(),
-            Some(extra_headers),
-        )
-        .await?;
-        Ok(headers)
+        wasm_http::put_object_bytes(url.to_string(), data.to_vec(), extra_headers, false).await
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn put_browser_file_part(
+        &self,
+        url: &str,
+        data: &[u8],
+        extra_headers: &HashMap<String, String>,
+    ) -> Result<HashMap<String, String>> {
+        wasm_http::put_object_bytes(url.to_string(), data.to_vec(), extra_headers, true).await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -3166,6 +3221,7 @@ impl HttpClient {
                     body,
                     &context_headers,
                     headers,
+                    core_epoch,
                 )
                 .await;
             self.ensure_request_scope(core_epoch).await?;
@@ -3222,6 +3278,9 @@ impl HttpClient {
                     // 证书或钉扎不符同样发生在连接阶段，单独认出来，健康簿记作 TLS 失败。
                     let failure = if super::router::is_tls_failure(&error) {
                         HttpFailure::Tls
+                    } else if error.is_connect() && super::router::is_local_network_failure(&error)
+                    {
+                        HttpFailure::NoNetworkRoute
                     } else if error.is_connect() {
                         HttpFailure::ConnectPhase
                     } else {
@@ -3266,6 +3325,7 @@ impl HttpClient {
         body: Option<&B>,
         context_headers: &HashMap<String, String>,
         headers: &HashMap<String, String>,
+        core_epoch: Option<u64>,
     ) -> Result<std::result::Result<reqwest::Response, reqwest::Error>>
     where
         B: serde::Serialize + ?Sized,
@@ -3287,7 +3347,91 @@ impl HttpClient {
         if let Some(b) = body {
             req = req.json(b);
         }
-        Ok(req.send().await)
+        let request = match req.build() {
+            Ok(request) => request,
+            Err(error) => return Ok(Err(error)),
+        };
+        let retry = request.try_clone();
+        let first = client.execute(request).await;
+        match (first, retry, self.ip_hint_resolver.as_ref()) {
+            (Err(error), Some(request), Some(resolver))
+                if error.is_connect() && request.url().scheme() == "https" =>
+            {
+                self.try_other_addresses(resolver, request, &resolved.spki_pins, core_epoch, error)
+                    .await
+            }
+            (result, _, _) => Ok(result),
+        }
+    }
+
+    /// A connector error guarantees that HTTP headers and the body were never
+    /// sent. Retry only that phase, retaining the original authority and TLS
+    /// configuration even for one-use authentication requests.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn try_other_addresses(
+        &self,
+        resolver: &IpHintResolver,
+        request: reqwest::Request,
+        pins: &[String],
+        core_epoch: Option<u64>,
+        mut last: reqwest::Error,
+    ) -> Result<std::result::Result<reqwest::Response, reqwest::Error>> {
+        let Some(host) = request.url().domain() else {
+            return Ok(Err(last));
+        };
+        self.note_send_failure(&last);
+        let deadline = tokio::time::Instant::now() + super::HTTP_CONNECT_TIMEOUT;
+        let Ok(Ok(mut addresses)) = tokio::time::timeout(
+            super::HTTP_CONNECT_TIMEOUT / 2,
+            resolver.addresses_for(host),
+        )
+        .await
+        else {
+            return Ok(Err(last));
+        };
+        let mut seen = std::collections::HashSet::new();
+        addresses.retain(|address| seen.insert(address.ip().to_canonical()));
+        if addresses.len() < 2 {
+            return Ok(Err(last));
+        }
+        // The normal connector doesn't expose the failed peer. Try the other
+        // addresses first and allow the original candidate last.
+        addresses.rotate_left(1);
+        let count = addresses
+            .len()
+            .min(flare_core::client::dial::MAX_HANDSHAKE_ADDRESSES);
+        let tls = self.tls.clone().with_spki_sha256_pins(pins.to_vec());
+        for (index, address) in addresses.into_iter().take(count).enumerate() {
+            let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if budget.is_zero() {
+                break;
+            }
+            let Some(retry) = request.try_clone() else {
+                break;
+            };
+            let (builder, tls_error) = Self::reqwest_builder(Some(&tls), None);
+            let slice = (budget / (count - index) as u32).max(Duration::from_secs(4));
+            let fallback = builder
+                .connect_timeout(slice.min(budget))
+                .resolve(host, address);
+            if let Some(reason) = tls_error {
+                return Err(FlareError::localized(ErrorCode::ConfigurationError, reason));
+            }
+            let client = fallback.build().map_err(|error| {
+                FlareError::localized(ErrorCode::ConfigurationError, error.to_string())
+            })?;
+            self.ensure_request_scope(core_epoch).await?;
+            match client.execute(retry).await {
+                Ok(response) => {
+                    resolver.remember_address(host, address.ip());
+                    tracing::info!(host, "HTTPS connected through another resolved address");
+                    return Ok(Ok(response));
+                }
+                Err(error) if error.is_connect() => last = error,
+                Err(error) => return Ok(Err(error)),
+            }
+        }
+        Ok(Err(last))
     }
 
     /// 本次请求的完整 URL：固定入口直接拼；路由客户端向选路器取接入点。

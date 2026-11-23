@@ -103,8 +103,7 @@ impl ReadPosition {
     /// 服务端摘要落库：合并本地与服务端读位/未读。
     #[must_use]
     pub fn merge_with_incoming_summary(local: Self, incoming: Self) -> Self {
-        let local = local.normalize_for_unread_delta();
-        let incoming = incoming.normalize_for_unread_delta();
+        // Unread counts can be sparse; only an explicit read position proves a read prefix.
         let merged_max = incoming.max_seq.max(local.max_seq);
         let last_read = incoming.last_read_seq.max(local.last_read_seq);
         let upper = merged_max.saturating_sub(last_read) as u32;

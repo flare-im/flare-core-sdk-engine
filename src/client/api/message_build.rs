@@ -284,44 +284,36 @@ impl MessageBuildApi {
         mention_user_ids: &[String],
     ) -> Result<IMMessage> {
         let sender_id = self.current_sender_id().await?;
-        // 提及从**正文**解析（`@全员` / `@某人`）：同一段文字在任何端都必须产出
-        // 同一条消息，所以规则只有核心这一份。入参是「显式追加」——
-        // 比如 UI 的 @全员 开关或选人器已经确定的人，与解析结果取并集。
-        let parsed = self
-            .parse_text_mentions(conversation_id, text, &sender_id)
+        let mentions = self
+            .resolve_text_mentions(conversation_id, text, &sender_id, mention_user_ids)
             .await;
-        let mut merged: Vec<String> = mention_user_ids.to_vec();
-        for id in parsed.user_ids {
-            if !merged.iter().any(|existing| existing == &id) {
-                merged.push(id);
-            }
-        }
-        let msg = MessageBuilderService::build_text(
+        let msg = MessageBuilderService::build_resolved_text(
             conversation_id,
             &sender_id,
             text,
             None,
-            mention_all || parsed.mention_all,
-            &merged,
+            mention_all,
+            mentions,
         )?;
         self.apply_conversation_routing(conversation_id, msg).await
     }
 
     /// 按会话成员名册解析正文里的提及。取不到会话时只解析 `@全员`
     /// （它不依赖名册），不因为名册缺失而整体失效。
-    async fn parse_text_mentions(
+    async fn resolve_text_mentions(
         &self,
         conversation_id: &str,
         text: &str,
         sender_id: &str,
-    ) -> crate::content::ParsedMentions {
+        explicit_user_ids: &[String],
+    ) -> Vec<crate::content::TextMention> {
         // 正文里没有 '@' 就什么都不用做 —— 绝大多数消息都是这样。
         //
         // 这里原本无条件读一次会话存储再组名册：在 web 上那是一次 IndexedDB 读，
         // 还要排进 WASM 的单槽 invoke 队列，实测把「点击→上屏」从 92ms 推到 601ms，
         // 而发送→上屏的预算是 **16ms**（下一帧）。热路径上不能有这种无条件 I/O。
         if !text.contains('@') {
-            return crate::content::ParsedMentions::default();
+            return Vec::new();
         }
 
         let mut candidates: Vec<crate::content::MentionCandidate> = Vec::new();
@@ -354,7 +346,45 @@ impl MessageBuildApi {
                 }
             }
         }
-        crate::content::parse_mentions(text, &candidates)
+        // The stored roster may only contain IDs and group nicknames. The member
+        // picker also shows aliases and profile names from the local identity cache.
+        let ids: Vec<_> = candidates
+            .iter()
+            .map(|candidate| candidate.user_id.clone())
+            .collect();
+        if !ids.is_empty()
+            && let Ok(profiles) = self.profiles.get_many(&ids).await
+        {
+            for candidate in &mut candidates {
+                let Some(profile) = profiles.get(&candidate.user_id) else {
+                    continue;
+                };
+                let names = profile.name_candidates();
+                for name in [names.alias.trim(), names.profile_name.trim()] {
+                    if !name.is_empty()
+                        && !candidate
+                            .display_names
+                            .iter()
+                            .any(|existing| existing == name)
+                    {
+                        candidate.display_names.push(name.to_owned());
+                    }
+                }
+            }
+        }
+        for id in explicit_user_ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+        {
+            if !candidates.iter().any(|candidate| candidate.user_id == id) {
+                candidates.push(crate::content::MentionCandidate {
+                    user_id: id.to_owned(),
+                    display_names: Vec::new(),
+                });
+            }
+        }
+        crate::content::resolve_mentions(text, &candidates)
     }
 
     pub async fn create_quote(

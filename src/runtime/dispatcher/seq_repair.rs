@@ -66,10 +66,8 @@ impl Dispatcher {
             warn!(error = %e, "MessagePush conversation projection failed");
             durable = false;
         }
-        if durable {
-            self.repair_message_seq_after_persist(durable_messages)
-                .await;
-        }
+        self.repair_message_seq_after_persist(durable_messages)
+            .await;
         durable
     }
 
@@ -145,6 +143,20 @@ impl Dispatcher {
             let base_seq = cursor_seq;
             let mut continuity_window = local_tail_seqs;
             continuity_window.extend(seqs.iter().copied());
+            let coverage = match stores.conversations.get(&conversation_id).await {
+                Ok(Some(conversation)) => crate::domain::message_projection_coverage(&conversation),
+                Ok(None) => Ok(crate::domain::TimelineCoverage::default()),
+                Err(error) => Err(error),
+            };
+            let coverage = match coverage {
+                Ok(coverage) => coverage,
+                Err(error) => {
+                    warn!(%conversation_id, %error, "读取会话投影完成记录失败，跳过游标推进");
+                    continue;
+                }
+            };
+            // A stored row is durable only after its conversation projection commits.
+            continuity_window.retain(|seq| coverage.range_containing(*seq).is_some());
             // 操作事件与消息共享会话 seq 分配器：已应用的操作事件占据的 seq
             // 在消息序列里表现为「空洞」。不计入连续窗口会让每条 reaction/已读都被判成缺口，
             // 触发冗余补拉与 warn 噪音，且游标被卡在事件 seq 之前。
@@ -161,7 +173,12 @@ impl Dispatcher {
             continuity_window.dedup();
             let contiguous_seq = max_contiguous_seq(base_seq, &continuity_window);
             let window_gap_after =
-                seq_repair_gap_after(base_seq, local_before_seq, &continuity_window);
+                seq_repair_gap_after(base_seq, local_before_seq, &continuity_window).or_else(
+                    || {
+                        (contiguous_seq < seqs.last().copied().unwrap_or_default())
+                            .then_some(contiguous_seq)
+                    },
+                );
             if contiguous_seq > cursor_seq
                 && let Err(error) = stores
                     .cursors

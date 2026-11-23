@@ -24,6 +24,7 @@ pub const UNIFFI_CANONICAL_OPERATIONS: &[&str] = &[
     "sdk.heartbeat_effective_interval",
     "connection.notify_network_change",
     "connection.reconnect_now",
+    "connection.set_protocol_mode",
     "access.get_status",
     "access.list_access_points",
     "access.pin",

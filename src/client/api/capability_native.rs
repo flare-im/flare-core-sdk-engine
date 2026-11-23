@@ -63,6 +63,7 @@ use tokio::sync::oneshot;
 
 use super::{CapabilityApi, CapabilityDispatchResult, PluginCallFuture, PluginFileUploadPage};
 use crate::client::IMClient;
+use crate::extension::capability::plugin_errors::{PLUGIN_REJECTED_KEY, plugin_rejection_code};
 use crate::kernel::event::{EventBus, PluginEvent, PublishOutcome, SdkEvent};
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
@@ -74,6 +75,10 @@ const HOST_ANSWER_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_PENDING_HOST_REQUESTS: usize = 8;
 /// Largest payment proof the host may hand back (serialized).
 const MAX_PAYMENT_PROOF_BYTES: usize = 4096;
+/// Credentials one payment confirmation takes: after a refusal the host asks
+/// again in the same panel, until the provider's refusal of the last one ends
+/// it (a provider locks its own credential sooner).
+const MAX_PAYMENT_ATTEMPTS: u32 = 5;
 /// Page action continuations held for payment orders at once.
 const MAX_HELD_PAYMENT_CONTINUATIONS: usize = 32;
 /// Payment orders recorded at once.
@@ -164,11 +169,61 @@ pub struct FilePickPrompt {
 /// only: the order as the engine recorded it), collect the viewer's payment
 /// credential, and hand it back. The engine gives it to the payment
 /// provider only, never to the plugin whose order it is.
+///
+/// After answering with a proof the host keeps the panel busy (every key
+/// locked, no way out): the engine either asks again for the same order with
+/// `error` (the provider refused that credential; the host shows why in the
+/// same panel and unlocks it) or ends it with
+/// [`PluginCapabilityHost::payment_settled`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentConfirmationPrompt {
     pub plugin_id: String,
     pub order: PaymentConfirmationOrder,
+    /// Why the provider refused the credential last given for this order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<PaymentConfirmationError>,
+}
+
+/// The provider's refusal of a payment credential, as hosts word plugin
+/// failures: the `sdk.plugin.*` key and the provider's own code under it
+/// (`PAYMENT_PASSWORD_INVALID`, ...) when it gave one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentConfirmationError {
+    pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// The words the page that asked for the payment gives `code`
+    /// ([`flare_plugin_protocol::ui::UiDocument::errors`]), in the
+    /// confirmation's `locale`: hosts show them, else their own line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl PaymentConfirmationError {
+    fn rejected(code: Option<&str>, words: impl Fn(&str) -> Option<String>) -> Self {
+        let code = code.filter(|code| !code.is_empty());
+        Self {
+            key: PLUGIN_REJECTED_KEY.to_owned(),
+            code: code.map(str::to_owned),
+            message: code.and_then(words),
+        }
+    }
+}
+
+/// A plugin's own refusal (`sdk.plugin.rejected`), not a platform or
+/// transport failure.
+fn is_rejection(error: &FlareError) -> bool {
+    matches!(error, FlareError::Localized { reason, .. } if reason == PLUGIN_REJECTED_KEY)
+}
+
+/// The end of a payment confirmation ([`PluginCapabilityHost::payment_settled`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentSettled {
+    pub plugin_id: String,
+    pub order_id: String,
 }
 
 /// One position fix, confirmed by the viewer.
@@ -221,6 +276,11 @@ pub trait PluginCapabilityHost: Send + Sync {
         prompt: PaymentConfirmationPrompt,
     ) -> CapabilityHostAnswer<Map<String, Value>>;
     async fn locate_once(&self, prompt: LocationPrompt) -> CapabilityHostAnswer<LocationFix>;
+    /// The engine is done with the confirmation of this order: paid, or
+    /// failed for good (the caller of `plugin_capability_invoke` gets which).
+    /// A host that kept its panel busy after answering closes it. Sent once
+    /// per confirmation, also after a cancel; nothing to answer.
+    async fn payment_settled(&self, _settled: PaymentSettled) {}
 }
 
 // ---------- The default host: events and completions ----------
@@ -243,6 +303,17 @@ impl CapabilityHostRequests {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&request_id);
         sender.is_some_and(|sender| sender.send(result).is_ok())
+    }
+
+    /// Publish a notice the host does not answer: its id is one nothing waits
+    /// on, so an answer is refused like a late one.
+    fn notify(&self, bus: &EventBus, method: &str, request: Value) {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = bus.publish(SdkEvent::Plugin(PluginEvent::CapabilityRequest {
+            request_id,
+            method: method.to_owned(),
+            request,
+        }));
     }
 
     /// Publish the request and wait for the host's answer; `None` when no
@@ -306,7 +377,8 @@ impl Drop for PendingRequest {
 /// | `consent` | [`CapabilityConsentPrompt`] | `{decision: "once" \| "always" \| "deny"}` |
 /// | `captureDocument` | [`DocumentCapturePrompt`] | `{file: {fileName, contentType, bytes}}` |
 /// | `pickFile` | [`FilePickPrompt`] | `{file: {fileName, contentType, bytes}}` |
-/// | `confirmPayment` | [`PaymentConfirmationPrompt`] | `{confirmation: {...}}` |
+/// | `confirmPayment` | [`PaymentConfirmationPrompt`], `reportsOutcome: true` | `{confirmation: {...}}` |
+/// | `paymentSettled` | [`PaymentSettled`] (a notice) | none |
 /// | `locateOnce` | [`LocationPrompt`] | `{location: {latitude, longitude, accuracyM?}}` |
 ///
 /// Any result may instead be `{cancelled: true}` (the viewer backed out) or
@@ -382,10 +454,21 @@ impl PluginCapabilityHost for EventCapabilityHost {
         &self,
         prompt: PaymentConfirmationPrompt,
     ) -> CapabilityHostAnswer<Map<String, Value>> {
-        self.ask("confirmPayment", prompt, "confirmation").await
+        let Ok(mut request) = serde_json::to_value(prompt) else {
+            return CapabilityHostAnswer::Unavailable;
+        };
+        // An older engine sends no `paymentSettled`: hosts keep the panel busy
+        // after answering only when the request says one follows.
+        request["reportsOutcome"] = Value::Bool(true);
+        self.ask("confirmPayment", request, "confirmation").await
     }
     async fn locate_once(&self, prompt: LocationPrompt) -> CapabilityHostAnswer<LocationFix> {
         self.ask("locateOnce", prompt, "location").await
+    }
+    async fn payment_settled(&self, settled: PaymentSettled) {
+        if let Ok(request) = serde_json::to_value(settled) {
+            self.requests.notify(&self.bus, "paymentSettled", request);
+        }
     }
 }
 
@@ -404,45 +487,65 @@ pub(crate) struct CapabilityHostSlot {
 
 /// The payment orders the engine received in operation results, the only
 /// orders it confirms: a host or a bundle names one by id, never supplies
-/// one. Kept per tenant, viewer, plugin and order id while open.
+/// one. Kept per tenant, viewer, plugin and order id while open, until every
+/// result that handed it out has been used up by a paid confirmation.
 #[derive(Default)]
 pub(crate) struct PaymentOrders {
-    recorded: Mutex<HashMap<HeldPaymentKey, PaymentConfirmationOrder>>,
+    recorded: Mutex<HashMap<HeldPaymentKey, RecordedOrder>>,
 }
 
+/// An order, the page (of its plugin) whose action asked for it, and how many
+/// results handed it out that no paid confirmation used up yet.
+type RecordedOrder = (PaymentConfirmationOrder, Option<String>, u32);
+
 impl PaymentOrders {
-    /// Record `order`; run-out orders are dropped, and past
-    /// [`MAX_RECORDED_PAYMENT_ORDERS`] the one running out first goes.
-    pub fn record(&self, key: HeldPaymentKey, order: PaymentConfirmationOrder, now_ms: i64) {
+    /// Record `order`, asked for by an action of `page` when one is known;
+    /// run-out orders are dropped, and past [`MAX_RECORDED_PAYMENT_ORDERS`]
+    /// the one running out first goes.
+    pub fn record(
+        &self,
+        key: HeldPaymentKey,
+        order: PaymentConfirmationOrder,
+        page: Option<String>,
+        now_ms: i64,
+    ) {
         let mut recorded = self.recorded.lock().unwrap_or_else(PoisonError::into_inner);
-        recorded.retain(|_, order| order.is_open(now_ms));
+        recorded.retain(|_, (order, _, _)| order.is_open(now_ms));
         if recorded.len() >= MAX_RECORDED_PAYMENT_ORDERS && !recorded.contains_key(&key) {
             let first = recorded
                 .iter()
-                .min_by_key(|(_, order)| order.expires_at_ms)
+                .min_by_key(|(_, (order, _, _))| order.expires_at_ms)
                 .map(|(key, _)| key.clone());
             if let Some(first) = first {
                 recorded.remove(&first);
             }
         }
-        recorded.insert(key, order);
+        // Handed out again (a second press): one more confirmation may pay it.
+        let handed = recorded.get(&key).map_or(0, |(_, _, handed)| *handed);
+        recorded.insert(key, (order, page, handed.saturating_add(1)));
     }
 
-    /// The order recorded for `key`.
-    pub fn get(&self, key: &HeldPaymentKey) -> Option<PaymentConfirmationOrder> {
+    /// The order recorded for `key`, with the page whose action asked for it.
+    pub fn get(&self, key: &HeldPaymentKey) -> Option<(PaymentConfirmationOrder, Option<String>)> {
         self.recorded
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(key)
-            .cloned()
+            .map(|(order, page, _)| (order.clone(), page.clone()))
     }
 
-    /// Forget the order for `key` (paid).
-    pub fn remove(&self, key: &HeldPaymentKey) {
-        self.recorded
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(key);
+    /// A confirmation of the order for `key` paid: it uses up one result that
+    /// handed the order out, and the order is forgotten with the last. A
+    /// confirmation from another press of the same order is thus never
+    /// refused as an unknown order because this one paid first.
+    pub fn paid(&self, key: &HeldPaymentKey) {
+        let mut recorded = self.recorded.lock().unwrap_or_else(PoisonError::into_inner);
+        match recorded.get_mut(key) {
+            Some((_, _, handed)) if *handed > 1 => *handed -= 1,
+            _ => {
+                recorded.remove(key);
+            }
+        }
     }
 }
 
@@ -697,6 +800,7 @@ impl CapabilityApi {
         &self,
         user: Option<&str>,
         plugin_id: &str,
+        page: Option<&str>,
         data: &Value,
     ) -> Option<PaymentConfirmationOrder> {
         let order = PaymentConfirmationOrder::from_result(plugin_id, data)?;
@@ -704,6 +808,7 @@ impl CapabilityApi {
             self.plugin_host.capability_host.orders.record(
                 HeldPaymentKey::new(&self.default_tenant_id, user, plugin_id, &order.order_id),
                 order.clone(),
+                page.map(str::to_owned),
                 self.server_clock.now_ms(),
             );
         }
@@ -713,17 +818,18 @@ impl CapabilityApi {
     /// The outcome of a plugin operation an action ran: `{kind: "operation",
     /// response}`, plus `confirmation` when the successful result asks the
     /// host to confirm a payment; the order is recorded for `user`
-    /// ([`Self::record_payment_order`]) and the host passes its `orderId` to
-    /// `plugin_capability_invoke`.
+    /// ([`Self::record_payment_order`], with `page` when a page action ran
+    /// it) and the host passes its `orderId` to `plugin_capability_invoke`.
     pub(crate) fn operation_outcome(
         &self,
         user: Option<&str>,
         plugin_id: &str,
+        page: Option<&str>,
         response: &CapabilityDispatchResult,
     ) -> Value {
         let mut outcome = json!({"kind": "operation", "response": response});
         if response.success
-            && let Some(order) = self.record_payment_order(user, plugin_id, &response.data)
+            && let Some(order) = self.record_payment_order(user, plugin_id, page, &response.data)
         {
             outcome["confirmation"] = json!(order);
         }
@@ -865,7 +971,7 @@ impl CapabilityApi {
                         // Only an order this viewer received from this
                         // plugin through Core, and only behind a transient
                         // operation of the same plugin.
-                        let order = self
+                        let (order, page) = self
                             .plugin_host
                             .capability_host
                             .orders
@@ -905,7 +1011,7 @@ impl CapabilityApi {
                             })
                             .cloned()
                             .ok_or_else(capability_unavailable)?;
-                        Some((order, provider))
+                        Some((order, page, provider))
                     }
                     None => None,
                 };
@@ -967,12 +1073,13 @@ impl CapabilityApi {
                         })
                     }
                     NativeCapability::PaymentConfirmation => {
-                        let (order, provider) = order.ok_or_else(invalid)?;
+                        let (order, page, provider) = order.ok_or_else(invalid)?;
                         self.confirm_payment(
                             host.as_ref(),
                             plugin,
                             PaymentCall {
                                 order,
+                                page,
                                 provider: &provider,
                                 request: &request,
                                 user: &user,
@@ -1212,63 +1319,115 @@ impl CapabilityApi {
         plugin: &ClientPlugin,
         call: PaymentCall<'_>,
     ) -> Result<Value> {
+        let settled = PaymentSettled {
+            plugin_id: plugin.plugin_id.clone(),
+            order_id: call.order.order_id.clone(),
+        };
+        let outcome = self.confirm_payment_attempts(host, plugin, call).await;
+        // Whatever came of it, a panel kept busy after its last answer closes.
+        host.payment_settled(settled).await;
+        outcome
+    }
+
+    async fn confirm_payment_attempts(
+        &self,
+        host: &dyn PluginCapabilityHost,
+        plugin: &ClientPlugin,
+        call: PaymentCall<'_>,
+    ) -> Result<Value> {
         let PaymentCall {
             order,
+            page,
             provider,
             request,
             user,
             bundle,
         } = call;
-        let answer = host
-            .confirm_payment(PaymentConfirmationPrompt {
-                plugin_id: plugin.plugin_id.clone(),
-                order: order.clone(),
+        // The page that asked for the payment words its refusals.
+        let asking = page.as_deref().and_then(|page| {
+            plugin.extensions.contributions.iter().find(|c| {
+                c.id == page && c.kind == flare_plugin_protocol::manifest::UiContributionKind::Page
             })
-            .await;
-        let proof = match answer {
-            CapabilityHostAnswer::Done(proof) => proof,
-            CapabilityHostAnswer::Cancelled => return Ok(json!({"kind": "cancelled"})),
-            CapabilityHostAnswer::Unavailable => return Ok(json!({"kind": "unavailable"})),
+        });
+        let words = |code: &str| asking.and_then(|c| c.schema.refusal_text(code, &request.locale));
+        let worded = |outcome: Value| match asking {
+            Some(c) => super::page::refusal_words(&c.schema, &request.locale, outcome),
+            None => outcome,
         };
-        if serde_json::to_vec(&proof).map_or(true, |bytes| bytes.len() > MAX_PAYMENT_PROOF_BYTES) {
-            return Err(invalid());
-        }
-        // The viewer may have taken longer than the order lives.
-        if !order.is_open(self.server_clock.now_ms()) {
-            return Err(order_expired());
-        }
         let conversation = request.conversation_id.as_deref();
         let tenant = Some(self.default_tenant_id.as_str());
-        // The credential reaches the provider only (`PaymentTicketRequest`).
-        let ticket = match self
-            .dispatch_with(
-                &provider.operation,
-                json!({
-                    "pluginId": plugin.plugin_id, "orderId": order.order_id,
-                    "amount": order.amount, "currency": order.currency, "payee": order.payee,
-                    "expiresAtMs": order.expires_at_ms, "confirmation": proof,
-                }),
-                conversation,
-                tenant,
-                Some(user),
-                None,
-            )
-            .await
-        {
-            // A wrong credential: the host shows the provider's answer.
-            Ok(response) if !response.success => {
-                return Ok(json!({"kind": "operation", "response": response}));
+        let mut refused = None;
+        let mut attempt = 0;
+        let ticket = loop {
+            attempt += 1;
+            let answer = host
+                .confirm_payment(PaymentConfirmationPrompt {
+                    plugin_id: plugin.plugin_id.clone(),
+                    order: order.clone(),
+                    error: refused.take(),
+                })
+                .await;
+            let proof = match answer {
+                CapabilityHostAnswer::Done(proof) => proof,
+                CapabilityHostAnswer::Cancelled => return Ok(json!({"kind": "cancelled"})),
+                CapabilityHostAnswer::Unavailable => return Ok(json!({"kind": "unavailable"})),
+            };
+            if serde_json::to_vec(&proof)
+                .map_or(true, |bytes| bytes.len() > MAX_PAYMENT_PROOF_BYTES)
+            {
+                return Err(invalid());
             }
-            Ok(response) => response
-                .data
-                .get("ticket")
-                .and_then(Value::as_str)
-                .filter(|ticket| flare_plugin_protocol::ui::PaymentTicket::is_valid(ticket))
-                .map(str::to_owned)
-                .ok_or_else(unavailable)?,
-            Err(error) => {
-                self.after_plugin_error(&error, &provider.plugin_id).await;
-                return Err(error);
+            // The viewer may have taken longer than the order lives.
+            if !order.is_open(self.server_clock.now_ms()) {
+                return Err(order_expired());
+            }
+            // The credential reaches the provider only (`PaymentTicketRequest`).
+            // The provider's refusal of it (a wrong password) goes back to the
+            // host's panel for another try; the last one ends the confirmation.
+            let last = attempt >= MAX_PAYMENT_ATTEMPTS;
+            match self
+                .dispatch_with(
+                    &provider.operation,
+                    json!({
+                        "pluginId": plugin.plugin_id, "orderId": order.order_id,
+                        "amount": order.amount, "currency": order.currency, "payee": order.payee,
+                        "expiresAtMs": order.expires_at_ms, "confirmation": proof,
+                    }),
+                    conversation,
+                    tenant,
+                    Some(user),
+                    None,
+                )
+                .await
+            {
+                Ok(response) if response.success => {
+                    break response
+                        .data
+                        .get("ticket")
+                        .and_then(Value::as_str)
+                        .filter(|ticket| flare_plugin_protocol::ui::PaymentTicket::is_valid(ticket))
+                        .map(str::to_owned)
+                        .ok_or_else(unavailable)?;
+                }
+                Ok(response) if last => {
+                    return Ok(worded(json!({"kind": "operation", "response": response})));
+                }
+                Ok(response) => {
+                    refused = Some(PaymentConfirmationError::rejected(
+                        response.data.get("errorCode").and_then(Value::as_str),
+                        words,
+                    ));
+                }
+                Err(error) if !last && is_rejection(&error) => {
+                    refused = Some(PaymentConfirmationError::rejected(
+                        plugin_rejection_code(&error),
+                        words,
+                    ));
+                }
+                Err(error) => {
+                    self.after_plugin_error(&error, &provider.plugin_id).await;
+                    return Err(error);
+                }
             }
         };
         let response = match self
@@ -1295,7 +1454,7 @@ impl CapabilityApi {
                 &plugin.plugin_id,
                 &order.order_id,
             );
-            self.plugin_host.capability_host.orders.remove(&key);
+            self.plugin_host.capability_host.orders.paid(&key);
             if !bundle
                 && let Some((origin, continuation)) = self
                     .plugin_host
@@ -1319,13 +1478,20 @@ impl CapabilityApi {
                     .await;
             }
         }
-        Ok(self.operation_outcome(Some(user), &plugin.plugin_id, &response))
+        Ok(worded(self.operation_outcome(
+            Some(user),
+            &plugin.plugin_id,
+            None,
+            &response,
+        )))
     }
 }
 
 /// A payment confirmation's recorded order and where its credential goes.
 struct PaymentCall<'a> {
     order: PaymentConfirmationOrder,
+    /// The page of the order's plugin whose action asked for it, if known.
+    page: Option<String>,
     provider: &'a flare_plugin_protocol::ui::UiPaymentProvider,
     request: &'a CapabilityInvokeRequest,
     user: &'a str,

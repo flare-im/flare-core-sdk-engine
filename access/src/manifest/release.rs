@@ -463,23 +463,27 @@ pub fn normalize_device_platform(device_platform: &str) -> Option<&'static str> 
 
 /// CONNECT 设备平台 → 发布清单平台段（Core 门禁、Social 门禁、引擎查更新共用这一处）。
 ///
-/// 设备平台先经 [`normalize_device_platform`] 归一。桌面分两种外壳，只看 `distribution`：
-/// `tauri` 是 `tauri`，`electron` 是 `electron`；其余（没给、`direct` 等）认不出外壳，返回 `None`——
-/// 不设版本门禁，也不查发布清单，免得把 Electron 客户端按 Tauri 的清单拦下或升级。没有发布清单的
-/// 平台（鸿蒙等）同样返回 `None`。
+/// 设备平台先经 [`normalize_device_platform`] 归一。`flutter-` 分发标识将 Flutter 移动应用
+/// 与原生平台分开；桌面分发标识区分 Flutter Windows、Flutter macOS 和已有的桌面外壳。
+/// 没有发布清单的平台或未知桌面外壳返回 `None`，不设版本门禁，也不查发布清单。
 pub fn release_platform(device_platform: &str, distribution: Option<&str>) -> Option<&'static str> {
+    let distribution = distribution.map(|value| value.trim().to_ascii_lowercase());
+    let distribution = distribution.as_deref().unwrap_or_default();
     match normalize_device_platform(device_platform)? {
         "web" | "h5" => Some("web"),
+        "android" if distribution.starts_with("flutter-") => Some("flutter-android"),
+        "ios" if distribution.starts_with("flutter-") => Some("flutter-ios"),
         "android" => Some("android"),
         "ios" => Some("ios"),
-        "pc" => {
-            let shell = distribution.map(|value| value.trim().to_ascii_lowercase());
-            match shell.as_deref() {
-                Some("tauri") => Some("tauri"),
-                Some("electron") => Some("electron"),
-                _ => None,
-            }
-        }
+        "pc" => match distribution {
+            "tauri" => Some("tauri"),
+            "electron" => Some("electron"),
+            "flutter-windows" => Some("flutter-windows"),
+            "flutter-macos" => Some("flutter-macos"),
+            value if value.starts_with("flutter-windows-") => Some("flutter-windows"),
+            value if value.starts_with("flutter-macos-") => Some("flutter-macos"),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -497,7 +501,9 @@ mod tests {
             ("h5", None, Some("web")),
             ("mobile_web", None, Some("web")),
             ("android", Some("play"), Some("android")),
+            ("android", Some("flutter-direct"), Some("flutter-android")),
             ("ios", Some("appstore"), Some("ios")),
+            ("ios", Some("flutter-appstore"), Some("flutter-ios")),
             ("IOS", None, Some("ios")),
             ("iphone", None, Some("ios")),
             ("iPad", Some("appstore"), Some("ios")),
@@ -506,6 +512,8 @@ mod tests {
             ("pc", Some("tauri"), Some("tauri")),
             ("pc", Some(" Tauri "), Some("tauri")),
             ("pc", Some("electron"), Some("electron")),
+            ("pc", Some("flutter-windows"), Some("flutter-windows")),
+            ("pc", Some("flutter-macos-download"), Some("flutter-macos")),
             ("desktop", Some("Electron"), Some("electron")),
             ("desktop", Some("tauri"), Some("tauri")),
             ("windows", Some("direct"), None),

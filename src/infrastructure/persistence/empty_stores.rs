@@ -107,6 +107,14 @@ impl ConversationReader for EmptyConversationStore {
 
 #[async_trait]
 impl ConversationWriter for EmptyConversationStore {
+    async fn commit_message_projection(
+        &self,
+        _expected: &crate::model::Conversation,
+        _projected: &crate::model::Conversation,
+    ) -> Result<bool> {
+        Ok(true)
+    }
+
     async fn save_batch(&self, _conversations: &[Conversation]) -> Result<()> {
         Ok(())
     }

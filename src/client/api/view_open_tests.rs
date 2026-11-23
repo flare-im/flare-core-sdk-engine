@@ -1,6 +1,7 @@
-//! Opening must resolve an unknown empty latest range without waiting for manual history paging.
+//! Opening shows locally available history while resolving an unknown latest range.
 
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use flare_proto::common::{
     SingleConversationSyncRes, SyncSliceItem, SyncTombstoneItem,
@@ -23,6 +24,17 @@ async fn cached_gap() -> Harness {
         coverage: &[[1, 16], [18, 18]],
     })
     .await
+}
+
+async fn wait_attached(h: &Harness) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !h.state().await.attached_to_latest {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the open view receives the repaired history");
+    h.settle().await;
 }
 
 fn proof_page(seq: u64) -> SingleConversationSyncRes {
@@ -69,6 +81,7 @@ async fn opening_repairs_the_cached_message_below_an_empty_event_only_latest_ran
         .unwrap();
 
     h.open().await;
+    wait_attached(&h).await;
     let expected = vec![1, 2, 3, 4, 7, 10, 13, 15, 17];
     assert_eq!(h.window().await, (expected.clone(), false));
     assert_eq!(h.server.take_requests(), vec![Req::Before(18, 40)]);
@@ -102,17 +115,35 @@ async fn opening_repairs_the_cached_message_below_an_empty_event_only_latest_ran
 }
 
 #[tokio::test]
-async fn pending_only_is_not_mistaken_for_loaded_history_and_keeps_its_identity() {
+async fn opening_shows_cached_history_and_pending_rows_while_backfill_is_blocked() {
     let h = cached_gap().await;
     h.send("pending-same-key").await;
-    h.open().await;
-    let state = h.state().await;
-    assert_eq!(state.seqs, vec![1, 2, 3, 4, 7, 10, 13, 15, 17]);
-    assert_eq!(state.pending, vec!["pending-same-key"]);
-    assert_eq!(h.server.take_requests(), vec![Req::Before(18, 40)]);
-    h.live_message(19).await;
-    assert_eq!(h.state().await.pending, vec!["pending-same-key"]);
-    assert_eq!(h.state().await.seqs.last(), Some(&19));
+    let (started, fetching) = tokio::sync::oneshot::channel();
+    let (release, blocked) = tokio::sync::oneshot::channel();
+    *h.server.after_backfill.lock().unwrap() = Some(Box::new(move || {
+        Box::pin(async move {
+            started.send(()).unwrap();
+            blocked.await.unwrap();
+            Ok(())
+        })
+    }));
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), h.open())
+        .await
+        .expect("opening must not wait for the backfill");
+    assert_eq!(h.state().await.pending, vec!["client:pending-same-key"]);
+    assert_eq!(h.state().await.seqs, vec![17]);
+    assert!(!h.state().await.attached_to_latest);
+    tokio::time::timeout(std::time::Duration::from_secs(1), fetching)
+        .await
+        .expect("the history backfill starts in the background")
+        .unwrap();
+    release.send(()).unwrap();
+
+    wait_attached(&h).await;
+    assert_eq!(h.state().await.seqs, vec![1, 2, 3, 4, 7, 10, 13, 15, 17]);
+    assert_eq!(h.state().await.pending, vec!["client:pending-same-key"]);
+    assert!(h.server.take_requests().contains(&Req::Before(18, 40)));
 }
 
 #[tokio::test]
@@ -132,6 +163,7 @@ async fn proof_only_tail_pages_unlock_existing_rows_without_a_message_arrival_ev
         Ok(proof_page(13)),
     ]);
     h.open().await;
+    wait_attached(&h).await;
     assert_eq!(h.window().await, (seqs(1, 12), false));
     assert_eq!(h.coverage().await, vec![[1, 18]]);
     assert_eq!(
@@ -143,8 +175,8 @@ async fn proof_only_tail_pages_unlock_existing_rows_without_a_message_arrival_ev
         ]
     );
     assert!(
-        h.take_updates().is_empty(),
-        "the initial snapshot itself contains the rows"
+        !h.take_updates().is_empty(),
+        "proof changes the open view even without a message-arrival event"
     );
 }
 
@@ -155,7 +187,7 @@ async fn unknown_empty_history_is_bounded_and_is_an_error_instead_of_true_empty(
         max_seq: 18,
         visible_after_seq: 0,
         server: &[[1, 12]],
-        local: &[[1, 12]],
+        local: &[],
         coverage: &[[1, 12], [18, 18]],
     })
     .await;
@@ -181,28 +213,17 @@ async fn unknown_empty_history_is_bounded_and_is_an_error_instead_of_true_empty(
 }
 
 #[tokio::test]
-async fn an_offline_first_screen_keeps_pending_storage_and_reconnect_can_retry() {
+async fn an_offline_first_screen_keeps_cached_history_and_failed_sends() {
     let h = cached_gap().await;
     h.send("pending-offline").await;
     h.server.offline.store(true, Ordering::SeqCst);
-    let error = h
-        .try_open()
-        .await
-        .expect_err("unknown history cannot be called empty offline");
-    assert_eq!(error.code(), Some(ErrorCode::NetworkError));
-    assert!(h.view.inner.views.read().await.timelines.is_empty());
-    assert!(
-        h.stores
-            .messages
-            .get_by_client_msg_id("pending-offline")
-            .await
-            .unwrap()
-            .is_some()
-    );
-    h.server.offline.store(false, Ordering::SeqCst);
     h.open().await;
-    assert_eq!(h.state().await.pending, vec!["pending-offline"]);
-    assert_eq!(h.window().await.0.last(), Some(&17));
+    h.view
+        .reread_windows(&super::ViewRefreshTarget::conversation(CONVERSATION))
+        .await;
+    assert_eq!(h.state().await.pending, vec!["client:pending-offline"]);
+    assert_eq!(h.state().await.seqs, vec![17]);
+    assert!(h.state().await.has_older);
 }
 
 #[tokio::test]
@@ -221,6 +242,7 @@ async fn an_older_gap_failure_keeps_a_materialized_latest_row_in_the_first_snaps
         Err(FlareError::localized(ErrorCode::NetworkError, "offline")),
     ]);
     h.open().await;
+    wait_attached(&h).await;
     assert_eq!(
         h.window().await,
         (vec![17], true),
@@ -240,6 +262,7 @@ async fn a_live_push_during_a_failed_bootstrap_is_re_read_and_does_not_cross_the
         Box::pin(async move { stores.messages.save_batch(&[row(19)]).await })
     }));
     h.open().await;
+    wait_attached(&h).await;
     assert_eq!(h.window().await, (vec![19], true));
     assert!(h.coverage().await.iter().all(|range| range != &[1, 18]));
     assert_eq!(h.server.take_requests(), vec![Req::Before(18, 40)]);
@@ -295,7 +318,7 @@ async fn an_anchor_window_is_not_replaced_by_latest_bootstrap() {
     })
     .await;
     h.open_around(Some("s3"), None).await.unwrap();
-    assert_eq!(h.state().await.anchor_key.as_deref(), Some("m3"));
+    assert_eq!(h.state().await.anchor_key.as_deref(), Some("server:s3"));
     assert!(!h.state().await.attached_to_latest);
     assert!(h.server.take_requests().is_empty());
 }
@@ -414,7 +437,15 @@ async fn newly_discovered_foreground_history_is_repaired_after_registration() {
 
 #[tokio::test]
 async fn an_older_slow_open_cannot_replace_a_newer_same_conversation_view() {
-    let h = cached_gap().await;
+    let h = Harness::new(Setup {
+        page_size: 40,
+        max_seq: 17,
+        visible_after_seq: 0,
+        server: &[[1, 17]],
+        local: &[],
+        coverage: &[[18, 18]],
+    })
+    .await;
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     *h.server.after_backfill.lock().unwrap() = Some(Box::new(move || {

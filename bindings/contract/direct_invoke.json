@@ -80,6 +80,11 @@
       "body": "\n            client.reconnect_now().await?;\n        "
     },
     {
+      "route": "connection.set_protocol_mode",
+      "result": "unit",
+      "body": "\n            let mode = dispatch_support::json_string(request, \"mode\")?;\n            client.set_protocol_mode(&mode).await?;\n        "
+    },
+    {
       "route": "access.get_status",
       "result": "json",
       "body": "\n            let status = client.access_status().await?;\n        ",

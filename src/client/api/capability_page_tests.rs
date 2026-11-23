@@ -808,3 +808,142 @@ async fn checkin_and_task_group_menu_pages_keep_context_through_the_real_transpo
         );
     }
 }
+
+/// The page words its refusals (docs/plugin-experience.md R8): a refusal of a
+/// worded code comes back as a refusal outcome with the words in the action's
+/// language, a thrown one included; an unworded code fails as before.
+#[tokio::test]
+async fn a_refused_page_action_comes_back_with_the_pages_words() {
+    let f = Fixture::new().await;
+    {
+        let mut catalog = f.catalog.lock().unwrap();
+        let history = catalog["plugins"][0]["extensions"]["contributions"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|c| c["id"] == "example.poll.history")
+            .unwrap();
+        history["schema"]["errors"] = json!({"LINE_LOCKED": "这条记录已锁定"});
+        history["schema"]["translations"] = json!({"en-US": {"title": "History", "fields": [],
+            "texts": {"这条记录已锁定": "This line is locked."}}});
+    }
+    f.fail("example.poll.hide", 422, "LINE_LOCKED");
+    let hide = |locale: Option<&str>| {
+        let mut request = json!({
+            "page": {"pluginId": "example.poll", "page": "example.poll.history"},
+            "platform": "web", "actionId": "hide", "userGesture": true,
+            "row": {"key": "l1", "input": {"lineId": "l1"}}, "formValues": {"note": "x"}
+        });
+        if let Some(locale) = locale {
+            request["locale"] = json!(locale);
+        }
+        request
+    };
+    let refused = f
+        .api
+        .invoke_plugin_action(hide(Some("en-US")))
+        .await
+        .unwrap();
+    assert_eq!(refused["kind"], "operation");
+    assert_eq!(refused["response"]["success"], false);
+    assert_eq!(refused["response"]["data"]["errorCode"], "LINE_LOCKED");
+    assert_eq!(refused["message"], "This line is locked.");
+    // Without a language: the words as the page declares them.
+    let declared = f.api.invoke_plugin_action(hide(None)).await.unwrap();
+    assert_eq!(declared["message"], "这条记录已锁定");
+    // A code the page does not word is thrown as before, with no words.
+    f.fail("example.poll.hide", 422, "NOT_FOUND");
+    let error = f
+        .api
+        .invoke_plugin_action(hide(Some("en-US")))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        crate::extension::capability::plugin_errors::plugin_rejection_code(&error),
+        Some("NOT_FOUND")
+    );
+    // A locale is bounded like a page's.
+    assert!(
+        f.api
+            .invoke_plugin_action(hide(Some(&"x".repeat(33))))
+            .await
+            .is_err()
+    );
+}
+
+/// `refusal_words` words only a refusal outcome whose code the document
+/// words; anything else goes back unchanged.
+#[test]
+fn only_a_worded_refusal_gets_words() {
+    let document: flare_plugin_protocol::ui::UiDocument = serde_json::from_value(json!({
+        "title": "t", "errors": {"WALLET_LIMIT": "钱包数量已达上限"},
+        "translations": {"en-US": {"title": "t", "fields": [], "texts": {"钱包数量已达上限": "Limit reached."}}}
+    }))
+    .unwrap();
+    let outcome = |success: bool, code: &str| json!({"kind": "operation", "response": {"success": success, "data": {"errorCode": code}}});
+    let worded = super::page::refusal_words(&document, "en-US", outcome(false, "WALLET_LIMIT"));
+    assert_eq!(worded["message"], "Limit reached.");
+    for unchanged in [
+        outcome(true, "WALLET_LIMIT"),
+        outcome(false, "NOT_FOUND"),
+        json!({"kind": "host", "target": {"kind": "page", "page": "x"}}),
+        json!({"kind": "operation", "response": {"success": false, "data": {}}}),
+    ] {
+        assert_eq!(
+            super::page::refusal_words(&document, "en-US", unchanged.clone()),
+            unchanged
+        );
+    }
+}
+
+/// A continuation's `run` reaches the host with the navigation; without it the
+/// navigation is as before.
+#[tokio::test]
+async fn a_continuation_hands_the_host_the_action_to_run_on_landing() {
+    let f = Fixture::new().await;
+    {
+        let mut catalog = f.catalog.lock().unwrap();
+        let wallet = catalog["plugins"][0]["extensions"]["contributions"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|c| c["id"] == "example.poll.wallet")
+            .unwrap();
+        wallet["schema"]["actions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+            "id": "pay", "label": "付款", "style": "primary",
+            "target": {"kind": "operation", "operation": "example.poll.hide"},
+            "continuation": {"page": "example.poll.history", "run": "hide",
+                "input": {"currency": "/currency"}}}));
+    }
+    f.answer(
+        "example.poll.wallet",
+        vec![json!({"balanceText": "¥1.00", "currency": "CNY"})],
+    );
+    // The continuation binds the next page's arguments from the result.
+    f.answer("example.poll.hide", vec![json!({"currency": "CNY"})]);
+    let wallet = f
+        .api
+        .plugin_page(
+            json!({"pluginId": "example.poll", "page": "example.poll.wallet", "platform": "web"}),
+        )
+        .await
+        .unwrap();
+    let next = f
+        .api
+        .invoke_plugin_action(json!({
+            "page": {"pluginId": "example.poll", "page": "example.poll.wallet"},
+            "platform": "web", "actionId": "pay", "userGesture": true, "data": wallet["data"]
+        }))
+        .await
+        .unwrap();
+    assert_eq!(next["kind"], "host");
+    assert_eq!(
+        next["target"],
+        json!({"kind": "page", "page": "example.poll.history"})
+    );
+    assert_eq!(next["payload"], json!({"currency": "CNY"}));
+    assert_eq!(next["run"], "hide");
+}

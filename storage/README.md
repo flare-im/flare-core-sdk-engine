@@ -13,7 +13,7 @@ storage/
 │       ├── lib.rs           # create_pool / open_pool / SqliteRuntime / register_schema_init*
 │       ├── runtime.rs       # SqliteRuntime
 │       └── schema_registry.rs  # 自定义 schema 注册
-└── indexeddb/          # IndexedDB（Web 平台，待实现）
+└── indexeddb/          # IndexedDB（Web 宿主适配）
     └── README.md
 ```
 
@@ -104,10 +104,31 @@ let stores = StoreProvider {
 
 ## IndexedDB 存储
 
-待实现，适用于 Web（wasm32），通过实现 core-sdk 的 domain Reader/Writer trait 接入。参见 core-sdk 的 `store::indexeddb_adapter` 文档。
+生产实现位于 `storage/indexeddb`：Memory 热存储配合 JS IndexedDB 宿主，写入等待宿主确认，恢复失败返回错误。
 
 ## 设计原则
 
 1. **存储与 core 解耦**：本目录的 SQLite crate 不依赖 core-sdk，只提供连接与 schema 注册。
 2. **扩展友好**：通过 `register_schema_init` / `register_schema_init_with` 与同一 pool，扩展可与 core 共用同一数据库；core 的 `sqlite_init_schema` 可直接注册使用。
 3. **依赖统一**：使用 workspace 依赖，与根 `Cargo.toml` 版本一致。
+
+
+### 应用与用户分区
+
+`build_web_store_provider(namespace, tenant_id, user_id)` 返回 `Result<StoreProvider>`。分区由 Core 的 `local_storage_scope` 生成，覆盖消息、待发和游标；插件存储继续使用显式的 tenant / user / plugin 身份，不把消息缓存的分区键当作真实用户；JS 宿主的 `userId` 是该不透明分区键，不是消息发送者的用户 ID。
+
+SQLite 的 `resolve_user_db_path(base, namespace, tenant_id, user_id)` 使用 `scopes/v2-<SHA-256>/flare_im_sdk.db`，媒体缓存与库同目录；加密和非加密路径都使用同一组身份，Social 也共享该分区。长度前缀与完整摘要避免分隔符和文件名净化导致的身份碰撞。
+
+旧 `users/<user>/flare_im_sdk.db` 和 IndexedDB 中未分区的行保留原位，不自动导入或删除。它们没有可信租户归属，不能因为当前登录者同名就迁移。恢复旧离线草稿时应先停止 SDK、备份原数据，并从宿主配置 / 创建记录核实来源租户，再迁入对应分区；无法核实的旧数据保持隔离。新分区中的服务端历史由正常同步恢复。
+
+IndexedDB 快照保存正文 protobuf 缓存与保留策略 / 状态，和面向界面的消息 JSON 分开；这些存储字段不扩展平台 SDK 的公开消息合同。快照读取或解码失败会阻止登录 / 预热完成，可在存储恢复后重试。
+
+底层 Rust 存储构造与路径函数需要显式身份参数，工作区外调用方升级时也须同步；不保留按 userId 单独分区的旧入口。
+
+Runtime 的 `storage.encryption.key_namespace` 只选择密钥命名空间；数据文件始终由 `storage.namespace / tenant_id / user_id` 分区。未设置密钥命名空间时使用 `storage.namespace`。此前该覆盖项被忽略：若已有加密缓存是用旧位置的密钥创建的，修正配置前需把同一密钥迁到配置位置，或继续显式使用原位置；更换命名空间不会自动重加密文件。
+
+消息写操作优先按 `server_id` 定位；只有本地消息可按唯一 `client_msg_id` 回退，已确认消息应传服务端 ID。卡片状态动作继续支持唯一 client ID。ACK 使用显式的 client ID，只合并同会话、同发送者的发送映射与目标服务端行，不能把同一字符串当成另一条消息的 server ID 来合并或删除它。
+
+私有事件时钟只属于本地状态，wire 收发会剥离；自定义存储宿主应保留现有存储快照 JSON，不能用 `to_proto` 代替本地快照。
+
+消息保留终态不可被旧快照撤销。服务端 reaction 快照不携带本地事件序列时，保留已知版本的用户 / emoji 操作，其他用户的快照反应照常合并；后续更高版本事件可继续更新。标记为单个值，类型共用同一个事件时钟。

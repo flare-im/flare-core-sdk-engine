@@ -1,12 +1,10 @@
 use std::collections::{HashSet, VecDeque};
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 const DEFAULT_DEDUPE_CAPACITY: usize = 4096;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum EventDedupeKey {
+enum EventDedupeKey {
     EventId(String),
     Seq {
         conversation_id: String,
@@ -24,6 +22,7 @@ pub(crate) enum EventDedupeKey {
 struct EventDedupeState {
     order: VecDeque<EventDedupeKey>,
     seen: HashSet<EventDedupeKey>,
+    pending: HashSet<EventDedupeKey>,
 }
 
 impl EventDedupeState {
@@ -31,6 +30,7 @@ impl EventDedupeState {
         Self {
             order: VecDeque::with_capacity(capacity),
             seen: HashSet::with_capacity(capacity),
+            pending: HashSet::new(),
         }
     }
 }
@@ -50,47 +50,61 @@ impl EventDeduper {
         }
     }
 
-    pub(crate) async fn record_if_new(&self, event: &flare_proto::common::Event) -> bool {
-        let Some(key) = dedupe_key_for_event(event) else {
-            return true;
-        };
-
-        let mut state = self.state.lock().await;
-        if !state.seen.insert(key.clone()) {
-            return false;
+    pub(crate) fn claim(&self, event: &flare_proto::common::Event) -> EventClaim {
+        let key = dedupe_key_for_event(event);
+        if let Some(key) = &key {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.seen.contains(key) {
+                return EventClaim::Applied;
+            }
+            if state.pending.len() >= self.capacity || !state.pending.insert(key.clone()) {
+                return EventClaim::InFlight;
+            }
         }
-        state.order.push_back(key);
+        EventClaim::New(EventReservation {
+            key,
+            deduper: self.clone(),
+        })
+    }
+}
 
-        while state.order.len() > self.capacity {
+pub(crate) enum EventClaim {
+    Applied,
+    InFlight,
+    New(EventReservation),
+}
+
+pub(crate) struct EventReservation {
+    key: Option<EventDedupeKey>,
+    deduper: EventDeduper,
+}
+
+impl EventReservation {
+    pub(crate) fn complete(mut self) {
+        let Some(key) = self.key.take() else { return };
+        let mut state = self.deduper.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.pending.remove(&key);
+        state.seen.insert(key.clone());
+        state.order.push_back(key);
+        while state.order.len() > self.deduper.capacity {
             if let Some(removed) = state.order.pop_front() {
                 state.seen.remove(&removed);
             }
         }
-        true
     }
+}
 
-    pub(crate) async fn forget(&self, event: &flare_proto::common::Event) {
-        let Some(key) = dedupe_key_for_event(event) else {
-            return;
-        };
-        self.forget_keys(std::slice::from_ref(&key)).await;
-    }
-
-    /// 事件的去重键（接收热路径可只保留小 key 而非克隆整个 Event 供失败回滚）。
-    pub(crate) fn key_for(event: &flare_proto::common::Event) -> Option<EventDedupeKey> {
-        dedupe_key_for_event(event)
-    }
-
-    /// 批量回滚：一次锁内移除多个 key（失败路径把整批事件退回"未见过"）。
-    pub(crate) async fn forget_keys(&self, keys: &[EventDedupeKey]) {
-        if keys.is_empty() {
-            return;
+impl Drop for EventReservation {
+    fn drop(&mut self) {
+        if let Some(key) = &self.key {
+            // Cancellation and every failed application release ownership without marking success.
+            self.deduper
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pending
+                .remove(key);
         }
-        let mut state = self.state.lock().await;
-        for key in keys {
-            state.seen.remove(key);
-        }
-        state.order.retain(|stored| !keys.contains(stored));
     }
 }
 
@@ -119,7 +133,17 @@ fn dedupe_key_for_event(event: &flare_proto::common::Event) -> Option<EventDedup
 
 #[cfg(test)]
 mod tests {
-    use super::EventDeduper;
+    use super::{EventClaim, EventDeduper};
+
+    fn record(deduper: &EventDeduper, event: &flare_proto::common::Event) -> bool {
+        match deduper.claim(event) {
+            EventClaim::New(reservation) => {
+                reservation.complete();
+                true
+            }
+            _ => false,
+        }
+    }
 
     #[tokio::test]
     async fn duplicate_event_id_is_deduped() {
@@ -129,8 +153,8 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(deduper.record_if_new(&event).await);
-        assert!(!deduper.record_if_new(&event).await);
+        assert!(record(&deduper, &event));
+        assert!(!record(&deduper, &event));
     }
 
     fn evt(id: u64) -> flare_proto::common::Event {
@@ -140,25 +164,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_in_flight_event_is_not_applied_and_failure_leaves_it_replayable() {
+        let deduper = EventDeduper::new(Some(1));
+        let EventClaim::New(reservation) = deduper.claim(&evt(1)) else {
+            panic!("first owner")
+        };
+        assert!(matches!(deduper.claim(&evt(1)), EventClaim::InFlight));
+        // Capacity pressure must not evict the active owner.
+        assert!(matches!(deduper.claim(&evt(2)), EventClaim::InFlight));
+        drop(reservation);
+        assert!(record(&deduper, &evt(1)));
+        assert!(matches!(deduper.claim(&evt(1)), EventClaim::Applied));
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_application_releases_its_reservation() {
+        let deduper = EventDeduper::new(Some(2));
+        let owner = deduper.clone();
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let EventClaim::New(_reservation) = owner.claim(&evt(1)) else {
+                panic!("first owner")
+            };
+            entered.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        ready.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(record(&deduper, &evt(1)));
+    }
+
     /// 窗口满后淘汰最旧 key:被淘汰的 key 再次出现应视为"新"。
     #[tokio::test]
     async fn evicts_oldest_when_window_full() {
         let cap = 4;
         let deduper = EventDeduper::new(Some(cap));
         for i in 0..cap as u64 {
-            assert!(deduper.record_if_new(&evt(i)).await, "first sight of e{i}");
+            assert!(record(&deduper, &evt(i)), "first sight of e{i}");
         }
         // e0 仍在窗口 [e0..e3] → 重复被拒(且不重排)。
-        assert!(!deduper.record_if_new(&evt(0)).await, "e0 still in window");
+        assert!(!record(&deduper, &evt(0)), "e0 still in window");
         // e4 为新 → 窗口满 → 淘汰最旧 e0 → 窗口 [e1..e4]。
-        assert!(deduper.record_if_new(&evt(4)).await, "e4 is new");
+        assert!(record(&deduper, &evt(4)), "e4 is new");
         // e0 已被淘汰 → 再次视为新。
-        assert!(
-            deduper.record_if_new(&evt(0)).await,
-            "e0 was evicted, new again"
-        );
+        assert!(record(&deduper, &evt(0)), "e0 was evicted, new again");
         // e4 仍在窗口 → 重复被拒。
-        assert!(!deduper.record_if_new(&evt(4)).await, "e4 still in window");
+        assert!(!record(&deduper, &evt(4)), "e4 still in window");
     }
 
     /// TEST-1:对拍独立参考实现(保留最近 cap 个不同 key 的 FIFO 窗口),
@@ -200,7 +253,7 @@ mod tests {
 
         for step in 0..6000 {
             let k = next() % 20; // key 空间 20 > cap 8 → 必经淘汰
-            let got = deduper.record_if_new(&evt(k)).await;
+            let got = record(&deduper, &evt(k));
             let want = reference.record(k);
             assert_eq!(
                 got, want,

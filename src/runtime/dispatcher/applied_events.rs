@@ -36,7 +36,7 @@ impl AppliedEventSeqs {
         Self::default()
     }
 
-    /// 记录一个已应用（或正在应用）的操作事件 seq。
+    /// 记录一个已成功应用的操作事件 seq。
     pub(super) async fn record(&self, conversation_id: &str, seq: u64) {
         let conversation_id = conversation_id.trim();
         if seq == 0 || conversation_id.is_empty() {
@@ -59,21 +59,6 @@ impl AppliedEventSeqs {
         entry.seqs.insert(seq);
         while entry.seqs.len() > MAX_SEQS_PER_CONVERSATION {
             entry.seqs.pop_first();
-        }
-    }
-
-    /// 回滚一次记录（事件应用失败、去重键回滚待重放时调用）。
-    pub(super) async fn unrecord(&self, conversation_id: &str, seq: u64) {
-        let conversation_id = conversation_id.trim();
-        if seq == 0 || conversation_id.is_empty() {
-            return;
-        }
-        let mut map = self.inner.lock().await;
-        if let Some(entry) = map.get_mut(conversation_id) {
-            entry.seqs.remove(&seq);
-            if entry.seqs.is_empty() {
-                map.remove(conversation_id);
-            }
         }
     }
 
@@ -112,13 +97,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn record_contains_unrecord_roundtrip() {
+    async fn only_recorded_sequences_are_covered() {
         let registry = AppliedEventSeqs::new();
         registry.record("c1", 5).await;
         assert!(registry.contains("c1", 5).await);
         assert!(!registry.contains("c1", 6).await);
-        registry.unrecord("c1", 5).await;
-        assert!(!registry.contains("c1", 5).await);
     }
 
     #[tokio::test]

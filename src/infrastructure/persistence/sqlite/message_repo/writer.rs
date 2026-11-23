@@ -3,23 +3,6 @@ use crate::shared::util::spawn_background;
 
 const INLINE_FTS_BATCH_LIMIT: usize = 32;
 
-#[derive(Clone)]
-struct MessageFtsBackfillRow {
-    server_id: String,
-    conversation_id: String,
-    search_text: Option<String>,
-}
-
-impl MessageFtsBackfillRow {
-    fn from_persist_row(row: &MessagePersistRow<'_>) -> Self {
-        Self {
-            server_id: row.message.server_id.clone(),
-            conversation_id: row.message.conversation_id.clone(),
-            search_text: row.search_text.clone(),
-        }
-    }
-}
-
 #[async_trait]
 impl MessageWriter for SqliteMessageRepo {
     async fn save_batch(&self, messages: &[IMMessage]) -> Result<()> {
@@ -50,20 +33,57 @@ impl MessageWriter for SqliteMessageRepo {
             .begin()
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-        let mut rows = Vec::with_capacity(persistable.len());
-        for m in persistable {
-            remove_conflicting_local_client_msg_rows_tx(&mut tx, &m.client_msg_id, &m.server_id)
-                .await?;
-
-            let server_id = m.server_id.trim();
-            if !server_id.is_empty() {
-                rows.retain(|row: &MessagePersistRow<'_>| {
-                    let row_server_id = row.message.server_id.trim();
-                    row_server_id != server_id
-                });
+        let has_pending_reactions: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM message_reactions WHERE event_seq > 0)",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(sqlx_err)?;
+        let mut merged_messages: Vec<IMMessage> = Vec::with_capacity(persistable.len());
+        let mut batch_indices: HashMap<String, usize> = HashMap::new();
+        for incoming in persistable {
+            let mut message = incoming.clone();
+            // Uploads reach SQLite before the reliable queue assigns a local row ID.
+            // The empty server ID would make every unacknowledged upload share a primary key.
+            if message.local_state.is_local
+                && message.conversation_seq == 0
+                && message.server_id.is_empty()
+                && !message.client_msg_id.is_empty()
+            {
+                message.server_id.clone_from(&message.client_msg_id);
             }
-            rows.push(MessagePersistRow::from_message(m));
+            let batch_index = batch_indices.get(&message.server_id).copied();
+            if let Some(index) = batch_index {
+                merge_message_event_state(&mut message, &merged_messages[index]);
+            } else if let Some(row) = sqlx::query("SELECT * FROM messages WHERE (server_id = ? AND server_id != '') OR (client_msg_id = ? AND client_msg_id != '' AND is_local = 1 AND conversation_id = ? AND sender_id = ?) ORDER BY is_local ASC LIMIT 1")
+                .bind(&message.server_id).bind(&message.client_msg_id).bind(&message.conversation_id).bind(&message.sender_id).fetch_optional(&mut *tx).await.map_err(sqlx_err)? {
+                merge_message_event_state(&mut message, &self.row_to_immessage(&row)?);
+            }
+            if has_pending_reactions {
+                merge_orphan_reactions_tx(&mut tx, &mut message).await?;
+            }
+            enforce_retention_visibility(&mut message);
+            remove_conflicting_local_client_msg_rows_tx(
+                &mut tx,
+                &message.client_msg_id,
+                &message.server_id,
+                &message.conversation_id,
+                &message.sender_id,
+            )
+            .await?;
+            if let Some(index) = batch_index {
+                merged_messages[index] = message;
+            } else {
+                if !message.server_id.trim().is_empty() {
+                    batch_indices.insert(message.server_id.clone(), merged_messages.len());
+                }
+                merged_messages.push(message);
+            }
         }
+        let rows = merged_messages
+            .iter()
+            .map(MessagePersistRow::from_message)
+            .collect::<Vec<_>>();
 
         let mut latest_per_conversation: HashMap<&str, &IMMessage> = HashMap::new();
         let should_update_fts_inline = rows.len() <= INLINE_FTS_BATCH_LIMIT;
@@ -95,7 +115,7 @@ impl MessageWriter for SqliteMessageRepo {
             Vec::new()
         } else {
             rows.iter()
-                .map(MessageFtsBackfillRow::from_persist_row)
+                .map(|row| row.message.server_id.clone())
                 .collect()
         };
         tx.commit()
@@ -114,82 +134,31 @@ impl MessageWriter for SqliteMessageRepo {
     async fn update_status(&self, message_id: &str, status: i32) -> Result<u64> {
         let recalled = MessageStatus::Recalled as i32;
         let result = if status == recalled {
-            sqlx::query(
+            sqlx::query(&format!(
                 r#"UPDATE messages SET status = ?, is_recalled = 1
-                   WHERE server_id = ? OR client_msg_id = ?"#,
-            )
+                   WHERE {MESSAGE_ID_MATCH}"#
+            ))
             .bind(status)
             .bind(message_id)
             .bind(message_id)
             .execute(&self.pool)
             .await
         } else {
-            sqlx::query("UPDATE messages SET status = ? WHERE server_id = ? OR client_msg_id = ?")
-                .bind(status)
-                .bind(message_id)
-                .bind(message_id)
-                .execute(&self.pool)
-                .await
+            sqlx::query(&format!(
+                "UPDATE messages SET status = ? WHERE {MESSAGE_ID_MATCH}"
+            ))
+            .bind(status)
+            .bind(message_id)
+            .bind(message_id)
+            .execute(&self.pool)
+            .await
         }
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         Ok(result.rows_affected())
     }
 
     async fn update_content(&self, message_id: &str, new_content: Vec<u8>) -> Result<bool> {
-        let now_ms = now_ms_i64();
-        let text = text_for_sqlite_from_content_bytes(&new_content);
-        let search_text = search_text_for_content_bytes(&new_content).or_else(|| text.clone());
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-        let rows = sqlx::query(
-            r#"UPDATE messages SET encoded_content = ?, is_edited = 1, text = ?, updated_at = ?
-               WHERE server_id = ? OR client_msg_id = ?"#,
-        )
-        .bind(&new_content)
-        .bind(text.as_deref())
-        .bind(now_ms)
-        .bind(message_id)
-        .bind(message_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?
-        .rows_affected();
-        if rows > 0 {
-            let rows = sqlx::query(
-                r#"SELECT server_id, conversation_id
-                   FROM messages
-                   WHERE server_id = ? OR client_msg_id = ?"#,
-            )
-            .bind(message_id)
-            .bind(message_id)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(sqlx_err)?;
-            for row in rows {
-                let server_id: String = row.try_get("server_id").map_err(sqlx_err)?;
-                let conversation_id: String = row.try_get("conversation_id").map_err(sqlx_err)?;
-                upsert_message_fts_tx(
-                    &mut tx,
-                    &server_id,
-                    &conversation_id,
-                    search_text.as_deref(),
-                )
-                .await?;
-            }
-        }
-        tx.commit()
-            .await
-            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-        if rows == 0 {
-            tracing::warn!(
-                message_id = %message_id,
-                "update_content: no row matched server_id/client_msg_id"
-            );
-        }
-        Ok(rows > 0)
+        Ok(self.apply_edit_event(message_id, new_content, None).await? == EditApplyResult::Applied)
     }
 
     async fn delete(&self, message_id: &str) -> Result<()> {
@@ -198,12 +167,12 @@ impl MessageWriter for SqliteMessageRepo {
             .begin()
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-        let deleted_conversation_id = sqlx::query(
+        let deleted_conversation_id = sqlx::query(&format!(
             r#"SELECT conversation_id
                FROM messages
-               WHERE server_id = ? OR client_msg_id = ?
-               LIMIT 1"#,
-        )
+               WHERE {MESSAGE_ID_MATCH}
+               LIMIT 1"#
+        ))
         .bind(message_id)
         .bind(message_id)
         .fetch_optional(&mut *tx)
@@ -211,22 +180,22 @@ impl MessageWriter for SqliteMessageRepo {
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?
         .and_then(|row| row.try_get::<String, _>("conversation_id").ok());
         delete_message_fts_by_message_id_tx(&mut tx, message_id).await?;
-        sqlx::query(
+        sqlx::query(&format!(
             r#"DELETE FROM message_reactions
                WHERE message_server_id = ?
                   OR message_server_id IN (
                       SELECT server_id
                       FROM messages
-                      WHERE server_id = ? OR client_msg_id = ?
-                  )"#,
-        )
+                      WHERE {MESSAGE_ID_MATCH}
+                  )"#
+        ))
         .bind(message_id)
         .bind(message_id)
         .bind(message_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-        sqlx::query("DELETE FROM messages WHERE server_id = ? OR client_msg_id = ?")
+        sqlx::query(&format!("DELETE FROM messages WHERE {MESSAGE_ID_MATCH}"))
             .bind(message_id)
             .bind(message_id)
             .execute(&mut *tx)
@@ -288,33 +257,19 @@ impl MessageWriter for SqliteMessageRepo {
             .await
             .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
         // 下面整行替换乐观写入行（以及可能已同步落库的同 server_id 行）；本地插件卡片状态随行带过去。
-        let mut lookup_ids = vec![
-            message.server_id.trim().to_string(),
-            ack_client_msg_id.to_string(),
-            message.client_msg_id.trim().to_string(),
-        ];
-        lookup_ids.retain(|id| !id.is_empty());
-        lookup_ids.dedup();
-        for lookup_id in &lookup_ids {
-            let rows = sqlx::query(
-                r#"SELECT attributes FROM messages
-                   WHERE server_id = ? OR client_msg_id = ?"#,
-            )
-            .bind(lookup_id)
-            .bind(lookup_id)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(sqlx_err)?;
-            for row in rows {
-                let raw: Option<String> = row.try_get("attributes").map_err(sqlx_err)?;
-                carry_plugin_message_state(&mut message.attributes, &parse_extra(raw.as_deref()));
-            }
+        let rows = sqlx::query("SELECT * FROM messages WHERE (server_id = ? AND server_id != '') OR (client_msg_id IN (?, ?) AND conversation_id = ? AND sender_id = ?)")
+            .bind(&message.server_id).bind(ack_client_msg_id).bind(&message.client_msg_id).bind(&message.conversation_id)
+            .bind(&message.sender_id)
+            .fetch_all(&mut *tx).await.map_err(sqlx_err)?;
+        for row in rows {
+            merge_message_event_state(&mut message, &self.row_to_immessage(&row)?);
         }
         remove_conflicting_client_msg_rows_tx(
             &mut tx,
             ack_client_msg_id,
             &message.server_id,
             &message.conversation_id,
+            &message.sender_id,
         )
         .await?;
         if message.client_msg_id.trim() != ack_client_msg_id {
@@ -323,72 +278,14 @@ impl MessageWriter for SqliteMessageRepo {
                 &message.client_msg_id,
                 &message.server_id,
                 &message.conversation_id,
+                &message.sender_id,
             )
             .await?;
         }
-        let extra_json = serde_json::to_string(&message.attributes).unwrap_or_default();
-        let mention_users_json = serde_json::to_string(&message.mention_users).unwrap_or_default();
-        let extensions_json = extensions_to_json(&message.extensions);
-        let text = message_preview_for_storage(&message);
-        let search_text = message_search_text_for_storage(&message);
-        sqlx::query(
-            r#"INSERT OR REPLACE INTO messages (
-               server_id, conversation_id, client_msg_id, sender_id, source, conversation_seq, created_at, client_created_at,
-               conversation_type, message_type, channel_id, sender_name, sender_avatar,
-               sender_display_name, encoded_content, status,
-               retention_policy, retention_state,
-               is_read, is_recalled, is_edited,
-               reply_to, quote_preview, thread_id, mention_users, mention_all, attributes, extensions, version, updated_at, text,
-               sending, failed, is_local, sort_ts, uploading, upload_progress)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(&message.server_id)
-        .bind(&message.conversation_id)
-        .bind(&message.client_msg_id)
-        .bind(&message.sender_id)
-        .bind(message.source)
-        .bind(message.conversation_seq as i64)
-        .bind(message.created_at as i64)
-        .bind(message.client_created_at as i64)
-        .bind(message.conversation_type)
-        .bind(message.message_type)
-        .bind(&message.channel_id)
-        .bind(&message.sender_name)
-        .bind(&message.sender_avatar)
-        .bind(&message.sender_display_name)
-        .bind(&message.encoded_content)
-        .bind(message.status)
-        .bind(encode_optional_proto(&message.retention_policy))
-        .bind(encode_optional_proto(&message.retention_state))
-        .bind(if message.is_read { 1i32 } else { 0 })
-        .bind(if message.is_recalled { 1i32 } else { 0 })
-        .bind(if message.is_edited { 1i32 } else { 0 })
-        .bind(&message.reply_to)
-        .bind(&message.quote_preview)
-        .bind(&message.thread_id)
-        .bind(&mention_users_json)
-        .bind(if message.mention_all { 1i32 } else { 0 })
-        .bind(&extra_json)
-        .bind(&extensions_json)
-        .bind(message.version as i64)
-        .bind(message.updated_at as i64)
-        .bind(text.as_deref())
-        .bind(if message.local_state.sending { 1i32 } else { 0 })
-        .bind(if message.local_state.failed { 1i32 } else { 0 })
-        .bind(if message.local_state.is_local { 1i32 } else { 0 })
-        .bind(effective_sort_ts_for_persist(&message))
-        .bind(if message.local_state.uploading { 1i32 } else { 0 })
-        .bind(message.local_state.upload_progress.min(100) as i64)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
-        upsert_message_fts_tx(
-            &mut tx,
-            &message.server_id,
-            &message.conversation_id,
-            search_text.as_deref(),
-        )
-        .await?;
+        merge_orphan_reactions_tx(&mut tx, &mut message).await?;
+        let rows = [MessagePersistRow::from_message(&message)];
+        insert_message_rows_tx(&mut tx, &rows).await?;
+        upsert_message_fts_rows_tx(&mut tx, &rows).await?;
         replace_reaction_snapshot_tx(&mut tx, &message).await?;
         upsert_conversation_snapshot_tx(&mut tx, &message).await?;
         tx.commit()
@@ -398,7 +295,7 @@ impl MessageWriter for SqliteMessageRepo {
     }
 }
 
-fn schedule_message_fts_backfill(pool: SqlitePool, rows: Vec<MessageFtsBackfillRow>) {
+fn schedule_message_fts_backfill(pool: SqlitePool, rows: Vec<String>) {
     spawn_background(async move {
         let row_count = rows.len();
         if let Err(error) = backfill_message_fts_rows(pool, rows).await {
@@ -411,17 +308,15 @@ fn schedule_message_fts_backfill(pool: SqlitePool, rows: Vec<MessageFtsBackfillR
     });
 }
 
-async fn backfill_message_fts_rows(
-    pool: SqlitePool,
-    rows: Vec<MessageFtsBackfillRow>,
-) -> Result<()> {
+async fn backfill_message_fts_rows(pool: SqlitePool, rows: Vec<String>) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
 
-    let mut tx = pool.begin().await.map_err(sqlx_err)?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(sqlx_err)?;
+    let repo = SqliteMessageRepo::new(pool.clone());
     for chunk in rows.chunks(MESSAGE_SAVE_BATCH_INSERT_CHUNK_SIZE) {
-        upsert_message_fts_backfill_rows_tx(&mut tx, chunk).await?;
+        upsert_message_fts_backfill_rows_tx(&repo, &mut tx, chunk).await?;
         tokio::task::yield_now().await;
     }
     tx.commit().await.map_err(sqlx_err)?;
@@ -429,53 +324,100 @@ async fn backfill_message_fts_rows(
 }
 
 async fn upsert_message_fts_backfill_rows_tx(
+    repo: &SqliteMessageRepo,
     tx: &mut Transaction<'_, Sqlite>,
-    rows: &[MessageFtsBackfillRow],
+    rows: &[String],
 ) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
 
-    let mut delete_qb =
-        QueryBuilder::<Sqlite>::new("DELETE FROM messages_fts WHERE server_id IN (");
-    {
-        let mut separated = delete_qb.separated(", ");
-        for row in rows {
-            separated.push_bind(&row.server_id);
-        }
+    // Deferred work must use the current row, never a pre-expiry/edit body snapshot.
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT * FROM messages WHERE server_id IN (");
+    let mut ids = query.separated(", ");
+    for id in rows {
+        ids.push_bind(id);
     }
-    delete_qb.push(")");
-    delete_qb
-        .build()
-        .execute(&mut **tx)
-        .await
-        .map_err(sqlx_err)?;
-
-    let searchable = rows
+    query.push(")");
+    let current = query.build().fetch_all(&mut **tx).await.map_err(sqlx_err)?;
+    let messages = current
         .iter()
-        .filter_map(|row| {
-            row.search_text
-                .as_deref()
-                .map(str::trim)
-                .filter(|text| !text.is_empty())
-                .map(|text| (row, text))
-        })
+        .map(|row| repo.row_to_immessage(row))
+        .collect::<Result<Vec<_>>>()?;
+    let current_rows = messages
+        .iter()
+        .map(MessagePersistRow::from_message)
         .collect::<Vec<_>>();
-    if searchable.is_empty() {
-        return Ok(());
-    }
+    upsert_message_fts_rows_tx(tx, &current_rows).await
+}
 
-    let mut insert_qb =
-        QueryBuilder::<Sqlite>::new("INSERT INTO messages_fts(server_id, conversation_id, text) ");
-    insert_qb.push_values(searchable, |mut b, (row, text)| {
-        b.push_bind(&row.server_id)
-            .push_bind(&row.conversation_id)
-            .push_bind(text);
-    });
-    insert_qb
-        .build()
-        .execute(&mut **tx)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn delayed_fts_work_cannot_restore_purged_deleted_or_edited_text() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        crate::infrastructure::persistence::sqlite_init_schema(&pool)
+            .await
+            .unwrap();
+        let repo = SqliteMessageRepo::new(pool.clone());
+        let mut message = IMMessage::new(Default::default());
+        message.server_id = "purged".into();
+        message.conversation_id = "c".into();
+        message.encoded_content = crate::content::ContentBuilder::text("old-private")
+            .build()
+            .encode();
+        for id in ["purged", "deleted", "edited"] {
+            message.server_id = id.into();
+            message.client_msg_id = format!("local-{id}");
+            repo.save_one(&message).await.unwrap();
+        }
+        repo.apply_retention_purged_event(
+            "purged",
+            &MessageRetentionState {
+                lifecycle: 5,
+                content_visibility: 4,
+                ..Default::default()
+            },
+            30,
+            Some(30),
+        )
         .await
-        .map_err(sqlx_err)?;
-    Ok(())
+        .unwrap();
+        repo.delete("deleted").await.unwrap();
+        repo.apply_edit_event(
+            "edited",
+            crate::content::ContentBuilder::text("new-index")
+                .build()
+                .encode(),
+            Some(20),
+        )
+        .await
+        .unwrap();
+        backfill_message_fts_rows(
+            pool.clone(),
+            vec!["purged".into(), "deleted".into(), "edited".into()],
+        )
+        .await
+        .unwrap();
+        let old: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM messages_fts WHERE text LIKE '%old-private%'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(old, 0);
+        assert!(repo.search("old-private", 10).await.unwrap().is_empty());
+        assert_eq!(
+            repo.search("new-index", 10).await.unwrap()[0].server_id,
+            "edited"
+        );
+        let stale: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM messages_fts WHERE server_id IN ('purged', 'deleted')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stale, 0);
+    }
 }

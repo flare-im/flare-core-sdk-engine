@@ -29,6 +29,11 @@ pub trait ConversationReader: Send + Sync {
         }
         Ok(out)
     }
+
+    /// Read stored conversation fields for projections that do not need to rebuild message previews.
+    async fn get_stored_many(&self, conversation_ids: &[String]) -> Result<Vec<Conversation>> {
+        self.get_many(conversation_ids).await
+    }
     /// 列表：置顶优先，再按 last_message_at 倒序
     async fn list(&self) -> Result<Vec<Conversation>>;
     /// 业务 SDK 写入的会话内成员昵称（[`ParticipantDisplaySnapshot`]），一次取回全部 `pairs`；
@@ -104,6 +109,14 @@ pub trait ConversationReader: Send + Sync {
 /// 会话写操作（内部统一使用 Conversation）
 #[async_trait]
 pub trait ConversationWriter: Send + Sync {
+    /// Atomically replace message projection fields and their local completion receipt.
+    /// Return false if the fields changed since `expected` was read.
+    async fn commit_message_projection(
+        &self,
+        expected: &Conversation,
+        projected: &Conversation,
+    ) -> Result<bool>;
+
     async fn save_batch(&self, conversations: &[Conversation]) -> Result<()>;
     async fn save_one(&self, conversation: &Conversation) -> Result<()>;
     async fn update_unread(

@@ -44,6 +44,12 @@ impl SqliteMediaCacheRepo {
     /// 从库中读取 `media_cache_settings` 并完成初始化。
     pub async fn create(pool: SqlitePool, default_root: PathBuf) -> Result<Self> {
         let _ = tokio::fs::create_dir_all(&default_root).await;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS media_upload_source (file_id TEXT PRIMARY KEY, local_path TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
 
         let row = sqlx::query(
             "SELECT max_bytes, cache_root FROM media_cache_settings WHERE singleton = 1",
@@ -192,6 +198,27 @@ impl SqliteMediaCacheRepo {
 
 #[async_trait]
 impl MediaCacheStore for SqliteMediaCacheRepo {
+    async fn remember_upload_source(&self, file_id: &str, path: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO media_upload_source (file_id, local_path) VALUES (?, ?) \
+             ON CONFLICT(file_id) DO UPDATE SET local_path = excluded.local_path",
+        )
+        .bind(file_id)
+        .bind(path)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        Ok(())
+    }
+
+    async fn upload_source(&self, file_id: &str) -> Result<Option<String>> {
+        sqlx::query_scalar("SELECT local_path FROM media_upload_source WHERE file_id = ?")
+            .bind(file_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))
+    }
+
     async fn get_cached(&self, file_id: &str) -> Result<Option<MediaCacheEntryVo>> {
         let _format_guard = self.format_paths.lock().await;
         let fid = file_id.trim();

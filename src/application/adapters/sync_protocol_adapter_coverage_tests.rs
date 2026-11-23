@@ -192,6 +192,18 @@ async fn a_cursor_advance_proves_the_seqs_it_passes() {
     let (adapter, stores) = new_adapter().await;
     set_cursor(&stores, 10).await;
     local_rows(&stores, 11..=15).await;
+    crate::application::projections::ConversationProjectionApplier::new(
+        stores.clone(),
+        EventBus::new(),
+    )
+    .apply_messages(
+        &(11..=15)
+            .map(|seq| IMMessage::new(message(seq)))
+            .collect::<Vec<_>>(),
+        USER,
+    )
+    .await
+    .unwrap();
     adapter
         .save_cursor_with_remote(USER, CONVERSATION, 15, &[])
         .await

@@ -386,6 +386,15 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
     ensure_current_message_columns(pool).await?;
 
     sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_messages_missing_preview ON messages(conversation_id)
+           WHERE TRIM(COALESCE(text, '')) = ''
+             AND length(COALESCE(encoded_content, X'')) > 0"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    sqlx::query(
         r#"CREATE INDEX IF NOT EXISTS idx_messages_conv_seq
            ON messages(conversation_id, conversation_seq DESC)"#,
     )
@@ -409,12 +418,31 @@ pub async fn init_schema(pool: &SqlitePool) -> Result<()> {
             user_id TEXT NOT NULL,
             created_at INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL DEFAULT 0,
+            event_seq INTEGER NOT NULL DEFAULT 0,
+            is_removed INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (message_server_id, emoji, user_id)
         )"#,
     )
     .execute(pool)
     .await
     .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+
+    ensure_column(
+        pool,
+        "message_reactions",
+        "event_seq",
+        "event_seq INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column(
+        pool,
+        "message_reactions",
+        "is_removed",
+        "is_removed INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_message_reactions_pending ON message_reactions(message_server_id) WHERE event_seq > 0")
+        .execute(pool).await.map_err(db_err)?;
 
     sqlx::query(
         r#"CREATE INDEX IF NOT EXISTS idx_message_reactions_message

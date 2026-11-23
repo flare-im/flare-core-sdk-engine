@@ -271,6 +271,8 @@ pub(crate) struct NotifyCenter {
     host: ArcSwap<NotificationHost>,
     state: Mutex<CenterState>,
     settings: Mutex<Option<UserNotificationSettings>>,
+    settings_scope: std::sync::OnceLock<String>,
+    settings_io: tokio::sync::Mutex<()>,
     badge: Mutex<BadgeState>,
     watcher: Mutex<Option<BackgroundTask>>,
     /// 会话已结束（登出、断开）：撤掉全部通知只做一次。
@@ -316,6 +318,8 @@ impl NotifyCenter {
             host: ArcSwap::from_pointee(NotificationHost::default()),
             state: Mutex::new(CenterState::default()),
             settings: Mutex::new(None),
+            settings_scope: std::sync::OnceLock::new(),
+            settings_io: tokio::sync::Mutex::new(()),
             badge: Mutex::new(BadgeState::default()),
             watcher: Mutex::new(None),
             ended: AtomicBool::new(false),

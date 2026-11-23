@@ -9,12 +9,14 @@ fn sqlx_err(error: sqlx::Error) -> FlareError {
 
 pub(super) async fn repair_single_chat_message_aliases(pool: &SqlitePool) -> Result<u64> {
     let rows = sqlx::query(
-        r#"SELECT conversation_id, channel_id
-           FROM conversations
-           WHERE conversation_type = ?
-             AND TRIM(COALESCE(conversation_id, '')) != ''
-             AND TRIM(COALESCE(channel_id, '')) != ''
-             AND TRIM(conversation_id) != TRIM(channel_id)"#,
+        r#"SELECT c.conversation_id, c.channel_id
+           FROM conversations c
+           WHERE c.conversation_type = ?
+             AND TRIM(COALESCE(c.conversation_id, '')) != ''
+             AND TRIM(COALESCE(c.channel_id, '')) != ''
+             AND TRIM(c.conversation_id) != TRIM(c.channel_id)
+             AND (EXISTS(SELECT 1 FROM messages WHERE conversation_id = TRIM(c.channel_id))
+               OR EXISTS(SELECT 1 FROM message_reactions WHERE conversation_id = TRIM(c.channel_id)))"#,
     )
     .bind(ConversationType::Single.to_proto_int())
     .fetch_all(pool)
@@ -39,12 +41,14 @@ pub(super) async fn repair_single_chat_message_alias_for_conversation(
         return Ok(0);
     }
     let Some(row) = sqlx::query(
-        r#"SELECT channel_id
-           FROM conversations
-           WHERE conversation_id = ?
-             AND conversation_type = ?
-             AND TRIM(COALESCE(channel_id, '')) != ''
-             AND TRIM(channel_id) != TRIM(conversation_id)"#,
+        r#"SELECT c.channel_id
+           FROM conversations c
+           WHERE c.conversation_id = ?
+             AND c.conversation_type = ?
+             AND TRIM(COALESCE(c.channel_id, '')) != ''
+             AND TRIM(c.channel_id) != TRIM(c.conversation_id)
+             AND (EXISTS(SELECT 1 FROM messages WHERE conversation_id = TRIM(c.channel_id))
+               OR EXISTS(SELECT 1 FROM message_reactions WHERE conversation_id = TRIM(c.channel_id)))"#,
     )
     .bind(conversation_id)
     .bind(ConversationType::Single.to_proto_int())

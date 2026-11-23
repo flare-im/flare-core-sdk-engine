@@ -46,6 +46,7 @@ impl IMClient {
         // 通知快照按这个账号写到宿主给的目录（目录跨登录保留，在客户端那份宿主事实里）。
         let notify = engine.notify_center();
         notify.adopt_host(self.notification_host.clone());
+        notify.bind_settings_scope(&tenant_id, user_id);
         notify.attach_session(user_id, &tenant_id);
         // 到达回执的队列在数据根下，只记、只报这个账号的。
         if let Some(root) = g.data_root.clone() {

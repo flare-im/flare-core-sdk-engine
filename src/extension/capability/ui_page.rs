@@ -360,6 +360,11 @@ pub(crate) struct PageActionRequest {
     pub form_values: Option<Value>,
     #[serde(default)]
     pub selection: Option<Vec<u32>>,
+    /// The viewer's language, as for `plugin_page`: the words a refusal of
+    /// the action comes back with ([`flare_plugin_protocol::ui::UiDocument::errors`])
+    /// are in it; without it, as the page declares them.
+    #[serde(default)]
+    pub locale: String,
 }
 
 /// Whether an invoke request is a page action (`page` instead of `message`).
@@ -373,6 +378,8 @@ pub(crate) fn parse_page_action(request: Value) -> Result<PageActionRequest> {
         crate::shared::util::json::from_value(request).map_err(|_| invalid())?;
     if !valid_id(&parsed.page.plugin_id)
         || !valid_id(&parsed.page.page)
+        || parsed.locale.len() > 32
+        || parsed.locale.chars().any(char::is_control)
         || parsed.data.as_ref().is_some_and(|d| !d.is_object())
         || parsed
             .conversation_id

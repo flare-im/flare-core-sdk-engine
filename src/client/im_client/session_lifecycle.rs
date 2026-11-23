@@ -100,13 +100,19 @@ impl IMClient {
     #[tracing::instrument(skip(self, event), fields(available = event.available, interface = event.interface.as_deref().unwrap_or("unknown")))]
     pub async fn notify_network_change(&self, event: NetworkChangeEvent) -> Result<()> {
         // 记下完整输入：登录前的首报（平台之后对相同状态去重）要带进之后新建的运行时与链路。
-        self.inner.write().await.last_network = Some(event.clone());
-        let changed = match self.access_runtime().await {
-            Some(access) => access.set_network(
-                event.interface.as_deref(),
-                event.fingerprint_hint.as_deref(),
-            ),
-            None => false,
+        let (changed, link, update) = {
+            let mut current = self.inner.write().await;
+            current.last_network = Some(event.clone());
+            let changed = current.access.as_ref().is_some_and(|access| {
+                access.report_network(
+                    event.available,
+                    event.interface.as_deref(),
+                    event.fingerprint_hint.as_deref(),
+                )
+            });
+            let link = current.engine.as_ref().map(|engine| engine.link().clone());
+            let update = current.access.as_ref().and_then(|access| access.update());
+            (changed, link, update)
         };
         tracing::info!(
             interface = event.interface.as_deref().unwrap_or("unknown"),
@@ -116,17 +122,13 @@ impl IMClient {
             fingerprint_changed = changed,
             "network change reported"
         );
-        let link = {
-            let g = self.inner.read().await;
-            g.engine.as_ref().map(|engine| engine.link().clone())
-        };
         if let Some(link) = link {
             link.network_changed(event.available, changed).await;
         }
         if event.available {
             self.reconcile_push_in_background();
         }
-        if let Some(update) = self.update_runtime().await {
+        if let Some(update) = update {
             update.network_changed(event.available, event.is_metered());
         }
         Ok(())
@@ -385,12 +387,25 @@ impl IMClient {
                 path
             }
         };
+        // 以构建期配置为底叠 overlay（只拿默认值作底会把宿主在构建期配好的项在登录那一刻顶掉）。
+        let config = match snap.7 {
+            Some(base) => crate::client::lifecycle::merge_sdk_config_onto(base, snap.1.as_ref()),
+            None => merge_sdk_config(snap.1.as_ref()),
+        };
         #[cfg(feature = "lifecycle-sqlite")]
         let stores = match db {
             #[cfg(feature = "lifecycle-sqlite")]
             LoginDbKind::Sqlite => {
-                crate::shared::util::sqlite_store::open_sqlite_store_for_user(&data_root, user_id)
-                    .await?
+                crate::shared::util::sqlite_store::open_sqlite_store_for_user(
+                    &data_root,
+                    "flare-im-core-sdk",
+                    config
+                        .tenant_id
+                        .as_deref()
+                        .unwrap_or(crate::shared::util::DEFAULT_TENANT_ID),
+                    user_id,
+                )
+                .await?
             }
             #[cfg(feature = "lifecycle-sqlite")]
             LoginDbKind::EncryptedSqlite {
@@ -402,7 +417,7 @@ impl IMClient {
                 let namespace = key_namespace.as_deref().unwrap_or("flare-im-core-sdk");
                 let tenant_id = tenant_id
                     .as_deref()
-                    .or_else(|| snap.1.as_ref().and_then(|cfg| cfg.tenant_id.as_deref()))
+                    .or(config.tenant_id.as_deref())
                     .unwrap_or(crate::shared::util::DEFAULT_TENANT_ID);
                 crate::shared::util::sqlite_store::open_sqlite_store_for_user_with_secure_key_store(
                     &data_root,
@@ -418,11 +433,6 @@ impl IMClient {
         };
         #[cfg(not(feature = "lifecycle-sqlite"))]
         let LoginDbKind::IndexedDb(stores) = db;
-        // 以构建期配置为底叠 overlay（只拿默认值作底会把宿主在构建期配好的项在登录那一刻顶掉）。
-        let config = match snap.7 {
-            Some(base) => crate::client::lifecycle::merge_sdk_config_onto(base, snap.1.as_ref()),
-            None => merge_sdk_config(snap.1.as_ref()),
-        };
         let mut child_builder = IMClientBuilder::new().config(config).stores(stores);
         if let Some(ctx) = snap.3.clone() {
             child_builder = child_builder.http_request_context(ctx);
@@ -448,7 +458,6 @@ impl IMClient {
         }
         // 宿主装的续期回调跨会话保留：它属于宿主，不属于某一次登录。
         inner.connect_token_refresher = snap.6;
-        inner.last_network = snap.9;
         inner.access_store = snap.10;
         inner.refresh_token_vault = vault.clone();
         inner.plugin_host = snap.12;
@@ -485,6 +494,30 @@ impl IMClient {
         }
         {
             let mut current = self.inner.write().await;
+            if let (Some(previous), Some(next)) = (&current.access, &inner.access) {
+                next.set_protocol_mode(previous.protocol_mode());
+            }
+            // Opening SQLite or closing the previous session can overlap a platform
+            // network report. Apply the latest input to the private link before
+            // publishing it so a subsequent report can't overtake this one.
+            if let Some(network) = current.last_network.as_ref() {
+                let changed = inner.access.as_ref().is_some_and(|access| {
+                    access.report_network(
+                        network.available,
+                        network.interface.as_deref(),
+                        network.fingerprint_hint.as_deref(),
+                    )
+                });
+                if let Some(engine) = inner.engine.as_ref()
+                    && (changed || network.available != network_available)
+                {
+                    engine
+                        .link()
+                        .network_changed(network.available, changed)
+                        .await;
+                }
+            }
+            inner.last_network = current.last_network.clone();
             // Never recycle the child builder's generation (normally zero): binding
             // caches and old watchers must not match a newly prepared user.
             inner.session_generation = current.session_generation.wrapping_add(1);
@@ -587,8 +620,12 @@ impl IMClient {
                 .as_ref()
                 .is_none_or(|access| !Arc::ptr_eq(access, link.access()))
             {
+                if let Some(previous) = &g.access {
+                    link.access().set_protocol_mode(previous.protocol_mode());
+                }
                 if let Some(network) = g.last_network.as_ref() {
-                    link.access().set_network(
+                    link.access().report_network(
+                        network.available,
                         network.interface.as_deref(),
                         network.fingerprint_hint.as_deref(),
                     );

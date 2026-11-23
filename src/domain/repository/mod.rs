@@ -32,9 +32,10 @@ pub use message_repository::{
     EditApplyResult, MessageReader, MessageStore, MessageWriter, OperationApplyResult,
 };
 pub(crate) use message_repository::{
-    carry_plugin_message_state, encode_plugin_message_state, merge_message_event_attributes,
-    message_attribute_seq, validate_plugin_shared_state, write_plugin_message_state,
-    write_plugin_shared_state,
+    RetentionEventKind, advance_message_event, apply_retention_event, encode_plugin_message_state,
+    enforce_retention_visibility, mark_outgoing_message_read, merge_message_event_state,
+    message_attribute_seq, retention_hides_content, validate_plugin_shared_state,
+    write_message_mark, write_plugin_message_state, write_plugin_shared_state,
 };
 pub use pending_send_repository::{PendingSendReader, PendingSendWriter};
 pub use sync_cursor_repository::{SyncCursorReader, SyncCursorStore, SyncCursorWriter};

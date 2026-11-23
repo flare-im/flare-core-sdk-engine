@@ -344,6 +344,9 @@ pub struct AccessPoint {
 /// 服务端的可选设置。
 #[derive(Default, Clone, Copy)]
 pub struct ServerOptions {
+    /// Optional QUIC listener on the same server as the WebSocket relay.
+    #[cfg(feature = "quic")]
+    pub quic_port: Option<u16>,
     /// 连接数上限（达到后握手直接回 OVERLOADED）。
     pub max_connections: Option<usize>,
     /// OVERLOADED 的建议等待基数。
@@ -370,6 +373,12 @@ impl AccessPoint {
             .with_ap_id(options.reported_ap_id.unwrap_or(id))
             .enable_auth()
             .with_authenticator(gate.clone());
+        #[cfg(feature = "quic")]
+        if let Some(port) = options.quic_port {
+            builder = builder
+                .with_protocols(vec![TransportProtocol::WebSocket, TransportProtocol::QUIC])
+                .with_protocol_address(TransportProtocol::QUIC, format!("127.0.0.1:{port}"));
+        }
         if let Some(gateway_id) = options.gateway_id {
             builder = builder.with_gateway_id(gateway_id);
         }

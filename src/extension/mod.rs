@@ -248,6 +248,21 @@ impl ExtensionRuntime {
 pub trait ExtensionStore: Send + Sync {
     async fn get_conversation(&self, conversation_id: &str) -> Result<Option<Conversation>>;
 
+    /// Batch local conversation metadata for extension projections. Missing IDs are omitted.
+    /// Consumers that need the current message preview use `get_conversation`.
+    async fn get_conversation_snapshots(
+        &self,
+        conversation_ids: &[String],
+    ) -> Result<Vec<Conversation>> {
+        let mut rows = Vec::new();
+        for id in conversation_ids {
+            if let Some(row) = self.get_conversation(id).await? {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
+    }
+
     async fn list_conversations(&self) -> Result<Vec<Conversation>>;
 
     async fn save_conversation(&self, conversation: &Conversation) -> Result<()>;
@@ -397,6 +412,16 @@ struct CoreExtensionStore {
 impl ExtensionStore for CoreExtensionStore {
     async fn get_conversation(&self, conversation_id: &str) -> Result<Option<Conversation>> {
         self.stores.conversations.get(conversation_id).await
+    }
+
+    async fn get_conversation_snapshots(
+        &self,
+        conversation_ids: &[String],
+    ) -> Result<Vec<Conversation>> {
+        self.stores
+            .conversations
+            .get_stored_many(conversation_ids)
+            .await
     }
 
     async fn list_conversations(&self) -> Result<Vec<Conversation>> {

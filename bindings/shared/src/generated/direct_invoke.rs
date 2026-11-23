@@ -24,6 +24,7 @@ pub const DIRECT_INVOKE_ROUTES: &[&str] = &[
     "presence.subscribe",
     "connection.get_status",
     "connection.reconnect_now",
+    "connection.set_protocol_mode",
     "access.get_status",
     "access.list_access_points",
     "access.pin",
@@ -99,6 +100,7 @@ pub fn is_direct_invoke_route(route: &str) -> bool {
         "presence.subscribe" => true,
         "connection.get_status" => true,
         "connection.reconnect_now" => true,
+        "connection.set_protocol_mode" => true,
         "access.get_status" => true,
         "access.list_access_points" => true,
         "access.pin" => true,
@@ -283,6 +285,12 @@ pub async fn dispatch_direct(
         "connection.reconnect_now" => {
             let client = session.client();
             client.reconnect_now().await?;
+            Ok(BindingResponse::unit())
+        }
+        "connection.set_protocol_mode" => {
+            let client = session.client();
+            let mode = dispatch_support::json_string(request, "mode")?;
+            client.set_protocol_mode(&mode).await?;
             Ok(BindingResponse::unit())
         }
         "access.get_status" => {

@@ -247,7 +247,14 @@ async fn invoke_impl(
             event_bridge.clear();
             let event_bridge_for_login = event_bridge.clone();
             let runtime_id = state.runtime_id;
-            let store_provider = build_web_store_provider(&user_id).await;
+            let (_, config) = client.config_snapshot().await;
+            let tenant_id = config
+                .as_ref()
+                .and_then(|c| c.tenant_id.as_deref())
+                .unwrap_or("0");
+            let store_provider = build_web_store_provider("flare-im-core-sdk", tenant_id, &user_id)
+                .await
+                .map_err(|e| map_sdk_err(operation, e))?;
             let login_result = client
                 .login(
                     &user_id,
@@ -281,7 +288,14 @@ async fn invoke_impl(
             let client = state.client();
             let event_bridge = state.event_bridge();
             event_bridge.clear();
-            let store_provider = build_web_store_provider(&user_id).await;
+            let (_, config) = client.config_snapshot().await;
+            let tenant_id = config
+                .as_ref()
+                .and_then(|c| c.tenant_id.as_deref())
+                .unwrap_or("0");
+            let store_provider = build_web_store_provider("flare-im-core-sdk", tenant_id, &user_id)
+                .await
+                .map_err(|e| map_sdk_err(operation, e))?;
             client
                 .prepare(&user_id, LoginDbKind::IndexedDb(store_provider))
                 .await

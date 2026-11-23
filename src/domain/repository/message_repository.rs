@@ -1,6 +1,8 @@
 use async_trait::async_trait;
-use flare_proto::common::{MessageRetentionPolicy, MessageRetentionState};
-use std::collections::HashMap;
+use flare_proto::common::{
+    ContentVisibility, MessageRetentionLifecycle, MessageRetentionPolicy, MessageRetentionState,
+};
+use std::collections::{BTreeSet, HashMap};
 
 use flare_plugin_protocol::state::{SharedState, SharedStateOrder};
 use flare_plugin_protocol::ui::PluginMessageState;
@@ -27,15 +29,319 @@ pub enum OperationApplyResult {
 }
 
 pub(crate) fn message_attribute_seq(attributes: &HashMap<String, String>, key: &str) -> u64 {
+    if key == "lastMarkEventSeq" {
+        // Fold the previously persisted per-type clocks into the single marker clock.
+        return attributes
+            .iter()
+            .filter(|(name, _)| name.as_str() == key || name.starts_with("lastMarkEventSeq:"))
+            .filter_map(|(_, value)| value.parse().ok())
+            .max()
+            .unwrap_or(0);
+    }
     attributes
         .get(key)
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0)
 }
 
+pub(crate) fn write_message_mark(
+    attributes: &mut HashMap<String, String>,
+    mark_type: i32,
+    color: Option<&str>,
+    set_mark: bool,
+) {
+    let seq = message_attribute_seq(attributes, "lastMarkEventSeq");
+    attributes.retain(|key, _| !key.starts_with("lastMarkEventSeq:"));
+    if seq > 0 {
+        attributes.insert("lastMarkEventSeq".into(), seq.to_string());
+    }
+    if set_mark {
+        attributes.insert("markType".into(), mark_type.to_string());
+        if let Some(color) = color.map(str::trim).filter(|color| !color.is_empty()) {
+            attributes.insert("markColor".into(), color.into());
+        } else {
+            attributes.remove("markColor");
+        }
+    } else if attributes.get("markType") == Some(&mark_type.to_string()) {
+        attributes.remove("markType");
+        attributes.remove("markColor");
+    }
+}
+
+pub(crate) fn mark_outgoing_message_read(
+    message: &mut IMMessage,
+    conversation_id: &str,
+    sender_user_id: &str,
+    read_seq: u64,
+) -> bool {
+    use flare_proto::common::MessageStatus;
+    if message.conversation_id != conversation_id.trim()
+        || message.sender_id != sender_user_id.trim()
+        || conversation_id.trim().is_empty()
+        || sender_user_id.trim().is_empty()
+        || message.conversation_seq == 0
+        || message.conversation_seq > read_seq
+        || !matches!(
+            MessageStatus::try_from(message.status).ok(),
+            Some(MessageStatus::Created | MessageStatus::Sent | MessageStatus::Persisted)
+        )
+        || (message.is_read && message.status != MessageStatus::Created as i32)
+    {
+        return false;
+    }
+    if message.status == MessageStatus::Created as i32 {
+        message.status = MessageStatus::Sent as i32;
+    }
+    message.is_read = true;
+    true
+}
+
+pub(crate) fn advance_message_event(
+    attributes: &mut HashMap<String, String>,
+    key: &str,
+    event_seq: Option<u64>,
+) -> bool {
+    if let Some(seq) = event_seq.filter(|seq| *seq > 0) {
+        if seq <= message_attribute_seq(attributes, key) {
+            return false;
+        }
+        attributes.insert(key.to_string(), seq.to_string());
+    }
+    true
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RetentionEventKind {
+    Scheduled,
+    Expired,
+    Purged,
+}
+
+const RETENTION_EVENT_SEQ_KEYS: [&str; 3] = [
+    "lastRetentionScheduledEventSeq",
+    "lastRetentionExpiredEventSeq",
+    "lastRetentionPurgedEventSeq",
+];
+
+fn clear_retained_content(message: &mut IMMessage) {
+    message.encoded_content.clear();
+    message.text_preview.clear();
+    message.content = None;
+    message.quote_preview = None;
+    message.extensions.clear();
+    message.offline_push_info = None;
+    message.attributes.remove("contentText");
+}
+
+pub(crate) fn retention_hides_content(state: &MessageRetentionState) -> bool {
+    state.lifecycle == flare_proto::common::MessageRetentionLifecycle::Purged as i32
+        || matches!(
+            ContentVisibility::try_from(state.content_visibility).ok(),
+            Some(
+                ContentVisibility::Hidden | ContentVisibility::Redacted | ContentVisibility::Purged
+            )
+        )
+}
+
+fn retention_is_terminal(state: &MessageRetentionState) -> bool {
+    retention_hides_content(state) || state.lifecycle == MessageRetentionLifecycle::Expired as i32
+}
+
+pub(crate) fn enforce_retention_visibility(message: &mut IMMessage) {
+    if message
+        .retention_state
+        .as_ref()
+        .is_some_and(retention_hides_content)
+    {
+        clear_retained_content(message);
+    }
+}
+
+pub(crate) fn merge_message_event_state(incoming: &mut IMMessage, existing: &IMMessage) {
+    let explicit_reactions = incoming.attributes.contains_key("reactionsJson");
+    if explicit_reactions {
+        incoming.reactions =
+            crate::model::message::parse_reactions_from_attributes(&incoming.attributes);
+    } else if incoming.reactions.is_empty() {
+        incoming.reactions =
+            crate::model::message::parse_reactions_from_attributes(&existing.attributes);
+    }
+    let pairs: BTreeSet<_> = incoming
+        .reactions
+        .iter()
+        .chain(&existing.reactions)
+        .flat_map(|reaction| {
+            reaction
+                .user_ids
+                .iter()
+                .map(|user| (reaction.emoji.clone(), user.clone()))
+        })
+        .collect();
+    for (emoji, user) in pairs {
+        let key = format!("lastReactionEventSeq:{user}:{emoji}");
+        let seq = message_attribute_seq(&existing.attributes, &key);
+        if seq > 0 && seq >= message_attribute_seq(&incoming.attributes, &key) {
+            let present = existing
+                .reactions
+                .iter()
+                .any(|reaction| reaction.emoji == emoji && reaction.user_ids.contains(&user));
+            incoming.apply_reaction_change(
+                &user,
+                &emoji,
+                if present {
+                    flare_proto::common::ReactionAction::Add
+                } else {
+                    flare_proto::common::ReactionAction::Remove
+                } as i32,
+            );
+        }
+    }
+    if (explicit_reactions || incoming.attributes.contains_key("reactionsJson"))
+        && let Ok(json) = serde_json::to_string(&incoming.reactions)
+    {
+        incoming.attributes.insert("reactionsJson".into(), json);
+    }
+    if message_attribute_seq(&existing.attributes, "lastEditEventSeq")
+        > message_attribute_seq(&incoming.attributes, "lastEditEventSeq")
+    {
+        incoming.encoded_content = existing.encoded_content.clone();
+        incoming.content = existing.content.clone();
+        incoming.text_preview = existing.text_preview.clone();
+        incoming.is_edited = existing.is_edited;
+        for key in [
+            "lastEditEventSeq",
+            "currentEditVersion",
+            "messageFsmState",
+            "lastEditedAt",
+        ] {
+            if let Some(value) = existing.attributes.get(key) {
+                incoming.attributes.insert(key.into(), value.clone());
+            }
+        }
+    }
+    let latest = |message: &IMMessage| {
+        RETENTION_EVENT_SEQ_KEYS
+            .iter()
+            .map(|key| message_attribute_seq(&message.attributes, key))
+            .max()
+            .unwrap_or(0)
+    };
+    // Server snapshots have typed lifecycle state, not the SDK's private event clocks.
+    if latest(existing) > 0
+        && latest(existing) >= latest(incoming)
+        && !incoming
+            .retention_state
+            .as_ref()
+            .is_some_and(retention_is_terminal)
+    {
+        incoming.retention_policy = existing.retention_policy.clone();
+        incoming.retention_state = existing.retention_state.clone();
+        for key in RETENTION_EVENT_SEQ_KEYS
+            .into_iter()
+            .chain(["retention_event", "retention_placeholder"])
+        {
+            if let Some(value) = existing.attributes.get(key) {
+                incoming.attributes.insert(key.into(), value.clone());
+            }
+        }
+        incoming.updated_at = incoming.updated_at.max(existing.updated_at);
+    }
+    if let Some(previous) = existing
+        .retention_state
+        .as_ref()
+        .filter(|state| retention_is_terminal(state))
+    {
+        let state = incoming
+            .retention_state
+            .get_or_insert_with(|| previous.clone());
+        if previous.lifecycle >= MessageRetentionLifecycle::Expired as i32 {
+            state.lifecycle = state.lifecycle.max(previous.lifecycle);
+        }
+        if retention_hides_content(previous) {
+            state.content_visibility = state.content_visibility.max(previous.content_visibility);
+        }
+        state.expired_at = state.expired_at.or(previous.expired_at);
+        state.purged_at = state.purged_at.or(previous.purged_at);
+    }
+    incoming.attributes = merge_message_event_attributes(
+        std::mem::take(&mut incoming.attributes),
+        existing.attributes.clone(),
+    );
+    enforce_retention_visibility(incoming);
+}
+
+/// All backends apply the same lifecycle and cross-phase ordering before persisting.
+pub(crate) fn apply_retention_event(
+    message: &mut IMMessage,
+    kind: RetentionEventKind,
+    policy: Option<&MessageRetentionPolicy>,
+    state: &MessageRetentionState,
+    at: i64,
+    event_seq: Option<u64>,
+) -> OperationApplyResult {
+    if message.retention_state.as_ref().is_some_and(|previous| {
+        (previous.lifecycle >= MessageRetentionLifecycle::Expired as i32
+            && state.lifecycle < previous.lifecycle)
+            || (retention_hides_content(previous)
+                && state.content_visibility < previous.content_visibility)
+    }) {
+        return OperationApplyResult::IgnoredStale;
+    }
+    let keys = RETENTION_EVENT_SEQ_KEYS;
+    if let Some(seq) = event_seq {
+        let latest = keys
+            .iter()
+            .map(|key| message_attribute_seq(&message.attributes, key))
+            .max()
+            .unwrap_or(0);
+        if seq <= latest {
+            return OperationApplyResult::IgnoredStale;
+        }
+        let index = match kind {
+            RetentionEventKind::Scheduled => 0,
+            RetentionEventKind::Expired => 1,
+            RetentionEventKind::Purged => 2,
+        };
+        message
+            .attributes
+            .insert(keys[index].to_string(), seq.to_string());
+    }
+    if let Some(policy) = policy {
+        message.retention_policy = Some(policy.clone());
+    }
+    message.retention_state = Some(state.clone());
+    message.updated_at = message
+        .updated_at
+        .max(u64::try_from(at).unwrap_or_default());
+    let (name, placeholder) = match kind {
+        RetentionEventKind::Scheduled => ("scheduled", None),
+        RetentionEventKind::Expired => ("expired", Some("该消息已过期")),
+        RetentionEventKind::Purged => ("purged", Some("该消息已清理")),
+    };
+    message
+        .attributes
+        .insert("retention_event".into(), name.into());
+    if let Some(placeholder) = placeholder {
+        message
+            .attributes
+            .insert("retention_placeholder".into(), placeholder.into());
+    }
+    if matches!(kind, RetentionEventKind::Purged)
+        || matches!(
+            ContentVisibility::try_from(state.content_visibility).ok(),
+            Some(
+                ContentVisibility::Hidden | ContentVisibility::Redacted | ContentVisibility::Purged
+            )
+        )
+    {
+        clear_retained_content(message);
+    }
+    OperationApplyResult::Applied
+}
+
 /// 插件卡片状态只由 `apply_plugin_message_state` 写入：同步、编辑、回执等整行覆盖时保留
 /// 版本更大（相同则保留已存）的那一份。共享层一并按版本带过去（见 [`carry_plugin_shared_state`]）。
-pub(crate) fn carry_plugin_message_state(
+fn carry_plugin_message_state(
     incoming: &mut HashMap<String, String>,
     existing: &HashMap<String, String>,
 ) {
@@ -180,7 +486,7 @@ fn preserve_attribute_if_missing(
     }
 }
 
-pub(crate) fn merge_message_event_attributes(
+fn merge_message_event_attributes(
     mut incoming: HashMap<String, String>,
     existing: HashMap<String, String>,
 ) -> HashMap<String, String> {
@@ -198,32 +504,27 @@ pub(crate) fn merge_message_event_attributes(
         preserve_attribute_if_missing(&mut incoming, &existing, "lastPinEventSeq");
     }
 
-    let existing_mark_seq_keys = existing
-        .keys()
-        .filter(|key| key.starts_with("lastMarkEventSeq:"))
-        .cloned()
-        .collect::<Vec<_>>();
-    for seq_key in existing_mark_seq_keys {
-        let existing_seq = message_attribute_seq(&existing, &seq_key);
-        let incoming_seq = message_attribute_seq(&incoming, &seq_key);
-        if existing_seq > incoming_seq {
-            incoming.insert(seq_key.clone(), existing_seq.to_string());
-            if let Some(mark_type) = existing.get("markType") {
-                incoming.insert("markType".to_string(), mark_type.clone());
+    let old_mark_seq = message_attribute_seq(&existing, "lastMarkEventSeq");
+    let new_mark_seq = message_attribute_seq(&incoming, "lastMarkEventSeq");
+    if old_mark_seq > 0 && old_mark_seq >= new_mark_seq {
+        for key in ["markType", "markColor"] {
+            if let Some(value) = existing.get(key) {
+                incoming.insert(key.into(), value.clone());
             } else {
-                incoming.remove("markType");
+                incoming.remove(key);
             }
-            if let Some(mark_color) = existing.get("markColor") {
-                incoming.insert("markColor".to_string(), mark_color.clone());
-            } else {
-                incoming.remove("markColor");
-            }
-        } else {
-            preserve_attribute_if_missing(&mut incoming, &existing, &seq_key);
         }
+    } else if new_mark_seq == 0 {
+        preserve_attribute_if_missing(&mut incoming, &existing, "markType");
+        preserve_attribute_if_missing(&mut incoming, &existing, "markColor");
     }
-    preserve_attribute_if_missing(&mut incoming, &existing, "markType");
-    preserve_attribute_if_missing(&mut incoming, &existing, "markColor");
+    incoming.retain(|key, _| !key.starts_with("lastMarkEventSeq:"));
+    if old_mark_seq.max(new_mark_seq) > 0 {
+        incoming.insert(
+            "lastMarkEventSeq".into(),
+            old_mark_seq.max(new_mark_seq).to_string(),
+        );
+    }
 
     preserve_attribute_if_missing(&mut incoming, &existing, "reactionsJson");
     for seq_key in existing
@@ -232,7 +533,9 @@ pub(crate) fn merge_message_event_attributes(
         .cloned()
         .collect::<Vec<_>>()
     {
-        preserve_attribute_if_missing(&mut incoming, &existing, &seq_key);
+        if message_attribute_seq(&existing, &seq_key) > message_attribute_seq(&incoming, &seq_key) {
+            incoming.insert(seq_key.clone(), existing[&seq_key].clone());
+        }
     }
 
     for seq_key in [
@@ -266,7 +569,7 @@ pub trait MessageReader: Send + Sync {
         }
         Ok(out)
     }
-    /// 按 client_msg_id 查询（发送中/待 ACK 时可能仅有 client_msg_id）
+    /// 按 client_msg_id 查询；多个消息共用别名时返回 None，不能任意选择目标。
     async fn get_by_client_msg_id(&self, client_msg_id: &str) -> Result<Option<IMMessage>>;
     /// 批量按 client_msg_id 查询。默认逐条兜底；SQLite 实现覆盖为 `IN (...)` 单次查询，
     /// 降低可靠队列对账每 tick 的 O(n) DB 往返与连接池争用。
@@ -287,6 +590,15 @@ pub trait MessageReader: Send + Sync {
         before_seq: u64,
         limit: u32,
     ) -> Result<Vec<IMMessage>>;
+    /// 最新窗口重读，包含待发消息；水位以下最多需要一行来判断还有更早历史。
+    async fn get_latest_window_through(
+        &self,
+        conversation_id: &str,
+        _oldest_seq: u64,
+        limit: u32,
+    ) -> Result<Vec<IMMessage>> {
+        self.get_by_conversation(conversation_id, 0, limit).await
+    }
     /// 往新的方向读：`seq > after_seq` 的已分配序列号的消息，按 seq **升序**最多 `limit` 条
     /// （时间线视图往新翻页、围绕某条消息打开时用）。与 [`Self::get_by_conversation`] 的翻页读法
     /// 一样不含待发送行、遵守本地清空水位。
@@ -398,16 +710,14 @@ pub trait MessageStore: MessageReader + MessageWriter {
     /// 应用编辑事件到存储层；实现基于权威 `event_seq`（conversation_seq）做收敛，避免旧编辑覆盖新内容、防止乱序/重复。
     async fn apply_edit_event(
         &self,
-        message_id: &str,
-        new_content: Vec<u8>,
+        _message_id: &str,
+        _new_content: Vec<u8>,
         _event_seq: Option<u64>,
     ) -> Result<EditApplyResult> {
-        let updated = self.update_content(message_id, new_content).await?;
-        Ok(if updated {
-            EditApplyResult::Applied
-        } else {
-            EditApplyResult::NotFound
-        })
+        Err(FlareError::localized(
+            ErrorCode::OperationNotSupported,
+            "Message store does not implement apply_edit_event",
+        ))
     }
 
     /// 应用删除事件到存储层；实现可基于 `event_seq/seq` 做顺序收敛，避免旧删除覆盖更新状态。
@@ -434,18 +744,16 @@ pub trait MessageStore: MessageReader + MessageWriter {
     /// 应用标记/取消标记事件到存储层；实现可基于 `event_seq/seq` 防止旧状态覆盖新状态。
     async fn apply_mark_event(
         &self,
-        message_id: &str,
-        mark_type: i32,
-        color: Option<&str>,
-        set_mark: bool,
+        _message_id: &str,
+        _mark_type: i32,
+        _color: Option<&str>,
+        _set_mark: bool,
         _event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
-        if set_mark {
-            self.set_message_mark(message_id, mark_type, color).await?;
-        } else {
-            self.clear_message_mark(message_id, mark_type).await?;
-        }
-        Ok(OperationApplyResult::Applied)
+        Err(FlareError::localized(
+            ErrorCode::OperationNotSupported,
+            "Message store does not implement apply_mark_event",
+        ))
     }
 
     /// 写入插件卡片状态（`attributes.pluginStateJson` / `pluginStateVersion`），`message_id` 接受
@@ -480,7 +788,10 @@ pub trait MessageStore: MessageReader + MessageWriter {
         _scheduled_at: i64,
         _event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
-        Ok(OperationApplyResult::NotFound)
+        Err(FlareError::localized(
+            ErrorCode::OperationNotSupported,
+            "Message store does not implement retention events",
+        ))
     }
 
     /// 应用 retention「已过期」事件到存储层；实现可基于 `conversation_seq` 防旧事件回放覆盖新状态。
@@ -491,7 +802,10 @@ pub trait MessageStore: MessageReader + MessageWriter {
         _expired_at: i64,
         _event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
-        Ok(OperationApplyResult::NotFound)
+        Err(FlareError::localized(
+            ErrorCode::OperationNotSupported,
+            "Message store does not implement retention events",
+        ))
     }
 
     /// 应用 retention「已清理」事件到存储层；实现可基于 `conversation_seq` 防旧事件回放覆盖新状态。
@@ -502,7 +816,10 @@ pub trait MessageStore: MessageReader + MessageWriter {
         _purged_at: i64,
         _event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
-        Ok(OperationApplyResult::NotFound)
+        Err(FlareError::localized(
+            ErrorCode::OperationNotSupported,
+            "Message store does not implement retention events",
+        ))
     }
 
     /// 对方已读回执落地：将当前用户在该会话中 `seq <= read_seq` 的已发送消息标记为已读。
@@ -548,16 +865,17 @@ pub trait MessageStore: MessageReader + MessageWriter {
     /// 做顺序收敛，避免旧反应事件覆盖新状态。
     async fn apply_reaction_event(
         &self,
-        conversation_id: &str,
-        message_server_id: &str,
-        user_id: &str,
-        emoji: &str,
-        action: i32,
+        _conversation_id: &str,
+        _message_server_id: &str,
+        _user_id: &str,
+        _emoji: &str,
+        _action: i32,
         _event_seq: Option<u64>,
     ) -> Result<OperationApplyResult> {
-        self.apply_reaction(conversation_id, message_server_id, user_id, emoji, action)
-            .await?;
-        Ok(OperationApplyResult::Applied)
+        Err(FlareError::localized(
+            ErrorCode::OperationNotSupported,
+            "Message store does not implement apply_reaction_event",
+        ))
     }
 
     /// 批量查询消息 reactions，key=message_server_id。
@@ -585,12 +903,18 @@ pub trait MessageStore: MessageReader + MessageWriter {
         _mark_type: i32,
         _color: Option<&str>,
     ) -> Result<()> {
-        Ok(())
+        Err(FlareError::localized(
+            ErrorCode::OperationNotSupported,
+            "Message store does not implement set_message_mark",
+        ))
     }
 
     /// 取消消息标记（清理 extra.markType / extra.markColor）。
     async fn clear_message_mark(&self, _message_id: &str, _mark_type: i32) -> Result<()> {
-        Ok(())
+        Err(FlareError::localized(
+            ErrorCode::OperationNotSupported,
+            "Message store does not implement clear_message_mark",
+        ))
     }
 
     /// 会话恢复自愈：将本地 `sending=1` 但不在 pending 队列中的孤儿消息改为 failed。

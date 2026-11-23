@@ -320,6 +320,31 @@ impl CapabilityApi {
                                 Err(error) => {
                                     self.after_plugin_error(&error, &request.page.plugin_id)
                                         .await;
+                                    // A business refusal the page words comes back as a
+                                    // refusal with those words, as a page command's does.
+                                    if let Some(code) =
+                                        crate::extension::capability::plugin_errors::plugin_rejection_code(&error)
+                                        && declaration.schema.refusal_text(code, &request.locale).is_some()
+                                    {
+                                        let refused = CapabilityDispatchResult {
+                                            request_id: String::new(),
+                                            success: false,
+                                            plugin_id: request.page.plugin_id.clone(),
+                                            capability_id: operation.clone(),
+                                            data: serde_json::json!({"errorCode": code}),
+                                            error: None,
+                                        };
+                                        return Ok(refusal_words(
+                                            &declaration.schema,
+                                            &request.locale,
+                                            self.operation_outcome(
+                                                user_id.as_deref(),
+                                                &request.page.plugin_id,
+                                                None,
+                                                &refused,
+                                            ),
+                                        ));
+                                    }
                                     return Err(error);
                                 }
                             };
@@ -327,9 +352,11 @@ impl CapabilityApi {
                         };
                         let origin = PageContinuationOrigin {
                             plugin_id: request.page.plugin_id.clone(),
+                            page: request.page.page.clone(),
                             platform: request.platform,
                             conversation_id: request.conversation_id.clone(),
                             user_gesture: request.user_gesture,
+                            locale: request.locale.clone(),
                         };
                         // An operation that answers with a payment order runs nothing
                         // further yet: its continuation is held for the order and runs
@@ -358,6 +385,7 @@ impl CapabilityApi {
                             return Ok(self.operation_outcome(
                                 user_id.as_deref(),
                                 &request.page.plugin_id,
+                                Some(&request.page.page),
                                 &response,
                             ));
                         }
@@ -386,9 +414,35 @@ impl CapabilityApi {
 #[derive(Clone, Debug)]
 pub(crate) struct PageContinuationOrigin {
     pub plugin_id: String,
+    /// The page (of `plugin_id`) the action is declared on: the one whose
+    /// words a refusal of it comes back with.
+    pub page: String,
     pub platform: flare_plugin_protocol::manifest::ClientPlatform,
     pub conversation_id: Option<String>,
     pub user_gesture: bool,
+    /// The language the viewer asked the action in (`locale` of the request).
+    pub locale: String,
+}
+
+/// `outcome` with the words `document` gives its refusal as `message`
+/// ([`flare_plugin_protocol::ui::UiDocument::errors`], in `locale`): an
+/// operation outcome whose response is a refusal (`success: false`) with
+/// the plugin's code at `data.errorCode`. Any other outcome, or a code the
+/// document does not word, goes back unchanged and the host says its own
+/// line (docs/plugin-experience.md R8).
+pub(crate) fn refusal_words(
+    document: &flare_plugin_protocol::ui::UiDocument,
+    locale: &str,
+    mut outcome: Value,
+) -> Value {
+    let words = (outcome["kind"] == "operation" && outcome["response"]["success"] == false)
+        .then(|| outcome["response"]["data"]["errorCode"].as_str())
+        .flatten()
+        .and_then(|code| document.refusal_text(code, locale));
+    if let Some(words) = words {
+        outcome["message"] = Value::String(words);
+    }
+    outcome
 }
 
 impl CapabilityApi {
@@ -416,6 +470,8 @@ impl CapabilityApi {
             now_ms: ui_page::now_ms(),
         };
         let conversation = origin.conversation_id.as_deref();
+        // The page whose action `response` answers: its words go with a refusal.
+        let mut answered = (origin.plugin_id.clone(), origin.page.clone());
         // A successful explicit operation may continue through one declared
         // durable action. Read fresh target truth, recheck its current grant,
         // and persist the financial command before dispatch. Secrets remain
@@ -528,6 +584,7 @@ impl CapabilityApi {
                     if let Some(next) = next.as_mut() {
                         next.plugin_id.get_or_insert_with(|| plugin.to_owned());
                     }
+                    answered = (plugin.to_owned(), transition.page.clone());
                     response = result;
                     continuation = next;
                 }
@@ -555,6 +612,15 @@ impl CapabilityApi {
                 return Ok(ui_page::page_navigation(next, conversation));
             }
         }
-        Ok(self.operation_outcome(Some(viewer), &origin.plugin_id, &response))
+        let outcome = self.operation_outcome(
+            Some(viewer),
+            &origin.plugin_id,
+            Some(&answered.1),
+            &response,
+        );
+        Ok(match catalog.page(&answered.0, &answered.1, &context) {
+            Ok((_, page)) => refusal_words(&page.schema, &origin.locale, outcome),
+            Err(_) => outcome,
+        })
     }
 }

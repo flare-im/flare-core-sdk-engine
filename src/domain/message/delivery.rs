@@ -287,6 +287,11 @@ impl MessageDeliveryService {
         let Some(local) = local_by_client else {
             return IncomingMessageConvergenceDecision::EmitReceived;
         };
+        if local.conversation_id != incoming.conversation_id
+            || local.sender_id != incoming.sender_id
+        {
+            return IncomingMessageConvergenceDecision::EmitReceived;
+        }
         let local_pending_like = local.server_id == local.client_msg_id
             || local.local_state.is_local
             || local.local_state.sending
@@ -815,6 +820,48 @@ mod tests {
             }
             _ => panic!("expected synthetic ack decision"),
         }
+    }
+
+    #[test]
+    fn incoming_ack_requires_the_same_conversation_and_sender() {
+        let mut local = IMMessage::new(Default::default());
+        local.server_id = "local".into();
+        local.client_msg_id = "local".into();
+        local.sender_id = "me".into();
+        local.conversation_id = "c".into();
+        local.local_state.is_local = true;
+        let mut incoming = local.clone();
+        incoming.server_id = "server".into();
+        assert_eq!(
+            MessageDeliveryService::decide_incoming_message_convergence(
+                "me",
+                &incoming,
+                Some(&local),
+                None
+            ),
+            IncomingMessageConvergenceDecision::MergePendingAndAck
+        );
+        incoming.conversation_id = "other".into();
+        assert_eq!(
+            MessageDeliveryService::decide_incoming_message_convergence(
+                "me",
+                &incoming,
+                Some(&local),
+                None
+            ),
+            IncomingMessageConvergenceDecision::EmitReceived
+        );
+        incoming.conversation_id = "c".into();
+        local.sender_id = "other".into();
+        assert_eq!(
+            MessageDeliveryService::decide_incoming_message_convergence(
+                "me",
+                &incoming,
+                Some(&local),
+                None
+            ),
+            IncomingMessageConvergenceDecision::EmitReceived
+        );
     }
 
     #[test]

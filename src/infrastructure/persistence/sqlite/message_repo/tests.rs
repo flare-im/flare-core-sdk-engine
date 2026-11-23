@@ -835,10 +835,17 @@ async fn latest_window_uses_seq_over_skewed_sort_ts_after_ack() {
     let latest = repo.get_by_conversation("conv-clock", 0, 3).await.unwrap();
     let ids = latest
         .iter()
-        .map(|m| m.server_id.as_str())
+        .map(IMMessage::timeline_key)
         .collect::<Vec<_>>();
 
-    assert_eq!(ids, vec!["", "server-clock-new", "server-clock-old"]);
+    assert_eq!(
+        ids,
+        [
+            "client:client-clock-pending",
+            "server:server-clock-new",
+            "server:server-clock-old",
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1087,7 +1094,7 @@ async fn apply_mark_event_ignores_stale_seq_and_accepts_newer_seq() {
     assert_eq!(
         after_new
             .attributes
-            .get("lastMarkEventSeq:7")
+            .get("lastMarkEventSeq")
             .map(String::as_str),
         Some("21")
     );
@@ -1162,6 +1169,52 @@ async fn apply_reaction_event_ignores_stale_seq_and_accepts_newer_seq() {
 }
 
 #[tokio::test]
+async fn rejected_reaction_write_does_not_advance_its_clock() {
+    let repo = make_repo().await;
+    let mut message = IMMessage::new(Default::default());
+    message.server_id = "atomic-reaction".into();
+    message.conversation_id = "c".into();
+    repo.save_one(&message).await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_reaction BEFORE INSERT ON message_reactions BEGIN SELECT RAISE(ABORT, 'injected write failure'); END").execute(&repo.pool).await.unwrap();
+    assert!(
+        repo.apply_reaction_event(
+            "c",
+            "atomic-reaction",
+            "u",
+            "👍",
+            ReactionAction::Add as i32,
+            Some(10)
+        )
+        .await
+        .is_err()
+    );
+    sqlx::query("DROP TRIGGER reject_reaction")
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.apply_reaction_event(
+            "c",
+            "atomic-reaction",
+            "u",
+            "👍",
+            ReactionAction::Add as i32,
+            Some(10)
+        )
+        .await
+        .unwrap(),
+        OperationApplyResult::Applied
+    );
+    assert_eq!(
+        repo.list_reactions(&["atomic-reaction".into()])
+            .await
+            .unwrap()["atomic-reaction"][0]
+            .user_ids,
+        vec!["u"]
+    );
+}
+
+#[tokio::test]
 async fn apply_reaction_remove_clears_message_snapshot_immediately() {
     let repo = make_repo().await;
     let mut message = IMMessage::new(flare_proto::common::Message::default());
@@ -1194,7 +1247,7 @@ async fn apply_reaction_remove_clears_message_snapshot_immediately() {
     .unwrap();
     let removed = repo.get("server-local-reaction").await.unwrap().unwrap();
     assert!(removed.reactions.is_empty());
-    assert!(!removed.attributes.contains_key("reactionsJson"));
+    assert_eq!(removed.attributes["reactionsJson"], "[]");
 }
 
 #[tokio::test]
@@ -1615,4 +1668,119 @@ async fn plugin_shared_state_moves_forward_only_and_keeps_the_newer_of_wire_and_
         OperationApplyResult::IgnoredStale,
         "a version older than the one history delivered is dropped"
     );
+}
+
+#[tokio::test]
+async fn orphan_reaction_clocks_upgrade_and_survive_reopening_before_message_hydration() {
+    let root =
+        std::env::temp_dir().join(format!("flare-orphan-reactions-{}", uuid::Uuid::new_v4()));
+    tokio::fs::create_dir_all(&root).await.unwrap();
+    let url =
+        crate::shared::util::sqlite_store::sqlite_database_url_from_path(&root.join("upgrade.db"));
+    let pool = SqlitePool::connect(&url).await.unwrap();
+    sqlx::query("CREATE TABLE message_reactions(message_server_id TEXT NOT NULL, conversation_id TEXT NOT NULL DEFAULT '', emoji TEXT NOT NULL, user_id TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(message_server_id, emoji, user_id))").execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO message_reactions(message_server_id, conversation_id, emoji, user_id) VALUES ('legacy', 'c', '👍', 'legacy-user')").execute(&pool).await.unwrap();
+    sqlite_init_schema(&pool).await.unwrap();
+    let repo = SqliteMessageRepo::new(pool.clone());
+    assert_eq!(
+        repo.list_reactions(&["legacy".into()]).await.unwrap()["legacy"][0].user_ids,
+        vec!["legacy-user"]
+    );
+    assert!(
+        repo.apply_reaction_event(
+            "c",
+            "cold",
+            "u",
+            "👍",
+            ReactionAction::Add as i32,
+            Some(u64::MAX)
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        repo.apply_reaction_event(
+            "c",
+            "cold",
+            "u",
+            "👍",
+            ReactionAction::Remove as i32,
+            Some(20)
+        )
+        .await
+        .unwrap(),
+        OperationApplyResult::Applied
+    );
+    assert_eq!(
+        repo.apply_reaction_event("c", "cold", "u", "👍", ReactionAction::Add as i32, Some(10))
+            .await
+            .unwrap(),
+        OperationApplyResult::IgnoredStale
+    );
+    assert!(
+        !repo
+            .list_reactions(&["cold".into()])
+            .await
+            .unwrap()
+            .contains_key("cold")
+    );
+    drop(repo);
+    pool.close().await;
+
+    let pool = SqlitePool::connect(&url).await.unwrap();
+    sqlite_init_schema(&pool).await.unwrap();
+    let repo = SqliteMessageRepo::new(pool.clone());
+    assert_eq!(
+        repo.apply_reaction_event("c", "cold", "u", "👍", ReactionAction::Add as i32, Some(10))
+            .await
+            .unwrap(),
+        OperationApplyResult::IgnoredStale
+    );
+    let mut old = IMMessage::new(Default::default());
+    old.server_id = "cold".into();
+    old.client_msg_id = "local-cold".into();
+    old.conversation_id = "c".into();
+    old.apply_reaction_change("u", "👍", ReactionAction::Add as i32);
+    repo.save_one(&old).await.unwrap();
+    assert!(
+        repo.get("cold")
+            .await
+            .unwrap()
+            .unwrap()
+            .reactions
+            .is_empty()
+    );
+    assert!(
+        !repo
+            .list_reactions(&["cold".into()])
+            .await
+            .unwrap()
+            .contains_key("cold")
+    );
+    assert_eq!(
+        repo.apply_reaction_event(
+            "c",
+            "cold",
+            "u",
+            "👍",
+            ReactionAction::Remove as i32,
+            Some(20)
+        )
+        .await
+        .unwrap(),
+        OperationApplyResult::IgnoredStale
+    );
+    assert_eq!(
+        repo.apply_reaction_event("c", "cold", "u", "👍", ReactionAction::Add as i32, Some(30))
+            .await
+            .unwrap(),
+        OperationApplyResult::Applied
+    );
+    assert_eq!(
+        repo.list_reactions(&["cold".into()]).await.unwrap()["cold"][0].user_ids,
+        vec!["u"]
+    );
+    drop(repo);
+    pool.close().await;
+    tokio::fs::remove_dir_all(root).await.unwrap();
 }

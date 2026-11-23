@@ -151,9 +151,19 @@ impl ConversationApi {
         request: BootstrapHomeTimelineRequest,
     ) -> Result<HomeTimelineSnapshot> {
         self.ensure_session_active().await?;
-        let mut conversations = self.view_assembler.list(false).await?;
+        let mut conversations = self
+            .view_assembler
+            .list_summaries_by_query(&crate::model::ConversationListQuery {
+                include_archived: false,
+                ..Default::default()
+            })
+            .await?;
         let total_unread = crate::domain::total_unread(&conversations);
         conversations.truncate(normalized_conversation_limit(request.conversation_limit) as usize);
+        let conversations = self
+            .view_assembler
+            .hydrate_conversations(conversations)
+            .await;
         Ok(HomeTimelineSnapshot {
             conversations,
             total_unread,
@@ -297,7 +307,7 @@ impl ConversationApi {
         let limit = limit.max(1);
         let rows = self
             .message_view_assembler
-            .list(conversation_id, 0, limit.saturating_add(1) as u32)
+            .latest_window_through(conversation_id, oldest_seq, limit.saturating_add(1) as u32)
             .await?;
         let conversation = self.view_assembler.get(conversation_id).await?;
         let coverage = self

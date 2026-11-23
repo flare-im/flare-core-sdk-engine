@@ -11,6 +11,8 @@ mod native_file_service;
 mod profile;
 mod upload_only;
 mod upload_shared;
+#[cfg(any(target_arch = "wasm32", test))]
+mod web_file_range;
 #[cfg(target_arch = "wasm32")]
 mod web_http_service;
 

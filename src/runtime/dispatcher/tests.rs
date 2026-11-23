@@ -18,6 +18,7 @@ use crate::domain::{
     SyncCursorWriter,
 };
 use crate::infrastructure::persistence::StoreProvider;
+use crate::infrastructure::persistence::memory_im::MemoryConversationStore;
 use crate::infrastructure::protocol::DownlinkPayload;
 use crate::infrastructure::protocol::{Codec, PacketSender, ProtobufCodec};
 use crate::kernel::event::{EventBus, MessageEvent, SdkEvent};
@@ -422,105 +423,9 @@ impl MessageWriter for MemoryMessageStore {
 
 impl MessageStore for MemoryMessageStore {}
 
-struct NoopConversationStore;
 struct NoopSyncCursorStore;
 struct CursorAtSeqStore {
     last_seq: u64,
-}
-
-#[async_trait]
-impl ConversationReader for NoopConversationStore {
-    async fn get(&self, _conversation_id: &str) -> Result<Option<crate::model::Conversation>> {
-        Ok(None)
-    }
-
-    async fn list(&self) -> Result<Vec<crate::model::Conversation>> {
-        Ok(Vec::new())
-    }
-}
-
-#[async_trait]
-impl ConversationWriter for NoopConversationStore {
-    async fn save_batch(&self, _conversations: &[crate::model::Conversation]) -> Result<()> {
-        Ok(())
-    }
-
-    async fn save_one(&self, _conversation: &crate::model::Conversation) -> Result<()> {
-        Ok(())
-    }
-
-    async fn update_unread(
-        &self,
-        _conversation_id: &str,
-        _unread_count: u32,
-        _last_read_seq: u64,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    async fn set_pinned(&self, _conversation_id: &str, _pinned: bool) -> Result<()> {
-        Ok(())
-    }
-
-    async fn set_muted(&self, _conversation_id: &str, _muted: bool) -> Result<()> {
-        Ok(())
-    }
-
-    async fn set_notify_all(&self, _conversation_id: &str, _enabled: bool) -> Result<()> {
-        Ok(())
-    }
-
-    async fn set_archived(&self, _conversation_id: &str, _archived: bool) -> Result<()> {
-        Ok(())
-    }
-
-    async fn mark_unread(&self, _conversation_id: &str) -> Result<u32> {
-        Ok(1)
-    }
-
-    async fn update_draft(&self, _conversation_id: &str, _draft: Option<&str>) -> Result<()> {
-        Ok(())
-    }
-
-    async fn delete(&self, _conversation_id: &str) -> Result<()> {
-        Ok(())
-    }
-
-    async fn merge_conversation_identity(
-        &self,
-        _from_conversation_id: &str,
-        _to_conversation_id: &str,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    async fn clear_local_chat_history(
-        &self,
-        _conversation_id: &str,
-        _cleared_through_seq: u64,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    async fn update_last_message(
-        &self,
-        _conversation_id: &str,
-        _last_message_id: &str,
-        _last_sender_id: &str,
-        _last_message_at: u64,
-        _last_message_preview: Option<&str>,
-        _max_seq: u64,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    async fn recompute_unread_for_user(
-        &self,
-        _conversation_id: &str,
-        _current_user_id: &str,
-    ) -> Result<()> {
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -596,7 +501,7 @@ async fn send_ack_is_published_once_when_reliable_queue_enabled() {
         pending_writer: pending_store,
         sender,
         message_store,
-        conversation_store: Arc::new(NoopConversationStore),
+        conversation_store: Arc::new(MemoryConversationStore::new()),
         current_user_id: current_user_id.clone(),
         bus: bus.clone(),
         timeout_secs: Some(60),
@@ -671,7 +576,7 @@ async fn self_sent_realtime_message_converges_to_send_ack_without_received() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: message_store.clone(),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -693,7 +598,7 @@ async fn self_sent_realtime_message_converges_to_send_ack_without_received() {
         pending_writer: pending_store,
         sender,
         message_store: message_store.clone(),
-        conversation_store: Arc::new(NoopConversationStore),
+        conversation_store: Arc::new(MemoryConversationStore::new()),
         current_user_id: current_user_id.clone(),
         bus: bus.clone(),
         timeout_secs: Some(60),
@@ -789,7 +694,7 @@ async fn out_of_order_ack_is_buffered_and_applied_once() {
         pending_writer: pending_store,
         sender,
         message_store,
-        conversation_store: Arc::new(NoopConversationStore),
+        conversation_store: Arc::new(MemoryConversationStore::new()),
         current_user_id: current_user_id.clone(),
         bus: bus.clone(),
         timeout_secs: Some(60),
@@ -895,7 +800,7 @@ async fn realtime_and_sync_replay_share_event_deduper() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: message_store,
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -974,7 +879,7 @@ async fn realtime_and_sync_message_replay_share_message_deduper() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: Arc::new(MemoryMessageStore::new()),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -1084,7 +989,7 @@ async fn sync_page_cursor_stops_before_failed_event_seq() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: Arc::new(MemoryMessageStore::new()),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -1188,7 +1093,7 @@ async fn clamped_cursor_save_proves_only_window_above_prior_cursor() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: message_store.clone(),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: cursor_store.clone(),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -1203,6 +1108,10 @@ async fn clamped_cursor_save_proves_only_window_above_prior_cursor() {
     };
     let notification_pipeline =
         test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
+    let projection = crate::application::projections::ConversationProjectionApplier::new(
+        stores.clone(),
+        bus.clone(),
+    );
     let sync_apply = SyncApplyUseCase::new(stores, bus.clone(), deduper, notification_pipeline);
 
     // 旧游标 5（例如快照切换建立），本地只有 6..=8，1..=4 缺失。
@@ -1225,7 +1134,14 @@ async fn clamped_cursor_save_proves_only_window_above_prior_cursor() {
             ..Default::default()
         });
         message.conversation_seq = seq;
-        message_store.save_batch(&[message]).await.unwrap();
+        message_store
+            .save_batch(std::slice::from_ref(&message))
+            .await
+            .unwrap();
+        projection
+            .apply_synced_messages(&[message], "u1")
+            .await
+            .unwrap();
     }
 
     sync_apply
@@ -1259,7 +1175,7 @@ async fn cursor_advances_past_seqs_the_server_proved_have_no_message() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: message_store.clone(),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: cursor_store.clone(),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -1274,6 +1190,10 @@ async fn cursor_advances_past_seqs_the_server_proved_have_no_message() {
     };
     let notification_pipeline =
         test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
+    let projection = crate::application::projections::ConversationProjectionApplier::new(
+        stores.clone(),
+        bus.clone(),
+    );
     let sync_apply = SyncApplyUseCase::new(stores, bus.clone(), deduper, notification_pipeline);
 
     cursor_store
@@ -1295,7 +1215,14 @@ async fn cursor_advances_past_seqs_the_server_proved_have_no_message() {
         ..Default::default()
     });
     message.conversation_seq = 22;
-    message_store.save_batch(&[message]).await.unwrap();
+    message_store
+        .save_batch(std::slice::from_ref(&message))
+        .await
+        .unwrap();
+    projection
+        .apply_synced_messages(&[message], "u1")
+        .await
+        .unwrap();
 
     let proven_absent: Vec<u64> = (13..=21).collect();
     sync_apply
@@ -1329,7 +1256,7 @@ async fn cursor_still_stops_at_messages_that_failed_to_persist() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: message_store.clone(),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: cursor_store.clone(),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -1396,7 +1323,7 @@ async fn watermark_cursor_save_persists_pseudo_keys_that_clamped_save_skips() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: Arc::new(MemoryMessageStore::new()),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: cursor_store.clone(),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -1454,7 +1381,7 @@ async fn snapshot_row_apply_persists_messages_and_returns_cutover_seq() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: message_store.clone(),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -1512,7 +1439,7 @@ async fn message_push_delivers_to_view_even_when_persist_fails() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: Arc::new(MemoryMessageStore::failing()),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -1600,7 +1527,7 @@ async fn concurrent_message_push_dispatch_is_lossless_for_slow_subscriber() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: message_store.clone(),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -1710,7 +1637,7 @@ async fn persist_worker_persists_asynchronously_when_started() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: message_store.clone(),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -1794,7 +1721,7 @@ async fn persist_worker_under_concurrent_dispatch_loses_nothing() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: message_store.clone(),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -2229,7 +2156,7 @@ fn waterline_fixture() -> (
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: message_store.clone(),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: cursor_store.clone(),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -2592,7 +2519,7 @@ async fn recall_event_without_outer_conversation_id_publishes_local_message_conv
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: message_store,
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -2656,7 +2583,7 @@ async fn recall_event_before_message_arrival_is_forgotten_and_replayable() {
         plugin_consents: None,
         plugin_bundle_storage: None,
         messages: message_store.clone(),
-        conversations: Arc::new(NoopConversationStore),
+        conversations: Arc::new(MemoryConversationStore::new()),
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
@@ -2929,4 +2856,446 @@ fn seq_repair_state_trims_oldest_idle_entries_when_over_capacity() {
     assert!(!states.contains_key("conv-0"));
     assert!(!states.contains_key("conv-1"));
     assert!(states.contains_key("conv-2"));
+}
+
+#[tokio::test]
+async fn projection_receipts_compact_interleaved_operations_at_the_proven_cursor() {
+    let stores = crate::infrastructure::persistence::in_memory_im_provider();
+    let dispatcher =
+        waterline_dispatcher(stores.clone(), Arc::new(RecordingSessionSyncRunner::new()));
+    for seq in (1..=31).step_by(2) {
+        if seq > 1 {
+            dispatcher
+                .applied_event_seqs
+                .record("compact", seq - 1)
+                .await;
+        }
+        let message = IMMessage::new(flare_proto::common::Message {
+            server_id: format!("m-{seq}"),
+            client_msg_id: format!("c-{seq}"),
+            conversation_id: "compact".into(),
+            sender_id: "u2".into(),
+            conversation_seq: seq,
+            ..Default::default()
+        });
+        assert!(dispatcher.persist_durable_batch(&[message], "u1").await);
+    }
+    let conversation = stores.conversations.get("compact").await.unwrap().unwrap();
+    let receipt = crate::domain::message_projection_receipt(&conversation).unwrap();
+    assert_eq!(conversation.unread_count, 16);
+    assert_eq!(
+        receipt.ranges.len(),
+        2,
+        "operation gaps cannot grow the receipt without bound"
+    );
+    assert_eq!(
+        stores
+            .cursors
+            .get_conversation_cursor("u1", "compact")
+            .await
+            .unwrap()
+            .unwrap()
+            .last_seq,
+        31
+    );
+}
+
+#[cfg(feature = "storage-sqlite")]
+#[tokio::test]
+async fn snapshot_projection_failure_does_not_return_a_cutover_watermark() {
+    use crate::infrastructure::persistence::{
+        SqliteConversationRepo, SqliteMessageRepo, in_memory_im_provider, sqlite_init_schema,
+    };
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlite_init_schema(&pool).await.unwrap();
+    let mut stores = in_memory_im_provider();
+    stores.messages = Arc::new(SqliteMessageRepo::new(pool.clone()));
+    stores.conversations = Arc::new(SqliteConversationRepo::new(pool.clone()));
+    let bus = EventBus::new();
+    let sync_apply = SyncApplyUseCase::new(
+        stores.clone(),
+        bus.clone(),
+        EventDeduper::new(Some(32)),
+        test_notification_pipeline(bus),
+    );
+    let row = flare_proto::common::SnapshotConversationRow {
+        conversation_id: "snapshot-retry".into(),
+        messages: vec![flare_proto::common::Message {
+            server_id: "snapshot-message".into(),
+            client_msg_id: "snapshot-client".into(),
+            conversation_id: "snapshot-retry".into(),
+            sender_id: "u2".into(),
+            conversation_seq: 10,
+            ..Default::default()
+        }],
+        last_conversation_seq: 10,
+        unread_count: 7,
+        last_read_seq: 3,
+        ..Default::default()
+    };
+    sqlx::query("CREATE TRIGGER fail_snapshot BEFORE UPDATE OF unread_count ON conversations WHEN NEW.unread_count = 7 BEGIN SELECT RAISE(ABORT, 'snapshot failed'); END")
+        .execute(&pool).await.unwrap();
+    assert!(
+        sync_apply
+            .apply_snapshot_row("u1", row.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        stores
+            .messages
+            .get("snapshot-message")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        stores
+            .timeline_coverage
+            .coverage("snapshot-retry")
+            .await
+            .unwrap()
+            .ranges()
+            .is_empty()
+    );
+    sqlx::query("DROP TRIGGER fail_snapshot")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(sync_apply.apply_snapshot_row("u1", row).await.unwrap(), 10);
+    let conversation = stores
+        .conversations
+        .get("snapshot-retry")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (conversation.unread_count, conversation.last_read_seq),
+        (7, 3)
+    );
+}
+
+#[cfg(feature = "storage-sqlite")]
+#[tokio::test]
+async fn failed_read_and_conversation_delete_events_remain_replayable() {
+    use crate::infrastructure::persistence::{
+        SqliteConversationRepo, SqliteMessageRepo, in_memory_im_provider, sqlite_init_schema,
+    };
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlite_init_schema(&pool).await.unwrap();
+    let mut stores = in_memory_im_provider();
+    stores.messages = Arc::new(SqliteMessageRepo::new(pool.clone()));
+    stores.conversations = Arc::new(SqliteConversationRepo::new(pool.clone()));
+    let dispatcher =
+        waterline_dispatcher(stores.clone(), Arc::new(RecordingSessionSyncRunner::new()));
+    let message = IMMessage::new(flare_proto::common::Message {
+        server_id: "outgoing".into(),
+        client_msg_id: "outgoing-client".into(),
+        conversation_id: "event-retry".into(),
+        sender_id: "u1".into(),
+        conversation_seq: 1,
+        status: flare_proto::common::MessageStatus::Persisted as i32,
+        ..Default::default()
+    });
+    assert!(dispatcher.persist_durable_batch(&[message], "u1").await);
+    let events = [
+        (
+            "CREATE TRIGGER fail_event BEFORE UPDATE OF is_read ON messages BEGIN SELECT RAISE(ABORT, 'read failed'); END",
+            EventPayload::Read(flare_proto::common::ReadReceiptEvent {
+                user_id: "u2".into(),
+                read_seq: 1,
+                ..Default::default()
+            }),
+        ),
+        (
+            "CREATE TRIGGER fail_event BEFORE DELETE ON conversations BEGIN SELECT RAISE(ABORT, 'delete failed'); END",
+            EventPayload::ConversationDelete(Default::default()),
+        ),
+    ];
+    for (index, (trigger, payload)) in events.into_iter().enumerate() {
+        let seq = index as u64 + 2;
+        let event = Event {
+            event_id: format!("event-{seq}"),
+            conversation_id: "event-retry".into(),
+            conversation_seq: seq,
+            payload: Some(payload),
+            ..Default::default()
+        };
+        sqlx::query(trigger).execute(&pool).await.unwrap();
+        dispatcher.dispatch_single_event(&event, Vec::new()).await;
+        assert!(
+            !dispatcher
+                .applied_event_seqs
+                .contains("event-retry", seq)
+                .await,
+            "failed event {seq} must remain unapplied"
+        );
+        assert!(matches!(
+            dispatcher.event_deduper.claim(&event),
+            crate::application::services::EventClaim::New(_)
+        ));
+        sqlx::query("DROP TRIGGER fail_event")
+            .execute(&pool)
+            .await
+            .unwrap();
+        dispatcher.dispatch_single_event(&event, Vec::new()).await;
+        assert!(
+            dispatcher
+                .applied_event_seqs
+                .contains("event-retry", seq)
+                .await
+        );
+        if index == 0 {
+            assert!(
+                stores
+                    .messages
+                    .get("outgoing")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_read
+            );
+        } else {
+            assert!(
+                stores
+                    .conversations
+                    .get("event-retry")
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+}
+
+#[cfg(feature = "storage-sqlite")]
+#[tokio::test]
+async fn stored_message_with_failed_projection_blocks_both_cursors_until_replay() {
+    use crate::infrastructure::persistence::{
+        SqliteConversationRepo, SqliteMessageRepo, in_memory_im_provider, sqlite_init_schema,
+    };
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlite_init_schema(&pool).await.unwrap();
+    let mut stores = in_memory_im_provider();
+    stores.messages = Arc::new(SqliteMessageRepo::new(pool.clone()));
+    stores.conversations = Arc::new(SqliteConversationRepo::new(pool.clone()));
+    let sync = Arc::new(RecordingSessionSyncRunner::new());
+    let dispatcher = waterline_dispatcher(stores.clone(), sync.clone());
+    let message = |seq| {
+        IMMessage::new(flare_proto::common::Message {
+            server_id: format!("server-{seq}"),
+            client_msg_id: format!("client-{seq}"),
+            conversation_id: "group-projection-gap".into(),
+            channel_id: "group-projection-gap".into(),
+            conversation_type: flare_proto::common::ConversationType::Group as i32,
+            sender_id: "u2".into(),
+            conversation_seq: seq,
+            ..Default::default()
+        })
+    };
+    let mut first = message(1);
+    first.mention_users = vec!["u1".into()];
+    let second = message(2);
+    sqlx::query("CREATE TRIGGER fail_mentions BEFORE UPDATE OF mention_count ON conversations WHEN NEW.mention_count > OLD.mention_count BEGIN SELECT RAISE(ABORT, 'projection failed'); END")
+        .execute(&pool).await.unwrap();
+
+    assert!(
+        !dispatcher
+            .persist_durable_batch(&[first.clone()], "u1")
+            .await
+    );
+    assert!(stores.messages.get("server-1").await.unwrap().is_some());
+    assert!(
+        !dispatcher
+            .local_waterline_reached("group-projection-gap", 1)
+            .await
+    );
+    timeout(Duration::from_secs(1), sync.notify.notified())
+        .await
+        .expect("projection failure must trigger the existing gap repair");
+
+    assert!(
+        dispatcher
+            .persist_durable_batch(std::slice::from_ref(&second), "u1")
+            .await
+    );
+    assert!(
+        !dispatcher
+            .local_waterline_reached("group-projection-gap", 2)
+            .await
+    );
+    assert!(
+        stores
+            .cursors
+            .get_conversation_cursor("u1", "group-projection-gap")
+            .await
+            .unwrap()
+            .is_none(),
+        "later rows cannot hide an unprojected message"
+    );
+    stores
+        .conversations
+        .save_one(&crate::model::Conversation {
+            conversation_id: "group-projection-gap".into(),
+            max_seq: 2,
+            unread_count: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        stores
+            .conversations
+            .get("group-projection-gap")
+            .await
+            .unwrap()
+            .unwrap()
+            .last_read_seq,
+        0,
+        "a summary cannot turn a projection hole into a read prefix"
+    );
+    let bus = EventBus::new();
+    let sync_apply = SyncApplyUseCase::new(
+        stores.clone(),
+        bus.clone(),
+        EventDeduper::new(Some(32)),
+        test_notification_pipeline(bus),
+    );
+    sync_apply
+        .save_cursor_with_remote("u1", "group-projection-gap", 2, &[], |_, _, _| async {
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(
+        stores
+            .cursors
+            .get_conversation_cursor("u1", "group-projection-gap")
+            .await
+            .unwrap()
+            .is_none(),
+        "sync cursor also requires a committed projection"
+    );
+
+    sqlx::query("DROP TRIGGER fail_mentions")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        dispatcher
+            .persist_durable_batch(&[first, second], "u1")
+            .await
+    );
+    let conversation = stores
+        .conversations
+        .get("group-projection-gap")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (conversation.unread_count, conversation.mention_count),
+        (2, 1)
+    );
+    assert_eq!(
+        stores
+            .cursors
+            .get_conversation_cursor("u1", "group-projection-gap")
+            .await
+            .unwrap()
+            .unwrap()
+            .last_seq,
+        2
+    );
+    assert!(
+        dispatcher
+            .local_waterline_reached("group-projection-gap", 2)
+            .await
+    );
+}
+
+#[cfg(feature = "storage-sqlite")]
+#[tokio::test]
+async fn persist_worker_counts_duplicate_queued_messages_and_mentions_once() {
+    use crate::infrastructure::persistence::{
+        SqliteConversationRepo, SqliteMessageRepo, in_memory_im_provider, sqlite_init_schema,
+    };
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+    sqlite_init_schema(&pool).await.unwrap();
+    let mut stores = in_memory_im_provider();
+    stores.messages = Arc::new(SqliteMessageRepo::new(pool.clone()));
+    stores.conversations = Arc::new(SqliteConversationRepo::new(pool.clone()));
+    let bus = EventBus::new();
+    let mut events = bus.subscribe_raw();
+    let dispatcher = Arc::new(Dispatcher::new(
+        bus.clone(),
+        None,
+        None,
+        None,
+        Some(stores.clone()),
+        Arc::new(RwLock::new("u1".into())),
+        EventDeduper::new(Some(32)),
+        test_notification_pipeline(bus),
+        MetricsRecorder::disabled(),
+    ));
+    dispatcher.start_persist_worker();
+    let mut message = IMMessage::new(flare_proto::common::Message {
+        server_id: "server-duplicate".into(),
+        client_msg_id: "client-duplicate".into(),
+        conversation_id: "group-duplicate".into(),
+        channel_id: "group-duplicate".into(),
+        conversation_type: flare_proto::common::ConversationType::Group as i32,
+        sender_id: "u2".into(),
+        conversation_seq: 5,
+        ..Default::default()
+    });
+    message.mention_users = vec!["u1".into()];
+    // No await between enqueues: the current-thread worker must merge both jobs.
+    for _ in 0..2 {
+        dispatcher
+            .persist_tx
+            .get()
+            .unwrap()
+            .try_send(super::PersistJob {
+                messages: vec![message.clone()],
+                user_id: "u1".into(),
+            })
+            .unwrap_or_else(|_| panic!("two jobs fit the queue"));
+    }
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if matches!(
+                events.recv().await.unwrap(),
+                SdkEvent::Conversation(
+                    crate::kernel::event::ConversationEvent::UnreadCountChanged {
+                        unread_count: 1,
+                        ..
+                    }
+                )
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the merged projection commits");
+    let stored = stores
+        .conversations
+        .get("group-duplicate")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((stored.unread_count, stored.mention_count), (1, 1));
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 1);
+    assert!(dispatcher.persist_durable_batch(&[message], "u1").await);
+    let replayed = stores
+        .conversations
+        .get("group-duplicate")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((replayed.unread_count, replayed.mention_count), (1, 1));
 }

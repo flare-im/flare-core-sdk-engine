@@ -142,8 +142,20 @@ impl MediaService {
             .upload_via_direct_session(path, file_name, mime, size, options, on_progress.as_ref())
             .await?;
         #[cfg(not(target_arch = "wasm32"))]
-        self.cache_uploaded_file(&uploaded, path, metadata.len())
-            .await;
+        {
+            if let Some(cache) = &self.media_cache_store
+                && path.is_absolute()
+                && let Some(source) = path.to_str()
+                && !uploaded.file_id.trim().is_empty()
+                && let Err(error) = cache
+                    .remember_upload_source(&uploaded.file_id, source)
+                    .await
+            {
+                tracing::warn!(%error, "could not remember uploaded media source");
+            }
+            self.cache_uploaded_file(&uploaded, path, metadata.len())
+                .await;
+        }
         Ok(uploaded)
     }
 
@@ -276,11 +288,11 @@ impl MediaService {
         }
 
         if let Some(cache) = &self.media_cache_store
-            && let Some(entry) = cache.get_cached(fid).await?
+            && let Some(path) = self.local_media_path(cache, fid).await?
         {
             return Ok(MediaResolvedAccess {
                 source: "local".to_string(),
-                local_path: Some(entry.local_path),
+                local_path: Some(path),
                 remote: None,
             });
         }
@@ -1525,6 +1537,19 @@ impl MediaService {
     /// 这个 key 保存过的文件路径。记录指向的文件已被用户删掉（或挪走）时删记录、返回 `None`：
     /// 宿主据此把「在文件夹中显示」换回「下载」。
     pub async fn user_download_get_saved_path(&self, download_key: &str) -> Result<Option<String>> {
+        if let Some(cache) = &self.media_cache_store
+            && let Some(source) = cache.upload_source(download_key).await?
+        {
+            if tokio::fs::metadata(&source)
+                .await
+                .is_ok_and(|info| info.is_file())
+            {
+                return Ok(Some(source));
+            }
+            if let Some(entry) = cache.get_cached(download_key).await? {
+                return Ok(Some(entry.local_path));
+            }
+        }
         let store = self.user_file_download_store.as_ref().ok_or_else(|| {
             FlareError::localized(
                 ErrorCode::ConfigurationError,
@@ -1543,6 +1568,23 @@ impl MediaService {
         }
         store.delete_download_record(download_key).await?;
         Ok(None)
+    }
+
+    async fn local_media_path(
+        &self,
+        cache: &Arc<dyn MediaCacheStore>,
+        file_id: &str,
+    ) -> Result<Option<String>> {
+        if let Some(entry) = cache.get_cached(file_id).await? {
+            return Ok(Some(entry.local_path));
+        }
+        let Some(source) = cache.upload_source(file_id).await? else {
+            return Ok(None);
+        };
+        Ok(tokio::fs::metadata(&source)
+            .await
+            .is_ok_and(|info| info.is_file())
+            .then_some(source))
     }
 
     pub async fn user_download_delete_record(&self, download_key: &str) -> Result<()> {
@@ -2946,6 +2988,13 @@ mod download_and_cache_tests {
         assert_eq!(std::fs::read(&local).unwrap(), bytes);
         // 原文件原样留在原处。
         assert_eq!(std::fs::read(&src).unwrap(), bytes);
+        assert_eq!(
+            f.service
+                .user_download_get_saved_path(&uploaded.file_id)
+                .await
+                .unwrap(),
+            Some(src.to_string_lossy().into_owned())
+        );
         let entry = f
             .cache_admin
             .get_cached(&uploaded.file_id)
@@ -2954,6 +3003,14 @@ mod download_and_cache_tests {
             .unwrap();
         assert_eq!(entry.mime_type, "image/png");
         assert_eq!(entry.size_bytes, bytes.len() as i64);
+        std::fs::remove_file(src).unwrap();
+        assert_eq!(
+            f.service
+                .user_download_get_saved_path(&uploaded.file_id)
+                .await
+                .unwrap(),
+            Some(local.to_string_lossy().into_owned())
+        );
 
         // 直接调 media.upload_image 也一样。
         let (src2, bytes2) = picked_image(&f.root.join("相册"), "IMG_0002.png");

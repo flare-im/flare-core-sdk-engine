@@ -67,6 +67,8 @@ pub fn method_safety(method: &str, has_key: bool) -> MethodSafety {
 pub enum HttpFailure {
     /// 请求没发出去（DNS、TCP）。
     ConnectPhase,
+    /// 本机在拨号时报告网络已断开或没有路由。可以换入口重试，健康簿不把它当作入口故障。
+    NoNetworkRoute,
     /// TLS 握手或证书校验失败（含接入点 SPKI 钉扎不符）：请求同样没发出去，健康簿记作 TLS 失败。
     Tls,
     /// 发出去了但结果没回来（读超时、连接中途被重置）。
@@ -95,7 +97,9 @@ pub enum HttpRetry {
 /// §3.9 重试表（纯函数）。
 pub fn retry_decision(safety: MethodSafety, failure: HttpFailure) -> HttpRetry {
     match failure {
-        HttpFailure::ConnectPhase | HttpFailure::Tls => HttpRetry::OtherAccessPoint,
+        HttpFailure::ConnectPhase | HttpFailure::NoNetworkRoute | HttpFailure::Tls => {
+            HttpRetry::OtherAccessPoint
+        }
         HttpFailure::Uncertain => match safety {
             MethodSafety::Idempotent | MethodSafety::KeyedWrite => HttpRetry::OtherAccessPoint,
             MethodSafety::UnkeyedWrite => HttpRetry::Uncertain,
@@ -212,6 +216,25 @@ pub(crate) fn is_tls_failure(error: &(dyn std::error::Error + 'static)) -> bool 
     false
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn is_local_network_failure(error: &(dyn std::error::Error + 'static)) -> bool {
+    use std::io::{Error, ErrorKind};
+
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if error.downcast_ref::<Error>().is_some_and(|error| {
+            matches!(
+                error.kind(),
+                ErrorKind::NetworkDown | ErrorKind::NetworkUnreachable
+            )
+        }) {
+            return true;
+        }
+        current = error.source();
+    }
+    false
+}
+
 /// 建连超时。总时限先到时 reqwest 不报成连接错误，所以只对建连时限比总时限短的客户端有用。
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn is_dial_timeout(error: &reqwest::Error) -> bool {
@@ -282,6 +305,12 @@ impl HttpRouter {
     /// 取本次请求的入口：`pinned` 时就用那个接入点（过载后原地重试），否则跟随 IM 当前接入点选路，
     /// 跳过 `exclude` 里已失败的。
     pub async fn route(&self, exclude: &[String], pinned: Option<&str>) -> Result<Route> {
+        if self.access.network_unavailable() {
+            return Err(FlareError::localized(
+                ErrorCode::NetworkUnreachable,
+                "the platform reports no network connection",
+            ));
+        }
         let kernel = self
             .access
             .kernel()
@@ -407,6 +436,7 @@ impl HttpRouter {
             HttpFailure::ConnectPhase => {
                 Outcome::Failure(flare_access::FailureClass::HttpConnectFailed)
             }
+            HttpFailure::NoNetworkRoute => Outcome::Neutral(NeutralReason::NoNetwork),
             HttpFailure::Tls => Outcome::Failure(flare_access::FailureClass::TlsFailed),
             HttpFailure::Overloaded { .. } => Outcome::Neutral(NeutralReason::Overloaded),
             HttpFailure::Uncertain | HttpFailure::BadGateway => {
@@ -449,6 +479,10 @@ mod tests {
                 retry_decision(safety, ConnectPhase),
                 HttpRetry::OtherAccessPoint,
                 "请求没发出去，任何方法都能换接入点重试"
+            );
+            assert_eq!(
+                retry_decision(safety, NoNetworkRoute),
+                HttpRetry::OtherAccessPoint
             );
             assert_eq!(
                 retry_decision(safety, Tls),
@@ -498,6 +532,22 @@ mod tests {
             HttpRetry::GiveUp,
             "要等太久就把过载报给调用方"
         );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn socket_without_a_network_route_is_distinct_from_a_refused_endpoint() {
+        use std::io::{Error, ErrorKind};
+
+        assert!(is_local_network_failure(&Error::from(
+            ErrorKind::NetworkUnreachable
+        )));
+        assert!(is_local_network_failure(&Error::from(
+            ErrorKind::NetworkDown
+        )));
+        assert!(!is_local_network_failure(&Error::from(
+            ErrorKind::ConnectionRefused
+        )));
     }
 
     #[test]

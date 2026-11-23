@@ -712,6 +712,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mutation_resolution_prefers_server_identity_and_rejects_ambiguous_aliases() {
+        let messages = Arc::new(MemoryMessageStore::new());
+        messages
+            .save_batch(&[
+                text_message("other", "alias", "target", "other"),
+                text_message("wanted", "target", "shared", "wanted"),
+                text_message("other", "third", "shared", "third"),
+            ])
+            .await
+            .unwrap();
+        let case = usecase(messages, Arc::new(MemoryConversationStore::new()));
+        assert_eq!(
+            case.resolve_message_id("target").await.unwrap(),
+            ("wanted".into(), "target".into())
+        );
+        assert_eq!(
+            case.resolve_message_id("shared").await.unwrap_err().code(),
+            Some(ErrorCode::MessageNotFound)
+        );
+        assert_eq!(
+            case.resolve_message_id("alias").await.unwrap(),
+            ("other".into(), "alias".into())
+        );
+    }
+
+    #[tokio::test]
     async fn unauthorized_recall_is_rejected_before_transport_or_local_change() {
         let messages = Arc::new(MemoryMessageStore::new());
         let mut message = text_message("c-denied", "s-denied", "m-denied", "keep original");

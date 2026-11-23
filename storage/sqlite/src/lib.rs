@@ -154,13 +154,26 @@ pub async fn create_pool_with_security(
 ) -> AnyhowResult<SqlitePool> {
     let mut options = connect_options(database_url)?;
     if let Some(key) = security.encryption_key() {
-        if key.trim().is_empty() {
-            anyhow::bail!("SQLite encryption key must not be empty");
+        if key.trim().is_empty() || key.contains('\0') {
+            anyhow::bail!("SQLite encryption key must not be empty or contain NUL");
         }
-        options = options.pragma("key", key.to_string());
+        options = options
+            .pragma("key", format!("'{}'", key.replace('\'', "''")))
+            .disable_statement_logging();
     }
 
-    let pool = pool_options().connect_with(options).await?;
+    let pool = pool_options()
+        .connect_with(options)
+        .await
+        .map_err(|error| match security.encryption_key() {
+            Some(key) => anyhow::anyhow!(
+                error
+                    .to_string()
+                    .replace(&format!("'{}'", key.replace('\'', "''")), "'<redacted>'")
+                    .replace(key, "<redacted>")
+            ),
+            None => error.into(),
+        })?;
     if security.is_encryption_required()
         && let Err(error) = verify_sqlcipher_available(&pool).await
     {
@@ -264,6 +277,46 @@ mod tests {
 
         assert!(db.exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn encryption_keys_are_literals_and_never_escape_through_errors() {
+        let plain = create_pool("sqlite::memory:").await.unwrap();
+        let has_cipher = verify_sqlcipher_available(&plain).await.is_ok();
+        plain.close().await;
+        for key in [
+            "1a".repeat(32),
+            "a1".repeat(32),
+            "key'; PRAGMA user_version = 91; --".into(),
+        ] {
+            let result = create_pool_with_security(
+                "sqlite::memory:",
+                SqliteSecurityConfig::new().with_encryption_key(&key),
+            )
+            .await;
+            match result {
+                Ok(pool) => {
+                    assert!(has_cipher);
+                    pool.close().await;
+                }
+                Err(error) => {
+                    let diagnostic = format!("{error:#}");
+                    assert!(!diagnostic.contains(&key), "key must stay out of errors");
+                    assert!(
+                        !has_cipher && diagnostic.contains("SQLCipher"),
+                        "{diagnostic}"
+                    );
+                }
+            }
+        }
+        let key = "invalid\0secret";
+        let error = create_pool_with_security(
+            "sqlite::memory:",
+            SqliteSecurityConfig::new().with_encryption_key(key),
+        )
+        .await
+        .unwrap_err();
+        assert!(!format!("{error:#}").contains(key));
     }
 
     #[tokio::test]
