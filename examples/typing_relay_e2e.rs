@@ -2,6 +2,9 @@
 //! 两个客户端入同一群；alice 发一条消息建立订阅，再 typing(true)；bob 应在 on_typing 收到。
 //! 运行前需启动本地全栈（ws://localhost:60051）。
 
+#[path = "common/core_endpoints.rs"]
+mod core_endpoints;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,16 +61,13 @@ async fn login_client(
     let client = IMClient::new();
     let device_id = format!("{run}-{user}-dev");
     let overlay = SdkConfigOverlay {
-        access: Some(AccessConfig::development(DevelopmentEndpoints {
-            ws_url: Some(ws.to_string()),
-            ..Default::default()
-        })),
+        endpoints: Some(core_endpoints::for_websocket(ws.to_string())),
         tenant_id: Some(tenant.to_string()),
         device_id: Some(device_id.clone()),
         ..Default::default()
     };
     client
-        .init(Some(format!("{run}-{user}")), Some(overlay))
+        .init(Some("development".into()), Some(overlay))
         .await?;
     let token = IMClient::generate_core_token(CoreTokenConfig {
         secret: secret.to_string(),

@@ -41,25 +41,12 @@ pub fn to_json_string<T: serde::Serialize>(value: &T) -> Result<String, i32> {
 
 /// 解析 init 配置：支持裸 [`SdkConfigOverlay`] 或 `{ environment?, sdkConfig? }`。
 #[inline]
-pub fn parse_init_request(ptr: *const c_char) -> Result<(Option<String>, SdkConfigOverlay), i32> {
+pub fn parse_init_request(
+    ptr: *const c_char,
+) -> Result<(Option<String>, Option<SdkConfigOverlay>), i32> {
     let value: Value = parse_json(ptr)?;
-    if value.get("sdkConfig").is_some() || value.get("environment").is_some() {
-        let environment = value
-            .get("environment")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let sdk_config = value
-            .get("sdkConfig")
-            .cloned()
-            .map(serde_json::from_value::<SdkConfigOverlay>)
-            .transpose()
-            .map_err(|_| FLARE_ERR_JSON_PARSE)?
-            .unwrap_or_default();
-        return Ok((environment, sdk_config));
-    }
-    let overlay: SdkConfigOverlay =
-        serde_json::from_value(value).map_err(|_| FLARE_ERR_JSON_PARSE)?;
-    Ok((None, overlay))
+    flare_im_core_sdk_bindings_runtime::dispatch_support::init_request(&value)
+        .map_err(|_| FLARE_ERR_JSON_PARSE)
 }
 
 /// 解析可选上传分片配置（`options_json` 为 null/空时返回 `None`）。

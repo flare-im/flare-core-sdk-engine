@@ -272,6 +272,7 @@ async fn page_acknowledging_a_known_refusal_succeeds_without_repeating_the_comma
         operation: "example.poll.wallet",
         payload: json!({}),
         conversation: None,
+        message_id: None,
         policy: &ack,
         continuation: None,
     };
@@ -428,6 +429,7 @@ async fn plugin_command_keeps_captured_identity_across_a_storage_await() {
                     command_id: "stable".into(),
                     capability_id: "example.poll.vote".into(),
                     conversation_id: Some("conversation-1".into()),
+                    message_id: None,
                     payload: json!({"pollId":"poll-1"}),
                     terminal_error_codes: vec![],
                 },
@@ -1458,7 +1460,8 @@ async fn a_catalog_from_a_newer_server_costs_only_what_this_client_cannot_read()
         .collect();
     assert_eq!(readable, ["example.poll.card", "example.poll.tally"]);
 
-    let vocabulary = super::host_profile::PluginClient::of(None, &Default::default()).vocabulary;
+    let vocabulary =
+        super::host_profile::PluginClient::of(None, &Default::default(), false).vocabulary;
     let catalog = ui::parse_catalog(&raw, &vocabulary).unwrap();
     assert_eq!(catalog.plugins.len(), 1);
     assert_eq!(catalog.plugins[0].plugin_id, "example.poll");

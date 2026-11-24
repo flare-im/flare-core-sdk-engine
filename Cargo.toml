@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
     ".",
-    "access",
     "xtask",
     "storage/sqlite",
     "storage/indexeddb",
@@ -13,8 +12,6 @@ members = [
 ]
 exclude = [
     "bindings/uniffi",
-    # Builds against the SDK packages in the private flare-plugins-commercial checkout.
-    "xtask/plugin-codegen",
 ]
 
 [workspace.package]
@@ -86,7 +83,7 @@ integration-tests = []
 # SQLite 持久化实现（Message/Conversation/PendingSend/UserProfile 仓储）
 storage-sqlite = ["dep:sqlx"]
 # 跨平台 SQLite 登录编排（依赖 storage/sqlite 连接池与 schema 注册）
-lifecycle-sqlite = ["storage-sqlite", "dep:flare-im-core-sdk-storage-sqlite", "flare-access/sqlite"]
+lifecycle-sqlite = ["storage-sqlite", "dep:flare-im-core-sdk-storage-sqlite"]
 # Native QUIC transport support. Browser/WASM remains WebSocket-only.
 quic = ["flare-core/quic"]
 # RichDoc v2 HTML 片段归一化；默认关闭以避免移动端无条件编译 HTML parser 重依赖。
@@ -100,8 +97,7 @@ link-preview = ["rich-doc-html"]
 [dependencies]
 flare-core = { workspace = true, default-features = false, features = ["client", "websocket", "compression-gzip", "encryption-aes-gcm"] }
 flare-proto = { workspace = true }
-# 客户端链路核心：接入清单、信任链、健康簿与选路（原生 SQLite 存储随 lifecycle-sqlite 打开）。
-flare-access = { version = "0.1.0", path = "access", default-features = false, features = ["client"] }
+flare-access-contract = { version = "0.1.0", path = "../flare-protocol-grpc/crates/flare-access-contract" }
 chrono = { workspace = true }
 
 serde = { workspace = true }
@@ -118,7 +114,6 @@ arc-swap = "1.7"
 prost = "0.14"
 prost-types = { workspace = true }
 tracing = "0.1"
-flate2 = "1.0"
 sha2 = "0.10"
 # E2EE 参考实现用：AEAD + X25519 ECDH + HKDF。
 # 放在可选 feature 后面 —— 不开 e2ee 的接入方不该为此背上密码学依赖。
@@ -141,19 +136,13 @@ pulldown-cmark = "0.12"
 # The browser cannot capture a backtrace, and anyhow's `std` feature would still link the
 # backtrace printer and symbol demangler into the WASM bundle; native builds keep it.
 anyhow = { workspace = true }
-# wasm 走浏览器的 `String.prototype.normalize`，共用路径的 URL 判定走 `flare_access::ParsedUrl`。
+# wasm 走浏览器的 `String.prototype.normalize`，共用路径的 URL 判定走 `flare_access_contract::ParsedUrl`。
 # 这里的 `url` 只留给原生专属代码：`file:` 转路径，以及必须和 reqwest 同样解析的钉扎。
 unicode-normalization = "0.1"
 url = "2.5"
-# Web bundle archives are unpacked into the native cache only; the browser reads the
-# sandbox domain's unpacked copy, so wasm builds keep the zip reader out.
-flare-plugin-protocol = { version = "0.1.0", path = "../flare-plugin-devkit/flare-plugin-protocol", features = ["bundle-archive"] }
 tokio = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-# 引导文档按 `Accept-Encoding: br, gzip` 拉取，体积上限要按解压后计，所以自己解压而不交给 reqwest。
-brotli-decompressor = "5"
-flate2 = "1"
 flare-grpc-proto = { workspace = true }
 tonic = { workspace = true }
 dirs = "5.0"
@@ -196,6 +185,7 @@ web-sys = { version = "0.3", features = [
 ] }
 
 [dev-dependencies]
+flare-plugin-protocol = { version = "0.1.0", path = "../flare-plugin-devkit/flare-plugin-protocol", features = ["bundle-archive"] }
 # 仅测试：本机回环起 flare-core 服务端，驱动 SDK 走完整的建连 / 重连循环
 flare-core = { workspace = true, default-features = false, features = ["client", "server", "websocket", "compression-gzip", "encryption-aes-gcm"] }
 rcgen = "0.14"
@@ -210,10 +200,6 @@ criterion = "0.5"
 [[bench]]
 name = "perf_baseline"
 harness = false
-
-[[example]]
-name = "access_lab_client"
-required-features = ["lifecycle-sqlite"]
 
 [[example]]
 name = "e2ee_demo"

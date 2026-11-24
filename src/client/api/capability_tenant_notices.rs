@@ -23,10 +23,9 @@ use rand::Rng;
 use super::CapabilityApi;
 use crate::kernel::TenantNoticePort;
 use crate::kernel::event::{
-    ACCESS_MANIFEST_TOPIC, EventBus, ExtensionEvent, PLUGIN_CATALOG_TOPIC, PluginEvent,
-    RELEASE_MANIFEST_TOPIC, SdkEvent, TENANT_NOTICE_SOURCE,
+    EventBus, ExtensionEvent, PLUGIN_CATALOG_TOPIC, PluginEvent, RELEASE_MANIFEST_TOPIC, SdkEvent,
+    TENANT_NOTICE_SOURCE,
 };
-use crate::runtime::link::AccessRuntime;
 use crate::shared::util::{delay, now_millis, spawn_background};
 
 /// The shortest and the longest spread honored, whatever a notice says.
@@ -34,6 +33,8 @@ pub(super) const MIN_SPREAD_MS: u64 = 3_000;
 pub(super) const MAX_SPREAD_MS: u64 = 60_000;
 /// Topics tracked at once; a tenant has a handful.
 const MAX_TOPICS: usize = 64;
+
+type ReleaseNoticeHandler = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Pending {
@@ -104,7 +105,8 @@ fn random_jitter_ms(spread_ms: u64) -> u64 {
 #[derive(Clone)]
 pub(crate) struct TenantNotices {
     capability: CapabilityApi,
-    access: Arc<AccessRuntime>,
+
+    on_release: Option<ReleaseNoticeHandler>,
     bus: EventBus,
     windows: Arc<Mutex<HashMap<String, NoticeWindow>>>,
     jitter_ms: fn(u64) -> u64,
@@ -113,21 +115,23 @@ pub(crate) struct TenantNotices {
 impl TenantNotices {
     pub(crate) fn new(
         capability: CapabilityApi,
-        access: Arc<AccessRuntime>,
+
+        on_release: Option<ReleaseNoticeHandler>,
         bus: EventBus,
     ) -> Self {
-        Self::with_jitter(capability, access, bus, random_jitter_ms)
+        Self::with_jitter(capability, on_release, bus, random_jitter_ms)
     }
 
     fn with_jitter(
         capability: CapabilityApi,
-        access: Arc<AccessRuntime>,
+
+        on_release: Option<ReleaseNoticeHandler>,
         bus: EventBus,
         jitter_ms: fn(u64) -> u64,
     ) -> Self {
         Self {
             capability,
-            access,
+            on_release,
             bus,
             windows: Arc::new(Mutex::new(HashMap::new())),
             jitter_ms,
@@ -146,12 +150,10 @@ impl TenantNotices {
         else {
             return;
         };
-        if topic == ACCESS_MANIFEST_TOPIC {
-            self.access.notify_access_serial(pending.version);
-            return;
-        }
         if topic == RELEASE_MANIFEST_TOPIC {
-            self.access.notify_release();
+            if let Some(on_release) = &self.on_release {
+                on_release();
+            }
             return;
         }
         if topic == PLUGIN_CATALOG_TOPIC {
@@ -314,13 +316,6 @@ mod tests {
         )
     }
 
-    fn access() -> Arc<AccessRuntime> {
-        Arc::new(AccessRuntime::new(
-            None,
-            crate::runtime::link::AccessStoreSource::memory(),
-        ))
-    }
-
     fn notice(topic: &str, version: u64) -> TenantNotice {
         TenantNotice {
             topic: topic.into(),
@@ -358,7 +353,7 @@ mod tests {
                 }
             },
         );
-        let notices = TenantNotices::with_jitter(api.clone(), access(), bus.clone(), |_| 1_500);
+        let notices = TenantNotices::with_jitter(api.clone(), None, bus.clone(), |_| 1_500);
         let generation = api.catalog_flight.generation();
 
         notices.notice(notice(PLUGIN_CATALOG_TOPIC, 7));
@@ -376,6 +371,29 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         settle(|| !announced.lock().unwrap().is_empty()).await;
         assert_eq!(*announced.lock().unwrap(), vec!["8".to_string()]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_release_notice_calls_the_host_once_after_the_jitter() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let received = Arc::new(AtomicUsize::new(0));
+        let on_release = {
+            let received = received.clone();
+            Arc::new(move || {
+                received.fetch_add(1, Ordering::Relaxed);
+            })
+        };
+        let notices =
+            TenantNotices::with_jitter(capability_api(), Some(on_release), EventBus::new(), |_| {
+                1_500
+            });
+        notices.notice(notice(RELEASE_MANIFEST_TOPIC, 7));
+        notices.notice(notice(RELEASE_MANIFEST_TOPIC, 8));
+        tokio::time::sleep(Duration::from_millis(1_400)).await;
+        assert_eq!(received.load(Ordering::Relaxed), 0);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(received.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test(start_paused = true)]
@@ -397,7 +415,7 @@ mod tests {
                 }
             },
         );
-        let notices = TenantNotices::with_jitter(api.clone(), access(), bus.clone(), |_| 0);
+        let notices = TenantNotices::with_jitter(api.clone(), None, bus.clone(), |_| 0);
         let generation = api.catalog_flight.generation();
         notices.notice(TenantNotice {
             tenant_wide: true,

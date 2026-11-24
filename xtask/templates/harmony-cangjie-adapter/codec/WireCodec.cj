@@ -426,7 +426,7 @@ public func jsonMessageBuildOpField(object: CjJsonObject, key: String, fallback:
 }
 
 let MESSAGE_SEARCH_KIND_WIRE_ORDER: Array<MessageSearchKind> = [MessageSearchKind.Message, MessageSearchKind.Text, MessageSearchKind.Media, MessageSearchKind.Image, MessageSearchKind.Video, MessageSearchKind.Audio, MessageSearchKind.File]
-let SDK_EVENT_KIND_WIRE_ORDER: Array<SdkEventKind> = [SdkEventKind.Lifecycle, SdkEventKind.Connection, SdkEventKind.Access, SdkEventKind.Message, SdkEventKind.Notification, SdkEventKind.Conversation, SdkEventKind.Sync, SdkEventKind.Extension, SdkEventKind.ExtensionEvent, SdkEventKind.Presence, SdkEventKind.Media, SdkEventKind.Plugin, SdkEventKind.View]
+let SDK_EVENT_KIND_WIRE_ORDER: Array<SdkEventKind> = [SdkEventKind.Lifecycle, SdkEventKind.Connection, SdkEventKind.Message, SdkEventKind.Notification, SdkEventKind.Conversation, SdkEventKind.Sync, SdkEventKind.Extension, SdkEventKind.ExtensionEvent, SdkEventKind.Presence, SdkEventKind.Media, SdkEventKind.Plugin, SdkEventKind.View]
 let LIFECYCLE_EVENT_NAME_WIRE_ORDER: Array<LifecycleEventName> = [LifecycleEventName.Initializing, LifecycleEventName.Initialized, LifecycleEventName.InitFailed, LifecycleEventName.LoginSucceeded, LifecycleEventName.LoginFailed, LifecycleEventName.LoggedOut, LifecycleEventName.Disposed]
 let MESSAGE_EVENT_NAME_WIRE_ORDER: Array<MessageEventName> = [MessageEventName.Received, MessageEventName.ReceivedBatch, MessageEventName.SendAck, MessageEventName.SendFailed, MessageEventName.Recalled, MessageEventName.Typing, MessageEventName.Edited, MessageEventName.ReactionChanged, MessageEventName.Deleted, MessageEventName.ReadReceipt, MessageEventName.BurnScheduled, MessageEventName.Burned, MessageEventName.HardDeleted, MessageEventName.Pinned, MessageEventName.Unpinned, MessageEventName.Marked, MessageEventName.Unmarked, MessageEventName.RetentionScheduled, MessageEventName.RetentionExpired, MessageEventName.RetentionPurged, MessageEventName.PresenceChanged, MessageEventName.Custom, MessageEventName.PluginStateChanged, MessageEventName.ReadSummariesChanged]
 let CONVERSATION_EVENT_NAME_WIRE_ORDER: Array<ConversationEventName> = [ConversationEventName.Synced, ConversationEventName.Created, ConversationEventName.Updated, ConversationEventName.UnreadCountChanged, ConversationEventName.Deleted]
@@ -468,12 +468,6 @@ public func completeConnectTokenRefreshRequestToJson(request: CompleteConnectTok
     return json.toJsonString()
 }
 
-public func accessPinRequestToJson(request: AccessPinRequest): String {
-    let json = CjJsonObject()
-    jsonPutString(json, "accessPointId", request.accessPointId)
-    return json.toJsonString()
-}
-
 public func setHeartbeatNatTimeoutRequestToJson(request: SetHeartbeatNatTimeoutRequest): String {
     let json = CjJsonObject()
     match (request.natTimeoutSecs) {
@@ -492,6 +486,36 @@ public func setHeartbeatNatTimeoutRequestFromObject(object: CjJsonObject): SetHe
     return SetHeartbeatNatTimeoutRequest(
         natTimeoutSecs: natTimeoutSecs
     )
+}
+
+public func setProtocolModeRequestToJson(request: SetProtocolModeRequest): String {
+    let json = CjJsonObject()
+    jsonPutString(json, "mode", request.mode)
+    return json.toJsonString()
+}
+
+public func coreEndpointsToJson(request: CoreEndpoints): String {
+    let json = CjJsonObject()
+    jsonPutString(json, "baseUrl", request.baseUrl)
+    jsonPutString(json, "websocketUrl", request.websocketUrl)
+    match (request.quicUrl) {
+        case Some(value) => jsonPutString(json, "quicUrl", value)
+        case None => ()
+    }
+    match (request.mediaBaseUrl) {
+        case Some(value) => jsonPutString(json, "mediaBaseUrl", value)
+        case None => ()
+    }
+    return json.toJsonString()
+}
+
+public func endpointUpdateFromJson(raw: String): EndpointUpdate {
+    let object = wireDecodeResponseObject(jsonObjectFromRaw(raw))
+    let revision = match (jsonUInt32OrNone(object, "revision")) {
+        case Some(value) => value
+        case None => throw Exception("Missing endpoint revision")
+    }
+    return EndpointUpdate(changed: jsonBoolField(object, "changed", false), revision: revision)
 }
 
 public func networkChangeRequestToJson(request: NetworkChangeRequest): String {
@@ -659,10 +683,8 @@ public func connectionStatusFromObject(object: CjJsonObject): ConnectionStatus {
     return ConnectionStatus(
         phase: phase,
         quality: quality,
-        accessPointId: jsonStringOrNone(object, "accessPointId"),
-        cellId: jsonStringOrNone(object, "cellId"),
-        regionId: jsonStringOrNone(object, "regionId"),
         protocol: jsonStringOrNone(object, "protocol"),
+        endpointRevision: jsonUInt32OrNone(object, "endpointRevision"),
         rttMs: jsonUInt32OrNone(object, "rttMs"),
         attempt: attempt,
         nextRetryAt: jsonInt64OrNone(object, "nextRetryAt"),
@@ -689,144 +711,8 @@ public func connectionSyncStateEventFromObject(object: CjJsonObject): Connection
     )
 }
 
-public func accessPinFromJson(raw: String): AccessPin {
-    return accessPinFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
-}
-
-public func accessPinFromObject(object: CjJsonObject): AccessPin {
-    return AccessPin(
-        accessPointId: jsonStringField(object, "accessPointId", ""),
-        expiresAtMs: jsonIntField(object, "expiresAtMs", 0)
-    )
-}
-
-public func accessStatusFromJson(raw: String): AccessStatus {
-    return accessStatusFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
-}
-
-public func accessStatusFromObject(object: CjJsonObject): AccessStatus {
-    let pinned: ?AccessPin = match (object.get("pinned")) {
-        case Some(value) => match (jsonObjectOrNone(value)) {
-            case Some(pin) => Some(accessPinFromObject(pin))
-            case None => None
-        }
-        case None => None
-    }
-    let connectAck: ?AccessConnectAck = match (object.get("connectAck")) {
-        case Some(value) => match (jsonObjectOrNone(value)) {
-            case Some(ack) => Some(accessConnectAckFromObject(ack))
-            case None => None
-        }
-        case None => None
-    }
-    return AccessStatus(
-        loaded: jsonBoolField(object, "loaded", false),
-        serial: UInt64(jsonIntField(object, "serial", 0)),
-        source: jsonStringOrNone(object, "source"),
-        stale: jsonBoolField(object, "stale", false),
-        developmentMode: jsonBoolField(object, "developmentMode", false),
-        expiresAtMs: jsonInt64OrNone(object, "expiresAtMs"),
-        regionId: jsonStringOrNone(object, "regionId"),
-        cellId: jsonStringOrNone(object, "cellId"),
-        keystateSerial: jsonUInt64OrNone(object, "keystateSerial"),
-        accessPointId: jsonStringOrNone(object, "accessPointId"),
-        protocol: jsonStringOrNone(object, "protocol"),
-        pinned: pinned,
-        connectAck: connectAck
-    )
-}
-
-// CONNECT_ACK diagnostics of the current connection (AccessStatus.connectAck); only shown.
-public func accessConnectAckFromObject(object: CjJsonObject): AccessConnectAck {
-    return AccessConnectAck(
-        gatewayId: jsonStringOrNone(object, "gatewayId"),
-        accessPointId: jsonStringOrNone(object, "accessPointId"),
-        accessSerial: jsonUInt64OrNone(object, "accessSerial"),
-        heartbeatIntervalHintSec: jsonUInt32OrNone(object, "heartbeatIntervalHintSec"),
-        accessPointMismatch: jsonBoolField(object, "accessPointMismatch", false)
-    )
-}
-
-public func accessPointInfoFromObject(object: CjJsonObject): AccessPointInfo {
-    return AccessPointInfo(
-        accessPointId: jsonStringField(object, "accessPointId", ""),
-        regionId: jsonStringField(object, "regionId", ""),
-        host: jsonStringField(object, "host", ""),
-        status: jsonStringField(object, "status", ""),
-        rttMs: jsonFloat64OrNone(object, "rttMs"),
-        breaker: jsonStringField(object, "breaker", ""),
-        protocolWinner: jsonStringOrNone(object, "protocolWinner"),
-        pinned: jsonBoolField(object, "pinned", false),
-        current: jsonBoolField(object, "current", false)
-    )
-}
-
-// `access.listAccessPoints` answers with a bare JSON array.
-public func accessPointInfoListFromJson(raw: String): Array<AccessPointInfo> {
-    let items = jsonValueFromRaw(wireDecodeResponse(raw)).asArray().getItems()
-    return Array<AccessPointInfo>(items.size, { index => accessPointInfoFromObject(items[index].asObject()) })
-}
-
-public func accessEndpointFromObject(object: CjJsonObject): AccessEndpoint {
-    return AccessEndpoint(
-        ap: jsonStringField(object, "ap", ""),
-        protocol: jsonStringField(object, "protocol", "")
-    )
-}
-
-func accessEndpointField(object: CjJsonObject, key: String): AccessEndpoint {
-    return match (object.get(key)) {
-        case Some(value) => match (jsonObjectOrNone(value)) {
-            case Some(endpoint) => accessEndpointFromObject(endpoint)
-            case None => AccessEndpoint(ap: "", protocol: "")
-        }
-        case None => AccessEndpoint(ap: "", protocol: "")
-    }
-}
-
 // Payload of `access://switched`.
-public func accessSwitchedEventFromJson(raw: String): AccessSwitchedEvent {
-    return accessSwitchedEventFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
-}
-
-public func accessSwitchedEventFromObject(object: CjJsonObject): AccessSwitchedEvent {
-    return AccessSwitchedEvent(
-        from: accessEndpointField(object, "from"),
-        to: accessEndpointField(object, "to"),
-        reason: jsonStringField(object, "reason", "")
-    )
-}
-
-public func accessChangesFromObject(object: CjJsonObject): AccessChanges {
-    return AccessChanges(
-        accessPointsAdded: jsonRawField(object, "accessPointsAdded", "[]"),
-        accessPointsRemoved: jsonRawField(object, "accessPointsRemoved", "[]"),
-        policyChanged: jsonBoolField(object, "policyChanged", false)
-    )
-}
-
 // Payload of `access://changed`.
-public func accessChangedEventFromJson(raw: String): AccessChangedEvent {
-    return accessChangedEventFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
-}
-
-public func accessChangedEventFromObject(object: CjJsonObject): AccessChangedEvent {
-    let changes = match (object.get("changes")) {
-        case Some(value) => match (jsonObjectOrNone(value)) {
-            case Some(inner) => accessChangesFromObject(inner)
-            case None => AccessChanges(accessPointsAdded: "[]", accessPointsRemoved: "[]", policyChanged: false)
-        }
-        case None => AccessChanges(accessPointsAdded: "[]", accessPointsRemoved: "[]", policyChanged: false)
-    }
-    return AccessChangedEvent(
-        serial: UInt64(jsonIntField(object, "serial", 0)),
-        source: jsonStringField(object, "source", ""),
-        stale: jsonBoolField(object, "stale", false),
-        developmentMode: jsonBoolField(object, "developmentMode", false),
-        changes: changes
-    )
-}
-
 public func runtimeHealthResponseFromJson(raw: String): RuntimeHealthResponse {
     return runtimeHealthResponseFromObject(wireDecodeResponseObject(jsonObjectFromRaw(raw)))
 }
@@ -1955,12 +1841,24 @@ public func sendMessageResponseFromObject(object: CjJsonObject): SendMessageResp
     let conversationId = jsonStringField(object, "conversationId", "")
     let seq = UInt64(jsonIntField(object, "seq", 0))
     let timestamp = UInt64(jsonIntField(object, "timestamp", 0))
+    let stage: ?MessageSendStage = match (jsonStringField(object, "stage", "")) {
+        case "queued" => Some(MessageSendStage.Queued)
+        case "accepted" => Some(MessageSendStage.Accepted)
+        case "persisted" => Some(MessageSendStage.Persisted)
+        case "failed" => Some(MessageSendStage.Failed)
+        case _ => None
+    }
     return SendMessageResponse(
+        ackId: jsonStringField(object, "ackId", ""),
         serverId: serverId,
         clientMsgId: clientMsgId,
         conversationId: conversationId,
         seq: seq,
-        timestamp: timestamp
+        timestamp: timestamp,
+        success: jsonBoolField(object, "success", false),
+        stage: stage,
+        errorCode: Int32(jsonIntField(object, "errorCode", 0)),
+        errorMessage: jsonStringField(object, "errorMessage", "")
     )
 }
 

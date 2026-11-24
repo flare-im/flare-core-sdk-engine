@@ -1,136 +1,35 @@
 {
   "$defs": {
-    "AccessConfig": {
-      "description": "初始化配置中的 `access` 对象（§7.6）。",
+    "CoreEndpoints": {
+      "additionalProperties": false,
       "properties": {
-        "bootstrapId": {
-          "default": "",
-          "description": "本应用的引导 ID；开发模式可省略（取 `development`）。",
+        "baseUrl": {
+          "description": "Core API base URL, including any deployment path prefix.",
           "type": "string"
         },
-        "developmentEndpoints": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/DevelopmentEndpoints"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "仅开发模式。"
-        },
-        "seed": {
-          "description": "构建期写入的已签名接入清单（DSSE 信封 JSON 原文）。",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "trustMode": {
-          "$ref": "#/$defs/TrustMode",
-          "default": "production"
-        },
-        "trustRoots": {
-          "default": [],
-          "description": "内置根公钥（构建期注入）。",
-          "items": {
-            "$ref": "#/$defs/TrustRootConfig"
-          },
-          "type": "array"
-        }
-      },
-      "type": "object"
-    },
-    "DevelopmentAccessPoint": {
-      "description": "开发模式的额外接入点：自带 ID 与一组完整 URL（字段含义同 [`DevelopmentEndpoints`]）。",
-      "properties": {
-        "coreApiUrl": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "id": {
-          "type": "string"
-        },
-        "mediaUrl": {
+        "mediaBaseUrl": {
+          "description": "Optional media API base. Defaults to the Core API base.",
           "type": [
             "string",
             "null"
           ]
         },
         "quicUrl": {
+          "description": "Optional native QUIC gateway; WebSocket remains available.",
           "type": [
             "string",
             "null"
           ]
         },
-        "socialApiUrl": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "wsUrl": {
-          "type": [
-            "string",
-            "null"
-          ]
+        "websocketUrl": {
+          "description": "Fully qualified WebSocket gateway URL.",
+          "type": "string"
         }
       },
       "required": [
-        "id"
+        "baseUrl",
+        "websocketUrl"
       ],
-      "type": "object"
-    },
-    "DevelopmentEndpoints": {
-      "description": "开发模式端点（完整 URL）。IM 至少给一个；REST 入口缺省时对应服务不可用。",
-      "properties": {
-        "accessPoints": {
-          "description": "可选：额外的接入点（本地双入口故障演练、集成测试）。上面几项是 ID 为 `development` 的主接入点，\n这里每一项是同一 Cell 里的另一个接入点，选路、熔断、切换与生产清单完全一样。",
-          "items": {
-            "$ref": "#/$defs/DevelopmentAccessPoint"
-          },
-          "type": "array"
-        },
-        "clientPolicy": {
-          "description": "可选：开发期的 `clientPolicy` 覆盖（结构同清单，照常按硬上下限夹紧），用来在演练里缩短退避、心跳等。"
-        },
-        "coreApiUrl": {
-          "description": "`http://` 或 `https://`。",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "mediaUrl": {
-          "description": "可选：媒体入口；缺省时媒体服务不可用。",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "quicUrl": {
-          "description": "`quic://host:port`。",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "socialApiUrl": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "wsUrl": {
-          "description": "`ws://` 或 `wss://`。",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
       "type": "object"
     },
     "SdkAppConfig": {
@@ -167,7 +66,7 @@
           ]
         },
         "locale": {
-          "description": "界面语言（BCP-47，如 `zh-Hant-TW`）：更新说明按它选，回退链见 `flare_access::release::locale`。",
+          "description": "界面语言（BCP-47，如 `zh-Hant-TW`）：更新说明按它选，回退链见 `flare_access_contract::update::locale`。",
           "type": [
             "string",
             "null"
@@ -191,7 +90,7 @@
       "type": "object"
     },
     "SdkAuthConfig": {
-      "description": "SDK 配置\n\n```ignore\nlet config = SdkConfig::builder()\n    .access(AccessConfig::development(DevelopmentEndpoints {\n        ws_url: Some(\"ws://127.0.0.1:60051/ws\".into()),\n        core_api_url: Some(\"http://127.0.0.1:60061\".into()),\n        ..Default::default()\n    }))\n    .build();\n```\nSDK 托管连接令牌（core-only 形态）：配了 `auth` 就是 SDK 托管——`login(user_id)` 不传 token 时，\n链路在每次建连前向 Core API 的签发接口签发（经 HttpRouter，换接入点与重试照 §3.9），到期前\n`refresh_lead_secs` 秒用 `{签发路径}/refresh` 换新并 `update_access_token`。没配则必须显式传 token\n（业务应用由宿主自己拿 token、自己刷新）。客户端永远不持有签名密钥。",
+      "description": "Optional SDK-managed connect token issuance and renewal through the configured Core API.",
       "properties": {
         "refreshLeadSecs": {
           "description": "到期前多少秒刷新，默认 300。",
@@ -203,7 +102,7 @@
           ]
         },
         "tokenEndpoint": {
-          "description": "签发接口在 Core API 上的路径（以 `/` 开头的相对路径）；不给用 [`Self::DEFAULT_TOKEN_PATH`]。\n基址就是接入清单里接入点的 Core API 入口（开发模式即 `developmentEndpoints.coreApiUrl`），\n不接受绝对地址。",
+          "description": "签发接口在 Core API 上的路径（以 `/` 开头的相对路径）；不给用 [`Self::DEFAULT_TOKEN_PATH`]。\n相对于 `endpoints.baseUrl`，必须以 `/` 开头。",
           "type": [
             "string",
             "null"
@@ -226,54 +125,11 @@
           "type": "string"
         }
       ]
-    },
-    "TrustMode": {
-      "description": "信任模式。",
-      "oneOf": [
-        {
-          "const": "production",
-          "description": "只接受信任链验证通过的清单。",
-          "type": "string"
-        },
-        {
-          "const": "development",
-          "description": "允许用 `developmentEndpoints` 直接构造未签名清单（本地联调与 E2E）。",
-          "type": "string"
-        }
-      ]
-    },
-    "TrustRootConfig": {
-      "description": "初始化配置里的一条根公钥（构建期注入，与 `tlsCaCert` 同一机制）。",
-      "properties": {
-        "keyId": {
-          "type": "string"
-        },
-        "publicKey": {
-          "description": "base64url(32 字节 Ed25519 公钥)。",
-          "type": "string"
-        }
-      },
-      "required": [
-        "keyId",
-        "publicKey"
-      ],
-      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "上层可选覆盖项（JSON 字段为 SDK canonical camelCase）。\n\n没有任何地址字段：连哪里只由 `access`（接入配置）决定，开发联调用\n`access.trustMode = \"development\"` + `access.developmentEndpoints`。",
+  "description": "上层可选覆盖项（JSON 字段为 SDK canonical camelCase）。\n\n宿主使用 `endpoints` 提供 Core HTTP 和 WebSocket 地址，QUIC 与媒体地址可选。",
   "properties": {
-    "access": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/AccessConfig"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "description": "接入配置：信任根、构建期种子、信任模式；开发模式下的开发端点。"
-    },
     "ackMaxInFlight": {
       "format": "uint",
       "minimum": 0,
@@ -321,7 +177,7 @@
       "description": "接入 token 来源（见 [`SdkAuthConfig`]）。"
     },
     "connectTimeoutSecs": {
-      "description": "单次握手（含 CONNECT_ACK）时限的本机覆盖（秒）；不设时用清单 `connectTimeoutMs`（默认 8 秒）。",
+      "description": "单次握手（含 CONNECT_ACK）时限的本机覆盖（秒），默认 8 秒。",
       "format": "uint64",
       "minimum": 0,
       "type": [
@@ -346,6 +202,16 @@
       "type": [
         "boolean",
         "null"
+      ]
+    },
+    "endpoints": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CoreEndpoints"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "eventBusCapacity": {

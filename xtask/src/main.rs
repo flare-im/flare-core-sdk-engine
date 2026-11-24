@@ -1,13 +1,11 @@
 use anyhow::{Context, Result, bail};
 use std::{env, fs, path::Path};
 
-mod access_seed;
 mod build;
 mod codegen;
 mod context;
 mod core_codegen;
 mod fs_util;
-mod plugin_codegen;
 mod spec_model;
 mod spec_query;
 mod verify;
@@ -40,8 +38,7 @@ use verify::{
     emit_errors, fail, verify_channel_capability_gate, verify_core_contract,
     verify_e2ee_contract_gate, verify_enterprise_compliance_gate, verify_golden_contracts,
     verify_media_processing_gate, verify_multidevice_state_gate, verify_network_reconnect_gate,
-    verify_observability_gate, verify_performance_gate, verify_plugin_marketplace_gate,
-    verify_spec, verify_structure,
+    verify_observability_gate, verify_performance_gate, verify_spec, verify_structure,
 };
 
 fn main() {
@@ -64,7 +61,6 @@ fn run() -> Result<()> {
         "network-reconnect" | "verify-network-reconnect" => verify_network_reconnect_gate(&root),
         "observability" | "verify-observability" => verify_observability_gate(&root),
         "performance" | "verify-performance" => verify_performance_gate(&root),
-        "plugin-marketplace" | "verify-plugin-marketplace" => verify_plugin_marketplace_gate(&root),
         "e2ee-contract" | "verify-e2ee-contract" => verify_e2ee_contract_gate(&root),
         "enterprise-compliance" | "verify-enterprise-compliance" => {
             verify_enterprise_compliance_gate(&root)
@@ -72,14 +68,8 @@ fn run() -> Result<()> {
         "channel-capability" | "verify-channel-capability" => verify_channel_capability_gate(&root),
         "media-processing" | "verify-media-processing" => verify_media_processing_gate(&root),
         "structure" | "verify-structure" => verify_structure(&root),
-        "access-seed" => access_seed::run(&rest),
         "schema" => core_codegen::run("schema"),
         "schema-check" => core_codegen::run("schema-check"),
-        "plugin-verify" => plugin_codegen::run(&root, "verify"),
-        "plugin-schema" => plugin_codegen::run(&root, "schema"),
-        "plugin-schema-check" => plugin_codegen::run(&root, "schema-check"),
-        "plugin-codegen" => plugin_codegen::run(&root, "codegen"),
-        "plugin-codegen-check" => plugin_codegen::run(&root, "check"),
         "core-codegen" => core_codegen::run("codegen"),
         "core-codegen-check" => core_codegen::run("check"),
         "expanded-spec" => emit_expanded_client_spec_file(&root, false),
@@ -88,7 +78,6 @@ fn run() -> Result<()> {
         "docs-check" => emit_doc_files(&root, true),
         "verify" => {
             core_codegen::run("verify")?;
-            plugin_codegen::run(&root, "verify")?;
             sync_shared_contracts(&root, true)?;
             verify_spec(&root)?;
             verify_core_contract(&root)?;
@@ -97,7 +86,6 @@ fn run() -> Result<()> {
             verify_network_reconnect_gate(&root)?;
             verify_observability_gate(&root)?;
             verify_performance_gate(&root)?;
-            verify_plugin_marketplace_gate(&root)?;
             verify_e2ee_contract_gate(&root)?;
             verify_enterprise_compliance_gate(&root)?;
             verify_channel_capability_gate(&root)?;
@@ -121,14 +109,12 @@ fn run() -> Result<()> {
         "typescript-adapter-check" => emit_typescript_adapter_files(&root, true),
         "codegen" => {
             core_codegen::run("codegen")?;
-            plugin_codegen::run(&root, "codegen")?;
             sync_shared_contracts(&root, false)?;
             verify_core_contract(&root)?;
             run_codegen(&root, false)
         }
         "codegen-check" => {
             core_codegen::run("check")?;
-            plugin_codegen::run(&root, "check")?;
             sync_shared_contracts(&root, true)?;
             verify_golden_contracts(&root)?;
             run_codegen(&root, true)
@@ -136,7 +122,6 @@ fn run() -> Result<()> {
         "build" => build::run(&root, &rest),
         "check" => {
             core_codegen::run("check")?;
-            plugin_codegen::run(&root, "check")?;
             sync_shared_contracts(&root, true)?;
             verify_spec(&root)?;
             verify_core_contract(&root)?;
@@ -145,7 +130,6 @@ fn run() -> Result<()> {
             verify_network_reconnect_gate(&root)?;
             verify_observability_gate(&root)?;
             verify_performance_gate(&root)?;
-            verify_plugin_marketplace_gate(&root)?;
             verify_e2ee_contract_gate(&root)?;
             verify_enterprise_compliance_gate(&root)?;
             verify_channel_capability_gate(&root)?;
@@ -155,7 +139,7 @@ fn run() -> Result<()> {
             run_command(&ts_sdk, "npm", &["run", "build"])?;
             run_command(&ts_sdk, "npm", &["test"])?;
             run_command(
-                &root.join("packages/flare-core-vue-im-ui"),
+                &root.join("packages/flare-core-plugin-vue-ui"),
                 "npm",
                 &["run", "typecheck"],
             )?;
@@ -184,7 +168,6 @@ fn run() -> Result<()> {
         }
         "all" => {
             core_codegen::run("codegen")?;
-            plugin_codegen::run(&root, "codegen")?;
             sync_shared_contracts(&root, false)?;
             verify_spec(&root)?;
             verify_core_contract(&root)?;
@@ -194,7 +177,6 @@ fn run() -> Result<()> {
             verify_network_reconnect_gate(&root)?;
             verify_observability_gate(&root)?;
             verify_performance_gate(&root)?;
-            verify_plugin_marketplace_gate(&root)?;
             verify_e2ee_contract_gate(&root)?;
             verify_enterprise_compliance_gate(&root)?;
             verify_channel_capability_gate(&root)?;
@@ -216,14 +198,8 @@ fn run() -> Result<()> {
 fn print_help() {
     eprintln!("Usage: cargo xtask <command>");
     eprintln!("Commands:");
-    eprintln!("  access-seed          Pull the latest signed access manifest into a build seed");
     eprintln!("  schema               Generate core Rust DTO JSON Schema artifacts");
     eprintln!("  schema-check         Fail if core Rust DTO JSON Schema artifacts drift");
-    eprintln!("  plugin-verify        Verify plugin manifests and marketplace catalog");
-    eprintln!("  plugin-schema        Generate plugin manifest JSON Schema");
-    eprintln!("  plugin-schema-check  Fail if plugin manifest JSON Schema drifts");
-    eprintln!("  plugin-codegen       Generate plugin manifest schema and platform stubs");
-    eprintln!("  plugin-codegen-check Fail if plugin generated artifacts drift");
     eprintln!("  core-codegen         Generate core binding artifacts only");
     eprintln!("  core-codegen-check   Fail if core binding generated artifacts drift");
     eprintln!("  sync-spec            Sync message build catalog from core contract");
@@ -233,9 +209,6 @@ fn print_help() {
     eprintln!("  network-reconnect   Verify platform network-change active reconnect entrypoints");
     eprintln!("  observability        Verify client diagnostics and metrics entrypoints");
     eprintln!("  performance          Verify public performance benchmark entrypoints");
-    eprintln!(
-        "  plugin-marketplace  Verify plugin catalog, schema, stubs, and capability registry"
-    );
     eprintln!("  e2ee-contract      Verify E2EE SDK, server push, and privacy anchors");
     eprintln!("  channel-capability Verify Channel/Broadcast and large-conversation anchors");
     eprintln!("  media-processing   Verify media processing port/server processor anchors");

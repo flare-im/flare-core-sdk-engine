@@ -125,52 +125,16 @@
           "tauri": "sdk_invoke_json"
         },
         {
+          "id": "connection.replace_endpoints",
+          "core": "IMClient::replace_endpoints",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
           "id": "connection.set_protocol_mode",
           "core": "IMClient::set_protocol_mode",
           "c": "flare_sdk_invoke_json",
           "tauri": null
-        },
-        {
-          "id": "access.get_status",
-          "core": "IMClient::access_status",
-          "c": "flare_sdk_invoke_json",
-          "tauri": "sdk_invoke_json"
-        },
-        {
-          "id": "access.list_access_points",
-          "core": "IMClient::list_access_points",
-          "c": "flare_sdk_invoke_json",
-          "tauri": "sdk_invoke_json"
-        },
-        {
-          "id": "access.pin",
-          "core": "IMClient::pin_access_point",
-          "c": "flare_sdk_invoke_json",
-          "tauri": "sdk_invoke_json"
-        },
-        {
-          "id": "access.unpin",
-          "core": "IMClient::unpin_access_point",
-          "c": "flare_sdk_invoke_json",
-          "tauri": "sdk_invoke_json"
-        },
-        {
-          "id": "access.refresh",
-          "core": "IMClient::refresh_access",
-          "c": "flare_sdk_invoke_json",
-          "tauri": "sdk_invoke_json"
-        },
-        {
-          "id": "access.import_recovery",
-          "core": "IMClient::import_access_recovery",
-          "c": "flare_sdk_invoke_json",
-          "tauri": "sdk_invoke_json"
-        },
-        {
-          "id": "access.export_diagnostics",
-          "core": "IMClient::export_access_diagnostics",
-          "c": "flare_sdk_invoke_json",
-          "tauri": "sdk_invoke_json"
         },
         {
           "id": "update.get_state",

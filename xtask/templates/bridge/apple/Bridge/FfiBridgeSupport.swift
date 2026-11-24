@@ -29,7 +29,7 @@ enum FfiJson {
         return decoded.mapValues { AnySendable($0) }
     }
 
-    /// Like `asResponseMap`, but a bare JSON array answer (`access.list_access_points`) stays an
+    /// Like `asResponseMap`, but a bare JSON array answer stays an
     /// array of plain JSON values instead of collapsing to an empty object.
     static func asResponseValue(_ value: Any?) -> Any {
         if let sendable = value as? AnySendable {

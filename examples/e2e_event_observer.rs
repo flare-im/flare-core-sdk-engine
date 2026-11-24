@@ -21,7 +21,7 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let secret = dev_token::require()?;
     let client = IMClient::new();
     client
-        .init(Some("e2e-event-observer".into()), smoke_config::overlay()?)
+        .init(Some("development".into()), smoke_config::overlay()?)
         .await?;
     let token = IMClient::generate_core_token(CoreTokenConfig {
         secret: secret.clone(),

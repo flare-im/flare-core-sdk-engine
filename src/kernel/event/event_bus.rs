@@ -381,10 +381,7 @@ impl EventBus {
                         f(s);
                     });
                 }
-                // 线路切换、目录装载与更新状态只给 raw 订阅者（绑定层事件），没有类型化回调。
-                ConnectionEvent::AccessSwitched(_)
-                | ConnectionEvent::AccessChanged(_)
-                | ConnectionEvent::UpdateState(_) => {}
+                ConnectionEvent::UpdateState(_) => {}
             },
             SdkEvent::Message(me) => match me {
                 MessageEvent::Received { message } => {

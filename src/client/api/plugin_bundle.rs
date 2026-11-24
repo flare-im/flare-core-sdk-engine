@@ -35,7 +35,7 @@
 //! what the engine sends on its own: `catalog.changed`, `entity.state`,
 //! `lifecycle.revoked` (with `close`), and `close: "evicted"` when a newer
 //! page took the place of the oldest.
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use flare_plugin_protocol::bridge::{
@@ -51,6 +51,8 @@ use flare_plugin_protocol::ui::{
 use serde_json::{Map, Value, json};
 
 use super::{CapabilityApi, PluginCallFuture};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::extension::capability::bundle::provider::{BundleDeliveryError, BundleLease};
 use crate::extension::capability::bundle::{
     self, broker::Admission, broker::BridgeSession, broker::SessionContext, events,
 };
@@ -65,6 +67,21 @@ pub(crate) struct BundlePeople {
 
 /// Members a conversation is read with for `people.resolve`.
 const MAX_MEMBERS_READ: u32 = 2000;
+
+#[derive(serde::Deserialize)]
+struct BundleRosterPage {
+    conversation_id: String,
+    participants: Vec<BundleRosterMember>,
+    next_cursor: String,
+    has_more: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct BundleRosterMember {
+    user_id: String,
+    #[serde(default)]
+    attributes: HashMap<String, String>,
+}
 
 fn bundle_error(reason: &str) -> FlareError {
     FlareError::localized(
@@ -217,6 +234,8 @@ struct Located {
     files: Option<Value>,
     /// The policy's source (`script-src` and the rest).
     source: Option<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    lease: BundleLease,
 }
 
 /// The plugin, the bundle reference of its selected contribution
@@ -281,6 +300,9 @@ impl CapabilityApi {
     }
 
     async fn plugin_bundle_open_now(&self, request: Value) -> Result<Value> {
+        if !self.plugin_host.bundles.can_open() {
+            return Err(bundle_error("unsupported"));
+        }
         let request = OpenRequest::read(request).ok_or_else(invalid)?;
         if !valid_id(&request.plugin_id)
             || !valid_id(&request.contribution_id)
@@ -324,6 +346,12 @@ impl CapabilityApi {
             .map(|capability| capability.name().to_owned())
             .collect();
         let grant = BridgeGrant::new(&located.manifest, entry, plugin, &host_native);
+        // Capture card provenance from the host at open, never from a frame's bridge calls.
+        let message_id = (request.presentation == BridgePresentation::Detail)
+            .then(|| request.arguments.get("messageId").and_then(Value::as_str))
+            .flatten()
+            .filter(|id| valid_id(id))
+            .map(str::to_owned);
         let context = SessionContext {
             tenant_id: self.default_tenant_id.clone(),
             viewer,
@@ -334,6 +362,7 @@ impl CapabilityApi {
             bundle_id: entry.id.clone(),
             sha256: entry.sha256.clone(),
             conversation_id: request.conversation.as_ref().map(|c| c.id.clone()),
+            message_id,
         };
         let sessions = &self.plugin_host.bundles.sessions;
         let hello = HelloResult {
@@ -371,14 +400,14 @@ impl CapabilityApi {
             .unwrap_or_else(|| origin.clone());
         let csp = bundle::content_security_policy(&source, &frame_ancestors);
         let session_id = uuid::Uuid::new_v4().to_string();
+        let session = BridgeSession::new(session_id.clone(), context, grant, hello.clone());
         #[cfg(not(target_arch = "wasm32"))]
-        self.plugin_host.bundles.cache().pin(&entry.sha256);
-        let evicted = sessions.insert(BridgeSession::new(
-            session_id.clone(),
-            context,
-            grant,
-            hello.clone(),
-        ));
+        let session = {
+            let mut session = session;
+            session.hold_files(located.lease);
+            session
+        };
+        let evicted = sessions.insert(session);
         for session in evicted {
             self.ended(&session, None, "evicted");
         }
@@ -397,47 +426,37 @@ impl CapabilityApi {
         Ok(answer)
     }
 
-    /// The verified files of `entry`: from the cache, downloaded and checked
-    /// first when needed.
     #[cfg(not(target_arch = "wasm32"))]
     async fn locate_bundle(&self, entry: &WebBundleDecl) -> Result<Located> {
-        use crate::extension::capability::bundle::cache::CacheError;
-        let cache = self.plugin_host.bundles.cache();
-        let fetcher = self
+        let delivery = self
             .plugin_host
             .bundles
-            .fetcher()
-            .ok_or_else(|| bundle_error("unavailable"))?;
-        let cached = cache
-            .ensure(entry, &fetcher)
-            .await
-            .map_err(|error| match error {
-                CacheError::Rejected(_) | CacheError::Mismatch => bundle_error("rejected"),
-                CacheError::Unavailable | CacheError::Storage => bundle_error("unavailable"),
-            })?;
-        let files: Vec<Value> = cached
-            .files
-            .iter()
-            .map(|file| json!({"path": file.path, "contentType": file.content_type, "size": file.size}))
-            .collect();
+            .delivery()
+            .ok_or_else(|| bundle_error("unsupported"))?;
+        let delivered = delivery.open(entry).await.map_err(|error| match error {
+            BundleDeliveryError::Unavailable => bundle_error("unavailable"),
+            BundleDeliveryError::Rejected => bundle_error("rejected"),
+        })?;
+        let files: Vec<Value> = delivered.files.iter().map(|file| {
+            json!({"path": file.path, "contentType": file.content_type, "size": file.size})
+        }).collect();
         Ok(Located {
-            manifest: cached.manifest,
-            root: cached.root.to_string_lossy().into_owned(),
+            manifest: delivered.manifest,
+            root: delivered.root.to_string_lossy().into_owned(),
             files: Some(Value::Array(files)),
             source: None,
+            lease: delivered.lease,
         })
     }
 
-    /// The browser loads the files from the sandbox domain (`files`); the
-    /// engine reads only `bundle.json` from there, for the grant. What it may
-    /// grant is still bounded by the catalog entry and the tenant's approval.
     #[cfg(target_arch = "wasm32")]
     async fn locate_bundle(&self, entry: &WebBundleDecl) -> Result<Located> {
         use flare_plugin_protocol::bundle::BUNDLE_MANIFEST_ENTRY;
         let files = entry
             .files
-            .clone()
+            .as_ref()
             .ok_or_else(|| bundle_error("unavailable"))?;
+        let source = bundle::https_origin_of(files).ok_or_else(|| bundle_error("rejected"))?;
         let bytes = crate::infrastructure::transport::http::http_client_wasm::fetch_bytes(
             "GET",
             [files.as_str(), BUNDLE_MANIFEST_ENTRY].concat(),
@@ -452,8 +471,8 @@ impl CapabilityApi {
         let manifest = BundleManifest::from_json(&bytes).map_err(|_| bundle_error("rejected"))?;
         Ok(Located {
             manifest,
-            source: bundle::https_origin_of(&files),
-            root: files,
+            source: Some(source),
+            root: files.clone(),
             files: None,
         })
     }
@@ -667,7 +686,7 @@ impl CapabilityApi {
                 context.conversation_id.as_deref(),
                 Some(&context.tenant_id),
                 Some(&context.viewer),
-                None,
+                context.message_id.as_deref(),
             )
             .await;
         operation_result(response, None)
@@ -701,6 +720,7 @@ impl CapabilityApi {
                 operation,
                 payload: input,
                 conversation: context.conversation_id.as_deref(),
+                message_id: context.message_id.as_deref(),
                 policy: &policy,
                 continuation: None,
             })
@@ -807,11 +827,10 @@ impl CapabilityApi {
         }
     }
 
-    /// `people.resolve`: display names and avatars this device already holds
-    /// of people the viewer may see: members of the page's conversation when
-    /// it has one, otherwise people who share a conversation with the viewer
-    /// (and the viewer). The name is the member's name there, else the
-    /// person's own nickname; the viewer's private remark name never leaves.
+    /// `people.resolve`: display names and avatars of people the viewer may see.
+    /// In a conversation, use its member store and resolve missing members through
+    /// the authenticated roster. Outside a conversation, use local membership and
+    /// profiles. Private remark names never leave.
     async fn bundle_people(
         &self,
         context: &SessionContext,
@@ -821,21 +840,40 @@ impl CapabilityApi {
             .bundle_people
             .clone()
             .ok_or_else(|| BridgeError::new(BridgeErrorCode::Unavailable))?;
-        let wanted: BTreeSet<&String> = user_ids.iter().collect();
-        let mut member_names = std::collections::HashMap::new();
+        let mut member_names = HashMap::new();
         let mut ids: Vec<String> = Vec::new();
         if let Some(conversation) = &context.conversation_id {
-            let store = people
-                .participants
-                .as_ref()
-                .ok_or_else(|| BridgeError::new(BridgeErrorCode::Unavailable))?;
-            let members = store
-                .list(conversation, 0, MAX_MEMBERS_READ)
-                .await
-                .map_err(|e| bundle::broker::bridge_error_of(&e))?;
-            for member in members {
-                if wanted.contains(&member.user_id) {
-                    member_names.insert(member.user_id.clone(), member.nickname.clone());
+            let wanted: BTreeSet<&String> = user_ids.iter().collect();
+            if let Some(store) = &people.participants {
+                let members = store
+                    .list(conversation, 0, MAX_MEMBERS_READ)
+                    .await
+                    .map_err(|e| bundle::broker::bridge_error_of(&e))?;
+                for member in members {
+                    if wanted.contains(&member.user_id) {
+                        member_names.insert(member.user_id, member.nickname);
+                    }
+                }
+            }
+            let missing = wanted
+                .into_iter()
+                .filter(|id| !member_names.contains_key(*id))
+                .collect::<BTreeSet<_>>();
+            if !missing.is_empty() {
+                match self
+                    .bundle_roster_names(context, conversation, &missing)
+                    .await
+                {
+                    Ok(names) => member_names.extend(names),
+                    // On a transport failure, keep only the members already known locally.
+                    // Authorization and response validation errors still fail closed.
+                    Err(error)
+                        if people.participants.is_some()
+                            && matches!(
+                                error.code,
+                                BridgeErrorCode::Unavailable | BridgeErrorCode::Timeout
+                            ) => {}
+                    Err(error) => return Err(error),
                 }
             }
             ids.extend(
@@ -882,6 +920,83 @@ impl CapabilityApi {
         }
         serde_json::to_value(PeopleResolveResult { people: out })
             .map_err(|_| BridgeError::new(BridgeErrorCode::Internal))
+    }
+
+    async fn bundle_roster_names(
+        &self,
+        context: &SessionContext,
+        conversation: &str,
+        wanted: &BTreeSet<&String>,
+    ) -> std::result::Result<HashMap<String, String>, BridgeError> {
+        let http = self
+            .http
+            .as_ref()
+            .ok_or_else(|| BridgeError::new(BridgeErrorCode::Unavailable))?;
+        self.session_guard
+            .run_with_user(|identity| async move {
+                if identity.as_deref() != Some(context.viewer.as_str())
+                    || context.tenant_id != self.default_tenant_id
+                {
+                    return Err(invalid());
+                }
+                let mut names = HashMap::new();
+                let mut cursor = String::new();
+                const PAGE_SIZE: u32 = 200;
+                for _ in 0..MAX_MEMBERS_READ.div_ceil(PAGE_SIZE) {
+                    let query = HashMap::from([
+                        ("conversation_id".to_owned(), conversation.to_owned()),
+                        ("limit".to_owned(), PAGE_SIZE.to_string()),
+                        ("cursor".to_owned(), cursor.clone()),
+                    ]);
+                    let envelope: super::HttpApiResponse<BundleRosterPage> = http
+                        .get("/api/v1/conversations/participants", Some(&query))
+                        .await?;
+                    let page = super::unwrap_api_response(envelope, "plugin conversation roster")?;
+                    if page.conversation_id != conversation
+                        || page.participants.len() > PAGE_SIZE as usize
+                    {
+                        return Err(invalid());
+                    }
+                    for member in page.participants {
+                        if wanted.contains(&member.user_id) {
+                            let name = member
+                                .attributes
+                                .get("nickname")
+                                .cloned()
+                                .unwrap_or_default();
+                            names.insert(member.user_id, name);
+                        }
+                    }
+                    if names.len() == wanted.len() || !page.has_more {
+                        break;
+                    }
+                    if page.next_cursor.is_empty() || page.next_cursor == cursor {
+                        return Err(invalid());
+                    }
+                    cursor = page.next_cursor;
+                }
+                Ok(names)
+            })
+            .await
+            .map_err(|error| {
+                // The shared HTTP transport carries response status as metadata.
+                // A generic server error may mask a denied roster, so never use
+                // it to fall back to cached members.
+                let status = error.as_localized().and_then(|e| {
+                    e.params.and_then(|params| {
+                        params
+                            .get("httpStatus")
+                            .and_then(|status| status.parse::<u16>().ok())
+                    })
+                });
+                match (status, error.code()) {
+                    (Some(401 | 403), _) => BridgeError::new(BridgeErrorCode::PermissionDenied),
+                    (Some(502 | 503 | 504), _) | (_, Some(ErrorCode::NetworkUnreachable)) => {
+                        BridgeError::new(BridgeErrorCode::Unavailable)
+                    }
+                    _ => bundle::broker::bridge_error_of(&error),
+                }
+            })
     }
 
     /// `media.read`: a private file this plugin uploaded for this viewer
@@ -1028,14 +1143,16 @@ impl CapabilityApi {
     pub fn plugin_bundle_close(&self, request: Value) -> PluginCallFuture<'_> {
         Box::pin(async move {
             let session_id = session_ref(request).ok_or_else(invalid)?;
-            let closed = self.plugin_host.bundles.sessions.remove(&session_id);
-            if let Some(session) = &closed {
-                self.release(session);
-            }
+            let closed = self
+                .plugin_host
+                .bundles
+                .sessions
+                .remove(&session_id)
+                .is_some();
             if self.plugin_host.bundles.sessions.is_empty() {
                 self.unwatch_entity_state();
             }
-            Ok(json!({ "closed": closed.is_some() }))
+            Ok(json!({ "closed": closed }))
         })
     }
 
@@ -1052,24 +1169,19 @@ impl CapabilityApi {
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn prefetch_entry_bundles(&self) -> Result<Value> {
+        let Some(delivery) = self.plugin_host.bundles.delivery() else {
+            return Ok(json!({ "fetched": 0 }));
+        };
         let catalog = self.presentation_catalog().await?;
-        let cache = self.plugin_host.bundles.cache();
-        let fetcher = self
-            .plugin_host
-            .bundles
-            .fetcher()
-            .ok_or_else(|| bundle_error("unavailable"))?;
         let mut fetched = 0;
         for (_, entry) in events::prefetch_candidates(&catalog) {
-            if cache.lookup(&entry.sha256).is_none() && cache.ensure(&entry, &fetcher).await.is_ok()
-            {
+            if matches!(delivery.prefetch(&entry).await, Ok(true)) {
                 fetched += 1;
             }
         }
         Ok(json!({ "fetched": fetched }))
     }
 
-    /// The browser caches the sandbox files itself.
     #[cfg(target_arch = "wasm32")]
     async fn prefetch_entry_bundles(&self) -> Result<Value> {
         Ok(json!({ "fetched": 0 }))
@@ -1080,10 +1192,9 @@ impl CapabilityApi {
     /// bundles are still named.
     pub(crate) fn reconcile_bundle_sessions(&self, catalog: &UiCatalog) {
         #[cfg(not(target_arch = "wasm32"))]
-        self.plugin_host
-            .bundles
-            .cache()
-            .mark_referenced(&events::referenced_digests(catalog));
+        if let Some(delivery) = self.plugin_host.bundles.delivery() {
+            delivery.mark_referenced(&events::referenced_digests(catalog));
+        }
         let sessions = &self.plugin_host.bundles.sessions;
         if sessions.is_empty() {
             return;
@@ -1139,19 +1250,8 @@ impl CapabilityApi {
 
     /// Tell the host a page ended (`close`), with the bundle's last event.
     fn ended(&self, session: &BridgeSession, envelope: Option<&BridgeEnvelope>, close: &str) {
-        self.release(session);
         let envelope = envelope.and_then(|e| serde_json::to_string(e).ok());
         self.emit_bundle(&session.id, envelope, Some(close.to_owned()));
-    }
-
-    fn release(&self, session: &BridgeSession) {
-        #[cfg(not(target_arch = "wasm32"))]
-        self.plugin_host
-            .bundles
-            .cache()
-            .unpin(&session.context.sha256);
-        #[cfg(target_arch = "wasm32")]
-        let _ = session;
     }
 
     fn emit_bundle(&self, session_id: &str, envelope: Option<String>, close: Option<String>) {
@@ -1398,6 +1498,234 @@ fn operation_result(
         command_id,
     })
     .map_err(|_| BridgeError::new(BridgeErrorCode::Internal))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod roster_tests {
+    use super::*;
+    use crate::infrastructure::transport::http::{HttpClient, http_client::HttpRequestContext};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    #[cfg(feature = "storage-sqlite")]
+    struct Profiles;
+
+    #[cfg(feature = "storage-sqlite")]
+    #[async_trait::async_trait]
+    impl crate::domain::UserReader for Profiles {
+        async fn get(&self, id: &str) -> Result<Option<crate::domain::UserProfile>> {
+            let mut profile =
+                crate::domain::UserProfile::new(id).with_nickname(format!("{id} profile"));
+            profile.alias = "Private remark".into();
+            Ok(Some(profile))
+        }
+    }
+
+    #[cfg(feature = "storage-sqlite")]
+    async fn roster_with_partial_cache(api: CapabilityApi) -> CapabilityApi {
+        use crate::domain::ConversationParticipantStore as _;
+        use crate::infrastructure::persistence::sqlite::{
+            SqliteConversationParticipantRepo, init_schema,
+        };
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        init_schema(&pool).await.unwrap();
+        let members = Arc::new(SqliteConversationParticipantRepo::new(pool));
+        members
+            .save_page(
+                "group",
+                &[crate::model::ConversationParticipant {
+                    user_id: "local".into(),
+                    nickname: "Local member".into(),
+                    ..Default::default()
+                }],
+                1,
+                false,
+            )
+            .await
+            .unwrap();
+        api.with_bundle_people(Arc::new(Profiles), Some(members))
+    }
+
+    #[tokio::test]
+    async fn roster_fallback_follows_pages_and_returns_only_requested_members() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for (cursor, next, member) in [
+                (
+                    "",
+                    "next",
+                    json!({"user_id":"unrequested","attributes":{"nickname":"Ignored"}}),
+                ),
+                (
+                    "next",
+                    "",
+                    json!({"user_id":"member","attributes":{"nickname":"Member","remark":"Private"}}),
+                ),
+            ] {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(socket);
+                let mut start = String::new();
+                reader.read_line(&mut start).await.unwrap();
+                let target = start.split_ascii_whitespace().nth(1).unwrap();
+                assert!(target.starts_with("/api/v1/conversations/participants?"));
+                assert!(target.contains("conversation_id=group"));
+                assert!(
+                    target
+                        .split(['?', '&'])
+                        .any(|part| part == format!("cursor={cursor}"))
+                );
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).await.unwrap();
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                }
+                let body = json!({"code":0, "data": {
+                    "conversation_id":"group", "participants":[member], "next_cursor":next, "has_more":!next.is_empty()
+                }});
+                let body = body.to_string();
+                let mut socket = reader.into_inner();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let api = CapabilityApi::new(
+            "http://127.0.0.1:1",
+            Arc::new(tokio::sync::RwLock::new("viewer".into())),
+            "201",
+            Arc::new(HttpRequestContext::new()),
+        )
+        .with_http_transport(HttpClient::new(base));
+        let context = SessionContext {
+            tenant_id: "201".into(),
+            viewer: "viewer".into(),
+            plugin_id: "example.schedule".into(),
+            plugin_version: "0.1.0".into(),
+            contribution_id: "example.schedule.compose".into(),
+            route: "/compose".into(),
+            bundle_id: "user-ui".into(),
+            sha256: "digest".into(),
+            conversation_id: Some("group".into()),
+            message_id: None,
+        };
+        let member = "member".to_owned();
+        let stranger = "stranger".to_owned();
+        let wanted = BTreeSet::from([&member, &stranger]);
+        let people = api
+            .bundle_roster_names(&context, "group", &wanted)
+            .await
+            .unwrap();
+        assert_eq!(people, HashMap::from([(member, "Member".to_owned())]));
+        server.await.unwrap();
+    }
+
+    #[cfg(feature = "storage-sqlite")]
+    #[tokio::test]
+    async fn roster_cache_miss_filters_profiles_and_preserves_authorization_failures() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let body = json!({"code":0, "data": {
+                "conversation_id":"group", "participants":[
+                    {"user_id":"member","attributes":{"nickname":"Remote member","remark":"Private"}},
+                    {"user_id":"profile","attributes":{}},
+                    {"user_id":"unrequested","attributes":{"nickname":"Unrequested name"}}
+                ], "next_cursor":"", "has_more":false
+            }});
+            for (status, body) in [
+                ("200 OK", body.to_string()),
+                ("403 Forbidden", "{}".into()),
+                (
+                    "500 Internal Server Error",
+                    r#"{"code":500,"reason":"CONVERSATION_PARTICIPANTS_FAILED"}"#.into(),
+                ),
+                ("503 Service Unavailable", "{}".into()),
+            ] {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(socket);
+                let mut start = String::new();
+                reader.read_line(&mut start).await.unwrap();
+                assert!(start.starts_with("GET /api/v1/conversations/participants?"));
+                assert!(start.contains("conversation_id=group"));
+                let mut authenticated = false;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).await.unwrap();
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    authenticated |= line
+                        .trim()
+                        .eq_ignore_ascii_case("authorization: Bearer roster-token");
+                }
+                assert!(authenticated);
+                let mut socket = reader.into_inner();
+                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let http_context = Arc::new(HttpRequestContext::new());
+        http_context
+            .set_auth_context("roster-token".into(), None)
+            .await;
+        let api = roster_with_partial_cache(
+            CapabilityApi::new(
+                "http://127.0.0.1:1",
+                Arc::new(tokio::sync::RwLock::new("viewer".into())),
+                "201",
+                Arc::clone(&http_context),
+            )
+            .with_http_transport(HttpClient::with_context(base, http_context)),
+        )
+        .await;
+        let mut context = SessionContext {
+            tenant_id: "201".into(),
+            viewer: "viewer".into(),
+            plugin_id: "example.schedule".into(),
+            plugin_version: "0.1.0".into(),
+            contribution_id: "example.schedule.details".into(),
+            route: "/detail".into(),
+            bundle_id: "user-ui".into(),
+            sha256: "digest".into(),
+            conversation_id: Some("group".into()),
+            message_id: None,
+        };
+        let ids = ["local", "member", "profile", "stranger"].map(str::to_owned);
+        let local = json!({"userId":"local","displayName":"Local member"});
+        assert_eq!(
+            api.bundle_people(&context, &ids[..1]).await.unwrap(),
+            json!({"people":[local.clone()]})
+        );
+        context.tenant_id = "202".into();
+        assert!(api.bundle_people(&context, &ids).await.is_err());
+        context.tenant_id = "201".into();
+        context.viewer = "different-viewer".into();
+        assert!(api.bundle_people(&context, &ids).await.is_err());
+        context.viewer = "viewer".into();
+        assert_eq!(
+            api.bundle_people(&context, &ids).await.unwrap(),
+            json!({"people":[local.clone(),
+                {"userId":"member","displayName":"Remote member"},
+                {"userId":"profile","displayName":"profile profile"}
+            ]})
+        );
+        assert_eq!(
+            api.bundle_people(&context, &ids).await.unwrap_err().code,
+            BridgeErrorCode::PermissionDenied
+        );
+        assert_eq!(
+            api.bundle_people(&context, &ids).await.unwrap_err().code,
+            BridgeErrorCode::Internal
+        );
+        assert_eq!(
+            api.bundle_people(&context, &ids).await.unwrap(),
+            json!({"people":[local]})
+        );
+        server.await.unwrap();
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Result of accepting a new set of addresses. Link readiness is reported\nseparately through normal connection status.",
+  "properties": {
+    "changed": {
+      "type": "boolean"
+    },
+    "revision": {
+      "description": "Accepted endpoint generation for this initialized client.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "revision",
+    "changed"
+  ],
+  "title": "EndpointUpdate",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "EndpointUpdate"
+}

@@ -1,5 +1,5 @@
 //! Web bundle pages through `CapabilityApi` against the local dispatch
-//! endpoint of the page tests: opening from the verified cache, the bridge
+//! endpoint of the page tests: opening through the host delivery interface, the bridge
 //! end to end (query, command journal, transient operations, storage,
 //! host-drawn requests, gestures), withdrawal closing the page, and rollback.
 use super::page_tests::Fixture;
@@ -7,6 +7,71 @@ use super::*;
 use flare_plugin_protocol::bundle::{BundleManifest, WebBundleDecl, sha256_hex, write_archive};
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use crate::extension::capability::bundle::provider::{
+    BundleDelivery, BundleDeliveryError, BundleLease, DeliveredBundle,
+};
+
+struct FixtureDelivery {
+    root: PathBuf,
+    archives: Mutex<BTreeMap<String, Vec<u8>>>,
+}
+
+impl FixtureDelivery {
+    fn add(&self, bytes: &[u8]) {
+        self.archives
+            .lock()
+            .unwrap()
+            .insert(sha256_hex(bytes), bytes.to_owned());
+    }
+}
+
+#[async_trait::async_trait]
+impl BundleDelivery for FixtureDelivery {
+    async fn open(
+        &self,
+        decl: &WebBundleDecl,
+    ) -> std::result::Result<DeliveredBundle, BundleDeliveryError> {
+        use flare_plugin_protocol::bundle::unpack_archive;
+        let archives = self.archives.lock().unwrap();
+        let bytes = archives
+            .get(&decl.sha256)
+            .ok_or(BundleDeliveryError::Unavailable)?;
+        let unpacked = unpack_archive(bytes, &decl.sha256, decl.size)
+            .map_err(|_| BundleDeliveryError::Rejected)?;
+        Ok(DeliveredBundle {
+            manifest: unpacked.manifest,
+            root: self.root.join(&decl.sha256),
+            files: unpacked.index,
+            lease: BundleLease::new(()),
+        })
+    }
+
+    async fn prefetch(
+        &self,
+        _decl: &WebBundleDecl,
+    ) -> std::result::Result<bool, BundleDeliveryError> {
+        Ok(false)
+    }
+
+    fn mark_referenced(&self, _digests: &std::collections::BTreeSet<String>) {}
+}
+
+fn install_fixture_delivery(
+    api: &CapabilityApi,
+    root: &Path,
+    bytes: &[u8],
+) -> Arc<FixtureDelivery> {
+    let delivery = Arc::new(FixtureDelivery {
+        root: root.into(),
+        archives: Mutex::default(),
+    });
+    delivery.add(bytes);
+    assert!(api.plugin_host.bundles.install_delivery(delivery.clone()));
+    delivery
+}
 
 const PLUGIN: &str = "example.poll";
 
@@ -79,12 +144,21 @@ fn catalog(entry: Option<&WebBundleDecl>, version: &str) -> Value {
 
 /// A web host with a bundle runtime, a cache under a temporary root holding
 /// `bytes`, and a catalog serving it.
-async fn fixture(bytes: &[u8]) -> (Fixture, std::path::PathBuf) {
-    fixture_with(bytes, entry(bytes)).await
+async fn fixture(bytes: &[u8]) -> (Fixture, PathBuf) {
+    let (fixture, root, _) = fixture_with_delivery(bytes, entry(bytes)).await;
+    (fixture, root)
 }
 
 /// [`fixture`] serving `served` (the catalog entry of `bytes`).
-async fn fixture_with(bytes: &[u8], served: WebBundleDecl) -> (Fixture, std::path::PathBuf) {
+async fn fixture_with(bytes: &[u8], served: WebBundleDecl) -> (Fixture, PathBuf) {
+    let (fixture, root, _) = fixture_with_delivery(bytes, served).await;
+    (fixture, root)
+}
+
+async fn fixture_with_delivery(
+    bytes: &[u8],
+    served: WebBundleDecl,
+) -> (Fixture, PathBuf, Arc<FixtureDelivery>) {
     let f = Fixture::new().await;
     let kit = serde_json::to_value(flare_plugin_protocol::ui::engine_vocabulary()).unwrap();
     let profile = super::host_profile::parse_profile(
@@ -99,26 +173,25 @@ async fn fixture_with(bytes: &[u8], served: WebBundleDecl) -> (Fixture, std::pat
         "flare-bundle-api-{}",
         uuid::Uuid::new_v4().simple()
     ));
-    f.api.plugin_host.bundles.set_cache_root(root.clone());
-    f.api
-        .plugin_host
-        .bundles
-        .cache()
-        .install(&served, bytes)
-        .unwrap();
+    let delivery = install_fixture_delivery(&f.api, &root, bytes);
     *f.catalog.lock().unwrap() = catalog(Some(&served), "0.2.0");
-    (f, root)
+    (f, root, delivery)
 }
 
-async fn open(f: &Fixture) -> Value {
+async fn open_with_card(f: &Fixture, presentation: &str, message_id: Option<&str>) -> Value {
     f.api
         .plugin_bundle_open(json!({
             "pluginId": PLUGIN, "contributionId": "example.poll.board",
             "conversation": {"id": "conversation-1", "type": "group"},
+            "presentation": presentation, "arguments": {"messageId": message_id},
             "locale": "en", "theme": {"mode": "light", "tokens": {}}
         }))
         .await
         .unwrap()
+}
+
+async fn open(f: &Fixture) -> Value {
+    open_with_card(f, "page", None).await
 }
 
 async fn bridge(f: &Fixture, session: &str, envelope: Value, gesture: bool) -> Value {
@@ -147,7 +220,7 @@ async fn greeted(f: &Fixture) -> String {
 }
 
 #[tokio::test]
-async fn opening_serves_the_verified_cache_with_the_policy_and_the_grant() {
+async fn opening_serves_the_delivered_files_with_the_policy_and_the_grant() {
     let bytes = archive(16);
     let (f, root) = fixture(&bytes).await;
     let opened = open(&f).await;
@@ -221,9 +294,34 @@ async fn a_query_goes_through_core_and_a_denied_one_never_leaves_the_engine() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[tokio::test]
+async fn a_bundle_detail_query_uses_the_host_card_and_ignores_the_frame_claim() {
+    let (f, root) = fixture(&archive(16)).await;
+    for (presentation, expected) in [("detail", json!("server-card")), ("page", Value::Null)] {
+        f.answer("example.poll.get", vec![json!({"done": 3})]);
+        let opened = open_with_card(&f, presentation, Some("server-card")).await;
+        let session = opened["sessionId"].as_str().unwrap();
+        bridge(&f, session, request("h", "host.hello", json!({})), false).await;
+        let query = request(
+            "q",
+            "plugin.query",
+            json!({
+                "operation": "example.poll.get", "input": {"messageId": "forged-card"},
+            }),
+        );
+        let outcome = answer(&bridge(&f, session, query, false).await);
+        assert_eq!(outcome["result"]["data"]["done"], 3);
+        assert_eq!(
+            f.calls_to("example.poll.get").last().unwrap()["messageId"],
+            expected
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[cfg(feature = "storage-sqlite")]
 #[tokio::test]
-async fn a_command_is_logged_and_answers_with_its_command_id() {
+async fn a_detail_command_is_logged_with_the_host_card_and_replayed_only_there() {
     use crate::infrastructure::persistence::sqlite::{SqlitePluginCommandRepo, init_schema};
     let bytes = archive(16);
     let (mut f, root) = fixture(&bytes).await;
@@ -238,7 +336,9 @@ async fn a_command_is_logged_and_answers_with_its_command_id() {
         .clone()
         .with_plugin_command_store(Some(Arc::new(SqlitePluginCommandRepo::new(pool))));
     f.answer("example.poll.move", vec![json!({"moved": true})]);
-    let session = greeted(&f).await;
+    let opened = open_with_card(&f, "detail", Some("server-card")).await;
+    let session = opened["sessionId"].as_str().unwrap().to_owned();
+    bridge(&f, &session, request("h", "host.hello", json!({})), false).await;
     let done = answer(
         &bridge(
             &f,
@@ -246,7 +346,7 @@ async fn a_command_is_logged_and_answers_with_its_command_id() {
             request(
                 "c",
                 "plugin.command",
-                json!({"operation": "example.poll.move", "input": {"task": "t1"},
+                json!({"operation": "example.poll.move", "input": {"task": "t1","messageId":"forged"},
                        "commandId": "cmd-1"}),
             ),
             false,
@@ -259,6 +359,7 @@ async fn a_command_is_logged_and_answers_with_its_command_id() {
     );
     let sent = f.calls_to("example.poll.move").pop().unwrap();
     assert_eq!(sent["payload"]["commandId"], "cmd-1");
+    assert_eq!(sent["messageId"], "server-card");
     // The same command again: the journal answers, nothing is sent twice.
     let again = answer(
         &bridge(
@@ -267,7 +368,7 @@ async fn a_command_is_logged_and_answers_with_its_command_id() {
             request(
                 "c2",
                 "plugin.command",
-                json!({"operation": "example.poll.move", "input": {"task": "t1"},
+                json!({"operation": "example.poll.move", "input": {"task": "t1","messageId":"forged"},
                        "commandId": "cmd-1"}),
             ),
             false,
@@ -275,6 +376,26 @@ async fn a_command_is_logged_and_answers_with_its_command_id() {
         .await,
     );
     assert_eq!(again["result"]["commandId"], "cmd-1");
+    let other = open_with_card(&f, "detail", Some("other-card")).await;
+    let other = other["sessionId"].as_str().unwrap();
+    bridge(&f, other, request("h", "host.hello", json!({})), false).await;
+    let denied = answer(
+        &bridge(
+            &f,
+            other,
+            request(
+                "c3",
+                "plugin.command",
+                json!({
+                    "operation": "example.poll.move", "input": {"task": "t1","messageId":"forged"},
+                    "commandId":"cmd-1"
+                }),
+            ),
+            false,
+        )
+        .await,
+    );
+    assert_eq!(denied["error"]["code"], "permission_denied");
     assert_eq!(f.calls_to("example.poll.move").len(), 1);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -386,6 +507,7 @@ async fn qr_scanning_uses_the_grant_gesture_and_host_and_discards_late_results()
     *f.catalog.lock().unwrap() = declared;
     let profile = super::host_profile::parse_profile(
         json!({"platform": "web", "nativeAllowlist": ["scanCode"],
+               "kitVocabulary": flare_plugin_protocol::ui::engine_vocabulary(),
                "bundleRuntime": {"bridge": 1, "engine": "browser", "engineMajor": 120}}),
         &super::host_profile::AppIdentity::default(),
     )
@@ -510,16 +632,11 @@ async fn a_withdrawn_bundle_closes_its_open_page() {
 /// still cached, so the page opens without any download (the fixture has no
 /// HTTPS mirror at all).
 #[tokio::test]
-async fn rolling_back_opens_the_older_bundle_from_the_cache() {
+async fn rolling_back_opens_the_older_delivered_bundle() {
     let old = archive(16);
     let new = archive(32);
-    let (f, root) = fixture(&old).await;
-    f.api
-        .plugin_host
-        .bundles
-        .cache()
-        .install(&entry(&new), &new)
-        .unwrap();
+    let (f, root, delivery) = fixture_with_delivery(&old, entry(&old)).await;
+    delivery.add(&new);
     *f.catalog.lock().unwrap() = catalog(Some(&entry(&new)), "0.3.0");
     let opened = open(&f).await;
     assert!(
@@ -571,7 +688,7 @@ fn ui_page_split_accepts(view: Value) -> bool {
 
 /// A bundle asking for `media.read`, `people.resolve` and the payment
 /// confirmation, approved for all three, on a host that offers it.
-async fn reading_fixture() -> (Fixture, std::path::PathBuf) {
+async fn reading_fixture() -> (Fixture, PathBuf) {
     let manifest: BundleManifest = serde_json::from_value(json!({
         "id": "board", "entry": "index.html", "bridge": 1,
         "permissions": ["plugin.command", "media.read", "people.resolve"],

@@ -32,7 +32,7 @@ const MAX_KEY_LEN: usize = 128;
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HandleRemoteMessageRequest {
-    /// Push channel that delivered it: apns, fcm or getui.
+    /// Push channel that delivered the message.
     pub provider: String,
     /// The push payload flattened to strings (snake_case keys): uid, tenant_id, conversation_id,
     /// message_id, seq, collapse_id, thread_id, disposition, alert_class, count, badge, title,
@@ -488,7 +488,10 @@ impl PushInbox {
         if cfg!(target_arch = "wasm32") {
             return Err(not_supported());
         }
-        if !matches!(request.provider.as_str(), "apns" | "fcm" | "getui") {
+        if !matches!(
+            request.provider.as_str(),
+            "apns" | "fcm" | "getui" | "jpush"
+        ) {
             return Err(FlareError::localized(
                 ErrorCode::InvalidParameter,
                 "unknown push provider",

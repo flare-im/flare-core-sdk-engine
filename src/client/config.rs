@@ -119,7 +119,7 @@ pub struct SdkAppConfig {
     /// 桌面目标（如 `darwin-aarch64`）：发布清单按它挑桌面制品。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-    /// 界面语言（BCP-47，如 `zh-Hant-TW`）：更新说明按它选，回退链见 `flare_access::release::locale`。
+    /// 界面语言（BCP-47，如 `zh-Hant-TW`）：更新说明按它选，回退链见 `flare_access_contract::update::locale`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
 }
@@ -130,27 +130,12 @@ impl SdkAppConfig {
     }
 }
 
-/// SDK 配置
-///
-/// ```ignore
-/// let config = SdkConfig::builder()
-///     .access(AccessConfig::development(DevelopmentEndpoints {
-///         ws_url: Some("ws://127.0.0.1:60051/ws".into()),
-///         core_api_url: Some("http://127.0.0.1:60061".into()),
-///         ..Default::default()
-///     }))
-///     .build();
-/// ```
-/// SDK 托管连接令牌（core-only 形态）：配了 `auth` 就是 SDK 托管——`login(user_id)` 不传 token 时，
-/// 链路在每次建连前向 Core API 的签发接口签发（经 HttpRouter，换接入点与重试照 §3.9），到期前
-/// `refresh_lead_secs` 秒用 `{签发路径}/refresh` 换新并 `update_access_token`。没配则必须显式传 token
-/// （业务应用由宿主自己拿 token、自己刷新）。客户端永远不持有签名密钥。
+/// Optional SDK-managed connect token issuance and renewal through the configured Core API.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SdkAuthConfig {
     /// 签发接口在 Core API 上的路径（以 `/` 开头的相对路径）；不给用 [`Self::DEFAULT_TOKEN_PATH`]。
-    /// 基址就是接入清单里接入点的 Core API 入口（开发模式即 `developmentEndpoints.coreApiUrl`），
-    /// 不接受绝对地址。
+    /// 相对于 `endpoints.baseUrl`，必须以 `/` 开头。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_endpoint: Option<String>,
     /// 到期前多少秒刷新，默认 300。
@@ -203,10 +188,8 @@ impl SdkAuthConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkConfig {
-    /// 接入配置：信任根、构建期种子与信任模式；开发模式下给出 `developmentEndpoints`。
-    /// 连哪里、怎么切换全部由它装配出的目录与健康簿决定，SDK 里没有单地址配置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access: Option<flare_access::AccessConfig>,
+    pub endpoints: Option<super::CoreEndpoints>,
     /// 宿主应用信息（版本、构建号、分发渠道、更新通道）。
     #[serde(default, skip_serializing_if = "SdkAppConfig::is_default")]
     pub app: SdkAppConfig,
@@ -220,7 +203,7 @@ pub struct SdkConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
     /// 单次握手（传输 + TLS + CONNECT_ACK）时限的本机覆盖（秒）。不设时用清单
-    /// `clientPolicy.connectTimeoutMs`（默认 8 秒）；只在联调慢网络或测试时设置。
+    /// 默认 8 秒；只在联调慢网络或测试时设置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connect_timeout_secs: Option<u64>,
     #[serde(default)]
@@ -248,10 +231,10 @@ pub struct SdkConfig {
 }
 
 impl SdkConfig {
-    /// 以接入配置创建配置（其余取默认）。
-    pub fn with_access(access: flare_access::AccessConfig) -> Self {
+    /// Create a configuration with a host-selected deployment.
+    pub fn with_endpoints(endpoints: super::CoreEndpoints) -> Self {
         Self {
-            access: Some(access),
+            endpoints: Some(endpoints),
             ..Self::default()
         }
     }
@@ -261,7 +244,7 @@ impl SdkConfig {
         SdkConfigBuilder::default()
     }
 
-    /// 单次握手时限的本机覆盖（毫秒）；没设置时为 `None`，用清单的 `connectTimeoutMs`。
+    /// 单次握手时限的本机覆盖（毫秒）；未设置时使用默认握手时限。
     pub fn connect_timeout_override_ms(&self) -> Option<u32> {
         self.connect_timeout_secs
             .map(|secs| (secs.clamp(2, 30) * 1_000) as u32)
@@ -405,7 +388,7 @@ mod tests {
         assert_eq!(config.effective_app_version(), None);
         #[cfg(not(target_arch = "wasm32"))]
         assert_eq!(config.effective_distribution(), None);
-        assert!(config.access.is_none());
+        assert!(config.endpoints.is_none());
         let json = serde_json::to_value(&config).unwrap();
         for key in ["app", "access", "ws_url", "http_url", "quic_url"] {
             assert!(json.get(key).is_none(), "{key} in {json}");
@@ -562,12 +545,12 @@ mod tests {
     fn a_default_config_names_no_device() {
         for config in [
             SdkConfig::default(),
-            SdkConfig::with_access(flare_access::AccessConfig::development(
-                flare_access::DevelopmentEndpoints {
-                    ws_url: Some("ws://h/ws".into()),
-                    ..Default::default()
-                },
-            )),
+            SdkConfig::with_endpoints(super::super::CoreEndpoints {
+                base_url: "https://h".into(),
+                websocket_url: "wss://h/ws".into(),
+                quic_url: None,
+                media_base_url: None,
+            }),
             SdkConfig::builder().tenant_id("0").build(),
         ] {
             assert_eq!(config.device_id, None);
@@ -588,8 +571,8 @@ mod tests {
 impl Default for SdkConfig {
     fn default() -> Self {
         Self {
-            // 没有内置地址：连哪里只由接入配置决定（开发模式给 developmentEndpoints）。
-            access: None,
+            // 部署地址由宿主提供。
+            endpoints: None,
             // 版本信息只取宿主的真实值；以前这里写死 "1.0.0"，服务端据此做的版本判断全是错的。
             app: SdkAppConfig::default(),
             tenant_id: Some("0".into()),
@@ -621,9 +604,8 @@ pub struct SdkConfigBuilder {
 }
 
 impl SdkConfigBuilder {
-    /// 设置接入配置（信任根、种子、信任模式；开发模式下的开发端点）。
-    pub fn access(mut self, access: flare_access::AccessConfig) -> Self {
-        self.config.access = Some(access);
+    pub fn endpoints(mut self, endpoints: super::CoreEndpoints) -> Self {
+        self.config.endpoints = Some(endpoints);
         self
     }
     /// 设置默认租户 ID（能力授权 gRPC 与编排器默认 `0` 对齐）。

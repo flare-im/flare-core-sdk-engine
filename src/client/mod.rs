@@ -6,6 +6,7 @@ pub mod api;
 pub mod builder;
 pub mod config;
 pub mod connected_apis;
+pub mod endpoints;
 pub mod events;
 pub mod im_client;
 pub mod lifecycle;
@@ -39,10 +40,9 @@ pub use config::{
     SdkAppConfig, SdkConfig, SdkConfigBuilder, SdkResourceProfile, SdkRuntimeResources,
 };
 pub use connected_apis::ConnectedApis;
+pub use endpoints::{CoreEndpoints, EndpointUpdate};
 pub use flare_core::common::{HeartbeatAppState, TlsConfig};
-pub use im_client::{
-    IMClient, NetworkChangeEvent, PinnedAccessPoint, RuntimeHealthSnapshot, ServerClockEstimate,
-};
+pub use im_client::{IMClient, NetworkChangeEvent, RuntimeHealthSnapshot, ServerClockEstimate};
 pub use lifecycle::{
     LoginDbKind, SdkConfigOverlay, default_sdk_data_root, dev_data_dir_relative_to_cwd,
     merge_sdk_config, parse_data_url_to_path, resolve_connect_token, resolve_sdk_data_root,

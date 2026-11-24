@@ -191,7 +191,8 @@ impl Fixture {
             "201",
             Arc::new(HttpRequestContext::new()),
         )
-        .with_http_transport(HttpClient::new(base));
+        .with_http_transport(HttpClient::new(base.clone()));
+        api.plugin_host.set_file_http(Some(HttpClient::new(base)));
         Self {
             api,
             catalog,

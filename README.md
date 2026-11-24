@@ -100,7 +100,7 @@ brew install protobuf
 
 ## Quick start
 
-> Client apps must not mint tokens: set `SdkConfig::auth.token_endpoint` (builder `auth_token_endpoint`) so the SDK issues and refreshes via the gateway's `/api/v1/auth/tokens`, or pass a token issued by your backend. `generate_core_token` stays only for server-side tooling and tests (see flare-core-server/docs/AUTH-TOKEN-ISSUANCE.md).
+Set `auth` to let the SDK obtain and refresh a connection token from your Core API. If your backend supplies the token, pass it to `login`.
 
 ```rust
 use flare_im_core_sdk::prelude::*;
@@ -108,18 +108,18 @@ use flare_im_core_sdk::prelude::*;
 #[tokio::main]
 async fn main() -> Result<()> {
     let client = IMClient::new();
-    client.init(Some("example".into()), None).await?;
-
-    let token = IMClient::generate_core_token(CoreTokenConfig {
-        secret: "insecure-secret".to_string(),
-        issuer: "flare-im-core".to_string(),
-        user_id: "user_a".to_string(),
-        ttl_secs: 3600,
-        device_id: None,
-        tenant_id: Some("0".to_string()),
-    })?;
+    client.init(None, Some(SdkConfigOverlay {
+        endpoints: Some(CoreEndpoints {
+            base_url: "https://im.example.com".into(),
+            websocket_url: "wss://im.example.com/ws".into(),
+            quic_url: None,
+            media_base_url: None,
+        }),
+        auth: Some(Default::default()),
+        ..Default::default()
+    })).await?;
     let apis = client
-        .login("user_a", Some(&token), LoginDbKind::Sqlite, |_, _| {})
+        .login("user_a", None, LoginDbKind::Sqlite, |_, _| {})
         .await?;
 
     let conversation = apis
@@ -135,6 +135,14 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
+
+`baseUrl` and `websocketUrl` are required. `mediaBaseUrl` defaults to `baseUrl`. Native clients can provide `quicUrl` to attempt QUIC with WebSocket fallback. Browsers use WebSocket. Production uses HTTPS and WSS. Local HTTP and WS require an explicit `environment: "development"`.
+
+Use `client.replace_endpoints` to accept a complete address group for the same deployment. It returns `revision` and `changed`. An HTTP or media-only change reuses the live connection. A transport change closes the old connection, adopts the new group, and resumes sync and the outbox. Observe `endpointRevision` and `phase` through the connection status. Initialize a new session when changing deployment or tenant.
+
+The public build ships messaging, conversations, media, long connections, and the plugin host.
+The commercial runtime owns routing, signed recovery and application updates. It initializes Core with one address group and submits replacements through the same endpoint API.
+The Core plugin host and update-provider interfaces are available to integrators.
 
 ## Binding runtime
 
@@ -233,14 +241,7 @@ call still returns `Ok`.
 
 ### Network recovery
 
-Platform adapters report availability through `connection.notify_network_change`;
-the shared link supervisor owns recovery. On an unavailable → available edge,
-an active session without a surviving connection can move cooling access points
-to half-open and try them once. It retains existing trial ownership and cooldown
-history; a failed trial still reopens the circuit. Repeated available reports do
-not bypass cooldown, and terminal authentication states still require their
-existing recovery action. A surviving connection is probed before resuming its
-outbox. Apps observe connection status and keep drafts; they add no retry loop.
+Platform adapters report network availability through `connection.notify_network_change`. Core probes a surviving connection before it resumes the outbox, and reconnects to the configured transport address when it needs a fresh link. A host can submit a new address group while a session is active. The status event includes the accepted `endpointRevision` so a commercial host can associate a failed attempt with the correct address group.
 
 ## Bindings
 

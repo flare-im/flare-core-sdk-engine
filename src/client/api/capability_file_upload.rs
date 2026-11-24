@@ -138,8 +138,8 @@ fn valid_private_path(value: &str) -> bool {
 /// relative private-path policy is validated separately before URL resolution.
 fn same_private_upload_origin(base: &str, target: &str) -> bool {
     let (Ok(base), Ok(target)) = (
-        flare_access::ParsedUrl::parse(base),
-        flare_access::ParsedUrl::parse(target),
+        flare_access_contract::ParsedUrl::parse(base),
+        flare_access_contract::ParsedUrl::parse(target),
     ) else {
         return false;
     };
@@ -352,12 +352,7 @@ impl CapabilityApi {
                     .as_deref()
                     .filter(|url| valid_private_path(url))
                     .ok_or_else(invalid)?;
-                let http = self
-                    .http
-                    .as_ref()
-                    .ok_or_else(unavailable)?
-                    .for_service(flare_access::ServiceClass::SocialApi)
-                    .without_request_context();
+                let http = self.plugin_host.file_http().ok_or_else(unavailable)?;
                 let base = http.url_for("/").await?;
                 let target = http.url_for(relative).await?;
                 if !same_private_upload_origin(&base, &target) {

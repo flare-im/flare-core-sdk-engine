@@ -1,8 +1,8 @@
 use super::{EventBus, PublishOutcome, RecoverableRwLock, ReportingGuard};
 use crate::kernel::SyncRunContext;
 use crate::kernel::event::{
-    AccessChanged, AccessChanges, ConnectionEvent, ConnectionEventType, ConnectionPhase,
-    ConnectionStatus, CustomEventDefinition, MessageEvent, MessageEventType, SdkEvent, SyncNotify,
+    ConnectionEvent, ConnectionEventType, ConnectionPhase, ConnectionStatus, CustomEventDefinition,
+    MessageEvent, MessageEventType, SdkEvent, SyncNotify,
 };
 use crate::kernel::fsm::SyncState;
 use std::sync::{
@@ -417,19 +417,9 @@ async fn filtered_receiver_skips_unmatched_events() {
     let bus = EventBus::new();
     let mut rx = bus.subscribe_event_type(ConnectionEventType::Status.into());
 
-    bus.publish(SdkEvent::Connection(ConnectionEvent::AccessChanged(
-        AccessChanged {
-            serial: 1,
-            source: "development".into(),
-            stale: false,
-            development_mode: true,
-            changes: AccessChanges {
-                access_points_added: vec!["development".into()],
-                access_points_removed: vec![],
-                policy_changed: true,
-            },
-        },
-    )));
+    bus.publish(SdkEvent::Connection(ConnectionEvent::SyncStateChanged {
+        state: SyncState::Idle,
+    }));
     bus.publish(online());
 
     let received = rx.try_recv().expect("status event emitted");

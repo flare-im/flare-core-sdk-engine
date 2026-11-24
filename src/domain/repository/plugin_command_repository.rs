@@ -12,6 +12,9 @@ pub struct PluginCommand {
     pub command_id: String,
     pub capability_id: String,
     pub conversation_id: Option<String>,
+    /// Original server message of a host-opened bundle detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     pub payload: Value,
     /// Plugin-declared read-only lookup. Frozen with the intent before submit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -44,6 +47,10 @@ impl PluginCommand {
                 .conversation_id
                 .as_ref()
                 .is_some_and(|id| !valid_key(id))
+            || self
+                .message_id
+                .as_ref()
+                .is_some_and(|id| !valid_key(id) || self.conversation_id.is_none())
             || self
                 .reconciliation_capability_id
                 .as_ref()

@@ -42,7 +42,8 @@ Key fields:
 
 | Field | Description |
 |------|-------------|
-| `access` | Where to connect: a signed access manifest (`bootstrapId`, `trustRoots`, `seed`) or, with `trustMode: "development"`, plain `developmentEndpoints`. Endpoints, protocol order and timeouts all come from here; there are no single-address fields |
+| `endpoints` | Self-hosted Core addresses. Requires `baseUrl` and `websocketUrl`. Accepts `quicUrl` and `mediaBaseUrl` when provided |
+| `access` | Legacy access configuration. Use either `endpoints` or `access` |
 | `app` | `version` / `build` / `distribution` / `channel` / `buildId` / `target` / `locale`; platform packages fill the keys the host leaves out |
 | `auth` | Present (even `{}`) means SDK-managed tokens issued on the Core API; `tokenEndpoint` is an optional relative path |
 | `connectTimeoutSecs` | Optional local override of one handshake, clamped to 2–30 |

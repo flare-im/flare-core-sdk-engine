@@ -1,3 +1,6 @@
+#[path = "common/core_endpoints.rs"]
+mod core_endpoints;
+
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::Path;
@@ -142,19 +145,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let alice = IMClient::new();
     let bob = IMClient::new();
     let overlay = SdkConfigOverlay {
-        access: Some(AccessConfig::development(DevelopmentEndpoints {
-            ws_url: Some(ws_url.clone()),
-            ..Default::default()
-        })),
+        endpoints: Some(core_endpoints::for_websocket(ws_url.clone())),
         tenant_id: Some(tenant_id.clone()),
         ack_max_in_flight: Some(ack_max_in_flight),
         ..Default::default()
     };
     alice
-        .init(Some(format!("{run}-alice-app")), Some(overlay.clone()))
+        .init(Some("development".into()), Some(overlay.clone()))
         .await?;
-    bob.init(Some(format!("{run}-bob-app")), Some(overlay))
-        .await?;
+    bob.init(Some("development".into()), Some(overlay)).await?;
 
     let alice_token = IMClient::generate_core_token(CoreTokenConfig {
         secret: secret.clone(),

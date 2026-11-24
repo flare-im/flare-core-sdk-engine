@@ -8,7 +8,12 @@
 #![recursion_limit = "256"]
 #![cfg_attr(
     not(test),
-    deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
+    deny(
+        clippy::await_holding_lock,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_used
+    )
 )]
 
 // Internal modules stay crate-private; public facades below own the SDK surface.
@@ -43,23 +48,8 @@ pub use serde_json;
 /// Reading JSON text the way the browser bundle keeps small ([`shared::util::json`]).
 pub use shared::util::json;
 
-/// Event subscription and SDK event payload facade.
-/// 客户端链路：接入配置、接入运行时与诊断数据、HTTP 路由（社交 SDK 等经它按服务路由与带幂等键重试）。
-pub mod link {
-    pub use crate::infrastructure::transport::http::fetch::PlatformHttpFetch;
-    pub use crate::infrastructure::transport::http::router::{
-        HttpRouter, IDEMPOTENCY_KEY_HEADER, new_idempotency_key,
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    #[doc(hidden)]
-    pub use crate::runtime::link::{AccessLab, DialRewrite};
-    pub use crate::runtime::link::{
-        AccessPointDto, AccessRuntime, AccessStatusDto, AccessStoreSource, AccessUnavailable,
-        ConnectAckSummary, RecoveringStatus, RecoveryImportDto, RefreshAttemptDto,
-        RefreshReportDto, RefreshStatus,
-    };
-    pub use flare_access;
-}
+/// Wire types used by an optional application update provider.
+pub use flare_access_contract::update;
 
 pub mod event {
     pub use crate::domain::SendFailure;
@@ -159,11 +149,11 @@ pub mod prelude {
     };
     pub use crate::client::{
         CapabilityApi, CapabilityDescriptorDto, CapabilityDispatchResult, ConnectedApis,
-        ConversationApi, CoreTokenConfig, CreateLocationRequest, CreateRichDocRequest,
-        CreateStickerRequest, EditRichDocRequest, IMClient, IMClientBuilder, LoginDbKind, MediaApi,
-        MessageApi, MessageBuildApi, NetworkChangeEvent, PinnedAccessPoint, RuntimeHealthSnapshot,
-        SdkAppConfig, SdkConfig, SdkConfigBuilder, SdkConfigOverlay, SdkResourceProfile,
-        SdkRuntimeResources, ServerClockEstimate, TlsConfig,
+        ConversationApi, CoreEndpoints, CoreTokenConfig, CreateLocationRequest,
+        CreateRichDocRequest, CreateStickerRequest, EditRichDocRequest, EndpointUpdate, IMClient,
+        IMClientBuilder, LoginDbKind, MediaApi, MessageApi, MessageBuildApi, NetworkChangeEvent,
+        RuntimeHealthSnapshot, SdkAppConfig, SdkConfig, SdkConfigBuilder, SdkConfigOverlay,
+        SdkResourceProfile, SdkRuntimeResources, ServerClockEstimate, TlsConfig,
     };
     pub use crate::domain::{
         ConversationStore, DEFAULT_MEDIA_CACHE_MAX_BYTES, MediaCacheEntryVo, MediaCacheStatsVo,
@@ -203,8 +193,7 @@ pub mod prelude {
         unwrap_optional_api_response, unwrap_void_api_response,
     };
     pub use crate::kernel::event::{
-        AccessChanged, AccessSwitched, ActionRequiredReason, ConnectionPhase, ConnectionStatus,
-        LinkQuality, SwitchReason,
+        ActionRequiredReason, ConnectionPhase, ConnectionStatus, LinkQuality, SwitchReason,
     };
     pub use crate::kernel::event::{
         ConnectionEvent, ConnectionEventType, ConversationEvent, ConversationEventType,
@@ -252,5 +241,4 @@ pub mod prelude {
         HistogramSnapshot, InMemoryMetricsSink, MetricLabel, MetricsRecorder, MetricsSink,
         MetricsSnapshot,
     };
-    pub use flare_access::{AccessConfig, DevelopmentAccessPoint, DevelopmentEndpoints, TrustMode};
 }

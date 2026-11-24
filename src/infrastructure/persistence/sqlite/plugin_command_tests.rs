@@ -16,6 +16,7 @@ fn command(id: &str) -> PluginCommand {
         command_id: id.into(),
         capability_id: "example.create".into(),
         conversation_id: Some("c1".into()),
+        message_id: None,
         payload: json!({"commandId":id,"amount":"500"}),
         terminal_error_codes: Vec::new(),
         reconciliation_capability_id: None,

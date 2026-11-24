@@ -4,18 +4,8 @@
 //! C `flare_sdk_init` accepts UTF-8 JSON matching [flare_im_core_sdk::client::SdkConfigOverlay].
 //! Optional wrapper: `{ "environment": "...", "sdkConfig": { ... } }` via `flare_sdk_invoke_json("client.init", ...)`.
 
-/// Example SdkConfigOverlay JSON (development access endpoints + app info).
+/// Example SdkConfigOverlay JSON (self-hosted Core endpoints + app info).
 pub const FLARE_SDK_CONFIG_EXAMPLE_JSON: &str = r#"{
-  "access": {
-    "developmentEndpoints": {
-      "coreApiUrl": "http://localhost:50050",
-      "mediaUrl": "http://localhost:50050",
-      "quicUrl": "quic://localhost:60052",
-      "socialApiUrl": "http://localhost:9300",
-      "wsUrl": "ws://localhost:60051"
-    },
-    "trustMode": "development"
-  },
   "app": {
     "build": 30201,
     "channel": "stable",
@@ -26,5 +16,9 @@ pub const FLARE_SDK_CONFIG_EXAMPLE_JSON: &str = r#"{
     "tokenEndpoint": "/api/v1/auth/tokens"
   },
   "connectTimeoutSecs": 8,
+  "endpoints": {
+    "baseUrl": "http://localhost:50050",
+    "websocketUrl": "ws://localhost:60051"
+  },
   "tlsCaCertPath": "certs/server.crt"
 }"#;

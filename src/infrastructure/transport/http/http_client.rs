@@ -9,8 +9,6 @@ use super::http_client_wasm as wasm_http;
 #[cfg(not(target_arch = "wasm32"))]
 use super::http_error_from_response_status;
 #[cfg(not(target_arch = "wasm32"))]
-use super::ip_hints::IpHintResolver;
-#[cfg(not(target_arch = "wasm32"))]
 use crate::shared::error::ErrorCode;
 use crate::shared::error::{FlareError, Result};
 use base64::Engine as _;
@@ -1263,59 +1261,6 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
-    async fn an_https_connect_failure_tries_another_address_for_the_original_host() {
-        use std::time::Duration;
-        use tokio::io::AsyncReadExt;
-        use tokio::net::TcpListener;
-
-        let host = "im-gateway.invalid";
-        let primary = TcpListener::bind("[::1]:0").await.unwrap();
-        let first = primary.local_addr().unwrap();
-        let alternate = TcpListener::bind(("127.0.0.1", first.port()))
-            .await
-            .unwrap();
-        let expect_tls = |listener: TcpListener| {
-            tokio::spawn(async move {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut header = [0; 5];
-                stream.read_exact(&mut header).await.unwrap();
-                assert_eq!(
-                    &header[..2],
-                    &[0x16, 0x03],
-                    "TLS must precede any HTTP data"
-                );
-            })
-        };
-        let received_primary = expect_tls(primary);
-        let received_alternate = expect_tls(alternate);
-        let mut client = super::HttpClient::new(format!("https://{host}:{}", first.port()));
-        client.client = reqwest::Client::builder()
-            .no_proxy()
-            .resolve(host, first)
-            .build()
-            .unwrap();
-        client.ip_hint_resolver = Some(std::sync::Arc::new(super::IpHintResolver::for_host(
-            host,
-            vec![first.ip(), "127.0.0.1".parse().unwrap()],
-            Duration::from_secs(2),
-        )));
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            client.get::<serde_json::Value>("/probe", None),
-        )
-        .await
-        .expect("failed connectors must terminate");
-        assert!(result.is_err(), "both test endpoints close during TLS");
-        tokio::time::timeout(Duration::from_secs(1), async {
-            received_primary.await.unwrap();
-            received_alternate.await.unwrap();
-        })
-        .await
-        .expect("both addresses must receive a handshake");
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
     async fn a_request_that_never_left_is_marked_network_unreachable() {
         // 1 号端口没人监听：连接被拒，请求没发出去。
         let client = super::HttpClient::new("http://127.0.0.1:1");
@@ -1353,119 +1298,6 @@ mod tests {
         );
     }
 
-    /// 跑一条发送路径，对着只回 TLS 告警的服务端：DoH 要被问到一次。主机名直接指到本机，解析这一步
-    /// 不会要求查询，看到的只有发送失败之后的要求。
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn asks_doh_after_a_tls_failure<F, T>(
-        target: impl FnOnce(u16) -> String,
-        send: impl FnOnce(super::HttpClient, String) -> F,
-    ) where
-        F: std::future::Future<Output = crate::shared::error::Result<T>>,
-    {
-        use super::super::doh::tests::{scripted_doh, settle, tls_alert_server};
-        use super::super::router::HttpRouter;
-        use crate::runtime::link::{AccessRuntime, AccessStoreSource};
-
-        let (port, server) = tls_alert_server().await;
-        let (cache, lookup) = scripted_doh(vec!["198.51.100.20".parse().unwrap()]);
-        let config = flare_access::AccessConfig::development(flare_access::DevelopmentEndpoints {
-            ws_url: Some("ws://127.0.0.1:1/ws".into()),
-            social_api_url: Some(format!("https://{DOH_TEST_HOST}:{port}")),
-            ..Default::default()
-        });
-        let access =
-            AccessRuntime::new(Some(config), AccessStoreSource::memory()).with_doh_cache(cache);
-        let direct = reqwest::Client::builder()
-            .no_proxy()
-            .resolve(DOH_TEST_HOST, ([127, 0, 0, 1], port).into())
-            .build()
-            .unwrap();
-        let mut http = super::HttpClient::new("http://unused");
-        http.router = Some(HttpRouter::new(
-            std::sync::Arc::new(access),
-            flare_access::ServiceClass::SocialApi,
-        ));
-        http.client = direct.clone();
-        http.private_clients
-            .lock()
-            .unwrap()
-            .insert(Vec::new(), Ok(direct));
-
-        let error = send(http, target(port))
-            .await
-            .err()
-            .expect("the server only answers with an alert");
-        settle().await;
-        assert_eq!(lookup.calls(), 1, "{error:?}");
-        server.abort();
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    const DOH_TEST_HOST: &str = "ap-1.flare.invalid";
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn object_url(port: u16) -> String {
-        format!("https://{DOH_TEST_HOST}:{port}/object")
-    }
-
-    /// 主请求循环之外的发送路径同样报：媒体上传下载、私有传输都在这里。
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
-    async fn every_full_url_send_path_reports_a_tls_failure_to_doh() {
-        use std::collections::HashMap;
-
-        let no_headers = HashMap::new;
-        asks_doh_after_a_tls_failure(object_url, |http, url| async move {
-            http.get_bytes_direct_url(&url).await
-        })
-        .await;
-        asks_doh_after_a_tls_failure(object_url, |http, url| async move {
-            http.get_response_direct_url(&url).await
-        })
-        .await;
-        asks_doh_after_a_tls_failure(object_url, |http, url| async move {
-            http.put_bytes_full_url_with_progress(&url, b"data", &no_headers(), None)
-                .await
-        })
-        .await;
-        asks_doh_after_a_tls_failure(object_url, |http, url| async move {
-            let file = std::env::temp_dir().join(format!("flare-doh-{}", uuid::Uuid::new_v4()));
-            tokio::fs::write(&file, b"data").await.unwrap();
-            let sent = http
-                .put_file_full_url_with_progress(&url, &file, 4, &no_headers(), None)
-                .await;
-            let _ = tokio::fs::remove_file(&file).await;
-            sent
-        })
-        .await;
-        asks_doh_after_a_tls_failure(object_url, |http, url| async move {
-            http.put_private_bytes_full_url(&url, b"data", "text/plain", 8)
-                .await
-        })
-        .await;
-        asks_doh_after_a_tls_failure(object_url, |http, url| async move {
-            http.get_private_bytes_full_url(&url, &no_headers(), 8)
-                .await
-        })
-        .await;
-    }
-
-    /// 走选路的两条：主请求循环和 `send_bytes`。主请求循环失败后换接入点重试一次，目录里只有这一个。
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
-    async fn the_routed_send_paths_report_a_tls_failure_to_doh() {
-        let path = |_port: u16| "/api/v1/ping".to_owned();
-        asks_doh_after_a_tls_failure(path, |http, path| async move {
-            http.send_bytes(&path, b"data").await
-        })
-        .await;
-        asks_doh_after_a_tls_failure(path, |http, path| async move {
-            http.get::<serde_json::Value>(&path, None).await
-        })
-        .await;
-    }
-
-    /// 接入点钉扎各自一个客户端（克隆间共享缓存）；钉扎无效时报配置错误，不退回只做 CA 校验的客户端。
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn access_point_pins_get_their_own_client_and_never_fall_back() {
@@ -1513,8 +1345,6 @@ pub struct HttpClient {
     #[cfg(not(target_arch = "wasm32"))]
     tls: CoreTlsConfig,
     /// 路由客户端的 DNS 解析器（DNS 失败或结果可疑时按接入点的 `ipHints` 直连）。固定入口没有接入点，不用它。
-    #[cfg(not(target_arch = "wasm32"))]
-    ip_hint_resolver: Option<Arc<IpHintResolver>>,
     /// 按钉扎集合缓存的客户端（克隆共享）：同一接入点的请求复用连接池。
     #[cfg(not(target_arch = "wasm32"))]
     pinned_clients: Arc<std::sync::Mutex<HashMap<Vec<String>, PinnedClient>>>,
@@ -1534,11 +1364,8 @@ const MAX_PINNED_CLIENTS: usize = 32;
 
 impl HttpClient {
     #[cfg(not(target_arch = "wasm32"))]
-    fn build_reqwest_client(
-        tls: Option<&CoreTlsConfig>,
-        ip_hint_resolver: Option<&Arc<IpHintResolver>>,
-    ) -> (reqwest::Client, Option<String>) {
-        let (builder, tls_config_error) = Self::reqwest_builder(tls, ip_hint_resolver);
+    fn build_reqwest_client(tls: Option<&CoreTlsConfig>) -> (reqwest::Client, Option<String>) {
+        let (builder, tls_config_error) = Self::reqwest_builder(tls);
         let client = match builder.build() {
             Ok(client) => client,
             Err(err) => {
@@ -1550,10 +1377,7 @@ impl HttpClient {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn reqwest_builder(
-        tls: Option<&CoreTlsConfig>,
-        ip_hint_resolver: Option<&Arc<IpHintResolver>>,
-    ) -> (reqwest::ClientBuilder, Option<String>) {
+    fn reqwest_builder(tls: Option<&CoreTlsConfig>) -> (reqwest::ClientBuilder, Option<String>) {
         // 时限与 wasm 端共用一份（`super::HTTP_REQUEST_TIMEOUT`），两端行为不再各自漂移。
         let mut builder = reqwest::Client::builder()
             .no_proxy()
@@ -1562,9 +1386,6 @@ impl HttpClient {
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(super::HTTP_CONNECT_TIMEOUT)
             .timeout(super::HTTP_REQUEST_TIMEOUT);
-        if let Some(resolver) = ip_hint_resolver {
-            builder = builder.dns_resolver(resolver.clone());
-        }
         let mut tls_config_error = None;
         if let Some(tls) = tls
             && tls.requires_custom_client_tls()
@@ -1583,7 +1404,7 @@ impl HttpClient {
 
     pub fn new(base_url: impl Into<String>) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
-        let (client, tls_config_error) = Self::build_reqwest_client(None, None);
+        let (client, tls_config_error) = Self::build_reqwest_client(None);
         Self {
             base_url: base_url.into(),
             context: None,
@@ -1598,7 +1419,6 @@ impl HttpClient {
             #[cfg(not(target_arch = "wasm32"))]
             tls: CoreTlsConfig::none(),
             #[cfg(not(target_arch = "wasm32"))]
-            ip_hint_resolver: None,
             #[cfg(not(target_arch = "wasm32"))]
             pinned_clients: Arc::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1608,7 +1428,7 @@ impl HttpClient {
 
     pub fn with_context(base_url: impl Into<String>, context: Arc<HttpRequestContext>) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
-        let (client, tls_config_error) = Self::build_reqwest_client(None, None);
+        let (client, tls_config_error) = Self::build_reqwest_client(None);
         Self {
             base_url: base_url.into(),
             context: Some(context),
@@ -1623,7 +1443,6 @@ impl HttpClient {
             #[cfg(not(target_arch = "wasm32"))]
             tls: CoreTlsConfig::none(),
             #[cfg(not(target_arch = "wasm32"))]
-            ip_hint_resolver: None,
             #[cfg(not(target_arch = "wasm32"))]
             pinned_clients: Arc::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1635,7 +1454,7 @@ impl HttpClient {
     /// login and token refresh, that verifies the server with `tls`.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_tls(base_url: impl Into<String>, tls: CoreTlsConfig) -> Self {
-        let (client, tls_config_error) = Self::build_reqwest_client(Some(&tls), None);
+        let (client, tls_config_error) = Self::build_reqwest_client(Some(&tls));
         Self {
             base_url: base_url.into(),
             context: None,
@@ -1646,7 +1465,6 @@ impl HttpClient {
             client,
             tls_config_error,
             tls,
-            ip_hint_resolver: None,
             pinned_clients: Arc::default(),
             private_clients: Arc::default(),
         }
@@ -1658,7 +1476,7 @@ impl HttpClient {
         context: Arc<HttpRequestContext>,
         tls: CoreTlsConfig,
     ) -> Self {
-        let (client, tls_config_error) = Self::build_reqwest_client(Some(&tls), None);
+        let (client, tls_config_error) = Self::build_reqwest_client(Some(&tls));
         Self {
             base_url: base_url.into(),
             context: Some(context),
@@ -1669,23 +1487,19 @@ impl HttpClient {
             client,
             tls_config_error,
             tls,
-            ip_hint_resolver: None,
             pinned_clients: Arc::default(),
             private_clients: Arc::default(),
         }
     }
 
-    /// 按服务路由的客户端（引擎内各 API 与社交 SDK 都用它）：每次请求按服务类型取接入点。
-    /// `tls` 是信任根（不含钉扎）；选中接入点的 SPKI 钉扎按请求叠加。主机名 DNS 失败或结果可疑时按
-    /// 接入点的 `ipHints` 直连，TLS 仍按主机名。
+    /// A Core HTTP client that reads the current endpoints before each request.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn routed(
+    pub(crate) fn routed(
         router: super::router::HttpRouter,
         context: Arc<HttpRequestContext>,
         tls: CoreTlsConfig,
     ) -> Self {
-        let resolver = Arc::new(router.ip_hint_resolver());
-        let (client, tls_config_error) = Self::build_reqwest_client(Some(&tls), Some(&resolver));
+        let (client, tls_config_error) = Self::build_reqwest_client(Some(&tls));
         Self {
             base_url: String::new(),
             context: Some(context),
@@ -1696,7 +1510,6 @@ impl HttpClient {
             client,
             tls_config_error,
             tls,
-            ip_hint_resolver: Some(resolver),
             pinned_clients: Arc::default(),
             private_clients: Arc::default(),
         }
@@ -1704,29 +1517,22 @@ impl HttpClient {
 
     /// 按服务路由的客户端（浏览器）。TLS 与证书校验由浏览器负责，接入点的钉扎在这里不生效。
     #[cfg(target_arch = "wasm32")]
-    pub fn routed(router: super::router::HttpRouter, context: Arc<HttpRequestContext>) -> Self {
+    pub(crate) fn routed(
+        router: super::router::HttpRouter,
+        context: Arc<HttpRequestContext>,
+    ) -> Self {
         let mut client = Self::with_context(String::new(), context);
         client.router = Some(router);
         client
     }
 
-    /// 同一接入运行时、另一类服务（例如媒体）的路由客户端；固定入口的客户端原样复制。
-    pub fn for_service(&self, service: flare_access::ServiceClass) -> Self {
-        let mut client = self.clone();
+    pub(crate) fn for_media(&self) -> Self {
+        let mut client = self.anonymous_clone();
         client.router = self
             .router
             .as_ref()
-            .map(|router| router.for_service(service));
-        match service {
-            flare_access::ServiceClass::CoreApi => client.with_core_bearer(),
-            flare_access::ServiceClass::SocialApi => {
-                client.core_bearer = false;
-                client
-            }
-            flare_access::ServiceClass::Media | flare_access::ServiceClass::Im => {
-                client.anonymous_clone()
-            }
-        }
+            .map(|router| router.for_service(super::router::CoreHttpService::Media));
+        client
     }
 
     pub fn is_routed(&self) -> bool {
@@ -1742,7 +1548,7 @@ impl HttpClient {
     }
 
     /// 带幂等键的 POST：重试（换接入点、结果未知后再发）都复用同一个键，服务端按键返回首次结果。
-    /// 键由调用方为「一次用户操作」生成一次（见 [`super::router::new_idempotency_key`]）。
+    /// 键由调用方为「一次用户操作」生成一次（见 [`super::new_idempotency_key`]）。
     pub async fn post_idempotent<B, T>(
         &self,
         path: &str,
@@ -1754,7 +1560,7 @@ impl HttpClient {
         T: serde::de::DeserializeOwned,
     {
         let headers = HashMap::from([(
-            super::router::IDEMPOTENCY_KEY_HEADER.to_owned(),
+            super::IDEMPOTENCY_KEY_HEADER.to_owned(),
             idempotency_key.to_owned(),
         )]);
         self.post_with_headers(path, body, &headers).await
@@ -1836,14 +1642,6 @@ impl HttpClient {
         &self.base_url
     }
 
-    /// 一次发送失败了：是 TLS 失败或建连超时时让 DoH 查一次主机。固定入口没有接入点，不查。
-    #[cfg(not(target_arch = "wasm32"))]
-    fn note_send_failure(&self, error: &reqwest::Error) {
-        if let Some(router) = &self.router {
-            router.note_send_failure(error);
-        }
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     fn ensure_tls_ready(&self) -> Result<()> {
         if let Some(error) = &self.tls_config_error {
@@ -1873,8 +1671,7 @@ impl HttpClient {
                 cache.clear();
             }
             let tls = self.tls.clone().with_spki_sha256_pins(key.clone());
-            let built = match Self::build_reqwest_client(Some(&tls), self.ip_hint_resolver.as_ref())
-            {
+            let built = match Self::build_reqwest_client(Some(&tls)) {
                 (_, Some(error)) => Err(error),
                 (client, None) => Ok(client),
             };
@@ -1889,24 +1686,15 @@ impl HttpClient {
         }
     }
 
-    /// 完整 URL（预签名直链等）的客户端：主机属于某个接入点时带上它的钉扎。
     #[cfg(not(target_arch = "wasm32"))]
-    fn client_for_url(&self, url: &str) -> Result<reqwest::Client> {
-        match &self.router {
-            Some(router) => self.client_for(&router.spki_pins_for_url(url)),
-            None => Ok(self.client.clone()),
-        }
+    fn client_for_url(&self, _url: &str) -> Result<reqwest::Client> {
+        self.client_for(&[])
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn private_client_for_url(&self, url: &str) -> Result<reqwest::Client> {
+    fn private_client_for_url(&self, _url: &str) -> Result<reqwest::Client> {
         self.ensure_tls_ready()?;
-        let mut pins = self
-            .router
-            .as_ref()
-            .map(|router| router.spki_pins_for_url(url))
-            .unwrap_or_default();
-        pins.sort();
+        let pins = Vec::new();
         let mut cache = self
             .private_clients
             .lock()
@@ -1918,8 +1706,7 @@ impl HttpClient {
             .entry(pins)
             .or_insert_with_key(|pins| {
                 let tls = self.tls.clone().with_spki_sha256_pins(pins.clone());
-                let (builder, tls_error) =
-                    Self::reqwest_builder(Some(&tls), self.ip_hint_resolver.as_ref());
+                let (builder, tls_error) = Self::reqwest_builder(Some(&tls));
                 if tls_error.is_some() {
                     Err("private HTTP TLS configuration unavailable".to_owned())
                 } else {
@@ -1980,7 +1767,7 @@ impl HttpClient {
             })?;
         }
         // 带 userinfo 的地址在解析时就被拒绝。
-        let target = flare_access::ParsedUrl::parse(url).map_err(|_| {
+        let target = flare_access_contract::ParsedUrl::parse(url).map_err(|_| {
             FlareError::localized(
                 crate::shared::error::ErrorCode::InvalidParameter,
                 "invalid private upload URL",
@@ -2009,7 +1796,6 @@ impl HttpClient {
                 request = request.header(name.as_str(), value.as_str());
             }
             let response = request.body(data.to_vec()).send().await.map_err(|error| {
-                self.note_send_failure(&error);
                 FlareError::localized(
                     if error.is_timeout() {
                         crate::shared::error::ErrorCode::OperationTimeout
@@ -2063,10 +1849,10 @@ impl HttpClient {
             for (key, value) in explicit_headers {
                 request = request.header(key, value);
             }
-            let mut response = request.send().await.map_err(|error| {
-                self.note_send_failure(&error);
-                private::transport(error.is_timeout())
-            })?;
+            let mut response = request
+                .send()
+                .await
+                .map_err(|error| private::transport(error.is_timeout()))?;
             if !response.status().is_success() {
                 return Err(private::rejected(response.status().as_u16()));
             }
@@ -2386,10 +2172,10 @@ impl HttpClient {
             }
             req = req.header(key, value);
         }
-        let resp = req.send().await.map_err(|e| {
-            self.note_send_failure(&e);
-            FlareError::system(format!("http put bytes failed: {e}"))
-        })?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| FlareError::system(format!("http put bytes failed: {e}")))?;
         let status = resp.status();
         if !status.is_success() {
             return Err(FlareError::general_error(format!(
@@ -2445,10 +2231,10 @@ impl HttpClient {
             }
         }
         req = req.header(reqwest::header::CONTENT_LENGTH, content_len.to_string());
-        let resp = req.send().await.map_err(|e| {
-            self.note_send_failure(&e);
-            FlareError::system(format!("http put file failed: {e}"))
-        })?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| FlareError::system(format!("http put file failed: {e}")))?;
         let status = resp.status();
         if !status.is_success() {
             return Err(FlareError::general_error(format!(
@@ -2564,10 +2350,7 @@ impl HttpClient {
             .get(url)
             .send()
             .await
-            .map_err(|e| {
-                self.note_send_failure(&e);
-                FlareError::system(format!("http get bytes failed: {e}"))
-            })?;
+            .map_err(|e| FlareError::system(format!("http get bytes failed: {e}")))?;
         let status = resp.status();
         if !status.is_success() {
             return Err(FlareError::general_error(format!(
@@ -2588,10 +2371,7 @@ impl HttpClient {
             .get(url)
             .send()
             .await
-            .map_err(|e| {
-                self.note_send_failure(&e);
-                FlareError::system(format!("http get stream failed: {e}"))
-            })?;
+            .map_err(|e| FlareError::system(format!("http get stream failed: {e}")))?;
         let status = resp.status();
         if !status.is_success() {
             return Err(FlareError::general_error(format!(
@@ -2605,15 +2385,12 @@ impl HttpClient {
     pub async fn send_bytes(&self, path: &str, data: &[u8]) -> Result<Vec<u8>> {
         let resolved = self.resolve(&RequestTarget::path(path), &[], None).await?;
         let resp = self
-            .client_for(&resolved.spki_pins)?
+            .client_for(&[])?
             .post(resolved.url)
             .body(data.to_vec())
             .send()
             .await
-            .map_err(|e| {
-                self.note_send_failure(&e);
-                FlareError::system(format!("http send_bytes failed: {e}"))
-            })?;
+            .map_err(|e| FlareError::system(format!("http send_bytes failed: {e}")))?;
         let status = resp.status();
         if !status.is_success() {
             return Err(FlareError::general_error(format!(
@@ -2997,20 +2774,14 @@ impl HttpClient {
         self.validate_credential_headers(extra)?;
         let safety = method_safety(method, has_idempotency_key(extra));
         let content_type = body.as_ref().map(|_| "application/json");
-        let mut excluded: Vec<String> = Vec::new();
-        let mut pinned: Option<String> = None;
+        let mut excluded: Vec<u32> = Vec::new();
+        let mut pinned: Option<u32> = None;
         let mut retried = false;
         let mut renewed = false;
         loop {
-            let resolved = self.resolve(target, &excluded, pinned.as_deref()).await?;
+            let resolved = self.resolve(target, &excluded, pinned).await?;
             let headers = self.context_headers(core_epoch).await?;
             let sent = self.core_bearer_in_headers(&headers, extra);
-            let mut request_headers = extra.clone();
-            if let Some(ap) = resolved.access_point.as_deref() {
-                request_headers
-                    .insert(super::router::ACCESS_POINT_HEADER.to_owned(), ap.to_owned());
-            }
-            let started = crate::shared::util::now_millis();
             self.ensure_request_scope(core_epoch).await?;
             let outcome = wasm_http::fetch_bytes(
                 method,
@@ -3019,13 +2790,12 @@ impl HttpClient {
                 body.clone(),
                 content_type,
                 headers,
-                Some(&request_headers),
+                Some(extra),
             )
             .await;
             self.ensure_request_scope(core_epoch).await?;
             let error = match outcome {
                 Ok(bytes) => {
-                    resolved.record_success(started);
                     return Ok(bytes);
                 }
                 Err(error) => error,
@@ -3058,7 +2828,6 @@ impl HttpClient {
                 _ => Some(HttpFailure::Uncertain),
             };
             let Some(failure) = failure else {
-                resolved.record_response();
                 return Err(error);
             };
             let error = match failure {
@@ -3067,19 +2836,19 @@ impl HttpClient {
                 }
                 _ => error,
             };
-            resolved.record_failure(failure);
+
             if !self.retry_enabled || retried {
                 return Err(error);
             }
             retried = true;
             match retry_decision(safety, failure) {
-                HttpRetry::OtherAccessPoint => {
-                    if let Some(ap) = resolved.access_point {
-                        excluded.push(ap.to_string());
+                HttpRetry::AfterEndpointReplacement => {
+                    if let Some(ap) = resolved.revision {
+                        excluded.push(ap);
                     }
                 }
-                HttpRetry::SameAccessPointAfter { delay_ms } => {
-                    pinned = resolved.access_point.map(|ap| ap.to_string());
+                HttpRetry::AfterOverload { delay_ms } => {
+                    pinned = resolved.revision;
                     crate::shared::util::delay(std::time::Duration::from_millis(delay_ms)).await;
                 }
                 HttpRetry::AfterBackoff { delay_ms } => {
@@ -3203,15 +2972,15 @@ impl HttpClient {
         self.validate_credential_headers(headers)?;
         self.ensure_tls_ready()?;
         let safety = method_safety(method.as_str(), has_idempotency_key(headers));
-        let mut excluded: Vec<String> = Vec::new();
-        let mut pinned: Option<String> = None;
+        let mut excluded: Vec<u32> = Vec::new();
+        let mut pinned: Option<u32> = None;
         let mut retried = false;
         let mut renewed = false;
         loop {
-            let resolved = self.resolve(&target, &excluded, pinned.as_deref()).await?;
+            let resolved = self.resolve(&target, &excluded, pinned).await?;
             let context_headers = self.context_headers(core_epoch).await?;
             let sent = self.core_bearer_in_headers(&context_headers, headers);
-            let started = crate::shared::util::now_millis();
+
             self.ensure_request_scope(core_epoch).await?;
             let sent_result = self
                 .send_native(
@@ -3221,7 +2990,6 @@ impl HttpClient {
                     body,
                     &context_headers,
                     headers,
-                    core_epoch,
                 )
                 .await;
             self.ensure_request_scope(core_epoch).await?;
@@ -3229,7 +2997,6 @@ impl HttpClient {
                 // 接入点的钉扎本身无效：这个接入点建不起受信连接，按 TLS 失败换下一个。
                 Err(error) => (HttpFailure::Tls, error),
                 Ok(Ok(resp)) if resp.status().is_success() => {
-                    resolved.record_success(started);
                     let result = resp
                         .json()
                         .await
@@ -3268,13 +3035,11 @@ impl HttpClient {
                         ),
                         Some(failure) => (failure, error),
                         None => {
-                            resolved.record_response();
                             return Err(error);
                         }
                     }
                 }
                 Ok(Err(error)) => {
-                    self.note_send_failure(&error);
                     // 证书或钉扎不符同样发生在连接阶段，单独认出来，健康簿记作 TLS 失败。
                     let failure = if super::router::is_tls_failure(&error) {
                         HttpFailure::Tls
@@ -3289,19 +3054,19 @@ impl HttpClient {
                     (failure, send_failure(error))
                 }
             };
-            resolved.record_failure(failure);
+
             if !self.retry_enabled || retried {
                 return Err(error);
             }
             retried = true;
             match retry_decision(safety, failure) {
-                HttpRetry::OtherAccessPoint => {
-                    if let Some(ap) = resolved.access_point {
-                        excluded.push(ap.to_string());
+                HttpRetry::AfterEndpointReplacement => {
+                    if let Some(ap) = resolved.revision {
+                        excluded.push(ap);
                     }
                 }
-                HttpRetry::SameAccessPointAfter { delay_ms } => {
-                    pinned = resolved.access_point.map(|ap| ap.to_string());
+                HttpRetry::AfterOverload { delay_ms } => {
+                    pinned = resolved.revision;
                     crate::shared::util::delay(Duration::from_millis(delay_ms)).await;
                 }
                 HttpRetry::AfterBackoff { delay_ms } => {
@@ -3325,12 +3090,11 @@ impl HttpClient {
         body: Option<&B>,
         context_headers: &HashMap<String, String>,
         headers: &HashMap<String, String>,
-        core_epoch: Option<u64>,
     ) -> Result<std::result::Result<reqwest::Response, reqwest::Error>>
     where
         B: serde::Serialize + ?Sized,
     {
-        let client = self.client_for(&resolved.spki_pins)?;
+        let client = self.client_for(&[])?;
         let mut req = client.request(method, &resolved.url);
         for (key, value) in context_headers {
             req = req.header(key, value);
@@ -3341,9 +3105,6 @@ impl HttpClient {
         for (key, value) in headers {
             req = req.header(key, value);
         }
-        if let Some(ap) = resolved.access_point.as_deref() {
-            req = req.header(super::router::ACCESS_POINT_HEADER, ap);
-        }
         if let Some(b) = body {
             req = req.json(b);
         }
@@ -3351,124 +3112,35 @@ impl HttpClient {
             Ok(request) => request,
             Err(error) => return Ok(Err(error)),
         };
-        let retry = request.try_clone();
         let first = client.execute(request).await;
-        match (first, retry, self.ip_hint_resolver.as_ref()) {
-            (Err(error), Some(request), Some(resolver))
-                if error.is_connect() && request.url().scheme() == "https" =>
-            {
-                self.try_other_addresses(resolver, request, &resolved.spki_pins, core_epoch, error)
-                    .await
-            }
-            (result, _, _) => Ok(result),
-        }
-    }
-
-    /// A connector error guarantees that HTTP headers and the body were never
-    /// sent. Retry only that phase, retaining the original authority and TLS
-    /// configuration even for one-use authentication requests.
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn try_other_addresses(
-        &self,
-        resolver: &IpHintResolver,
-        request: reqwest::Request,
-        pins: &[String],
-        core_epoch: Option<u64>,
-        mut last: reqwest::Error,
-    ) -> Result<std::result::Result<reqwest::Response, reqwest::Error>> {
-        let Some(host) = request.url().domain() else {
-            return Ok(Err(last));
-        };
-        self.note_send_failure(&last);
-        let deadline = tokio::time::Instant::now() + super::HTTP_CONNECT_TIMEOUT;
-        let Ok(Ok(mut addresses)) = tokio::time::timeout(
-            super::HTTP_CONNECT_TIMEOUT / 2,
-            resolver.addresses_for(host),
-        )
-        .await
-        else {
-            return Ok(Err(last));
-        };
-        let mut seen = std::collections::HashSet::new();
-        addresses.retain(|address| seen.insert(address.ip().to_canonical()));
-        if addresses.len() < 2 {
-            return Ok(Err(last));
-        }
-        // The normal connector doesn't expose the failed peer. Try the other
-        // addresses first and allow the original candidate last.
-        addresses.rotate_left(1);
-        let count = addresses
-            .len()
-            .min(flare_core::client::dial::MAX_HANDSHAKE_ADDRESSES);
-        let tls = self.tls.clone().with_spki_sha256_pins(pins.to_vec());
-        for (index, address) in addresses.into_iter().take(count).enumerate() {
-            let budget = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if budget.is_zero() {
-                break;
-            }
-            let Some(retry) = request.try_clone() else {
-                break;
-            };
-            let (builder, tls_error) = Self::reqwest_builder(Some(&tls), None);
-            let slice = (budget / (count - index) as u32).max(Duration::from_secs(4));
-            let fallback = builder
-                .connect_timeout(slice.min(budget))
-                .resolve(host, address);
-            if let Some(reason) = tls_error {
-                return Err(FlareError::localized(ErrorCode::ConfigurationError, reason));
-            }
-            let client = fallback.build().map_err(|error| {
-                FlareError::localized(ErrorCode::ConfigurationError, error.to_string())
-            })?;
-            self.ensure_request_scope(core_epoch).await?;
-            match client.execute(retry).await {
-                Ok(response) => {
-                    resolver.remember_address(host, address.ip());
-                    tracing::info!(host, "HTTPS connected through another resolved address");
-                    return Ok(Ok(response));
-                }
-                Err(error) if error.is_connect() => last = error,
-                Err(error) => return Ok(Err(error)),
-            }
-        }
-        Ok(Err(last))
+        Ok(first)
     }
 
     /// 本次请求的完整 URL：固定入口直接拼；路由客户端向选路器取接入点。
     async fn resolve(
         &self,
         target: &RequestTarget,
-        excluded: &[String],
-        pinned: Option<&str>,
+        excluded: &[u32],
+        pinned: Option<u32>,
     ) -> Result<ResolvedRequest> {
         match target {
             RequestTarget::Url(url) => Ok(ResolvedRequest {
                 url: url.clone(),
-                access_point: None,
+                revision: None,
                 router: None,
-                #[cfg(not(target_arch = "wasm32"))]
-                spki_pins: self
-                    .router
-                    .as_ref()
-                    .map(|router| router.spki_pins_for_url(url))
-                    .unwrap_or_default(),
-                #[cfg(target_arch = "wasm32")]
-                spki_pins: Vec::new(),
             }),
             RequestTarget::Path(path) => match &self.router {
                 None => Ok(ResolvedRequest {
                     url: join_url(&self.base_url, path),
-                    access_point: None,
+                    revision: None,
                     router: None,
-                    spki_pins: Vec::new(),
                 }),
                 Some(router) => {
-                    let route = router.route(excluded, pinned).await?;
+                    let route = router.route(excluded, pinned)?;
                     Ok(ResolvedRequest {
                         url: join_url(&route.base, path),
-                        access_point: Some(route.access_point_id),
+                        revision: Some(route.revision),
                         router: Some(router.clone()),
-                        spki_pins: route.spki_pins,
                     })
                 }
             },
@@ -3500,35 +3172,11 @@ impl RequestTarget {
 /// 解析好的一次请求：URL、所经接入点（回写健康簿用）与该接入点的 SPKI 钉扎。
 struct ResolvedRequest {
     url: String,
-    access_point: Option<flare_access::ApId>,
+    revision: Option<u32>,
     router: Option<super::router::HttpRouter>,
-    /// 浏览器里 TLS 由浏览器负责，钉扎只在原生端生效。
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    spki_pins: Vec<String>,
 }
 
 impl ResolvedRequest {
-    fn record_success(&self, started_ms: u64) {
-        if let (Some(router), Some(ap)) = (&self.router, &self.access_point) {
-            router.record_success(
-                ap,
-                crate::shared::util::now_millis().saturating_sub(started_ms),
-            );
-        }
-    }
-
-    fn record_failure(&self, failure: super::router::HttpFailure) {
-        if let (Some(router), Some(ap)) = (&self.router, &self.access_point) {
-            router.record_failure(ap, failure);
-        }
-    }
-
-    fn record_response(&self) {
-        if let (Some(router), Some(ap)) = (&self.router, &self.access_point) {
-            router.record_response(ap);
-        }
-    }
-
     /// 服务端给了响应：版本被门禁拦下时告诉更新中心。
     fn observe_status(&self, status: u16) {
         if status == super::router::UPGRADE_REQUIRED_STATUS

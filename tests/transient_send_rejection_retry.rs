@@ -164,33 +164,40 @@ fn data_root(case: &str) -> PathBuf {
 }
 
 /// 开发模式接入：单个接入点，端点就是本机服务端。
-fn development_access(ws_url: &str) -> AccessConfig {
-    AccessConfig::development(DevelopmentEndpoints {
-        ws_url: Some(ws_url.to_string()),
-        ..Default::default()
-    })
+fn development_endpoints(ws_url: &str) -> CoreEndpoints {
+    CoreEndpoints {
+        base_url: "http://127.0.0.1:9".into(),
+        websocket_url: ws_url.to_string(),
+        quic_url: None,
+        media_base_url: None,
+    }
 }
 
 /// 内存存储、已连上的客户端；`ack_max_retries` 是一条消息的总尝试次数。
 async fn connected_client(ws_url: &str, data_root: &Path, ack_max_retries: u32) -> IMClient {
-    let mut config = SdkConfig::with_access(development_access(ws_url));
+    let mut config = SdkConfig::with_endpoints(development_endpoints(ws_url));
     config.ack_max_retries = Some(ack_max_retries);
     let client = IMClient::builder()
         .config(config)
+        .environment(Some("development".into()))
         .stores(in_memory_im_provider())
         .build()
         .expect("build IMClient");
     client
         .init(
-            None,
+            Some("development".into()),
             Some(SdkConfigOverlay {
                 data_url: Some(data_root.display().to_string()),
-                access: Some(development_access(ws_url)),
+                endpoints: Some(development_endpoints(ws_url)),
                 ..Default::default()
             }),
         )
         .await
         .expect("init SDK config");
+    client
+        .prepare(USER_ID, LoginDbKind::IndexedDb(in_memory_im_provider()))
+        .await
+        .expect("prepare test session");
     client
         .connect(USER_ID, Some("token"))
         .await

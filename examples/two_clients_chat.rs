@@ -26,6 +26,9 @@
 //!
 //! 输入：直接打字回车发送；`/quit` 退出。提示符为 `{user}> `。
 
+#[path = "common/core_endpoints.rs"]
+mod core_endpoints;
+
 use std::env;
 use std::io::{self, Write};
 use std::path::Path;
@@ -350,20 +353,14 @@ async fn main() -> Result<()> {
     );
 
     let overlay = SdkConfigOverlay {
-        access: Some(AccessConfig::development(DevelopmentEndpoints {
-            ws_url: Some(ws_url),
-            ..Default::default()
-        })),
+        endpoints: Some(core_endpoints::for_websocket(ws_url)),
         tenant_id: Some(tenant_id.clone()),
         ..Default::default()
     };
 
     let client = IMClient::new();
     client
-        .init(
-            Some(format!("two-clients-chat-{user}")),
-            Some(overlay.clone()),
-        )
+        .init(Some("development".into()), Some(overlay.clone()))
         .await?;
     let token = IMClient::generate_core_token(CoreTokenConfig {
         secret: secret.clone(),

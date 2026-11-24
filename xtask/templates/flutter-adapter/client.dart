@@ -18,7 +18,6 @@ final class DefaultFlareImClient implements FlareImClient {
   DefaultFlareImClient(this._bridge)
     : events = DefaultEventsApi(_bridge),
       connection = _DefaultConnectionApi(_bridge),
-      access = _DefaultAccessApi(_bridge),
       update = _DefaultUpdateApi(_bridge),
       lifecycle = _DefaultLifecycleApi(_bridge),
       messageBuilder = DefaultMessageBuilderApi(_bridge),
@@ -42,7 +41,6 @@ final class DefaultFlareImClient implements FlareImClient {
   @override
   final ConnectionApi connection;
   @override
-  final AccessApi access;
   @override
   final UpdateApi update;
   @override
@@ -394,6 +392,19 @@ final class _DefaultConnectionApi implements ConnectionApi {
       _bridge.invoke<void>(NativeCallMap.connectionReconnectNow);
 
   @override
+  Future<EndpointUpdate> replaceEndpoints(CoreEndpoints request) async {
+    final result = await _bridge.invoke<Object?>(
+      NativeCallMap.connectionReplaceEndpoints,
+      coreEndpointsToMap(request),
+    );
+    return endpointUpdateFromJson(result);
+  }
+
+  @override
+  Future<void> setProtocolMode(SetProtocolModeRequest request) => _bridge
+      .invoke<void>(NativeCallMap.connectionSetProtocolMode, {'mode': request.mode});
+
+  @override
   Future<void> disconnect() =>
       _bridge.invoke<void>(NativeCallMap.connectionDisconnect);
 
@@ -522,63 +533,6 @@ final class _DefaultUpdateApi implements UpdateApi {
       updateGetResourcesRequestToMap(request),
     ),
   );
-}
-
-final class _DefaultAccessApi implements AccessApi {
-  const _DefaultAccessApi(this._bridge);
-
-  final NativeBridge _bridge;
-
-  @override
-  Future<AccessStatus> getStatus() async {
-    final raw = await _bridge.invoke<Object?>(NativeCallMap.accessGetStatus);
-    return accessStatusFromJson(raw);
-  }
-
-  @override
-  Future<List<AccessPointInfo>> listAccessPoints() async {
-    final raw = await _bridge.invoke<Object?>(
-      NativeCallMap.accessListAccessPoints,
-    );
-    return accessPointInfoListFromJson(raw);
-  }
-
-  @override
-  Future<AccessPin> pin(AccessPinRequest request) async {
-    final raw = await _bridge.invoke<Object?>(
-      NativeCallMap.accessPin,
-      accessPinRequestToMap(request),
-    );
-    return accessPinFromJson(raw);
-  }
-
-  @override
-  Future<void> unpin() => _bridge.invoke<void>(NativeCallMap.accessUnpin);
-
-  @override
-  Future<AccessRefreshReport> refresh() async {
-    final raw = await _bridge.invoke<Object?>(NativeCallMap.accessRefresh);
-    return accessRefreshReportFromJson(raw);
-  }
-
-  @override
-  Future<AccessRecoveryImport> importRecovery(
-    AccessImportRecoveryRequest request,
-  ) async {
-    final raw = await _bridge.invoke<Object?>(
-      NativeCallMap.accessImportRecovery,
-      accessImportRecoveryRequestToMap(request),
-    );
-    return accessRecoveryImportFromJson(raw);
-  }
-
-  @override
-  Future<Map<String, Object?>> exportDiagnostics() async {
-    final raw = await _bridge.invoke<Object?>(
-      NativeCallMap.accessExportDiagnostics,
-    );
-    return mapValue(raw);
-  }
 }
 
 final class _DefaultNotificationApi implements NotificationApi {

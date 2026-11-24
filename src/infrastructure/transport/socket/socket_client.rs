@@ -220,13 +220,7 @@ impl SocketTransport {
                 elapsed: Duration::ZERO,
             });
         };
-        // 信任根（系统根 + 配置的私有 CA）加这个接入点自己的 SPKI 钉扎；清单没给钉扎时只做 CA 校验。
-        // 钉扎不符在握手阶段失败，报成 TLS 失败计入该接入点的健康记录。
-        // wasm 上 WebSocket 由浏览器建立、证书由浏览器校验，这里的 TLS 配置不生效，也就没有钉扎。
-        let tls = self
-            .config
-            .core_tls_config()
-            .with_spki_sha256_pins(target.spki_pins.clone());
+        let tls = self.config.core_tls_config();
         let app_state = if request.foreground {
             HeartbeatAppState::Foreground
         } else {
@@ -251,13 +245,7 @@ impl SocketTransport {
                     .unwrap_or(target.connect_timeout),
             )
             .with_race_stagger(target.stagger)
-            .with_connection_epoch(request.epoch)
-            .with_access_serial(target.access_serial)
-            .with_ip_hints(target.ip_hints.clone());
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(doh) = &request.doh {
-            builder = builder.with_doh(doh.clone());
-        }
+            .with_connection_epoch(request.epoch);
         for (protocol, url) in &target.protocols {
             builder = builder.with_protocol_url(*protocol, url.clone());
         }
@@ -269,7 +257,6 @@ impl SocketTransport {
                 .collect(),
         );
         info!(
-            access_point = %target.access_point_id,
             epoch = request.epoch,
             protocols = ?target.protocols.iter().map(|(protocol, _)| *protocol).collect::<Vec<_>>(),
             "connecting"
@@ -400,8 +387,7 @@ impl SocketTransport {
     }
 }
 
-/// 一条连接的心跳：节奏只来自生效的接入策略（`clientPolicy.heartbeat` 与 `probeWakeTimeoutMs`），宿主没有
-/// 别的入口。自适应上限放到后台间隔，否则传输层的默认上限（120 s）会把更长的后台间隔压回去；下限沿用
+/// Heartbeat timing for this transport connection.
 /// `min(前台间隔, 15 s)`（NAT 超时较短时往下收敛的底）。
 fn link_heartbeat_config(
     heartbeat: crate::runtime::link::LinkHeartbeat,
@@ -421,41 +407,25 @@ fn link_heartbeat_config(
 
 #[cfg(test)]
 mod tests {
-    /// 清单给了非默认心跳：前台、后台间隔、判死超时、验活窗口都按它，前后台切换换节奏。
     #[test]
-    fn the_heartbeat_comes_from_the_access_policy() {
-        let policy = flare_access::ClientPolicy::resolve(&serde_json::json!({
-            "heartbeat": { "intervalSec": 45, "timeoutSec": 150, "backgroundIntervalSec": 300 },
-            "probeWakeTimeoutMs": 7_000
-        }));
-        let heartbeat = crate::runtime::link::LinkHeartbeat::from_policy(&policy);
+    fn applies_the_connection_heartbeat_and_probe_window() {
+        let heartbeat = crate::runtime::link::LinkHeartbeat {
+            interval: Duration::from_secs(45),
+            timeout: Duration::from_secs(150),
+            background_interval: Duration::from_secs(300),
+        };
         let config = link_heartbeat_config(
             heartbeat,
-            Duration::from_millis(u64::from(policy.probe_wake_timeout_ms)),
+            Duration::from_secs(7),
             HeartbeatAppState::Foreground,
         );
         assert_eq!(config.effective_interval(), Duration::from_secs(45));
         assert_eq!(config.timeout, Duration::from_secs(150));
         assert_eq!(config.probe_timeout, Duration::from_secs(7));
         assert_eq!(
-            config.clone().background().effective_interval(),
-            Duration::from_secs(300),
-            "the background interval is not capped at the transport's default 120 s"
+            config.background().effective_interval(),
+            Duration::from_secs(300)
         );
-
-        // 越界的值按 POLICY_BOUNDS 夹紧（间隔 ≥ 10 s、验活窗口 ≥ 2 s），超时至少两倍间隔。
-        let clamped = flare_access::ClientPolicy::resolve(&serde_json::json!({
-            "heartbeat": { "intervalSec": 1, "timeoutSec": 1, "backgroundIntervalSec": 1 },
-            "probeWakeTimeoutMs": 10
-        }));
-        let config = link_heartbeat_config(
-            crate::runtime::link::LinkHeartbeat::from_policy(&clamped),
-            Duration::from_millis(u64::from(clamped.probe_wake_timeout_ms)),
-            HeartbeatAppState::Foreground,
-        );
-        assert_eq!(config.effective_interval(), Duration::from_secs(10));
-        assert!(config.timeout >= Duration::from_secs(20));
-        assert_eq!(config.probe_timeout, Duration::from_secs(2));
     }
 
     use super::*;

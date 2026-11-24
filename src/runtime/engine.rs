@@ -27,7 +27,7 @@ use crate::kernel::{
     StartupClass, SyncManager, SyncResponseHandler, SyncRunContext, TenantNoticePort,
 };
 use crate::runtime::link::{
-    AccessRuntime, ConnectionStatus, DeviceLinkState, DeviceReach, LinkDriver, LinkFuture,
+    ConnectionRuntime, ConnectionStatus, DeviceLinkState, DeviceReach, LinkDriver, LinkFuture,
     LinkHandle, LinkSignals, LinkTokenSource, LinkUp, OpenRequest, ReachProfile, boxed,
     device_state_report,
 };
@@ -97,7 +97,7 @@ pub(crate) struct SdkEngineConfig {
     pub ack_max_in_flight: Option<usize>,
     pub metrics: MetricsRecorder,
     /// 接入运行时（跨会话共享：健康簿、熔断属于设备与网络，不属于某次登录）。
-    pub access: Arc<AccessRuntime>,
+    pub connection: Arc<ConnectionRuntime>,
     /// 宿主此前报过的网络可用性（链路状态机的初始值；没报过为 `true`）。
     pub network_available: bool,
     /// 本设备的 ID：读写用户级通知设置的同步请求带它。
@@ -126,7 +126,7 @@ impl SdkEngine {
             ack_max_retries,
             ack_max_in_flight,
             metrics,
-            access,
+            connection,
             network_available,
             device_id,
             locale,
@@ -206,7 +206,7 @@ impl SdkEngine {
         });
         let link = LinkHandle::spawn(
             link_driver.clone() as Arc<dyn LinkDriver>,
-            access,
+            connection,
             bus.clone(),
             network_available,
             reach.clone(),
@@ -810,7 +810,7 @@ mod tests {
     use crate::kernel::CurrentUserIdStore;
     use crate::kernel::event::EventBus;
     use crate::model::IMMessage;
-    use crate::runtime::link::{AccessRuntime, AccessStoreSource, ConnectionPhase};
+    use crate::runtime::link::{ConnectionPhase, ConnectionRuntime};
     use crate::spi::metrics::MetricsRecorder;
 
     fn test_engine(current_user_id: CurrentUserIdStore) -> SdkEngine {
@@ -838,7 +838,7 @@ mod tests {
             ack_max_retries: Some(3),
             ack_max_in_flight: Some(4),
             metrics: MetricsRecorder::disabled(),
-            access: Arc::new(AccessRuntime::new(None, AccessStoreSource::memory())),
+            connection: Arc::new(ConnectionRuntime::default()),
             network_available: true,
             device_id: "device-1".to_string(),
             locale: None,

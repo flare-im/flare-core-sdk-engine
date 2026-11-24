@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 
 use flare_core::common::device::DevicePlatform;
 use flare_core::common::protocol::{Reliability, frame_with_system_command};
-use flare_im_core_sdk::client::HeartbeatAppState;
 use flare_im_core_sdk::client::config::SdkAuthConfig;
 use flare_im_core_sdk::prelude::*;
 
@@ -30,7 +29,7 @@ async fn one_access_point(case: &str) -> (AccessPoint, Arc<Mutex<Ledger>>, std::
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_outage_is_recovered_by_the_link_alone() {
     let (a, ledger, root) = one_access_point("outage").await;
-    let client = lab_client(development_access(&[(&a.id, a.ws_url())]), &root, |_| {}).await;
+    let client = lab_client(development_endpoints(a.ws_url()), &root, |_| {}).await;
     let (observed, _subscriptions) = Observed::record(&client);
     connect(&client).await;
     wait_connected(&client, Duration::from_secs(10)).await;
@@ -57,54 +56,12 @@ async fn an_outage_is_recovered_by_the_link_alone() {
     let _ = client.logout().await;
 }
 
-/// 服务端停机（CLOSE(SERVER_SHUTDOWN)，窗口 1–5 s）：在窗口内重连，而不是立刻冲上去。
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_server_shutdown_reconnects_inside_the_announced_window() {
-    let ledger = Arc::new(Mutex::new(Ledger::default()));
-    let a = AccessPoint::start("development", ledger.clone(), ServerOptions::default()).await;
-    let b = AccessPoint::start("ap-b", ledger, ServerOptions::default()).await;
-    let root = data_root("link-lifecycle", "shutdown");
-    let client = lab_client(
-        development_access(&[(&a.id, a.ws_url()), (&b.id, b.ws_url())]),
-        &root,
-        |_| {},
-    )
-    .await;
-    connect(&client).await;
-    let online = wait_connected(&client, Duration::from_secs(10)).await;
-    let (current, other) = if online.access_point_id.as_deref() == Some("development") {
-        (&a, &b)
-    } else {
-        (&b, &a)
-    };
-    let before = other.relay.accepted();
-    current
-        .server
-        .stop()
-        .await
-        .expect("stop the current server");
-    let stopped_at = Instant::now();
-    wait_until(
-        "reconnected to the other access point",
-        Duration::from_secs(10),
-        || async { other.relay.accepted() > before },
-    )
-    .await;
-    let waited = other.relay.accepted_at()[before].duration_since(stopped_at);
-    assert!(
-        waited >= Duration::from_millis(900),
-        "waits inside the 1-5 s window: {waited:?}"
-    );
-    assert!(waited <= Duration::from_secs(6), "{waited:?}");
-    let _ = client.logout().await;
-}
-
 /// 服务端暂时放不了行（SERVICE_UNAVAILABLE）：链路保留会话、按退避继续，`connect` 照常成功；放行后上线。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_transient_rejection_backs_off_until_admitted() {
     let (a, _ledger, root) = one_access_point("transient").await;
     *a.gate.mode.lock().unwrap() = GateMode::Retryable;
-    let client = lab_client(development_access(&[(&a.id, a.ws_url())]), &root, |_| {}).await;
+    let client = lab_client(development_endpoints(a.ws_url()), &root, |_| {}).await;
     client
         .connect(USER_ID, Some("token"))
         .await
@@ -127,7 +84,7 @@ async fn a_transient_rejection_backs_off_until_admitted() {
 async fn tenant_unavailable_terminates_the_link() {
     let (a, _ledger, root) = one_access_point("tenant").await;
     *a.gate.mode.lock().unwrap() = GateMode::TenantUnavailable;
-    let client = lab_client(development_access(&[(&a.id, a.ws_url())]), &root, |_| {}).await;
+    let client = lab_client(development_endpoints(a.ws_url()), &root, |_| {}).await;
     let Err(error) = client.connect(USER_ID, Some("token")).await else {
         panic!("tenant unavailable");
     };
@@ -158,7 +115,7 @@ async fn tenant_unavailable_terminates_the_link() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_session_ending_kick_needs_the_user() {
     let (a, _ledger, root) = one_access_point("kick").await;
-    let client = lab_client(development_access(&[(&a.id, a.ws_url())]), &root, |_| {}).await;
+    let client = lab_client(development_endpoints(a.ws_url()), &root, |_| {}).await;
     connect(&client).await;
     wait_connected(&client, Duration::from_secs(10)).await;
     let kick = flare_core::common::kick::device_conflict_kicked(&DevicePlatform::PC, "new-device");
@@ -179,27 +136,15 @@ async fn a_session_ending_kick_needs_the_user() {
     let _ = client.logout().await;
 }
 
-/// 平台报告网络变化：对还在的连接立即验活；半开的连接在验活窗口内被判死，换到另一个接入点。
+/// 平台报告网络变化：对还在的连接立即验活；半开的连接在验活窗口内被判死，从当前地址重连。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_network_change_probes_a_half_open_link() {
-    let ledger = Arc::new(Mutex::new(Ledger::default()));
-    let a = AccessPoint::start("development", ledger.clone(), ServerOptions::default()).await;
-    let b = AccessPoint::start("ap-b", ledger, ServerOptions::default()).await;
-    let root = data_root("link-lifecycle", "network-probe");
-    let client = lab_client(
-        development_access(&[(&a.id, a.ws_url()), (&b.id, b.ws_url())]),
-        &root,
-        |_| {},
-    )
-    .await;
+    let (a, _, root) = one_access_point("network-probe").await;
+    let client = lab_client(development_endpoints(a.ws_url()), &root, |_| {}).await;
     connect(&client).await;
-    let online = wait_connected(&client, Duration::from_secs(10)).await;
-    let (current, other) = if online.access_point_id.as_deref() == Some("development") {
-        (&a, &b)
-    } else {
-        (&b, &a)
-    };
-    current.relay.freeze();
+    wait_connected(&client, Duration::from_secs(10)).await;
+    let before = a.relay.accepted();
+    a.relay.freeze();
     let changed_at = Instant::now();
     client
         .notify_network_change(NetworkChangeEvent {
@@ -211,11 +156,9 @@ async fn a_network_change_probes_a_half_open_link() {
         .await
         .unwrap();
     wait_until(
-        "moved to the other access point",
+        "a new connection replaced the half-open connection",
         Duration::from_secs(15),
-        || async {
-            client.connection_status().await.access_point_id.as_deref() == Some(other.id.as_str())
-        },
+        || async { a.relay.accepted() > before },
     )
     .await;
     assert!(
@@ -230,7 +173,7 @@ async fn a_network_change_probes_a_half_open_link() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_network_suspends_and_the_outbox_waits() {
     let (a, ledger, root) = one_access_point("suspend").await;
-    let client = lab_client(development_access(&[(&a.id, a.ws_url())]), &root, |_| {}).await;
+    let client = lab_client(development_endpoints(a.ws_url()), &root, |_| {}).await;
     let (observed, _subscriptions) = Observed::record(&client);
     connect(&client).await;
     wait_connected(&client, Duration::from_secs(10)).await;
@@ -280,10 +223,10 @@ async fn offline_reported_before_login_carries_into_the_new_link() {
     let client = IMClient::new();
     client
         .init(
-            None,
+            Some("development".into()),
             Some(SdkConfigOverlay {
                 data_url: Some(root.display().to_string()),
-                access: Some(development_access(&[(&a.id, a.ws_url())])),
+                endpoints: Some(development_endpoints(a.ws_url())),
                 ..Default::default()
             }),
         )
@@ -355,17 +298,15 @@ async fn offline_reported_before_login_carries_into_the_new_link() {
 async fn sdk_managed_tokens_are_issued_by_the_link_once_the_network_is_back() {
     let (a, ledger, root) = one_access_point("sdk-managed-offline").await;
     let issuer = TokenIssuer::start().await;
-    let mut access = development_access(&[(&a.id, a.ws_url())]);
-    if let Some(endpoints) = access.development_endpoints.as_mut() {
-        endpoints.core_api_url = Some(issuer.url.clone());
-    }
+    let mut endpoints = development_endpoints(a.ws_url());
+    endpoints.base_url = issuer.url.clone();
     let client = IMClient::new();
     client
         .init(
-            None,
+            Some("development".into()),
             Some(SdkConfigOverlay {
                 data_url: Some(root.display().to_string()),
-                access: Some(access),
+                endpoints: Some(endpoints),
                 // SDK 托管：签发走 Core API（开发模式即 coreApiUrl）上的标准路径。
                 auth: Some(SdkAuthConfig::default()),
                 ..Default::default()
@@ -433,123 +374,19 @@ async fn sdk_managed_tokens_are_issued_by_the_link_once_the_network_is_back() {
     let _ = client.logout().await;
 }
 
-/// 心跳只由接入策略决定：清单给了非默认心跳，建连后实际用的就是它；切到后台用后台间隔，回前台恢复。
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_connection_heartbeats_on_the_policy_rhythm() {
-    let (a, _ledger, root) = one_access_point("heartbeat-policy").await;
-    let mut access = development_access(&[(&a.id, a.ws_url())]);
-    if let Some(endpoints) = access.development_endpoints.as_mut() {
-        let mut policy = drill_policy();
-        policy["heartbeat"] = serde_json::json!({
-            "intervalSec": 45,
-            "timeoutSec": 150,
-            "backgroundIntervalSec": 300
-        });
-        endpoints.client_policy = Some(policy);
-    }
-    let client = lab_client(access, &root, |_| {}).await;
-    connect(&client).await;
-    wait_connected(&client, Duration::from_secs(10)).await;
-    assert_eq!(
-        client.heartbeat_effective_interval().await.unwrap(),
-        Some(Duration::from_secs(45))
-    );
-
-    client
-        .set_app_state(HeartbeatAppState::Background)
-        .await
-        .unwrap();
-    assert_eq!(
-        client.heartbeat_effective_interval().await.unwrap(),
-        Some(Duration::from_secs(300)),
-        "the background interval comes from the policy, not the transport default"
-    );
-    client
-        .set_app_state(HeartbeatAppState::Foreground)
-        .await
-        .unwrap();
-    assert_eq!(
-        client.heartbeat_effective_interval().await.unwrap(),
-        Some(Duration::from_secs(45))
-    );
-    let _ = client.logout().await;
-}
-
-/// CONNECT_ACK 的诊断字段（网关 ID、服务端报的接入点、清单 serial、网关心跳间隔）出现在 `access.get_status`
-/// 与 `access.export_diagnostics` 里；服务端报的接入点和选的不一致时告警、记进健康簿，但不断连。
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn connect_ack_fields_show_up_in_the_access_diagnostics() {
-    let ledger = Arc::new(Mutex::new(Ledger::default()));
-    let a = AccessPoint::start(
-        "development",
-        ledger,
-        ServerOptions {
-            gateway_id: Some("gw-lab-7"),
-            reported_ap_id: Some("ap-elsewhere"),
-            heartbeat_interval: Some(Duration::from_secs(25)),
-            ..Default::default()
-        },
-    )
-    .await;
-    let root = data_root("link-lifecycle", "connect-ack");
-    let client = lab_client(development_access(&[(&a.id, a.ws_url())]), &root, |_| {}).await;
-    connect(&client).await;
-    wait_phase(&client, ConnectionPhase::Online, Duration::from_secs(10)).await;
-
-    let status = client.access_status().await.unwrap();
-    let ack = status
-        .connect_ack
-        .expect("connected: the CONNECT_ACK fields are shown");
-    assert_eq!(ack.gateway_id.as_deref(), Some("gw-lab-7"));
-    assert_eq!(ack.access_point_id.as_deref(), Some("ap-elsewhere"));
-    assert!(ack.access_point_mismatch);
-    assert_eq!(
-        ack.access_serial,
-        Some(0),
-        "the gateway knows no manifest yet"
-    );
-    assert_eq!(ack.heartbeat_interval_hint_sec, Some(25));
-
-    let diagnostics = client.export_access_diagnostics().await.unwrap();
-    assert_eq!(diagnostics["status"]["connectAck"]["gatewayId"], "gw-lab-7");
-    assert_eq!(
-        diagnostics["status"]["connectAck"]["accessPointId"],
-        "ap-elsewhere"
-    );
-    assert!(
-        diagnostics["warnings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|warning| warning["kind"] == "accessPointMismatch"
-                && warning["expected"] == "development"
-                && warning["reported"] == "ap-elsewhere"),
-        "{diagnostics}"
-    );
-    // 不断连：仍在线，接入点还是选的那个。
-    let now = client.connection_status().await;
-    assert_eq!(now.phase, ConnectionPhase::Online);
-    assert_eq!(now.access_point_id.as_deref(), Some("development"));
-    let _ = client.logout().await;
-}
-
 /// CONNECT 带上宿主给的应用信息与链路字段；每次重连的连接代数递增。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connect_carries_the_app_and_the_connection_epoch() {
     let (a, _ledger, root) = one_access_point("connect-metadata").await;
-    let client = lab_client(
-        development_access(&[(&a.id, a.ws_url())]),
-        &root,
-        |config| {
-            config.app = SdkAppConfig {
-                version: Some("3.2.1".into()),
-                build: Some(30201),
-                distribution: Some("direct".into()),
-                channel: Some("stable".into()),
-                ..Default::default()
-            };
-        },
-    )
+    let client = lab_client(development_endpoints(a.ws_url()), &root, |config| {
+        config.app = SdkAppConfig {
+            version: Some("3.2.1".into()),
+            build: Some(30201),
+            distribution: Some("direct".into()),
+            channel: Some("stable".into()),
+            ..Default::default()
+        };
+    })
     .await;
     connect(&client).await;
     wait_connected(&client, Duration::from_secs(10)).await;

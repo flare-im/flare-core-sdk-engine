@@ -12,7 +12,6 @@ import flare_core_harmony_cangjie_sdk.lifecycle.*
 public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImClient {
     private let bridge: NativeBridge
     private let connectionApi: ConnectionApi
-    private let accessApi: AccessApi
     private let lifecycleApi: LifecycleApi
     private let conversationsApi: ConversationsApi
     private let messageBuilderApi: MessageBuilderApi
@@ -29,12 +28,6 @@ public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImC
     public prop connection: ConnectionApi {
         get() {
             return connectionApi
-        }
-    }
-
-    public prop access: AccessApi {
-        get() {
-            return accessApi
         }
     }
 
@@ -107,7 +100,6 @@ public class DefaultFlareImClient <: flare_core_harmony_cangjie_sdk.api.FlareImC
     public init(bridge: NativeBridge) {
         this.bridge = bridge
         this.connectionApi = DefaultConnectionApi(bridge)
-        this.accessApi = DefaultAccessApi(bridge)
         this.lifecycleApi = DefaultLifecycleApi(bridge)
         this.conversationsApi = DefaultConversationsApi(bridge)
         this.messageBuilderApi = DefaultMessageBuilderApi(bridge)

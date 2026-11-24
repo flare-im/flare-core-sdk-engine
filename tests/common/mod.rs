@@ -570,12 +570,15 @@ fn make_stores() -> StoreProvider {
 
 /// 创建 IMClient（不连接），用于纯本地测试。接入走开发模式，端点取 `FLARE_TEST_SERVER_URL`。
 pub async fn create_test_client_no_connect() -> IMClient {
-    let config = SdkConfig::with_access(AccessConfig::development(DevelopmentEndpoints {
-        ws_url: Some(get_ws_url()),
-        ..Default::default()
-    }));
+    let config = SdkConfig::with_endpoints(CoreEndpoints {
+        base_url: "http://127.0.0.1:9".into(),
+        websocket_url: get_ws_url(),
+        quic_url: None,
+        media_base_url: None,
+    });
     IMClient::builder()
         .config(config)
+        .environment(Some("development".into()))
         .stores(make_stores())
         .build()
         .expect("test IMClient build")

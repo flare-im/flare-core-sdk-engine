@@ -25,12 +25,8 @@ pub enum ConnectionEvent {
     Status(super::link_status::ConnectionStatus),
     /// 同步状态变更（Idle / Syncing / CatchingUp / Error）
     SyncStateChanged { state: SyncState },
-    /// IM 换到了另一个接入点（切换完成、补同步就绪时一次）。
-    AccessSwitched(super::link_status::AccessSwitched),
-    /// 接入目录装载或变化（本阶段在开发模式 / LKG / 种子装载时发一次）。
-    AccessChanged(super::link_status::AccessChanged),
     /// 更新中心状态变化（`update://state`）。
-    UpdateState(Box<flare_access::release::UpdateStatus>),
+    UpdateState(Box<flare_access_contract::update::UpdateStatus>),
 }
 
 /// 消息域事件：收到新消息、发送成功/失败、撤回、正在输入、批量新消息
@@ -269,7 +265,6 @@ pub const TENANT_NOTICE_SOURCE: &str = "flare.tenant_notice";
 /// (announced as `PluginEvent::CatalogChanged`).
 pub const PLUGIN_CATALOG_TOPIC: &str = "flare.plugin.catalog";
 /// 租户通知里接入清单的 topic：`version` 是最新清单的 serial。
-pub const ACCESS_MANIFEST_TOPIC: &str = "flare.access";
 /// 租户通知里发布清单的 topic：只作触发，`version` 不与具体平台渠道的 serial 对应。
 pub const RELEASE_MANIFEST_TOPIC: &str = "flare.release";
 

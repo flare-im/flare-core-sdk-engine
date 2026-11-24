@@ -382,7 +382,7 @@ class JniNativeBridge(
             sink(eventType, decodeJsonObject(eventJson))
         }
 
-        /** 对象之外也有裸数组结果（`access.list_access_points`），按原样交给适配层解码。 */
+        /** 对象之外也有裸数组结果，按原样交给适配层解码。 */
         private fun decodeJsonValue(json: String?): Any? {
             val trimmed = json?.trimStart()
             if (trimmed == null || !trimmed.startsWith("[")) {

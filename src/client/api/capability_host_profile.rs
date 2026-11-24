@@ -53,7 +53,7 @@ pub(crate) struct AppIdentity {
 }
 
 /// Where the host's profile lives across sessions.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct PluginHostSlot {
     profile: RwLock<Option<PluginHostProfile>>,
     /// The host's part of plugin capabilities: requests waiting for
@@ -63,9 +63,25 @@ pub(crate) struct PluginHostSlot {
     pub bundles: crate::extension::capability::bundle::BundleSlot,
     /// The private files plugins uploaded through this engine.
     pub uploads: super::file_upload::PluginUploads,
+    file_http: RwLock<Option<crate::infrastructure::transport::HttpClient>>,
 }
 
 impl PluginHostSlot {
+    pub fn set_file_http(&self, http: Option<crate::infrastructure::transport::HttpClient>) {
+        *self
+            .file_http
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) =
+            http.map(|http| http.without_request_context());
+    }
+
+    pub fn file_http(&self) -> Option<crate::infrastructure::transport::HttpClient> {
+        self.file_http
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     /// Keep `profile`; whether it differs from the one kept before.
     pub fn set(&self, profile: PluginHostProfile) -> bool {
         let mut slot = self.profile.write().unwrap_or_else(PoisonError::into_inner);
@@ -99,7 +115,11 @@ impl PluginClient {
     /// vocabulary version 1 ([`base_vocabulary`]), what every kit rendered
     /// before profiles existed, with no native capability and no web bundle
     /// runtime: nothing the host has not declared is reported.
-    pub fn of(profile: Option<&PluginHostProfile>, identity: &AppIdentity) -> Self {
+    pub fn of(
+        profile: Option<&PluginHostProfile>,
+        identity: &AppIdentity,
+        bundle_delivery: bool,
+    ) -> Self {
         let engine = engine_vocabulary();
         let (platform, vocabulary, bundle) = match profile {
             Some(profile) => {
@@ -111,7 +131,11 @@ impl PluginClient {
                 (
                     profile.platform,
                     engine.for_host(Some(&profile.kit_vocabulary), &allowlist),
-                    profile.bundle_runtime.clone(),
+                    if bundle_delivery {
+                        profile.bundle_runtime.clone()
+                    } else {
+                        None
+                    },
                 )
             }
             None => (
@@ -186,10 +210,8 @@ pub(crate) fn parse_profile(request: Value, identity: &AppIdentity) -> Result<Pl
         .kit_vocabulary
         .validate()
         .map_err(|_| invalid_profile())?;
-    PluginClient::of(Some(&profile), identity)
-        .descriptor
-        .validate()
-        .map_err(|_| invalid_profile())?;
+    let declared = PluginClient::of(Some(&profile), identity, true).descriptor;
+    declared.validate().map_err(|_| invalid_profile())?;
     Ok(profile)
 }
 
@@ -265,7 +287,7 @@ mod tests {
             &identity(),
         )
         .unwrap();
-        let client = PluginClient::of(Some(&profile), &identity());
+        let client = PluginClient::of(Some(&profile), &identity(), false);
         let d = &client.descriptor;
         assert_eq!(d.platform, ClientPlatform::Flutter);
         assert_eq!(d.app_build, 41_020);
@@ -287,8 +309,25 @@ mod tests {
     }
 
     #[test]
+    fn bundle_delivery_is_advertised_only_when_installed() {
+        let profile = parse_profile(
+            json!({
+                "platform": "ios",
+                "kitVocabulary": kit(&["text"], &[]),
+                "bundleRuntime": {"bridge": 1, "engine": "wkwebview", "engineMajor": 17},
+            }),
+            &identity(),
+        )
+        .unwrap();
+        let unavailable = PluginClient::of(Some(&profile), &identity(), false).descriptor;
+        let available = PluginClient::of(Some(&profile), &identity(), true).descriptor;
+        assert!(unavailable.bundle.is_none());
+        assert!(available.bundle.is_some());
+    }
+
+    #[test]
     fn without_a_profile_the_client_reads_version_one_and_offers_no_native_capability() {
-        let client = PluginClient::of(None, &AppIdentity::default());
+        let client = PluginClient::of(None, &AppIdentity::default(), true);
         assert!(client.native.is_empty());
         assert!(client.descriptor.native.is_empty());
         assert!(client.vocabulary.native.is_empty());

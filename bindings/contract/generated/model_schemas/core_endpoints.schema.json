@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "baseUrl": {
+      "description": "Core API base URL, including any deployment path prefix.",
+      "type": "string"
+    },
+    "mediaBaseUrl": {
+      "description": "Optional media API base. Defaults to the Core API base.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "quicUrl": {
+      "description": "Optional native QUIC gateway; WebSocket remains available.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "websocketUrl": {
+      "description": "Fully qualified WebSocket gateway URL.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "baseUrl",
+    "websocketUrl"
+  ],
+  "title": "CoreEndpoints",
+  "type": "object",
+  "xFlareGeneratedBy": "flare-im-core-sdk-xtask",
+  "xFlareRustType": "CoreEndpoints"
+}

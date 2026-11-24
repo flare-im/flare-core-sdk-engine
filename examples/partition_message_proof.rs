@@ -17,8 +17,7 @@ use std::io::{BufRead, Write};
 use std::time::Duration;
 
 use flare_im_core_sdk::prelude::{
-    AccessConfig, DevelopmentEndpoints, IMClientBuilder, RuntimeComponents, SdkConfig,
-    in_memory_im_provider,
+    CoreEndpoints, IMClientBuilder, RuntimeComponents, SdkConfig, in_memory_im_provider,
 };
 use serde::Serialize;
 use server_message_proof::{
@@ -127,12 +126,12 @@ async fn run() -> i32 {
     }
     // 只给 WebSocket 端点：协议计划里只有 ws，不会去试 QUIC。后台重连由链路状态机负责，不可关闭。
     let sdk_config = SdkConfig {
-        access: Some(AccessConfig::development(DevelopmentEndpoints {
-            ws_url: Some(config.ws_url.clone()),
-            core_api_url: Some(config.http_url.clone()),
-            media_url: Some(config.http_url.clone()),
-            ..Default::default()
-        })),
+        endpoints: Some(CoreEndpoints {
+            websocket_url: config.ws_url.clone(),
+            base_url: config.http_url.clone(),
+            media_base_url: None,
+            quic_url: None,
+        }),
         tenant_id: Some(config.app_id.clone()),
         device_id: Some(config.device_id.clone()),
         connect_timeout_secs: Some(config.connect_timeout_ms.div_ceil(1_000)),
@@ -145,6 +144,7 @@ async fn run() -> i32 {
     let sender = runtime.transport.sender().clone();
     let Ok(client) = IMClientBuilder::new()
         .config(sdk_config)
+        .environment(Some("development".into()))
         .runtime(runtime)
         .build()
     else {

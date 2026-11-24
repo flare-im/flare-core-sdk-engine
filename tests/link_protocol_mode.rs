@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use flare_im_core_sdk::prelude::*;
 use link_lab::{
-    AccessPoint, Ledger, Observed, ServerOptions, connect, data_root, development_access,
+    AccessPoint, Ledger, Observed, ServerOptions, connect, data_root, development_endpoints,
     lab_client, send_text, wait_until,
 };
 
@@ -41,10 +41,14 @@ async fn live_protocol_selection_reconnects_without_replacing_the_session() {
         },
     )
     .await;
-    let mut access = development_access(&[(&edge.id, edge.ws_url())]);
-    access.development_endpoints.as_mut().unwrap().quic_url =
-        Some(format!("quic://127.0.0.1:{port}"));
-    let client = lab_client(access, &data_root("link-protocol-mode", "switch"), |_| {}).await;
+    let mut endpoints = development_endpoints(edge.ws_url());
+    endpoints.quic_url = Some(format!("quic://127.0.0.1:{port}"));
+    let client = lab_client(
+        endpoints,
+        &data_root("link-protocol-mode", "switch"),
+        |_| {},
+    )
+    .await;
     let (observed, _subscriptions) = Observed::record(&client);
 
     client.set_protocol_mode("ws").await.unwrap();

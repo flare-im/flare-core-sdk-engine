@@ -6,7 +6,6 @@ import com.flare.im.adapter.codec.*
 import com.flare.im.adapter.module.*
 import com.flare.im.api.FlareImClient
 import com.flare.im.api.connection.ConnectionApi
-import com.flare.im.api.access.AccessApi
 import com.flare.im.api.update.UpdateApi
 import com.flare.im.api.lifecycle.LifecycleApi
 import com.flare.im.api.conversations.ConversationsApi
@@ -35,7 +34,6 @@ import com.flare.im.model.common.error.*
 import com.flare.im.model.content.*
 import com.flare.im.model.entity.*
 import com.flare.im.model.event.*
-import com.flare.im.model.event.access.*
 import com.flare.im.model.event.connection.*
 import com.flare.im.model.event.conversation.*
 import com.flare.im.model.event.lifecycle.*
@@ -60,7 +58,6 @@ class DefaultFlareImClient(
     private var installedLifecycle: PlatformLifecycle? = null
 
     override val connection: ConnectionApi = DefaultConnectionApi(bridge)
-    override val access: AccessApi = DefaultAccessApi(bridge)
     override val update: UpdateApi = DefaultUpdateApi(bridge)
     override val lifecycle: LifecycleApi = DefaultLifecycleApi(bridge)
     override val conversations: ConversationsApi = DefaultConversationsApi(bridge)

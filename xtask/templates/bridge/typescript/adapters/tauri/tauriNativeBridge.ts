@@ -78,7 +78,7 @@ export class TauriNativeBridge implements NativeBridge {
       if (dedicated === 'sdk_init') {
         const encoded = wireEncodeRequest(request ?? {}) as Record<string, unknown>;
         await invoke(dedicated, {
-          environment: encoded.environment ?? 'development',
+          environment: encoded.environment,
           sdkConfig: encoded.sdkConfig ?? encoded,
         });
         return undefined as T;

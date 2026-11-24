@@ -300,6 +300,7 @@ impl CapabilityApi {
                                 operation: &operation,
                                 payload,
                                 conversation,
+                                message_id: None,
                                 policy,
                                 continuation: action.continuation.clone(),
                             })
@@ -575,6 +576,7 @@ impl CapabilityApi {
                     operation: &operation,
                     payload,
                     conversation: follow_conversation,
+                    message_id: None,
                     policy,
                     continuation: follow.continuation.clone(),
                 })

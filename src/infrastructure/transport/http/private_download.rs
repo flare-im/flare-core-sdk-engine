@@ -12,7 +12,7 @@ pub(super) fn validate(
     max_bytes: usize,
 ) -> Result<()> {
     // 带 userinfo 的地址在解析时就被拒绝。
-    let target = flare_access::ParsedUrl::parse(url).map_err(|_| invalid())?;
+    let target = flare_access_contract::ParsedUrl::parse(url).map_err(|_| invalid())?;
     let local = target.host_str() == "localhost" || target.ip().is_some_and(|ip| ip.is_loopback());
     if url.len() > 8192
         || target.scheme() != "https" && !(target.scheme() == "http" && local)

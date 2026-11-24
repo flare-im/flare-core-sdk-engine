@@ -346,8 +346,8 @@ mod tests {
     async fn a_core_request_cannot_retry_as_the_next_prepared_session() {
         use crate::infrastructure::transport::http::HttpRequestContext;
         use crate::prelude::{
-            AccessConfig, DevelopmentEndpoints, IMClient, LoginDbKind, NetworkChangeEvent,
-            SdkConfig, SdkConfigOverlay, in_memory_empty_im_provider,
+            CoreEndpoints, IMClient, LoginDbKind, NetworkChangeEvent, SdkConfig, SdkConfigOverlay,
+            in_memory_empty_im_provider,
         };
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         struct Renewal;
@@ -409,14 +409,15 @@ mod tests {
                 }
             });
             let context = Arc::new(HttpRequestContext::new());
-            let mut config =
-                SdkConfig::with_access(AccessConfig::development(DevelopmentEndpoints {
-                    ws_url: Some("ws://127.0.0.1:9/ws".into()),
-                    core_api_url: Some(url),
-                    ..Default::default()
-                }));
+            let mut config = SdkConfig::with_endpoints(CoreEndpoints {
+                websocket_url: "ws://127.0.0.1:9/ws".into(),
+                base_url: url,
+                quic_url: None,
+                media_base_url: None,
+            });
             config.tenant_id = Some("701".into());
             let im = IMClient::builder()
+                .environment(Some("development".into()))
                 .config(config)
                 .stores(in_memory_empty_im_provider())
                 .http_request_context(context.clone())
@@ -424,7 +425,7 @@ mod tests {
                 .unwrap();
             let data = std::env::temp_dir().join(format!(
                 "flare-core-owner-{}",
-                crate::spi::link::new_idempotency_key()
+                crate::spi::new_idempotency_key()
             ));
             im.init(
                 None,
@@ -487,7 +488,9 @@ mod tests {
             im.set_connect_token_refresher(Some(Arc::new(Renewal)))
                 .await;
             let http = im
-                .routed_http_client(flare_access::ServiceClass::CoreApi)
+                .http_client(
+                    crate::infrastructure::transport::http::router::CoreHttpService::CoreApi,
+                )
                 .await
                 .unwrap();
             // Initialization ran offline to avoid waiting for a transport

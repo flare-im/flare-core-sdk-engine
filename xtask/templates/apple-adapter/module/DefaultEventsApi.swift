@@ -85,12 +85,6 @@ public final class DefaultEventsApi: EventsApiProtocol {
     public func onConnectionStatusChanged(_ listener: @escaping EventCallback<ConnectionStatus>) -> any EventSubscription {
         registerTyped(listener)
     }
-    public func onAccessSwitched(_ listener: @escaping EventCallback<AccessSwitchedEvent>) -> any EventSubscription {
-        registerTyped(listener)
-    }
-    public func onAccessChanged(_ listener: @escaping EventCallback<AccessChangedEvent>) -> any EventSubscription {
-        registerTyped(listener)
-    }
     public func onUpdateState(_ listener: @escaping EventCallback<UpdateStatus>) -> any EventSubscription {
         registerTyped(listener)
     }
@@ -222,10 +216,6 @@ private func nativeEventFromCode(eventType: Int, payload: Any?) throws -> Any {
         return try connectionStatusFromJson(json)
     case EventCode.connectionSyncStateChanged:
         return connectionSyncStateEventFromJson(json)
-    case EventCode.accessSwitched:
-        return try accessSwitchedEventFromJson(json)
-    case EventCode.accessChanged:
-        return try accessChangedEventFromJson(json)
     case EventCode.updateState:
         return try updateStatusFromJson(json)
     case EventCode.messageSendAck:
@@ -601,8 +591,6 @@ private func dispatchToListener(_ listener: any FlareImEventListener, event: Any
         return
     }
     if let status = event as? ConnectionStatus { listener.onConnectionStatusChanged(status); return }
-    if let switched = event as? AccessSwitchedEvent { listener.onAccessSwitched(switched); return }
-    if let changed = event as? AccessChangedEvent { listener.onAccessChanged(changed); return }
     if let update = event as? UpdateStatus { listener.onUpdateState(update); return }
     if let received = event as? MessageReceivedEvent { listener.onMessageReceived(received); return }
     if let batch = event as? MessageReceivedBatchEvent { listener.onMessageReceivedBatch(batch); return }

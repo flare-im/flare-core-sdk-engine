@@ -129,7 +129,7 @@ pub extern "C" fn flare_sdk_init(
         let client = instance.client.clone();
 
         execute_async_unit(instance, ctx, async move {
-            client.init(environment, Some(config)).await
+            client.init(environment, config).await
         });
 
         0

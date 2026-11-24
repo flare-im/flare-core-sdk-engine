@@ -2,28 +2,24 @@
   "cases": [
     {
       "expected": {
-        "accessPointId": null,
         "attempt": 0,
-        "cellId": null,
         "developmentMode": false,
+        "endpointRevision": null,
         "nextRetryAt": null,
         "phase": "idle",
         "protocol": null,
         "quality": null,
         "reason": null,
-        "regionId": null,
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -34,28 +30,24 @@
     },
     {
       "expected": {
-        "accessPointId": null,
         "attempt": 0,
-        "cellId": null,
         "developmentMode": true,
+        "endpointRevision": null,
         "nextRetryAt": null,
         "phase": "idle",
         "protocol": null,
         "quality": null,
         "reason": null,
-        "regionId": null,
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": true,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -66,28 +58,24 @@
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 2,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": null,
         "phase": "connecting",
         "protocol": "quic",
         "quality": null,
         "reason": null,
-        "regionId": "sg",
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -98,28 +86,24 @@
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 2,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": null,
         "phase": "connecting",
         "protocol": "quic",
         "quality": null,
         "reason": null,
-        "regionId": "sg",
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -130,28 +114,24 @@
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 2,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": null,
         "phase": "connecting",
         "protocol": "quic",
         "quality": null,
         "reason": null,
-        "regionId": "sg",
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -162,30 +142,26 @@
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 2,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": null,
         "phase": "switching",
         "protocol": "quic",
         "quality": null,
-        "reason": "failure",
-        "regionId": "sg",
+        "reason": "manual",
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
-          "switchReason": "failure",
+          "switchReason": "manual",
           "wasOnline": true
         },
         "phase": "connecting"
@@ -194,28 +170,24 @@
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 2,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": null,
         "phase": "switching",
         "protocol": "quic",
         "quality": null,
         "reason": "drain",
-        "regionId": "sg",
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": "drain",
           "wasOnline": true
@@ -226,124 +198,108 @@
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 2,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": null,
         "phase": "switching",
         "protocol": "quic",
         "quality": null,
-        "reason": "failback",
-        "regionId": "sg",
+        "reason": "manual",
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
-          "switchReason": "failback",
+          "switchReason": "manual",
           "wasOnline": true
         },
         "phase": "authenticating"
       },
-      "name": "authenticating while failing back"
+      "name": "authenticating after a host address refresh"
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 2,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": null,
         "phase": "switching",
         "protocol": "ws",
         "quality": null,
         "reason": "manual",
-        "regionId": "sg",
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "ws",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": "manual",
           "wasOnline": true
         },
         "phase": "connecting"
       },
-      "name": "connecting to a pinned access point"
+      "name": "connecting after a manual reconnect"
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 2,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": null,
         "phase": "switching",
         "protocol": "quic",
         "quality": null,
-        "reason": "manifest",
-        "regionId": "sg",
+        "reason": "manual",
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
-          "switchReason": "manifest",
+          "switchReason": "manual",
           "wasOnline": true
         },
         "phase": "connecting"
       },
-      "name": "connecting after a manifest change"
+      "name": "connecting after an address replacement"
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 0,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": null,
         "phase": "syncing",
         "protocol": "quic",
         "quality": null,
         "reason": null,
-        "regionId": "sg",
         "rttMs": 42
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -354,28 +310,24 @@
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 0,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": null,
         "phase": "online",
         "protocol": "quic",
         "quality": "good",
         "reason": null,
-        "regionId": "sg",
         "rttMs": 42
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -386,28 +338,24 @@
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 0,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": null,
         "phase": "online",
         "protocol": "quic",
         "quality": "poor",
         "reason": null,
-        "regionId": "sg",
         "rttMs": 1800
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 1800,
           "switchReason": null,
           "wasOnline": false
@@ -418,28 +366,24 @@
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 2,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": 1793779204000,
         "phase": "reconnecting",
         "protocol": "quic",
         "quality": null,
         "reason": null,
-        "regionId": "sg",
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": true
@@ -450,28 +394,24 @@
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 1,
-        "cellId": "cell-sg-a",
         "developmentMode": true,
+        "endpointRevision": 1,
         "nextRetryAt": 1793779204000,
         "phase": "reconnecting",
         "protocol": "quic",
         "quality": null,
         "reason": null,
-        "regionId": "sg",
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 1,
-          "cellId": "cell-sg-a",
           "developmentMode": true,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -482,28 +422,24 @@
     },
     {
       "expected": {
-        "accessPointId": null,
         "attempt": 3,
-        "cellId": null,
         "developmentMode": false,
+        "endpointRevision": null,
         "nextRetryAt": 1793779204000,
         "phase": "serviceUnavailable",
         "protocol": null,
         "quality": null,
         "reason": null,
-        "regionId": null,
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 3,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -514,28 +450,24 @@
     },
     {
       "expected": {
-        "accessPointId": null,
         "attempt": 0,
-        "cellId": null,
         "developmentMode": false,
+        "endpointRevision": null,
         "nextRetryAt": null,
         "phase": "waitingForNetwork",
         "protocol": null,
         "quality": null,
         "reason": null,
-        "regionId": null,
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -546,28 +478,24 @@
     },
     {
       "expected": {
-        "accessPointId": "ap-sg-1",
         "attempt": 0,
-        "cellId": "cell-sg-a",
         "developmentMode": false,
+        "endpointRevision": 1,
         "nextRetryAt": null,
         "phase": "online",
         "protocol": "quic",
         "quality": "good",
         "reason": null,
-        "regionId": "sg",
         "rttMs": 42
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -578,28 +506,24 @@
     },
     {
       "expected": {
-        "accessPointId": null,
         "attempt": 0,
-        "cellId": null,
         "developmentMode": false,
+        "endpointRevision": null,
         "nextRetryAt": null,
         "phase": "actionRequired",
         "protocol": null,
         "quality": null,
         "reason": "kicked",
-        "regionId": null,
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": "kicked",
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -610,28 +534,24 @@
     },
     {
       "expected": {
-        "accessPointId": null,
         "attempt": 0,
-        "cellId": null,
         "developmentMode": false,
+        "endpointRevision": null,
         "nextRetryAt": null,
         "phase": "actionRequired",
         "protocol": null,
         "quality": null,
         "reason": "expired",
-        "regionId": null,
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": "expired",
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -642,28 +562,24 @@
     },
     {
       "expected": {
-        "accessPointId": null,
         "attempt": 0,
-        "cellId": null,
         "developmentMode": false,
+        "endpointRevision": null,
         "nextRetryAt": null,
         "phase": "actionRequired",
         "protocol": null,
         "quality": null,
         "reason": "upgradeRequired",
-        "regionId": null,
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": "upgradeRequired",
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -674,28 +590,24 @@
     },
     {
       "expected": {
-        "accessPointId": null,
         "attempt": 0,
-        "cellId": null,
         "developmentMode": false,
+        "endpointRevision": null,
         "nextRetryAt": null,
         "phase": "actionRequired",
         "protocol": null,
         "quality": null,
         "reason": "tenantUnavailable",
-        "regionId": null,
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": "tenantUnavailable",
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -706,28 +618,24 @@
     },
     {
       "expected": {
-        "accessPointId": null,
         "attempt": 0,
-        "cellId": null,
         "developmentMode": false,
+        "endpointRevision": null,
         "nextRetryAt": null,
         "phase": "actionRequired",
         "protocol": null,
         "quality": null,
         "reason": "expired",
-        "regionId": null,
         "rttMs": null
       },
       "input": {
         "facts": {
-          "accessPointId": "ap-sg-1",
           "actionReason": null,
           "attempt": 2,
-          "cellId": "cell-sg-a",
           "developmentMode": false,
+          "endpointRevision": 1,
           "nextRetryAt": 1793779204000,
           "protocol": "quic",
-          "regionId": "sg",
           "rttMs": 42,
           "switchReason": null,
           "wasOnline": false
@@ -737,5 +645,5 @@
       "name": "terminated without a recorded reason"
     }
   ],
-  "description": "Internal link phase + link facts -> the connection://status payload (every field present, null when absent). resolving / connecting / authenticating show connecting before the session was first online and switching (with the switch reason) after; syncing carries rttMs; ready and degraded are online with quality good / poor; backoff is reconnecting with the access point (cell, region, protocol) it will try next, attempt and nextRetryAt; recovering is serviceUnavailable with attempt and nextRetryAt and without the access point; suspended is waitingForNetwork; parked (the link handed over to the push channel while the app is in the background) is online with quality good, field for field what ready gives; terminated is actionRequired with its reason (expired when none was recorded). developmentMode is carried in every phase."
+  "description": "Public connection status payload by link phase. Optional endpointRevision identifies the host address group."
 }

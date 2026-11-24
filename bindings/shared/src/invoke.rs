@@ -591,8 +591,49 @@ mod tests {
 
         assert_eq!(value["phase"], "idle");
         assert_eq!(value["attempt"], 0);
-        assert!(value.get("accessPointId").is_some_and(Value::is_null));
+        assert_eq!(value.get("accessPointId"), None);
         assert!(value.get("nextRetryAt").is_some_and(Value::is_null));
+    }
+
+    #[tokio::test]
+    async fn init_and_replace_core_endpoints_through_the_binding_contract() {
+        let session = DirectOnlySession::new();
+        let root =
+            std::env::temp_dir().join(format!("flare-direct-binding-{}", std::process::id()));
+        let init = serde_json::json!({
+            "sdkConfig": {
+                "dataUrl": root,
+                "endpoints": {"baseUrl": "https://core.example", "websocketUrl": "wss://core.example/ws"},
+                "ackMaxInFlight": 16,
+                "resourceProfile": "mobile",
+                "eventBusCapacity": 128
+            }
+        });
+        invoke_api_id_json(&session, "sdk.init", &init.to_string())
+            .await
+            .unwrap();
+        let replacement =
+            r#"{"baseUrl":"https://new.example","websocketUrl":"wss://new.example/ws"}"#;
+        let response = invoke_api_id_json(&session, "connection.replace_endpoints", replacement)
+            .await
+            .unwrap();
+        assert_eq!(
+            binding_response_to_value(response),
+            serde_json::json!({"revision": 2, "changed": true})
+        );
+
+        let missing_websocket = r#"{"baseUrl":"https://incomplete.example"}"#;
+        assert!(
+            invoke_api_id_json(&session, "connection.replace_endpoints", missing_websocket)
+                .await
+                .is_err()
+        );
+        let status = invoke_api_id_json(&session, "connection.get_status", "{}")
+            .await
+            .unwrap();
+        assert_eq!(binding_response_to_value(status)["endpointRevision"], 2);
+        session.client.uninit().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// Hosts read `{ offsetMs, estimated }`; without a session nothing is estimated yet, so the

@@ -1,10 +1,9 @@
 //! 链路状态机单测：用假驱动（脚本化的建连结果）驱动真实的选路与健康簿（开发模式双接入点）。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use flare_access::{AccessConfig, DevelopmentAccessPoint, DevelopmentEndpoints};
 use flare_core::client::link::{
     AttemptFailure, AttemptReport, CloseKind, ConnectAckInfo, ConnectFailure, ConnectReport,
     DisconnectReason, ServerClose, ServerRejection,
@@ -14,19 +13,15 @@ use flare_core::common::error::ErrorCode;
 
 use super::*;
 use crate::kernel::event::{EventBus, SdkEventKind};
-use crate::runtime::link::{
-    AccessStoreSource, ConnectionPhase, LinkFuture, LinkQuality, LinkUp, boxed,
-};
+use crate::runtime::link::{ConnectionPhase, LinkFuture, LinkQuality, LinkUp, boxed};
 
 type OpenResult = std::result::Result<ConnectReport, ConnectFailure>;
 
 #[derive(Default)]
 struct Script {
     /// 每个接入点依次返回的建连结果；没有脚本时成功。
-    opens: HashMap<String, VecDeque<OpenResult>>,
+    opens: VecDeque<OpenResult>,
     opened: Vec<(String, u64, String)>,
-    /// 最近一次建连目标带的 `ipHints`。
-    ip_hints: Vec<std::net::IpAddr>,
     link_ups: Vec<LinkUp>,
     link_downs: usize,
     probes: usize,
@@ -53,22 +48,12 @@ struct Script {
 struct FakeDriver(Arc<Mutex<Script>>);
 
 impl FakeDriver {
-    fn script(&self, ap: &str, results: impl IntoIterator<Item = OpenResult>) {
-        self.0
-            .lock()
-            .unwrap()
-            .opens
-            .entry(ap.to_owned())
-            .or_default()
-            .extend(results);
+    fn script(&self, results: impl IntoIterator<Item = OpenResult>) {
+        self.0.lock().unwrap().opens.extend(results);
     }
 
     fn opened(&self) -> Vec<(String, u64, String)> {
         self.0.lock().unwrap().opened.clone()
-    }
-
-    fn ip_hints(&self) -> Vec<std::net::IpAddr> {
-        self.0.lock().unwrap().ip_hints.clone()
     }
 
     fn link_ups(&self) -> Vec<LinkUp> {
@@ -177,21 +162,16 @@ impl LinkDriver for FakeDriver {
         request: OpenRequest,
     ) -> std::result::Result<ConnectReport, ConnectFailure> {
         let mut script = self.0.lock().unwrap();
-        let ap = request.target.access_point_id.to_string();
+        let url = request.target.protocols[0].1.clone();
         script
             .opened
-            .push((ap.clone(), request.epoch, request.token.clone()));
+            .push((url, request.epoch, request.token.clone()));
         script.opened_foreground.push(request.foreground);
         script.opened_states.push(request.device_state);
-        script.ip_hints = request.target.ip_hints.clone();
         if script.unreachable {
             return Err(unreachable());
         }
-        script
-            .opens
-            .get_mut(&ap)
-            .and_then(VecDeque::pop_front)
-            .unwrap_or_else(|| Ok(ok_report()))
+        script.opens.pop_front().unwrap_or_else(|| Ok(ok_report()))
     }
 
     async fn close(&self) {
@@ -287,23 +267,6 @@ impl LinkTokenSource for Tokens {
     }
 }
 
-fn two_access_points() -> AccessConfig {
-    AccessConfig::development(DevelopmentEndpoints {
-        ws_url: Some("ws://127.0.0.1:1/ws".into()),
-        access_points: vec![DevelopmentAccessPoint {
-            id: "ap-b".into(),
-            ws_url: Some("ws://127.0.0.1:2/ws".into()),
-            ..Default::default()
-        }],
-        // 演练用的短退避（下限 500 ms）。
-        client_policy: Some(serde_json::json!({
-            "backoff": { "baseMs": 500, "capForegroundMs": 5_000 },
-            "probeWakeTimeoutMs": 2_000
-        })),
-        ..Default::default()
-    })
-}
-
 struct Harness {
     driver: FakeDriver,
     link: LinkHandle,
@@ -326,9 +289,14 @@ fn harness_on(platform: &str) -> Harness {
     let driver = FakeDriver::default();
     let bus = EventBus::new();
     let rx = bus.subscribe_filter(SdkEventKind::Connection);
-    let access = Arc::new(AccessRuntime::new(
-        Some(two_access_points()),
-        AccessStoreSource::memory(),
+    let access = Arc::new(ConnectionRuntime::new(
+        Some(CoreEndpoints {
+            base_url: "https://fixture.example".into(),
+            websocket_url: "wss://fixture.example/ws".into(),
+            quic_url: None,
+            media_base_url: None,
+        }),
+        false,
     ));
     let reach = reach_on(platform);
     let link = LinkHandle::spawn(
@@ -366,20 +334,6 @@ impl Harness {
                 && status.phase == phase
             {
                 return status;
-            }
-        }
-    }
-
-    async fn next_switched(&mut self, within: Duration) -> AccessSwitched {
-        let deadline = tokio::time::Instant::now() + within;
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let event = tokio::time::timeout(remaining, self.rx.recv())
-                .await
-                .expect("access://switched")
-                .expect("bus open");
-            if let SdkEvent::Connection(ConnectionEvent::AccessSwitched(switched)) = event {
-                return switched;
             }
         }
     }
@@ -456,81 +410,30 @@ impl Harness {
 const SHORT: Duration = Duration::from_secs(3);
 
 mod parking;
-mod recovery;
 mod wake;
 
 #[tokio::test]
-async fn start_goes_online_and_announces_the_directory() {
+async fn start_goes_online_with_the_host_endpoint() {
     let mut h = harness();
     let tokens = Tokens::new("t1", []);
     h.link.start("alice", tokens).await.expect("online");
     let online = h.wait_phase(ConnectionPhase::Online, SHORT).await;
-    assert!(online.development_mode);
-    assert!(online.access_point_id.is_some());
+    assert_eq!(online.endpoint_revision, Some(1));
     assert_eq!(online.protocol.as_deref(), Some("ws"));
     assert_eq!(h.driver.link_ups(), vec![LinkUp::First]);
     assert_eq!(h.link.sdk_state(), SdkState::Ready);
     let _ = &h.bus;
 }
 
-/// 判死：立即换另一个接入点（不等退避、不重登），切换完成后发 access://switched；
-/// 旧连接迟到的断开（旧代数）一律丢弃。
-#[tokio::test]
-async fn a_dead_link_switches_to_the_other_access_point_without_relogin() {
-    let mut h = harness();
-    h.link.start("alice", Tokens::new("t1", [])).await.unwrap();
-    let online = h.wait_phase(ConnectionPhase::Online, SHORT).await;
-    let first_ap = online.access_point_id.clone().unwrap();
-    let first_epoch = h.current_epoch();
-
-    h.lose(first_epoch, DisconnectReason::HeartbeatTimeout);
-    let switched = h.next_switched(SHORT).await;
-    h.wait_phase(ConnectionPhase::Online, SHORT).await;
-    assert_eq!(switched.from.ap, first_ap);
-    assert_ne!(switched.to.ap, first_ap);
-    assert_eq!(switched.reason, SwitchReason::Failure);
-    assert!(h.current_epoch() > first_epoch);
-    assert!(h.driver.link_downs() >= 1, "发件箱在切换期间暂停");
-    assert!(matches!(
-        h.driver.link_ups().last(),
-        Some(LinkUp::Reconnected {
-            lost_at_ms: Some(_)
-        })
-    ));
-
-    // 旧连接迟到的断开不能把新连接当成断了。
-    let opened = h.driver.opened().len();
-    h.lose(
-        first_epoch,
-        DisconnectReason::PeerClosed {
-            detail: "late".into(),
-        },
-    );
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(h.driver.opened().len(), opened);
-    assert_eq!(h.link.status().phase, ConnectionPhase::Online);
-}
-
 /// 过载：同一个接入点等服务端给的窗口再试，不换入口。
 #[tokio::test]
-async fn overload_waits_on_the_same_access_point() {
+async fn overload_waits_before_retrying_the_endpoint() {
     let mut h = harness();
-    h.driver.script(
-        "development",
-        [Err(rejected(
-            ErrorCode::Overloaded,
-            "OVERLOADED",
-            Some(600),
-        ))],
-    );
-    h.driver.script(
-        "ap-b",
-        [Err(rejected(
-            ErrorCode::Overloaded,
-            "OVERLOADED",
-            Some(600),
-        ))],
-    );
+    h.driver.script([Err(rejected(
+        ErrorCode::Overloaded,
+        "OVERLOADED",
+        Some(600),
+    ))]);
     h.link
         .start("alice", Tokens::new("t1", []))
         .await
@@ -543,45 +446,14 @@ async fn overload_waits_on_the_same_access_point() {
     assert_eq!(opened[0].0, opened[1].0, "过载后原地重试同一个接入点");
 }
 
-/// 计划性关闭：在窗口内重连，优先服务端建议的接入点。
-#[tokio::test]
-async fn drain_reconnects_inside_the_window_preferring_the_suggested_access_point() {
-    let mut h = harness();
-    h.link.start("alice", Tokens::new("t1", [])).await.unwrap();
-    let online = h.wait_phase(ConnectionPhase::Online, SHORT).await;
-    let current = online.access_point_id.unwrap();
-    let other = if current == "ap-b" {
-        "development"
-    } else {
-        "ap-b"
-    };
-    let close = ServerClose::new(CloseKind::Drain)
-        .with_retry_window(Duration::from_millis(200), Duration::from_millis(400))
-        .with_prefer_ap([other]);
-    let lost_at = tokio::time::Instant::now();
-    h.lose(h.current_epoch(), DisconnectReason::ServerClose(close));
-    let switched = h.next_switched(SHORT).await;
-    assert!(
-        lost_at.elapsed() >= Duration::from_millis(200),
-        "不早于窗口"
-    );
-    assert_eq!(switched.to.ap, other);
-    assert_eq!(switched.reason, SwitchReason::Drain);
-}
-
 /// 鉴权被拒：续期一次，换到不同令牌就用它重连；再被拒即终止（只能重新登录）。
 #[tokio::test]
 async fn auth_rejection_renews_once_then_terminates() {
     let mut h = harness();
-    for ap in ["development", "ap-b"] {
-        h.driver.script(
-            ap,
-            [
-                Err(rejected(ErrorCode::TokenExpired, "TOKEN_EXPIRED", None)),
-                Err(rejected(ErrorCode::TokenExpired, "TOKEN_EXPIRED", None)),
-            ],
-        );
-    }
+    h.driver.script([
+        Err(rejected(ErrorCode::TokenExpired, "TOKEN_EXPIRED", None)),
+        Err(rejected(ErrorCode::TokenExpired, "TOKEN_EXPIRED", None)),
+    ]);
     let tokens = Tokens::new("old", [Some("new".to_owned())]);
     let result = h.link.start("alice", tokens.clone()).await;
     assert!(result.is_err());
@@ -606,22 +478,16 @@ async fn auth_rejection_renews_once_then_terminates() {
 #[tokio::test]
 async fn upgrade_required_and_session_ending_kicks_terminate() {
     let mut h = harness();
-    h.driver.script(
-        "development",
-        [Err(rejected(
-            ErrorCode::UpgradeRequired,
-            "UPGRADE_REQUIRED",
-            None,
-        ))],
-    );
-    h.driver.script(
-        "ap-b",
-        [Err(rejected(
-            ErrorCode::UpgradeRequired,
-            "UPGRADE_REQUIRED",
-            None,
-        ))],
-    );
+    h.driver.script([Err(rejected(
+        ErrorCode::UpgradeRequired,
+        "UPGRADE_REQUIRED",
+        None,
+    ))]);
+    h.driver.script([Err(rejected(
+        ErrorCode::UpgradeRequired,
+        "UPGRADE_REQUIRED",
+        None,
+    ))]);
     let error = h
         .link
         .start("alice", Tokens::new("t1", []))
@@ -669,18 +535,19 @@ async fn a_mid_session_upgrade_required_terminates_like_a_connect_rejection() {
 #[tokio::test]
 async fn exhausted_rounds_back_off_then_recover() {
     let mut h = harness();
-    for ap in ["development", "ap-b"] {
-        h.driver
-            .script(ap, (0..4).map(|_| Err(unreachable())).collect::<Vec<_>>());
-    }
+    h.driver
+        .script((0..4).map(|_| Err(unreachable())).collect::<Vec<_>>());
     h.link
         .start("alice", Tokens::new("t1", []))
         .await
         .expect("连不上时链路保留会话、按退避重试，登录照常成功");
     let first = h.wait_phase(ConnectionPhase::Reconnecting, SHORT).await;
     assert_eq!(first.attempt, 1);
-    let next = first.next_retry_at.unwrap() - crate::runtime::link::access::now_ms();
-    assert!(next <= 1_600, "首次退避在 [base, 3·base]：{next} ms");
+    let next = first.next_retry_at.unwrap() - now_ms();
+    assert!(
+        next <= i64::from(CONNECTION_BACKOFF.base_ms) * 3,
+        "首次退避在 [base, 3·base]：{next} ms"
+    );
     let recovering = h
         .wait_phase(ConnectionPhase::ServiceUnavailable, Duration::from_secs(5))
         .await;
@@ -707,7 +574,7 @@ async fn a_late_link_up_does_not_resume_the_outbox_after_the_network_went_away()
     );
 
     h.link.network_changed(true, false).await;
-    h.wait_link_ups(2, Duration::from_secs(5)).await;
+    h.wait_link_ups(2, Duration::from_secs(8)).await;
     assert_eq!(h.driver.link_ups().last(), Some(&LinkUp::Resumed));
     assert!(h.driver.outbox_running(), "the probe passed: sending again");
 }
@@ -733,7 +600,7 @@ async fn the_network_dropping_inside_the_probe_window_keeps_the_outbox_paused() 
     );
 
     h.link.network_changed(true, false).await;
-    h.wait_link_ups(2, Duration::from_secs(5)).await;
+    h.wait_link_ups(2, Duration::from_secs(8)).await;
     assert!(h.driver.outbox_running(), "the probe passed: sending again");
 }
 
@@ -755,7 +622,7 @@ async fn connecting_while_the_device_reports_no_network_keeps_the_outbox_paused(
     );
 
     h.link.network_changed(true, false).await;
-    h.wait_link_ups(2, Duration::from_secs(5)).await;
+    h.wait_link_ups(2, Duration::from_secs(8)).await;
     assert!(h.driver.outbox_running(), "the probe passed: sending again");
 }
 
@@ -781,7 +648,7 @@ async fn network_loss_suspends_and_recovery_probes_the_surviving_link() {
     );
     assert_eq!(h.driver.probes(), 1);
     let good = h
-        .wait_phase(ConnectionPhase::Online, Duration::from_secs(5))
+        .wait_phase(ConnectionPhase::Online, Duration::from_secs(8))
         .await;
     assert_eq!(good.quality, Some(LinkQuality::Good));
     assert_eq!(h.driver.opened().len(), opened, "验活通过不重建连接");

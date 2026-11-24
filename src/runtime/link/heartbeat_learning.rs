@@ -5,7 +5,7 @@
 //!
 //! - 只在后台、只在保留链路的手机上学（iOS 进后台就托管，没有后台链路）；前台心跳不受影响；
 //! - 第一次见到的网络从接入策略的后台间隔起步；在当前间隔上连续 3 次后台心跳得到应答，就把间隔
-//!   拉长 30 秒，上限是策略允许的后台间隔上限（`POLICY_BOUNDS`）与 540 秒中较小的那个；
+//!   拉长 30 秒，上限是允许的后台间隔上限与 540 秒中较小的那个；
 //! - 应用在后台空闲时连接在间隔 I 上死了：记下这张网的上限 I − 30 秒（不低于策略的后台间隔）和
 //!   学到它的时刻，退到上限；之后在这张网上不再超过它。上限学到 7 天后作废：一次偶然的断连不能把一张网
 //!   永远压在低处，作废后这张网退回策略的后台间隔，从那里重新探；
@@ -19,8 +19,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use flare_access::NetPrint;
-use flare_access::manifest::POLICY_BOUNDS;
+use flare_access_contract::network::NetPrint;
 use serde::{Deserialize, Serialize};
 
 use super::driver::LinkHeartbeat;
@@ -45,11 +44,7 @@ const LEARNING_VERSION: u32 = 1;
 
 /// 后台间隔能学到的最长值（秒）：策略允许的后台间隔上限与 540 秒中较小的那个。
 pub(crate) fn upper_bound_sec() -> u32 {
-    POLICY_BOUNDS
-        .iter()
-        .find(|(name, _)| *name == "heartbeat.backgroundIntervalSec")
-        .map_or(HARD_CAP_SEC, |(_, bound)| bound.max as u32)
-        .min(HARD_CAP_SEC)
+    HARD_CAP_SEC
 }
 
 /// 在一张网上死过之后的上限。
@@ -519,7 +514,7 @@ mod tests {
     }
 
     fn policy_heartbeat() -> LinkHeartbeat {
-        LinkHeartbeat::from_policy(&flare_access::ClientPolicy::default())
+        LinkHeartbeat::default()
     }
 
     /// 上限取策略允许的后台间隔上限与 540 秒中较小的那个。

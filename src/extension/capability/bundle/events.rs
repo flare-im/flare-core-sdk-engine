@@ -201,6 +201,7 @@ mod tests {
             bundle_id: "board".into(),
             sha256: DIGEST.into(),
             conversation_id: Some("c1".into()),
+            message_id: None,
         }
     }
 

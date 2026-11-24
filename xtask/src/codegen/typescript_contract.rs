@@ -142,47 +142,11 @@ fn emit_typescript_api_types(spec: &Value) -> String {
         " * Shared request/response types for module APIs under `./modules/`.".to_string(),
         " */".to_string(),
         "import type { FlareSdkError } from '../contract';".to_string(),
+        "import type { CoreEndpoints } from '../model';".to_string(),
         String::new(),
         "export type Unit = void;".to_string(),
         "export type JsonValue = unknown;".to_string(),
         "export type SdkResourceProfile = \"desktop\" | \"mobile\";".to_string(),
-        "/** A root public key the access manifest signature chain is verified against. */"
-            .to_string(),
-        "export interface AccessTrustRoot { keyId: string; publicKey: string; }".to_string(),
-        "/** One more access point of the development cell (local dual-entry failover drills). */"
-            .to_string(),
-        "export interface DevelopmentAccessPoint {".to_string(),
-        "  id: string;".to_string(),
-        "  wsUrl?: string;".to_string(),
-        "  quicUrl?: string;".to_string(),
-        "  coreApiUrl?: string;".to_string(),
-        "  socialApiUrl?: string;".to_string(),
-        "  mediaUrl?: string;".to_string(),
-        "}".to_string(),
-        "/** Development mode only: endpoints of the primary access point (id `development`), unsigned. */"
-            .to_string(),
-        "export interface DevelopmentEndpoints {".to_string(),
-        "  wsUrl?: string;".to_string(),
-        "  quicUrl?: string;".to_string(),
-        "  coreApiUrl?: string;".to_string(),
-        "  socialApiUrl?: string;".to_string(),
-        "  mediaUrl?: string;".to_string(),
-        "  accessPoints?: DevelopmentAccessPoint[];".to_string(),
-        "  /** Client link policy overrides, clamped like a signed manifest's `clientPolicy`. */"
-            .to_string(),
-        "  clientPolicy?: Record<string, unknown>;".to_string(),
-        "}".to_string(),
-        "/** Where to connect: the signed access manifest, or development endpoints. The SDK has no other address field. */"
-            .to_string(),
-        "export interface AccessConfig {".to_string(),
-        "  bootstrapId?: string;".to_string(),
-        "  trustRoots?: AccessTrustRoot[];".to_string(),
-        "  /** Signed access manifest written at build time (DSSE envelope JSON text). */"
-            .to_string(),
-        "  seed?: string;".to_string(),
-        "  trustMode?: \"production\" | \"development\";".to_string(),
-        "  developmentEndpoints?: DevelopmentEndpoints;".to_string(),
-        "}".to_string(),
         "/** Host app identity reported on CONNECT. When given it replaces the build-time value whole. */"
             .to_string(),
         "export interface SdkAppConfig {".to_string(),
@@ -220,17 +184,17 @@ fn emit_typescript_api_types(spec: &Value) -> String {
         "  refreshLeadSecs?: number;".to_string(),
         "}".to_string(),
         "export interface SdkConfig {".to_string(),
-        "  access?: AccessConfig;".to_string(),
         "  ackMaxInFlight?: number;".to_string(),
         "  ackMaxRetries?: number;".to_string(),
         "  ackTimeoutSecs?: number;".to_string(),
         "  app?: SdkAppConfig;".to_string(),
         "  auth?: SdkAuthConfig;".to_string(),
-        "  /** Local override of one handshake's timeout, clamped to 2..30; unset uses the manifest's clientPolicy. */"
+        "  /** Local override of one handshake's timeout, clamped to 2..30; defaults to 8 seconds. */"
             .to_string(),
         "  connectTimeoutSecs?: number;".to_string(),
         "  dataUrl?: string;".to_string(),
         "  deviceId?: string;".to_string(),
+        "  endpoints?: CoreEndpoints;".to_string(),
         "  enableMetrics?: boolean;".to_string(),
         "  eventBusCapacity?: number;".to_string(),
         "  eventDedupeCapacity?: number;".to_string(),
@@ -247,6 +211,7 @@ fn emit_typescript_api_types(spec: &Value) -> String {
         "   */".to_string(),
         "  installPlatformLifecycle?: boolean;".to_string(),
         "}".to_string(),
+        "export type SdkInitRequest = SdkConfig | { environment?: string; sdkConfig?: SdkConfig; installPlatformLifecycle?: boolean };".to_string(),
         "export interface CreateClientRequest { config: SdkConfig; }".to_string(),
         "export interface CreateClientResponse { handle: bigint | number; }".to_string(),
         "export interface LoginRequest { userId: string; token?: string; storeConfigJson?: string; }"
@@ -432,7 +397,7 @@ fn typescript_api_type(name: &str, spec: &Value) -> String {
     }
 }
 
-/// `<Model>List`: a bare JSON array of one spec model (e.g. `access.listAccessPoints`).
+/// `<Model>List`: a bare JSON array of one spec model.
 pub(crate) fn is_model_list_type(name: &str, spec: &Value) -> bool {
     is_list_type_name(name) && is_known_ts_model_type(list_inner_type_name(name), spec)
 }
@@ -448,6 +413,7 @@ fn is_static_typescript_api_type(name: &str) -> bool {
     matches!(
         name,
         "SdkConfig"
+            | "SdkInitRequest"
             | "CreateClientRequest"
             | "CreateClientResponse"
             | "LoginRequest"

@@ -1,3 +1,6 @@
+#[path = "common/core_endpoints.rs"]
+mod core_endpoints;
+
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -419,10 +422,7 @@ async fn login_client(
     let device_id = format!("{run}-{user_id}-device");
     let overlay = SdkConfigOverlay {
         data_url: Some(data_root.to_string_lossy().to_string()),
-        access: Some(AccessConfig::development(DevelopmentEndpoints {
-            ws_url: Some(ws_url.to_string()),
-            ..Default::default()
-        })),
+        endpoints: Some(core_endpoints::for_websocket(ws_url.to_string())),
         tenant_id: Some(tenant_id.to_string()),
         device_id: Some(device_id.clone()),
         ack_max_in_flight: Some(ack_max_in_flight),
@@ -430,7 +430,7 @@ async fn login_client(
         ..Default::default()
     };
     client
-        .init(Some(format!("{run}-{user_id}-app")), Some(overlay))
+        .init(Some("development".into()), Some(overlay))
         .await?;
     let token = IMClient::generate_core_token(CoreTokenConfig {
         secret: secret.to_string(),

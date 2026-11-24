@@ -53,7 +53,7 @@ async fn uninit_clears_init_configuration() {
             Some("dev".to_string()),
             Some(SdkConfigOverlay {
                 data_url: Some(format!("file://{}", data_root.display())),
-                access: Some(development_access()),
+                endpoints: Some(fixture_endpoints()),
                 ..SdkConfigOverlay::default()
             }),
         )
@@ -69,6 +69,46 @@ async fn uninit_clears_init_configuration() {
     assert!(client.data_root().await.is_none());
     assert!(!client.session_active_sync());
     let _ = tokio::fs::remove_dir_all(data_root).await;
+}
+
+#[tokio::test]
+async fn fixed_endpoints_initialize_without_an_update_runtime() {
+    let client = IMClient::new();
+    let data_root =
+        std::env::temp_dir().join(format!("flare-im-fixed-test-{}", std::process::id()));
+    let endpoints = crate::client::CoreEndpoints {
+        websocket_url: "wss://127.0.0.1:9/ws".into(),
+        base_url: "https://127.0.0.1:9".into(),
+        quic_url: None,
+        media_base_url: None,
+    };
+    client
+        .init(
+            None,
+            Some(SdkConfigOverlay {
+                data_url: Some(format!("file://{}", data_root.display())),
+                endpoints: Some(endpoints),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("init fixed endpoints");
+
+    let status = client.connection_status().await;
+    assert_eq!(status.endpoint_revision, Some(1));
+    assert!(!status.development_mode);
+    assert!(client.update_runtime().await.is_none());
+
+    client.uninit().await.expect("uninit sdk");
+    let _ = tokio::fs::remove_dir_all(data_root).await;
+}
+
+#[tokio::test]
+async fn update_calls_report_that_no_provider_is_available() {
+    let client = IMClient::new();
+    let error = client.update_state(false).await.unwrap_err();
+    assert_eq!(error.code(), Some(ErrorCode::OperationNotSupported));
+    assert_eq!(error.reason(), "update.providerUnavailable");
 }
 
 #[tokio::test]
@@ -696,11 +736,11 @@ async fn a_token_pushed_in_by_the_host_first_still_counts_as_a_swap() {
 
 /// 构建期配好的接入配置在登录重建会话时不丢；接入运行时（健康簿、熔断）跨会话共用同一个。
 #[tokio::test]
-async fn the_build_time_access_config_and_runtime_survive_the_login_rebuild() {
+async fn the_build_time_endpoints_and_runtime_survive_the_login_rebuild() {
     use crate::client::config::SdkConfig;
     use crate::client::lifecycle::LoginDbKind;
     let client = IMClient::builder()
-        .config(SdkConfig::with_access(development_access()))
+        .config(SdkConfig::with_endpoints(fixture_endpoints()))
         .stores(in_memory_empty_im_provider())
         .build()
         .unwrap();
@@ -708,7 +748,7 @@ async fn the_build_time_access_config_and_runtime_survive_the_login_rebuild() {
         .inner
         .read()
         .await
-        .access
+        .connection
         .clone()
         .expect("access runtime");
     client
@@ -722,10 +762,10 @@ async fn the_build_time_access_config_and_runtime_survive_the_login_rebuild() {
     assert_eq!(
         g.configured_config
             .as_ref()
-            .and_then(|config| config.access.clone()),
-        Some(development_access())
+            .and_then(|config| config.endpoints.clone()),
+        Some(fixture_endpoints())
     );
-    assert!(Arc::ptr_eq(&before, g.access.as_ref().unwrap()));
+    assert!(Arc::ptr_eq(&before, g.connection.as_ref().unwrap()));
     drop(g);
     client.logout().await.unwrap();
 }
@@ -733,20 +773,20 @@ async fn the_build_time_access_config_and_runtime_survive_the_login_rebuild() {
 #[test]
 fn an_overlay_still_overrides_the_build_time_config() {
     use crate::client::config::SdkConfig;
-    let mut base = SdkConfig::with_access(development_access());
+    let mut base = SdkConfig::with_endpoints(fixture_endpoints());
     base.tenant_id = Some("t-base".to_string());
-    let other = flare_access::AccessConfig::development(flare_access::DevelopmentEndpoints {
-        ws_url: Some("ws://127.0.0.1:61051/ws".into()),
-        ..Default::default()
-    });
+    let other = crate::client::CoreEndpoints {
+        websocket_url: "wss://127.0.0.1:61051/ws".into(),
+        ..fixture_endpoints()
+    };
     let merged = crate::client::lifecycle::merge_sdk_config_onto(
         base,
         Some(&SdkConfigOverlay {
-            access: Some(other.clone()),
+            endpoints: Some(other.clone()),
             ..Default::default()
         }),
     );
-    assert_eq!(merged.access, Some(other));
+    assert_eq!(merged.endpoints, Some(other));
     assert_eq!(merged.tenant_id.as_deref(), Some("t-base"));
 }
 
@@ -756,8 +796,8 @@ async fn the_same_user_keeps_the_outbox_across_prepare() {
     use crate::client::lifecycle::LoginDbKind;
     use crate::domain::PendingSendVo;
     let client = IMClient::builder()
-        .config(crate::client::config::SdkConfig::with_access(
-            development_access(),
+        .config(crate::client::config::SdkConfig::with_endpoints(
+            fixture_endpoints(),
         ))
         .stores(in_memory_empty_im_provider())
         .build()
@@ -820,12 +860,13 @@ async fn the_same_user_keeps_the_outbox_across_prepare() {
     client.logout().await.unwrap();
 }
 
-fn development_access() -> flare_access::AccessConfig {
-    flare_access::AccessConfig::development(flare_access::DevelopmentEndpoints {
-        ws_url: Some("ws://127.0.0.1:9/ws".into()),
-        core_api_url: Some("http://127.0.0.1:9".into()),
-        ..Default::default()
-    })
+fn fixture_endpoints() -> crate::client::CoreEndpoints {
+    crate::client::CoreEndpoints {
+        websocket_url: "wss://127.0.0.1:9/ws".into(),
+        base_url: "https://127.0.0.1:9".into(),
+        quic_url: None,
+        media_base_url: None,
+    }
 }
 
 /// 把当前线程的 tracing 输出收进内存，供断言「会话结束后没有再记重连成功」。
@@ -888,7 +929,7 @@ async fn session_watchers_stop_when_the_session_ends(end: SessionEnd) {
 
     // 开发端点指向本机不监听的端口：本用例不会真去连，只要不碰外网。
     let client = IMClient::builder()
-        .config(SdkConfig::with_access(development_access()))
+        .config(SdkConfig::with_endpoints(fixture_endpoints()))
         .stores(in_memory_empty_im_provider())
         .build()
         .expect("build client");
@@ -954,109 +995,6 @@ async fn session_watchers_stop_on_disconnect() {
 #[tokio::test]
 async fn session_watchers_stop_when_the_client_is_destroyed() {
     session_watchers_stop_when_the_session_ends(SessionEnd::DropClient).await;
-}
-
-/// 宿主注入的登录前全局存储：装上后 init 建的接入运行时用它；传 `None` 后再 init 还原平台默认。
-#[tokio::test]
-async fn init_uses_the_injected_access_store_until_it_is_cleared() {
-    let client = IMClient::new();
-    let data_root =
-        std::env::temp_dir().join(format!("flare-im-access-store-test-{}", std::process::id()));
-    let overlay = || SdkConfigOverlay {
-        data_url: Some(format!("file://{}", data_root.display())),
-        access: Some(development_access()),
-        ..SdkConfigOverlay::default()
-    };
-    let injected: Arc<dyn flare_access::AccessStore> =
-        Arc::new(flare_access::store::MemoryAccessStore::new());
-    let is_injected = |store: &Arc<dyn flare_access::AccessStore>| {
-        std::ptr::addr_eq(Arc::as_ptr(store), Arc::as_ptr(&injected))
-    };
-
-    client.set_access_store(Some(injected.clone())).await;
-    client.init(None, Some(overlay())).await.expect("init sdk");
-    let access = client
-        .inner
-        .read()
-        .await
-        .access
-        .clone()
-        .expect("access runtime");
-    let kernel = access.kernel().await.expect("development directory");
-    assert!(
-        is_injected(kernel.store()),
-        "init must use the injected store"
-    );
-
-    client.set_access_store(None).await;
-    client
-        .init(None, Some(overlay()))
-        .await
-        .expect("init sdk again");
-    let access = client
-        .inner
-        .read()
-        .await
-        .access
-        .clone()
-        .expect("access runtime");
-    let kernel = access.kernel().await.expect("development directory");
-    assert!(
-        !is_injected(kernel.store()),
-        "None restores the platform default"
-    );
-
-    client.uninit().await.expect("uninit sdk");
-    let _ = tokio::fs::remove_dir_all(data_root).await;
-}
-
-/// 注入的登录前全局存储跨会话保留：prepare（登录重建客户端）之后再 init，用的仍是注入的那份。
-#[tokio::test]
-async fn the_injected_access_store_survives_the_login_rebuild() {
-    use crate::client::lifecycle::LoginDbKind;
-    let client = IMClient::new();
-    let data_root = std::env::temp_dir().join(format!(
-        "flare-im-access-store-rebuild-{}",
-        std::process::id()
-    ));
-    let overlay = || SdkConfigOverlay {
-        data_url: Some(format!("file://{}", data_root.display())),
-        access: Some(development_access()),
-        ..SdkConfigOverlay::default()
-    };
-    let injected: Arc<dyn flare_access::AccessStore> =
-        Arc::new(flare_access::store::MemoryAccessStore::new());
-
-    client.set_access_store(Some(injected.clone())).await;
-    client.init(None, Some(overlay())).await.expect("init sdk");
-    client
-        .prepare(
-            "alice",
-            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
-        )
-        .await
-        .expect("prepare");
-    client
-        .init(None, Some(overlay()))
-        .await
-        .expect("init after login");
-
-    let access = client
-        .inner
-        .read()
-        .await
-        .access
-        .clone()
-        .expect("access runtime");
-    let kernel = access.kernel().await.expect("development directory");
-    assert!(
-        std::ptr::addr_eq(Arc::as_ptr(kernel.store()), Arc::as_ptr(&injected)),
-        "init after the login rebuild must still use the injected store"
-    );
-
-    client.logout().await.expect("logout");
-    client.uninit().await.expect("uninit sdk");
-    let _ = tokio::fs::remove_dir_all(data_root).await;
 }
 
 /// 推送入口跟着会话走：准备好的会话只认自己账号（用户与租户）的推送，同一条只响一次；登出之后

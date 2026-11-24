@@ -184,24 +184,25 @@ impl Fixture {
     }
 }
 /// 开发模式下 Core API 指向替身服务的接入配置。
-fn development_access(base: &str) -> flare_access::AccessConfig {
-    flare_access::AccessConfig::development(flare_access::DevelopmentEndpoints {
-        ws_url: Some("ws://127.0.0.1:9/ws".into()),
-        core_api_url: Some(base.into()),
-        ..Default::default()
-    })
+fn fixture_endpoints(base: &str) -> crate::client::CoreEndpoints {
+    crate::client::CoreEndpoints {
+        websocket_url: "ws://127.0.0.1:9/ws".into(),
+        base_url: base.into(),
+        quic_url: None,
+        media_base_url: None,
+    }
 }
 
 /// 与 SDK 一样按接入点路由的 Core HTTP 客户端（推送日志按部署标识归档，替身与 SDK 必须一致）。
 fn routed_http(base: &str) -> HttpClient {
-    let access = std::sync::Arc::new(crate::runtime::link::AccessRuntime::new(
-        Some(development_access(base)),
-        crate::runtime::link::AccessStoreSource::memory(),
+    let access = std::sync::Arc::new(crate::runtime::link::ConnectionRuntime::new(
+        Some(fixture_endpoints(base)),
+        true,
     ));
     HttpClient::routed(
         crate::infrastructure::transport::http::router::HttpRouter::new(
             access,
-            flare_access::ServiceClass::CoreApi,
+            crate::infrastructure::transport::http::router::CoreHttpService::CoreApi,
         ),
         std::sync::Arc::new(crate::infrastructure::transport::http::HttpRequestContext::new()),
         flare_core::common::TlsConfig::none(),
@@ -591,10 +592,10 @@ async fn normal_init_recovers_pending_revoke_before_login() {
     let client = crate::client::IMClient::new();
     client
         .init(
-            None,
+            Some("development".into()),
             Some(crate::client::lifecycle::SdkConfigOverlay {
                 data_url: Some(f.root.to_str().unwrap().into()),
-                access: Some(development_access(&f.base)),
+                endpoints: Some(fixture_endpoints(&f.base)),
                 device_id: Some("device".into()),
                 ..Default::default()
             }),
@@ -628,10 +629,10 @@ async fn public_reconcile_reopens_journal_after_old_instance_releases_lease() {
     let client = crate::client::IMClient::new();
     client
         .init(
-            None,
+            Some("development".into()),
             Some(crate::client::lifecycle::SdkConfigOverlay {
                 data_url: Some(f.root.to_str().unwrap().into()),
-                access: Some(development_access(&f.base)),
+                endpoints: Some(fixture_endpoints(&f.base)),
                 device_id: Some("device".into()),
                 ..Default::default()
             }),
@@ -684,10 +685,10 @@ async fn a_client_without_the_hosts_device_opens_no_push_journal() {
     let client = crate::client::IMClient::new();
     client
         .init(
-            None,
+            Some("development".into()),
             Some(crate::client::lifecycle::SdkConfigOverlay {
                 data_url: Some(f.root.to_str().unwrap().into()),
-                access: Some(development_access(&f.base)),
+                endpoints: Some(fixture_endpoints(&f.base)),
                 ..Default::default()
             }),
         )

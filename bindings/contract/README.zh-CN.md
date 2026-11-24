@@ -36,7 +36,8 @@ Rust `cargo xtask core-codegen` 是唯一 bindings 生成入口（类似 protoc�
 
 | 字段 | 说明 |
 |------|------|
-| `access` | 连到哪里：已签名的接入清单（`bootstrapId`、`trustRoots`、`seed`），或 `trustMode: "development"` 时直接给 `developmentEndpoints`。接入点、协议顺序、超时都从这里来，没有单地址字段 |
+| `endpoints` | 自建 Core 的地址组。`baseUrl`、`websocketUrl` 必填，可选 `quicUrl`、`mediaBaseUrl` |
+| `access` | 旧接入配置，与 `endpoints` 互斥 |
 | `app` | `version` / `build` / `distribution` / `channel` / `buildId` / `target` / `locale`；宿主没给的键由平台包补 |
 | `auth` | 出现（空对象也算）即 SDK 托管令牌，在 Core API 上签发；`tokenEndpoint` 是可选的相对路径 |
 | `connectTimeoutSecs` | 单次握手的本机覆盖，夹紧到 2–30 |

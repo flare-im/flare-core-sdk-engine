@@ -48,6 +48,7 @@ pub struct SessionContext {
     pub bundle_id: String,
     pub sha256: String,
     pub conversation_id: Option<String>,
+    pub message_id: Option<String>,
 }
 
 /// What [`BridgeSession::admit`] decided about one message.
@@ -77,6 +78,8 @@ pub struct BridgeSession {
     /// method; at most [`MAX_HOST_CALLS`].
     host_calls: Vec<(String, BridgeMethod)>,
     revoked: Option<RevokeReason>,
+    #[cfg(not(target_arch = "wasm32"))]
+    file_lease: Option<super::provider::BundleLease>,
 }
 
 impl BridgeSession {
@@ -97,7 +100,14 @@ impl BridgeSession {
             running: Vec::new(),
             host_calls: Vec::new(),
             revoked: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            file_lease: None,
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn hold_files(&mut self, lease: super::provider::BundleLease) {
+        self.file_lease = Some(lease);
     }
 
     pub fn hello(&self) -> &HelloResult {

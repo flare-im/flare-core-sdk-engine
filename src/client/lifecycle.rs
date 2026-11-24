@@ -19,20 +19,18 @@ use std::sync::Arc;
 
 /// 上层可选覆盖项（JSON 字段为 SDK canonical camelCase）。
 ///
-/// 没有任何地址字段：连哪里只由 `access`（接入配置）决定，开发联调用
-/// `access.trustMode = "development"` + `access.developmentEndpoints`。
+/// 宿主使用 `endpoints` 提供 Core HTTP 和 WebSocket 地址，QUIC 与媒体地址可选。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SdkConfigOverlay {
     pub data_url: Option<String>,
-    /// 接入配置：信任根、构建期种子、信任模式；开发模式下的开发端点。
-    pub access: Option<flare_access::AccessConfig>,
+    pub endpoints: Option<super::CoreEndpoints>,
     /// 宿主应用信息：版本、构建号、分发渠道、更新通道。给了就整体替换构建期的值。
     pub app: Option<SdkAppConfig>,
     pub tenant_id: Option<String>,
     /// Stable client device id for multi-device delivery and sync cursors.
     pub device_id: Option<String>,
-    /// 单次握手（含 CONNECT_ACK）时限的本机覆盖（秒）；不设时用清单 `connectTimeoutMs`（默认 8 秒）。
+    /// 单次握手（含 CONNECT_ACK）时限的本机覆盖（秒），默认 8 秒。
     pub connect_timeout_secs: Option<u64>,
     /// 运行资源预算 profile（`desktop` / `mobile`）。
     pub resource_profile: Option<SdkResourceProfile>,
@@ -69,8 +67,8 @@ pub fn merge_sdk_config_onto(
     let Some(o) = overlay else {
         return config;
     };
-    if o.access.is_some() {
-        config.access = o.access.clone();
+    if o.endpoints.is_some() {
+        config.endpoints = o.endpoints.clone();
     }
     if let Some(app) = &o.app {
         config.app = app.clone();
@@ -204,7 +202,51 @@ impl LoginDbKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flare_access::{AccessConfig, DevelopmentEndpoints, TrustMode};
+
+    #[test]
+    fn direct_init_keeps_full_runtime_configuration() {
+        let overlay: SdkConfigOverlay = serde_json::from_value(serde_json::json!({
+            "endpoints": {"baseUrl": "https://core.example", "websocketUrl": "wss://core.example/ws"},
+            "dataUrl": "file:///tmp/flare",
+            "tenantId": "tenant-a",
+            "deviceId": "device-a",
+            "app": {"version": "1.2.3"},
+            "auth": {"tokenEndpoint": "/auth/issue", "refreshLeadSecs": 90},
+            "connectTimeoutSecs": 4,
+            "resourceProfile": "mobile",
+            "syncBatchSize": 40,
+            "initMessageSyncConcurrency": 2,
+            "eventBusCapacity": 128,
+            "eventDedupeCapacity": 256,
+            "messageDedupeCapacity": 512,
+            "ackTimeoutSecs": 6,
+            "ackMaxRetries": 3,
+            "ackMaxInFlight": 12,
+            "tlsCaCertPath": "ca.pem",
+            "tlsCaCert": "inline-ca",
+            "enableMetrics": false
+        })).unwrap();
+        let config = merge_sdk_config(Some(&overlay));
+        assert_eq!(config.endpoints, overlay.endpoints);
+        assert_eq!(overlay.data_url.as_deref(), Some("file:///tmp/flare"));
+        assert_eq!(config.tenant_id, overlay.tenant_id);
+        assert_eq!(config.device_id, overlay.device_id);
+        assert_eq!(Some(config.app), overlay.app);
+        assert_eq!(config.auth, overlay.auth);
+        assert_eq!(config.connect_timeout_secs, Some(4));
+        assert_eq!(config.resource_profile, SdkResourceProfile::Mobile);
+        assert_eq!(config.sync_batch_size, Some(40));
+        assert_eq!(config.init_message_sync_concurrency, Some(2));
+        assert_eq!(config.event_bus_capacity, Some(128));
+        assert_eq!(config.event_dedupe_capacity, Some(256));
+        assert_eq!(config.message_dedupe_capacity, Some(512));
+        assert_eq!(config.ack_timeout_secs, Some(6));
+        assert_eq!(config.ack_max_retries, Some(3));
+        assert_eq!(config.ack_max_in_flight, Some(12));
+        assert_eq!(config.tls_ca_cert_path, overlay.tls_ca_cert_path);
+        assert_eq!(config.tls_ca_cert, overlay.tls_ca_cert);
+        assert!(!config.enable_metrics);
+    }
 
     /// 应用信息走 camelCase 的 `app` 对象（各端 init 都这么传）；给了就整体替换构建期的值，
     /// 没给保留构建期的，两边都没有就保持为空——绝不回退成假版本号。
@@ -236,57 +278,15 @@ mod tests {
         assert_eq!(merge_sdk_config(None).app, SdkAppConfig::default());
     }
 
-    /// 开发模式的接入配置原样带过去；旧的单地址字段与全局钉扎不再被认（一条路径）。
     #[test]
-    fn access_overlay_is_the_only_way_to_say_where_to_connect() {
-        let overlay: SdkConfigOverlay = crate::shared::util::json::from_value(serde_json::json!({
-            "access": {
-                "trustMode": "development",
-                "developmentEndpoints": {
-                    "wsUrl": "ws://127.0.0.1:60051/ws",
-                    "coreApiUrl": "http://127.0.0.1:60061"
-                }
-            },
-            "connectTimeoutSecs": 8,
-            "tlsSpkiSha256Pins": ["spki-sha256/current"]
-        }))
-        .expect("camelCase overlay");
-        let access = overlay.access.clone().unwrap();
-        assert_eq!(access.trust_mode, TrustMode::Development);
-        assert_eq!(
-            access.development_endpoints,
-            Some(DevelopmentEndpoints {
-                ws_url: Some("ws://127.0.0.1:60051/ws".into()),
-                core_api_url: Some("http://127.0.0.1:60061".into()),
-                ..Default::default()
-            })
-        );
+    fn overlay_preserves_the_endpoint_group() {
+        let overlay: SdkConfigOverlay = serde_json::from_value(serde_json::json!({
+            "endpoints": { "baseUrl": "https://example.com/api", "websocketUrl": "wss://example.com/ws" },
+            "connectTimeoutSecs": 8
+        })).unwrap();
         let merged = merge_sdk_config(Some(&overlay));
-        assert_eq!(merged.access, Some(access));
+        assert_eq!(merged.endpoints, overlay.endpoints);
         assert_eq!(merged.connect_timeout_secs, Some(8));
-
-        let json = serde_json::to_value(&overlay).expect("serialize overlay");
-        assert!(json.get("access").is_some());
-        for removed in [
-            "wsUrl",
-            "httpUrl",
-            "quicUrl",
-            "transportPolicy",
-            "reconnectIntervalSecs",
-            "tlsSpkiSha256Pins",
-            "tlsCertificateSha256Pins",
-        ] {
-            assert!(json.get(removed).is_none(), "{removed} must be gone");
-        }
-        assert!(
-            crate::shared::util::json::from_value::<SdkConfigOverlay>(
-                serde_json::json!({ "wsUrl": "ws://x" })
-            )
-            .is_ok_and(|overlay| overlay.access.is_none()),
-            "unknown legacy keys are ignored, never mapped"
-        );
-        let production = AccessConfig::production("b7f3c9a1e2d4b6a8", vec![], None);
-        assert_eq!(production.trust_mode, TrustMode::Production);
     }
 }
 

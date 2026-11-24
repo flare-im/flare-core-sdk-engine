@@ -70,15 +70,18 @@ impl IMClient {
             let base = g.configured_config.clone().unwrap_or_default();
             let config = merge_sdk_config_onto(base, g.sdk_config.as_ref());
             match (
-                g.access.clone(),
+                g.connection.clone(),
                 config.device_id.clone(),
                 g.data_root.clone(),
             ) {
                 (Some(access), Some(device), Some(root))
-                    if access.config().is_some() && !device.is_empty() =>
+                    if access.endpoints.is_some() && !device.is_empty() =>
                 {
                     // 推送撤销走 Core API，与其它 REST 一样按接入点路由；不带任何会话凭据。
-                    let router = HttpRouter::new(access, flare_access::ServiceClass::CoreApi);
+                    let router = HttpRouter::new(
+                        access,
+                        crate::infrastructure::transport::http::router::CoreHttpService::CoreApi,
+                    );
                     let context = std::sync::Arc::new(HttpRequestContext::new());
                     #[cfg(not(target_arch = "wasm32"))]
                     let http = HttpClient::routed(router, context, config.core_tls_config());

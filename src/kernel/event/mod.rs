@@ -52,14 +52,13 @@ pub use selector::{
     SdkEventKind, SdkEventType, SyncEventType, ViewEventType,
 };
 pub use types::{
-    ACCESS_MANIFEST_TOPIC, ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent,
-    NotificationEvent, PLUGIN_CATALOG_TOPIC, PluginEvent, PluginRealtime, RELEASE_MANIFEST_TOPIC,
-    ReadinessStage, SdkEvent, SyncNotify, SyncPhase, TENANT_NOTICE_SOURCE,
+    ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent, NotificationEvent,
+    PLUGIN_CATALOG_TOPIC, PluginEvent, PluginRealtime, RELEASE_MANIFEST_TOPIC, ReadinessStage,
+    SdkEvent, SyncNotify, SyncPhase, TENANT_NOTICE_SOURCE,
 };
 
 pub use link_status::{
-    AccessChanged, AccessChanges, AccessEndpoint, AccessSwitched, ActionRequiredReason,
-    ConnectionPhase, ConnectionStatus, LinkQuality, SwitchReason,
+    ActionRequiredReason, ConnectionPhase, ConnectionStatus, LinkQuality, SwitchReason,
 };
 
 pub(crate) use name_change::NameChange;

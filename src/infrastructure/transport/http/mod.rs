@@ -1,17 +1,9 @@
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod artifact;
 mod credential_scope;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod doh;
-pub mod fetch;
 pub mod http_client;
 #[cfg(target_arch = "wasm32")]
 pub mod http_client_wasm;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod ip_hints;
 pub mod media_dto;
 mod private_download;
-pub mod probe;
 pub(crate) mod read_receipt_api;
 pub mod router;
 pub use credential_scope::{
@@ -29,6 +21,14 @@ pub use media_dto::{
 };
 
 use crate::shared::error::{ErrorCode, FlareError, Result};
+
+/// Header carrying the idempotency key for a write request.
+pub const IDEMPOTENCY_KEY_HEADER: &str = "Idempotency-Key";
+
+/// Creates a key for one logical write. Reuse the key when retrying that write.
+pub fn new_idempotency_key() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
 
 /// 单次 HTTP 请求的总时限（从发起到读完响应体），原生与 wasm 共用。
 pub(crate) const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);

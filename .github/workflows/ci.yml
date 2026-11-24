@@ -72,12 +72,9 @@ jobs:
       - name: test
         run: cargo test --features storage-sqlite
 
-      # 根包的 cargo test 不跑成员 crate。flare-access 的两种依赖方式都要过：
-      # 客户端带全部模块，控制面只带 manifest 与 trust；两种都会比对 access/schemas。
+      # 签名契约由 flare-protocol-grpc 的 CI 校验。
       - name: test（flare-access）
-        run: |
-          cargo test -p flare-access
-          cargo test -p flare-access --no-default-features
+        run: cargo test -p flare-access
 
   # 供应链审计与主流程解耦：advisory DB 每天在变，
   # 不该因为上游新披露的 CVE 就让无关的功能 PR 变红。
@@ -346,16 +343,7 @@ jobs:
           name: perf-baseline-sdk
           path: perf-baseline.txt
 
-  # 架构与契约门禁：xtask/src/verify 下 13 道判据（约 130KB），
-  # 在 2026-08-20 之前**CI 里一条 xtask 命令都没有**——只在有人手动敲
-  # `cargo xtask verify` 时才跑。跑一次就知道后果：4 道红的，而且 verify 顺序执行、
-  # 遇错即停，第一道红之后的 14 步从来没被执行过。四道全部修好了（三道是判据
-  # 自己过时，一道是判据自相矛盾），这个 job 就是为了不再让它们烂掉。
-  #
-  # **不用 `cargo xtask verify` 总入口**：它里面有三步需要私有商业插件和通话仓
-  # （plugin-marketplace / rtc-capability / plugin-verify），公开仓的 CI 拿不到。
-  # 所以逐条列出能跑的 11 道，并把跑不了的 3 道**明写在日志里**——
-  # 「少验了什么」必须看得见，不能靠沉默。
+  # 商业插件的生成与市场校验由私有插件仓执行。
   xtask-verify:
     name: 架构与契约门禁
     runs-on: ubuntu-latest
@@ -395,8 +383,6 @@ jobs:
                  performance e2ee-contract enterprise-compliance channel-capability
                  media-processing structure"
           EXPECTED=11
-          echo "跳过 3 道（需要私有商业插件和通话仓，公开 CI 拿不到）："
-          echo "  · plugin-marketplace   · rtc-capability   · plugin-verify"
           echo ""
           ran=0
           for g in $GATES; do

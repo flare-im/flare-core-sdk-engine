@@ -554,8 +554,9 @@ mod native {
             .filter_map(|line| serde_json::from_slice::<ExtensionLine>(line).ok())
             .filter(owned)
             .filter_map(|line| {
-                let provider = field(&line.p)
-                    .filter(|provider| matches!(provider.as_str(), "apns" | "fcm" | "getui"))?;
+                let provider = field(&line.p).filter(|provider| {
+                    matches!(provider.as_str(), "apns" | "fcm" | "getui" | "jpush")
+                })?;
                 Some(Receipt {
                     conversation_id: field(&line.c)?,
                     message_id: field(&line.m).unwrap_or_default(),

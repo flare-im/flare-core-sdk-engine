@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+out_dir=pkg
+if [ -n "${FLARE_SDK_PRODUCT_DIST:-}" ]; then
+    mkdir -p "$FLARE_SDK_PRODUCT_DIST"
+    printf '%s\n' 'Flare commercial SDK' > "$FLARE_SDK_PRODUCT_DIST/.commercial-sdk"
+    out_dir="$FLARE_SDK_PRODUCT_DIST/wasm/pkg"
+fi
+
+export CARGO="$PWD/scripts/cargo-metadata-no-deps"
+exec wasm-pack build --target web --out-dir "$out_dir" --out-name flare_im_core_sdk

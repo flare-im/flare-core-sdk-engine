@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use flare_access::release::UpdateStatus;
+use flare_access_contract::update::UpdateStatus;
 
 use crate::FlareError;
 use crate::client::token_provider::{GatewayTokenProvider, jwt_exp_secs};
@@ -383,9 +383,7 @@ impl IMClient {
         }
     }
 
-    /// 签发与换新走接入清单的 Core API（HttpRouter，换接入点与重试照 §3.9；开发模式即
-    /// `developmentEndpoints.coreApiUrl`），用部署的信任根，不带会话鉴权头（凭据由签发、换新各自给出）。
-    /// 不是 SDK 托管、接入还没初始化、或签发路径写错时为 `None`。
+    /// 连接令牌签发与续期使用当前 `endpoints.baseUrl` 和部署的信任根。
     pub(super) fn gateway_token_provider_from_inner(
         g: &super::IMClientInner,
     ) -> Option<GatewayTokenProvider> {
@@ -400,8 +398,11 @@ impl IMClient {
                 return None;
             }
         };
-        let access = g.access.clone()?;
-        let router = HttpRouter::new(access, flare_access::ServiceClass::CoreApi);
+        let access = g.connection.clone()?;
+        let router = HttpRouter::new(
+            access,
+            crate::infrastructure::transport::http::router::CoreHttpService::CoreApi,
+        );
         let context = std::sync::Arc::new(HttpRequestContext::new());
         #[cfg(not(target_arch = "wasm32"))]
         let http = {

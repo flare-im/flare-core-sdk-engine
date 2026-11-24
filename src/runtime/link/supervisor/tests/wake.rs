@@ -2,8 +2,8 @@
 
 use super::*;
 
-/// 三轮后台重连要等两次退避（各自最长几秒）。
-const LONG: Duration = Duration::from_secs(12);
+/// Covers the background reconnect backoff, including jitter.
+const LONG: Duration = Duration::from_secs(45);
 
 async fn online(platform: &str) -> Harness {
     let mut h = harness_on(platform);

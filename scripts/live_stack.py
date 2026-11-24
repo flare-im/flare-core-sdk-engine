@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Isolated local stack for the engine's live link smoke test (tests/live_stack_smoke.rs).
+"""Isolated local stack for the engine's reachability acceptance tests.
 
 One Cell with two signaling gateways as two access points of the same Cell, the Core
 services a send needs, the Push Proxy, Push Server and Push Worker (offline tasks go to

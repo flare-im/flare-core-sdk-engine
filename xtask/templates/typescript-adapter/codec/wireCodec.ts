@@ -1281,6 +1281,7 @@ export function sendAckFromJson(value: unknown | undefined): SendMessageResponse
     seq: requiredIntField(json, 'seq', 'SendMessageResponse'),
     timestamp: requiredIntField(json, 'timestamp', 'SendMessageResponse'),
     success: boolValue(field(json, 'success')),
+    stage: Object.values(MessageSendStage).find(stage => stage === json.stage),
     errorCode: intValue(field(json, 'errorCode')),
     errorMessage: stringValue(field(json, 'errorMessage')),
   };

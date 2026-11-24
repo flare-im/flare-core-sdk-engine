@@ -4,11 +4,11 @@
 //!
 //! Both read the update center ([`crate::runtime::update::UpdateRuntime`]),
 //! which lives as long as `init`, so they work before login too.
-use flare_access::release::UpdateStatus;
+use flare_access_contract::update::UpdateStatus;
 use serde::Serialize;
 
 use crate::client::IMClient;
-use crate::shared::error::{ErrorCode, FlareError, Result};
+use crate::shared::error::Result;
 
 /// `update.plugin_upgrade_status` result.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -33,13 +33,6 @@ impl PluginUpgradeStatus {
     }
 }
 
-fn update_center_missing() -> FlareError {
-    FlareError::localized(
-        ErrorCode::ConfigurationError,
-        "the update center is not initialised; call init first",
-    )
-}
-
 impl IMClient {
     /// `update.plugin_upgrade_status`: `{minBuild?}` (a view's `minBuild`,
     /// absent when the plugin names none). Whether this channel has a build
@@ -54,7 +47,7 @@ impl IMClient {
         let Some(update) = self.update_runtime().await else {
             return Ok(PluginUpgradeStatus::default());
         };
-        let floor = match (min_build, update.state(false).await.current.build) {
+        let floor = match (min_build, update.clone().state(false).await.current.build) {
             (Some(floor), _) => floor,
             // Any build newer than this one.
             (None, Some(current)) => current.saturating_add(1),
@@ -71,10 +64,7 @@ impl IMClient {
     /// install, defer). Returns the update state; its `prompt` is `none` when
     /// there is nothing to update to.
     pub async fn open_update_flow(&self) -> Result<UpdateStatus> {
-        let update = self
-            .update_runtime()
-            .await
-            .ok_or_else(update_center_missing)?;
+        let update = self.require_update().await?;
         Ok(update.open_flow().await)
     }
 }

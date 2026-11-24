@@ -25,8 +25,8 @@ use flare_im_core_sdk::client::IMClient;
 use flare_im_core_sdk::client::config::SdkAuthConfig;
 use flare_im_core_sdk::client::lifecycle::{LoginDbKind, SdkConfigOverlay};
 use flare_im_core_sdk::model::StartupHomeSyncRequest;
+use flare_im_core_sdk::prelude::CoreEndpoints;
 use flare_im_core_sdk::prelude::MessageEvent;
-use flare_im_core_sdk::prelude::{AccessConfig, DevelopmentEndpoints};
 
 fn env_var(key: &str) -> Option<String> {
     env::var(key).ok().filter(|value| !value.is_empty())
@@ -71,16 +71,18 @@ async fn desktop_stack_logs_in_and_receives_realtime_push() {
     let client = IMClient::new();
     client
         .init(
-            None,
+            Some("development".into()),
             Some(SdkConfigOverlay {
                 data_url: Some(format!("file://{}", data_root.display())),
                 // 联调：开发模式接入。协议顺序、交错竞速由清单策略决定，不再有「连接协议」开关。
-                access: Some(AccessConfig::development(DevelopmentEndpoints {
-                    ws_url: Some(ws_url),
+                endpoints: Some(CoreEndpoints {
+                    base_url: http_url
+                        .clone()
+                        .unwrap_or_else(|| "http://127.0.0.1:9".into()),
+                    websocket_url: ws_url,
                     quic_url: env_var("FLARE_E2E_QUIC_URL"),
-                    core_api_url: http_url.clone(),
-                    ..Default::default()
-                })),
+                    media_base_url: None,
+                }),
                 tls_ca_cert: env_var("FLARE_E2E_TLS_CA_CERT"),
                 tenant_id: Some("0".to_string()),
                 // 有 Core HTTP 就由 SDK 托管令牌：向 coreApiUrl 上的标准签发路径签发。

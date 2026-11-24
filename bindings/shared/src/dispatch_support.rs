@@ -7,7 +7,20 @@ use flare_im_core_sdk::serde_json::{self, Value};
 
 use crate::{BindingResponse, binding_invalid_parameter};
 use flare_im_core_sdk::Result;
-use flare_im_core_sdk::client::HeartbeatAppState;
+use flare_im_core_sdk::client::{HeartbeatAppState, SdkConfigOverlay};
+
+pub fn init_request(request: &Value) -> Result<(Option<String>, Option<SdkConfigOverlay>)> {
+    let environment = request
+        .get("environment")
+        .filter(|value| !value.is_null())
+        .map(|value| from_value::<String>(value.clone(), "init environment"))
+        .transpose()?;
+    let config = request.get("sdkConfig").unwrap_or(request);
+    let config = (!config.is_null())
+        .then(|| from_value(config.clone(), "SDK init config"))
+        .transpose()?;
+    Ok((environment, config))
+}
 
 /// Five MiB of bytes expand to at most twenty MiB as a compact JSON integer
 /// array. Keep the larger transport budget exclusive to the APIs that carry
@@ -40,7 +53,7 @@ use flare_im_core_sdk::content::message_elem::{Elem, elem_to_message_content};
 use flare_im_core_sdk::model::conversation::ConversationType;
 use flare_im_core_sdk::model::media::UploadOptions;
 use flare_im_core_sdk::model::message::{
-    IMMessage, ImageFormat, ImageInfo, MarkType, MessageType, SendAck, send_ack,
+    IMMessage, ImageFormat, ImageInfo, MarkType, MessageType, SendAck, SendAckDurability, send_ack,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use flare_im_core_sdk::{ErrorCode, FlareError};
@@ -133,6 +146,20 @@ fn canonical_send_ack_id(ack: &SendAck) -> &str {
         .unwrap_or(ack.client_msg_id.as_str())
 }
 
+pub(crate) fn send_ack_stage(ack: &SendAck) -> &'static str {
+    match &ack.result {
+        None => "queued",
+        Some(send_ack::Result::Accepted(accepted)) => {
+            if accepted.durability() == SendAckDurability::Persisted {
+                "persisted"
+            } else {
+                "accepted"
+            }
+        }
+        Some(send_ack::Result::Error(_)) => "failed",
+    }
+}
+
 pub fn json_send_ack(ack: SendAck) -> Result<BindingResponse> {
     let ack_id = canonical_send_ack_id(&ack).to_string();
     let (server_msg_id, seq, timestamp, success, error_code, error_message) =
@@ -166,6 +193,7 @@ pub fn json_send_ack(ack: SendAck) -> Result<BindingResponse> {
         "ackId": ack_id,
         "timestamp": timestamp,
         "success": success,
+        "stage": send_ack_stage(&ack),
         "errorCode": error_code,
         "errorMessage": error_message,
     })))

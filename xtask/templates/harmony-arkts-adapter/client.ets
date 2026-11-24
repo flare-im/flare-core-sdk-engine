@@ -4,7 +4,6 @@ import { SdkErrorCodes } from '../contract/SdkContract';
 import { FlareSdkException } from '../bridge/FlareSdkException';
 import type { FlareImClient } from '../api/client';
 import type { ConnectionApi } from '../api/modules/connection';
-import type { AccessApi } from '../api/modules/access';
 import type { LifecycleApi } from '../api/modules/lifecycle';
 import type { ConversationsApi } from '../api/modules/conversations';
 import type { MessageBuilderApi } from '../api/modules/message_builder';
@@ -23,7 +22,6 @@ import { emitLifecycleEvent, invokeBool, invokeMap, invokeVoid, sdkErrorPayloadF
 import { setHeartbeatNatTimeoutRequestToMap } from './codec/WireCodec';
 import { DefaultEventsApi } from './module/DefaultEventsApi';
 import { DefaultConnectionApi } from './module/DefaultConnectionApi';
-import { DefaultAccessApi } from './module/DefaultAccessApi';
 import { DefaultLifecycleApi } from './module/DefaultLifecycleApi';
 import { DefaultConversationsApi } from './module/DefaultConversationsApi';
 import { DefaultMessagesApi } from './module/DefaultMessagesApi';
@@ -53,7 +51,6 @@ import {
 
 export class DefaultFlareImClient implements FlareImClient {
   readonly connection: ConnectionApi;
-  readonly access: AccessApi;
   readonly lifecycle: LifecycleApi;
   readonly conversations: ConversationsApi;
   readonly messageBuilder: MessageBuilderApi;
@@ -73,7 +70,6 @@ export class DefaultFlareImClient implements FlareImClient {
   constructor(bridge: NativeBridge) {
     this.bridge = bridge;
     this.connection = new DefaultConnectionApi(bridge);
-    this.access = new DefaultAccessApi(bridge);
     this.lifecycle = new DefaultLifecycleApi(bridge);
     this.conversations = new DefaultConversationsApi(bridge);
     this.messageBuilder = new DefaultMessageBuilderApi(bridge);

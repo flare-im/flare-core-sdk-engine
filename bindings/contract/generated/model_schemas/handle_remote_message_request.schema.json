@@ -20,7 +20,7 @@
       "type": "object"
     },
     "provider": {
-      "description": "Push channel that delivered it: apns, fcm or getui.",
+      "description": "Push channel that delivered the message.",
       "type": "string"
     }
   },

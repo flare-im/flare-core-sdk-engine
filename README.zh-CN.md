@@ -90,7 +90,7 @@ brew install protobuf
 
 ## 快速开始
 
-> 客户端 App 不要本地签发：配置 `SdkConfig::auth.token_endpoint`（builder `auth_token_endpoint`）让 SDK 向网关 `/api/v1/auth/tokens` 签发并自动刷新，或传入业务后端签好的 token。`generate_core_token` 只保留给服务端工具与测试（见 flare-core-server/docs/AUTH-TOKEN-ISSUANCE.zh-CN.md）。
+`auth` 配置让 SDK 向自建 Core API 请求连接令牌并自动续期。应用也可以向自己的后端取令牌，传给 `login`。
 
 ```rust
 use flare_im_core_sdk::prelude::*;
@@ -98,18 +98,18 @@ use flare_im_core_sdk::prelude::*;
 #[tokio::main]
 async fn main() -> Result<()> {
     let client = IMClient::new();
-    client.init(Some("example".into()), None).await?;
-
-    let token = IMClient::generate_core_token(CoreTokenConfig {
-        secret: "insecure-secret".to_string(),
-        issuer: "flare-im-core".to_string(),
-        user_id: "user_a".to_string(),
-        ttl_secs: 3600,
-        device_id: None,
-        tenant_id: Some("0".to_string()),
-    })?;
+    client.init(None, Some(SdkConfigOverlay {
+        endpoints: Some(CoreEndpoints {
+            base_url: "https://im.example.com".into(),
+            websocket_url: "wss://im.example.com/ws".into(),
+            quic_url: None,
+            media_base_url: None,
+        }),
+        auth: Some(Default::default()),
+        ..Default::default()
+    })).await?;
     let apis = client
-        .login("user_a", Some(&token), LoginDbKind::Sqlite, |_, _| {})
+        .login("user_a", None, LoginDbKind::Sqlite, |_, _| {})
         .await?;
 
     let conversation = apis
@@ -125,6 +125,15 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
+
+`baseUrl` 和 `websocketUrl` 必填。`mediaBaseUrl` 缺省时走 `baseUrl`。原生可提供 `quicUrl`，默认与 WebSocket 错峰尝试，浏览器走 WebSocket。生产环境使用 HTTPS 和 WSS。开发环境显式传 `environment: "development"` 后可用本地 HTTP 和 WS。
+
+宿主选定同一部署的新地址后，调用 `client.replace_endpoints`。接口一次接收整组地址并返回 `revision` 与 `changed`。只修改 HTTP 或媒体地址时复用当前长连接。修改长连接地址时，SDK 关闭旧连接、采纳新地址并恢复同步和发件箱。宿主通过 `connection://status` 里的 `endpointRevision` 和 `phase` 确认恢复进度。跨租户或部署时重新初始化会话。
+
+公开构建提供消息、会话、媒体、长连接和插件宿主。商用构建另外装配托管接入、应用更新及远程 Bundle 交付。
+两种构建共用绑定契约。缺少提供方时，相应调用返回可识别的不可用错误。
+
+旧的显式 `access` 配置仍可供现有接入迁移使用。公开构建按配置顺序和优先级处理这些地址，延迟打分、加权选点和自动切回由商用 `connectivity` 提供。
 
 ## Binding Runtime
 

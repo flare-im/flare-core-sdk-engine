@@ -5,7 +5,6 @@ use std::sync::atomic::Ordering;
 
 use flare_im_core_sdk::client::lifecycle::LoginDbKind;
 use flare_im_core_sdk::event::SharedEventReceiver;
-use flare_im_core_sdk::link::flare_access::AccessStore;
 use flare_im_core_sdk_bindings_runtime::{
     SessionTaskSlot, binding_response_to_value, boundary_error_js, invoke_api_id_json, sdk_error_js,
 };
@@ -20,8 +19,7 @@ use super::session::WasmSdkState;
 use super::token_refresh::{WasmTokenRefresher, clear_refresh_callback, set_refresh_callback};
 use crate::tokio_runtime;
 use flare_im_core_sdk_storage_indexeddb::{
-    JsGlobalStorageHost, build_web_store_provider, clear_storage_host, set_storage_host,
-    storage_host_configured,
+    build_web_store_provider, clear_storage_host, set_storage_host, storage_host_configured,
 };
 
 fn js_error(code: &str, operation: &str, error: impl ToString) -> JsValue {
@@ -98,27 +96,6 @@ impl FlareImWasmRuntime {
             })
             .await
         })
-    }
-
-    /// 装上登录前全局存储的宿主（`get` / `commit` / `scan`，见 `flare_im_core_sdk_storage_indexeddb::JsGlobalStorageHost`），在 `sdk.init`
-    /// 之前调用；传 `null` / `undefined` 还原默认（内存）。缺方法时同步抛 `INVALID_PARAMETER`。
-    #[wasm_bindgen(js_name = setAccessStoreHost)]
-    pub fn set_access_store_host(&self, host: JsValue) -> Result<js_sys::Promise, JsValue> {
-        let store: Option<Arc<dyn AccessStore>> = if host.is_null() || host.is_undefined() {
-            None
-        } else {
-            let host = JsGlobalStorageHost::from_js(&host)
-                .map_err(|error| sdk_error_js(&error, Some("setAccessStoreHost")))?;
-            Some(Arc::new(host.into_access_store()))
-        };
-        let client = self.state.client();
-        Ok(future_to_promise(async move {
-            tokio_runtime::run_sdk(async move {
-                client.set_access_store(store).await;
-                Ok(JsValue::UNDEFINED)
-            })
-            .await
-        }))
     }
 
     /// Install the JS persistence host before `sdk.login`: one object with the
@@ -202,20 +179,9 @@ async fn invoke_impl(
         "sdk.create" => Ok(json!({ "handle": 1 })),
         "sdk.init" => {
             let request = parse_request(request_json)?;
-            let environment = request
-                .get("environment")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            let sdk_config = if request.get("sdkConfig").is_some() {
-                Some(
-                    flare_im_core_sdk::json::from_value(
-                        request.get("sdkConfig").cloned().unwrap_or(Value::Null),
-                    )
-                    .map_err(|e| js_error("invalidParameter", operation, e))?,
-                )
-            } else {
-                flare_im_core_sdk::json::from_value(request.clone()).ok()
-            };
+            let (environment, sdk_config) =
+                flare_im_core_sdk_bindings_runtime::dispatch_support::init_request(&request)
+                    .map_err(|e| map_sdk_err(operation, e))?;
             state
                 .set_config(environment, sdk_config)
                 .await

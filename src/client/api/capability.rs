@@ -264,7 +264,11 @@ impl CapabilityApi {
     /// What plugin UI is read with now: the vocabulary, the native allowlist
     /// and the descriptor of the host's current profile.
     pub(crate) fn plugin_client(&self) -> host_profile::PluginClient {
-        host_profile::PluginClient::of(self.plugin_host.profile().as_ref(), &self.app_identity)
+        host_profile::PluginClient::of(
+            self.plugin_host.profile().as_ref(),
+            &self.app_identity,
+            self.plugin_host.bundles.can_open(),
+        )
     }
     /// The host's plugin UI profile (`plugin.set_host_profile` input), for an
     /// embedder that drives this API without an [`crate::client::IMClient`]

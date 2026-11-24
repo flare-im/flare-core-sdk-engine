@@ -9,6 +9,7 @@ pub use crate::domain::{
     PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,
 };
 pub use crate::domain::{PluginConsent, PluginConsentScope, PluginConsentStore};
+pub use crate::runtime::update::UpdateService;
 
 pub use crate::application::{
     InboundDelivery, InboundNotificationView, LocalConversationClearResult,
@@ -30,6 +31,12 @@ pub use crate::domain::display_name::{
     ParticipantDisplaySnapshot, PersonNameCandidates, id_tail, resolve_conversation_title,
     resolve_person_name,
 };
+/// Event bus and payloads for business SDKs.
+pub use crate::event;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::extension::capability::bundle::provider::{
+    BundleDelivery, BundleDeliveryError, BundleLease, DeliveredBundle,
+};
 pub use crate::extension::capability::{SdkCapabilityPlugin, SdkCapabilityRegistry};
 pub use crate::extension::encryption::{
     ContentEncryptionInterceptor, ConversationEncryptionPolicy,
@@ -48,6 +55,7 @@ pub use crate::extension::{
     generate_group_conversation_id, generate_single_chat_conversation_id,
     merge_or_create_conversation, repair_single_chat_channel,
 };
+pub use crate::infrastructure::transport::http::{IDEMPOTENCY_KEY_HEADER, new_idempotency_key};
 pub use crate::kernel::{
     ApplyOutcome, ConvergencePriority, DomainCursor, DomainDelta, DomainId, DomainItem,
     DomainPhase, LaneSpec, SyncContext, SyncDomain, SyncFailurePolicy, SyncMode, SyncResult,
@@ -64,8 +72,6 @@ pub use crate::shared::error::link_keeps_session;
 /// Cross-platform async delay (JS timers on wasm, tokio on native) for
 /// bounded backoff in extensions.
 pub use crate::shared::util::time::delay;
-/// Event bus and payloads, and the link's access and HTTP routing, for business SDKs.
-pub use crate::{event, link};
 pub use metrics::{
     HistogramSnapshot, InMemoryMetricsSink, MetricLabel, MetricsRecorder, MetricsSink,
     MetricsSnapshot,

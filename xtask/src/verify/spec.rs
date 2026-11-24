@@ -91,6 +91,7 @@ pub(crate) fn verify_spec(root: &Path) -> Result<()> {
         "CreateClientRequest",
         "CreateClientResponse",
         "SdkConfig",
+        "SdkInitRequest",
         "LoginRequest",
         "MessageDispatchRequest",
         "Subscription",
@@ -210,7 +211,7 @@ pub(crate) fn verify_spec(root: &Path) -> Result<()> {
             }
             for attr in ["request", "response"] {
                 let type_name = str_field(method, attr);
-                // A bare JSON array of one model (e.g. `access.list_access_points`) is `<Model>List`.
+                // A bare JSON array of one model is `<Model>List`.
                 let listed_model = attr == "response"
                     && type_name
                         .strip_suffix("List")

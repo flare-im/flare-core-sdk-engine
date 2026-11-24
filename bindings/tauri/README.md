@@ -44,12 +44,9 @@ await invoke("sdk_init", {
     config: {
       environment: "development",
       sdkConfig: {
-        access: {
-          trustMode: "development",
-          developmentEndpoints: {
-            wsUrl: "ws://localhost:60051",
-            coreApiUrl: "http://localhost:50050"
-          }
+        endpoints: {
+          baseUrl: "http://localhost:50050",
+          websocketUrl: "ws://localhost:60051"
         }
       }
     }
@@ -57,7 +54,7 @@ await invoke("sdk_init", {
 });
 
 const response = await invoke("sdk_invoke_json", {
-  apiId: "connection.get_state",
+  apiId: "connection.get_status",
   requestJson: "{}"
 });
 ```

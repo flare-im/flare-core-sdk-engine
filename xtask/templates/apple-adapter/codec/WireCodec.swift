@@ -72,10 +72,9 @@ func userIdFromRequest(_ request: [String: AnySendable]) -> String? {
 }
 
 private let MESSAGE_SEARCH_KIND_WIRE_ORDER: [MessageSearchKind] = [.message, .text, .media, .image, .video, .audio, .file]
-private let SDK_EVENT_KIND_WIRE_ORDER: [SdkEventKind] = [.lifecycle, .connection, .access, .message, .notification, .conversation, .sync, .`extension`, .extensionEvent, .presence, .media, .plugin, .view]
+private let SDK_EVENT_KIND_WIRE_ORDER: [SdkEventKind] = [.lifecycle, .connection, .message, .notification, .conversation, .sync, .`extension`, .extensionEvent, .presence, .media, .plugin, .view]
 private let LIFECYCLE_EVENT_NAME_WIRE_ORDER: [LifecycleEventName] = [.initializing, .initialized, .initFailed, .loginSucceeded, .loginFailed, .loggedOut, .disposed]
 private let CONNECTION_EVENT_NAME_WIRE_ORDER: [ConnectionEventName] = [.status, .syncStateChanged]
-private let ACCESS_EVENT_NAME_WIRE_ORDER: [AccessEventName] = [.switched, .changed]
 private let MESSAGE_EVENT_NAME_WIRE_ORDER: [MessageEventName] = [.received, .receivedBatch, .sendAck, .sendFailed, .recalled, .typing, .typingAggregate, .edited, .reactionChanged, .deleted, .readReceipt, .burnScheduled, .burned, .hardDeleted, .pinned, .unpinned, .marked, .unmarked, .retentionScheduled, .retentionExpired, .retentionPurged, .presenceChanged, .custom, .pluginStateChanged, .readSummariesChanged]
 private let CONVERSATION_EVENT_NAME_WIRE_ORDER: [ConversationEventName] = [.synced, .created, .updated, .unreadCountChanged, .deleted]
 private let SYNC_EVENT_NAME_WIRE_ORDER: [SyncEventName] = [.stateChanged, .started, .finished, .failed, .progress, .taskCompleted, .resyncNeeded]
@@ -159,6 +158,25 @@ func updateUserNotificationSettingsRequestToMap(_ request: UpdateUserNotificatio
 }
 /// Unset fields are left out: a nil inside the map would make JSONSerialization reject the whole
 /// request, and the core treats a missing field as its documented default.
+func setProtocolModeRequestToMap(_ request: SetProtocolModeRequest) -> [String: AnySendable] {
+    ["mode": AnySendable(request.mode)]
+}
+
+func coreEndpointsToMap(_ request: CoreEndpoints) -> [String: AnySendable] {
+    var map = ["baseUrl": wrapSendable(request.baseUrl), "websocketUrl": wrapSendable(request.websocketUrl)]
+    if let value = request.quicUrl { map["quicUrl"] = wrapSendable(value) }
+    if let value = request.mediaBaseUrl { map["mediaBaseUrl"] = wrapSendable(value) }
+    return map
+}
+
+func endpointUpdateFromJson(_ value: [String: AnySendable]) throws -> EndpointUpdate {
+    let json = plainMap(value)
+    return EndpointUpdate(
+        changed: try requiredBoolField(json, "changed", "EndpointUpdate"),
+        revision: try requiredUInt32Field(json, "revision", "EndpointUpdate")
+    )
+}
+
 func networkChangeRequestToMap(_ request: NetworkChangeRequest) -> [String: AnySendable] {
     var map: [String: AnySendable] = [:]
     if let available = request.available { map["available"] = wrapSendable(available) }
@@ -168,16 +186,6 @@ func networkChangeRequestToMap(_ request: NetworkChangeRequest) -> [String: AnyS
     if let reason = request.reason { map["reason"] = wrapSendable(reason) }
     if let fingerprintHint = request.fingerprintHint { map["fingerprintHint"] = wrapSendable(fingerprintHint) }
     return map
-}
-func accessPinRequestToMap(_ request: AccessPinRequest) -> [String: AnySendable] {
-    [
-        "accessPointId": wrapSendable(request.accessPointId),
-    ]
-}
-func accessImportRecoveryRequestToMap(_ request: AccessImportRecoveryRequest) -> [String: AnySendable] {
-    [
-        "link": wrapSendable(request.link),
-    ]
 }
 func updateCheckRequestToMap(_ request: UpdateCheckRequest) -> [String: AnySendable] {
     [
@@ -1613,10 +1621,8 @@ func connectionStatusFromJson(_ value: [String: AnySendable]) throws -> Connecti
     return ConnectionStatus(
         phase: try connectionPhaseField(json, "phase", context),
         quality: try optionalConnectionQualityField(json, "quality", context),
-        accessPointId: try optionalStringField(json, "accessPointId", context),
-        cellId: try optionalStringField(json, "cellId", context),
-        regionId: try optionalStringField(json, "regionId", context),
         protocol: try optionalStringField(json, "protocol", context),
+        endpointRevision: try optionalUInt32Field(json, "endpointRevision", context),
         rttMs: try optionalUInt32Field(json, "rttMs", context),
         attempt: try requiredUInt32Field(json, "attempt", context),
         nextRetryAt: try optionalInt64Field(json, "nextRetryAt", context),
@@ -1628,123 +1634,6 @@ func connectionStatusFromJson(_ value: [String: AnySendable]) throws -> Connecti
 /// The coarse sync state hint has no listener; it decodes leniently and never fails.
 func connectionSyncStateEventFromJson(_ value: [String: AnySendable]) -> ConnectionSyncStateEvent {
     ConnectionSyncStateEvent(state: value["state"]?.value as? String ?? "")
-}
-
-func accessPinFromJson(_ value: [String: AnySendable]) throws -> AccessPin {
-    try accessPinFromJson(plainMap(value))
-}
-
-func accessPinFromJson(_ json: [String: Any]) throws -> AccessPin {
-    AccessPin(
-        accessPointId: try requiredStringField(json, "accessPointId", "AccessPin"),
-        expiresAtMs: try requiredInt64Field(json, "expiresAtMs", "AccessPin")
-    )
-}
-
-func accessStatusFromJson(_ value: [String: AnySendable]) throws -> AccessStatus {
-    let json = plainMap(value)
-    let context = "AccessStatus"
-    let pinned: AccessPin?
-    if isWireNull(json["pinned"]) {
-        pinned = nil
-    } else {
-        pinned = try accessPinFromJson(try requiredObjectField(json, "pinned", context))
-    }
-    let connectAck: AccessConnectAck?
-    if isWireNull(json["connectAck"]) {
-        connectAck = nil
-    } else {
-        connectAck = try accessConnectAckFromJson(try requiredObjectField(json, "connectAck", context))
-    }
-    let refresh: AccessRefreshStatus?
-    if isWireNull(json["refresh"]) {
-        refresh = nil
-    } else {
-        refresh = try accessRefreshStatusFromJson(try requiredObjectField(json, "refresh", context))
-    }
-    let recovering: AccessRecoveringStatus?
-    if isWireNull(json["recovering"]) {
-        recovering = nil
-    } else {
-        recovering = try accessRecoveringStatusFromJson(try requiredObjectField(json, "recovering", context))
-    }
-    return AccessStatus(
-        loaded: try requiredBoolField(json, "loaded", context),
-        serial: try requiredUInt64Field(json, "serial", context),
-        source: try optionalStringField(json, "source", context),
-        stale: try requiredBoolField(json, "stale", context),
-        developmentMode: try requiredBoolField(json, "developmentMode", context),
-        issuedAtMs: try optionalInt64Field(json, "issuedAtMs", context),
-        expiresAtMs: try optionalInt64Field(json, "expiresAtMs", context),
-        fetchedAtMs: try optionalInt64Field(json, "fetchedAtMs", context),
-        regionId: try optionalStringField(json, "regionId", context),
-        cellId: try optionalStringField(json, "cellId", context),
-        keystateSerial: try optionalUInt64Field(json, "keystateSerial", context),
-        accessPointId: try optionalStringField(json, "accessPointId", context),
-        protocol: try optionalStringField(json, "protocol", context),
-        pinned: pinned,
-        connectAck: connectAck,
-        refresh: refresh,
-        recovering: recovering
-    )
-}
-
-/// Manifest refresh progress (`AccessStatus.refresh`).
-func accessRefreshStatusFromJson(_ json: [String: Any]) throws -> AccessRefreshStatus {
-    let context = "AccessRefreshStatus"
-    return AccessRefreshStatus(
-        lastAttemptAtMs: try optionalInt64Field(json, "lastAttemptAtMs", context),
-        lastSuccessAtMs: try optionalInt64Field(json, "lastSuccessAtMs", context),
-        lastOutcome: try optionalStringField(json, "lastOutcome", context),
-        nextAtMs: try optionalInt64Field(json, "nextAtMs", context)
-    )
-}
-
-/// Recovery state while every access point has failed (`AccessStatus.recovering`).
-func accessRecoveringStatusFromJson(_ json: [String: Any]) throws -> AccessRecoveringStatus {
-    let context = "AccessRecoveringStatus"
-    return AccessRecoveringStatus(
-        sinceMs: try requiredInt64Field(json, "sinceMs", context),
-        rounds: try requiredUInt32Field(json, "rounds", context),
-        nextRoundAtMs: try optionalInt64Field(json, "nextRoundAtMs", context)
-    )
-}
-
-func accessRefreshAttemptFromJson(_ json: [String: Any]) throws -> AccessRefreshAttempt {
-    let context = "AccessRefreshAttempt"
-    return AccessRefreshAttempt(
-        source: try requiredStringField(json, "source", context),
-        tier: try requiredStringField(json, "tier", context),
-        document: try requiredStringField(json, "document", context),
-        result: try requiredStringField(json, "result", context),
-        code: try optionalStringField(json, "code", context),
-        serial: try optionalUInt64Field(json, "serial", context)
-    )
-}
-
-/// `access.refresh`.
-func accessRefreshReportFromJson(_ value: [String: AnySendable]) throws -> AccessRefreshReport {
-    let json = plainMap(value)
-    let context = "AccessRefreshReport"
-    return AccessRefreshReport(
-        outcome: try requiredStringField(json, "outcome", context),
-        mode: try requiredStringField(json, "mode", context),
-        serial: try requiredUInt64Field(json, "serial", context),
-        source: try optionalStringField(json, "source", context),
-        keystateSerial: try optionalUInt64Field(json, "keystateSerial", context),
-        attempts: try requiredListOfMaps(json["attempts"], "attempts", context).map(accessRefreshAttemptFromJson)
-    )
-}
-
-/// `access.importRecovery`: a bad link is an answer here, not a thrown error.
-func accessRecoveryImportFromJson(_ value: [String: AnySendable]) throws -> AccessRecoveryImport {
-    let json = plainMap(value)
-    let context = "AccessRecoveryImport"
-    return AccessRecoveryImport(
-        outcome: try requiredStringField(json, "outcome", context),
-        code: try optionalStringField(json, "code", context),
-        serial: try requiredUInt64Field(json, "serial", context)
-    )
 }
 
 /// `update.getState` and the other `update.*` answers; also the `update://state` payload.
@@ -1875,105 +1764,6 @@ func updateInstallPlanFromJson(_ value: [String: AnySendable]) throws -> UpdateI
         blockUi: try optionalBool("blockUi"),
         version: try optionalStringField(json, "version", context),
         target: try optionalStringField(json, "target", context)
-    )
-}
-
-/// CONNECT_ACK diagnostics of the current connection (`AccessStatus.connectAck`); only shown.
-func accessConnectAckFromJson(_ json: [String: Any]) throws -> AccessConnectAck {
-    let context = "AccessConnectAck"
-    return AccessConnectAck(
-        gatewayId: try optionalStringField(json, "gatewayId", context),
-        accessPointId: try optionalStringField(json, "accessPointId", context),
-        accessSerial: try optionalUInt64Field(json, "accessSerial", context),
-        heartbeatIntervalHintSec: try optionalUInt32Field(json, "heartbeatIntervalHintSec", context),
-        accessPointMismatch: try requiredBoolField(json, "accessPointMismatch", context)
-    )
-}
-
-func accessPointInfoFromJson(_ value: [String: AnySendable]) throws -> AccessPointInfo {
-    try accessPointInfoFromJson(plainMap(value))
-}
-
-func accessPointInfoFromJson(_ json: [String: Any]) throws -> AccessPointInfo {
-    let context = "AccessPointInfo"
-    return AccessPointInfo(
-        accessPointId: try requiredStringField(json, "accessPointId", context),
-        regionId: try requiredStringField(json, "regionId", context),
-        host: try requiredStringField(json, "host", context),
-        status: try requiredStringField(json, "status", context),
-        rttMs: try optionalDoubleField(json, "rttMs", context),
-        breaker: try requiredStringField(json, "breaker", context),
-        protocolWinner: try optionalStringField(json, "protocolWinner", context),
-        pinned: try requiredBoolField(json, "pinned", context),
-        current: try requiredBoolField(json, "current", context)
-    )
-}
-
-/// `access.listAccessPoints` answers with a bare JSON array, not an object.
-func accessPointInfoListFromJson(_ value: Any) throws -> [AccessPointInfo] {
-    let items: [Any]
-    if let list = value as? [AnySendable] {
-        items = list.map { $0.value }
-    } else if let list = value as? [Any] {
-        items = list
-    } else {
-        throw FlareSdkException(
-            code: SdkErrorCodes.invalidParameter,
-            message: "AccessPointInfoList must be an array",
-            operation: "wire.decode",
-            details: ["field": "AccessPointInfoList", "expected": "array"]
-        )
-    }
-    return try items.enumerated().map { (index, item) -> AccessPointInfo in
-        if let map = item as? [String: AnySendable] {
-            return try accessPointInfoFromJson(plainMap(map))
-        }
-        guard let map = item as? [String: Any] else {
-            throw FlareSdkException(
-                code: SdkErrorCodes.invalidParameter,
-                message: "AccessPointInfoList[\(index)] must be an object",
-                operation: "wire.decode",
-                details: ["field": "AccessPointInfoList[\(index)]", "expected": "object"]
-            )
-        }
-        return try accessPointInfoFromJson(map)
-    }
-}
-
-private func accessEndpointFromJson(_ json: [String: Any], _ key: String, _ context: String) throws -> AccessEndpoint {
-    let endpoint = try requiredObjectField(json, key, context)
-    let endpointContext = "\(context).\(key)"
-    return AccessEndpoint(
-        ap: try requiredStringField(endpoint, "ap", endpointContext),
-        protocol: try requiredStringField(endpoint, "protocol", endpointContext)
-    )
-}
-
-func accessSwitchedEventFromJson(_ value: [String: AnySendable]) throws -> AccessSwitchedEvent {
-    let json = plainMap(value)
-    let context = "AccessSwitchedEvent"
-    return AccessSwitchedEvent(
-        from: try accessEndpointFromJson(json, "from", context),
-        to: try accessEndpointFromJson(json, "to", context),
-        reason: try requiredStringField(json, "reason", context)
-    )
-}
-
-func accessChangedEventFromJson(_ value: [String: AnySendable]) throws -> AccessChangedEvent {
-    let json = plainMap(value)
-    let context = "AccessChangedEvent"
-    let changes = try requiredObjectField(json, "changes", context)
-    let changesContext = "\(context).changes"
-    return AccessChangedEvent(
-        serial: try requiredUInt64Field(json, "serial", context),
-        source: try requiredStringField(json, "source", context),
-        stale: try requiredBoolField(json, "stale", context),
-        developmentMode: try requiredBoolField(json, "developmentMode", context),
-        changes: AccessChanges(
-            accessPointsAdded: try requiredStringList(changes["accessPointsAdded"], "accessPointsAdded", changesContext),
-            accessPointsRemoved: try requiredStringList(changes["accessPointsRemoved"], "accessPointsRemoved", changesContext),
-            policyChanged: try requiredBoolField(changes, "policyChanged", changesContext)
-        )
     )
 }
 
@@ -2454,6 +2244,7 @@ func sendAckFromJson(_ value: [String: AnySendable]) throws -> SendMessageRespon
         seq: try requiredUInt64Field(json, "seq", "SendMessageResponse"),
         timestamp: try requiredUInt64Field(json, "timestamp", "SendMessageResponse"),
         success: try boolValue(json["success"]),
+        stage: (json["stage"] as? String).flatMap(MessageSendStage.init(rawValue:)),
         errorCode: Int32(try intValue(json["errorCode"])),
         errorMessage: try stringValue(json["errorMessage"])
     )

@@ -105,6 +105,7 @@ impl Pending {
                 operation: QUERY,
                 payload: json!({"commandId":"forged","payload":{"decimal":"999"}}),
                 conversation: None,
+                message_id: None,
                 policy: &Self::policy(),
                 continuation: None,
             })
@@ -332,6 +333,7 @@ async fn a_stale_observation_cannot_complete_a_replaced_command() {
             operation: QUERY,
             payload: json!({}),
             conversation: None,
+            message_id: None,
             policy: &Pending::policy(),
             continuation: None,
         })
@@ -368,6 +370,7 @@ async fn changing_actor_during_observation_does_not_settle_the_old_actor() {
             operation: QUERY,
             payload: json!({}),
             conversation: None,
+            message_id: None,
             policy: &Pending::policy(),
             continuation: None,
         })

@@ -24,14 +24,8 @@ pub const DIRECT_INVOKE_ROUTES: &[&str] = &[
     "presence.subscribe",
     "connection.get_status",
     "connection.reconnect_now",
+    "connection.replace_endpoints",
     "connection.set_protocol_mode",
-    "access.get_status",
-    "access.list_access_points",
-    "access.pin",
-    "access.unpin",
-    "access.refresh",
-    "access.import_recovery",
-    "access.export_diagnostics",
     "update.get_state",
     "update.check",
     "update.download",
@@ -100,14 +94,8 @@ pub fn is_direct_invoke_route(route: &str) -> bool {
         "presence.subscribe" => true,
         "connection.get_status" => true,
         "connection.reconnect_now" => true,
+        "connection.replace_endpoints" => true,
         "connection.set_protocol_mode" => true,
-        "access.get_status" => true,
-        "access.list_access_points" => true,
-        "access.pin" => true,
-        "access.unpin" => true,
-        "access.refresh" => true,
-        "access.import_recovery" => true,
-        "access.export_diagnostics" => true,
         "update.get_state" => true,
         "update.check" => true,
         "update.download" => true,
@@ -189,10 +177,7 @@ pub async fn dispatch_direct(
 ) -> Result<BindingResponse> {
     match route {
         "sdk.init" => {
-            let environment = dispatch_support::optional_string(request, "environment");
-            let sdk_config = dispatch_support::optional_value::<
-                flare_im_core_sdk::client::lifecycle::SdkConfigOverlay,
-            >(request, "sdkConfig")?;
+            let (environment, sdk_config) = dispatch_support::init_request(request)?;
             session.client().init(environment, sdk_config).await?;
             Ok(BindingResponse::unit())
         }
@@ -287,48 +272,20 @@ pub async fn dispatch_direct(
             client.reconnect_now().await?;
             Ok(BindingResponse::unit())
         }
+        "connection.replace_endpoints" => {
+            let client = session.client();
+            let endpoints = dispatch_support::from_value::<flare_im_core_sdk::client::CoreEndpoints>(
+                request.clone(),
+                "Core endpoints",
+            )?;
+            let result = client.replace_endpoints(endpoints).await?;
+            dispatch_support::json(result)
+        }
         "connection.set_protocol_mode" => {
             let client = session.client();
             let mode = dispatch_support::json_string(request, "mode")?;
             client.set_protocol_mode(&mode).await?;
             Ok(BindingResponse::unit())
-        }
-        "access.get_status" => {
-            let client = session.client();
-            let status = client.access_status().await?;
-            dispatch_support::json(status)
-        }
-        "access.list_access_points" => {
-            let client = session.client();
-            let access_points = client.list_access_points().await?;
-            dispatch_support::json(access_points)
-        }
-        "access.pin" => {
-            let client = session.client();
-            let access_point_id = dispatch_support::json_string(request, "accessPointId")?;
-            let pinned = client.pin_access_point(&access_point_id).await?;
-            dispatch_support::json(pinned)
-        }
-        "access.unpin" => {
-            let client = session.client();
-            client.unpin_access_point().await?;
-            Ok(BindingResponse::unit())
-        }
-        "access.refresh" => {
-            let client = session.client();
-            let report = client.refresh_access().await?;
-            dispatch_support::json(report)
-        }
-        "access.import_recovery" => {
-            let client = session.client();
-            let link = dispatch_support::json_string(request, "link")?;
-            let imported = client.import_access_recovery(&link).await?;
-            dispatch_support::json(imported)
-        }
-        "access.export_diagnostics" => {
-            let client = session.client();
-            let diagnostics = client.export_access_diagnostics().await?;
-            dispatch_support::json(diagnostics)
         }
         "update.get_state" => {
             let client = session.client();

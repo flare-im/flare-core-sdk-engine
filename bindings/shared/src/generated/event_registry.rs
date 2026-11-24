@@ -9,8 +9,6 @@ pub const EVENT_ROUTE_TABLE: &[(i32, &str, &str)] = &[
         "connection.sync_state_changed",
         "im://sync_state_changed",
     ),
-    (1011, "access.switched", "access://switched"),
-    (1012, "access.changed", "access://changed"),
     (2001, "message.received", "im://message"),
     (2002, "message.received_batch", "im://message_batch"),
     (2003, "message.send_ack", "im://send_ack"),

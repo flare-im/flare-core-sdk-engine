@@ -226,7 +226,7 @@ Revocation cannot recall a vendor request already sent, or undo a notification a
 
 ## Flutter composition
 
-Flutter apps use the plugin `flare_core_flutter_push` (`flare-core-sdk/packages/flare-core-flutter-push`).
+Flutter apps use the plugin `flare_core_flutter_push` (`flare-commercial-client-runtime/packages/push/flare-core-flutter-push`).
 It is a thin bridge over the native platform push modules, `FlarePlatformPush` on iOS and
 `flare-core-android-push` on Android, and carries no `firebase_messaging` and no Dart background
 isolate. The native modules own the OS side: notification permission (three states), APNs/FCM/Getui
@@ -249,7 +249,7 @@ final status = await push.requestPermission();
 await push.signOut();                     // with client.logout(): clears notifications, forgets tokens
 ```
 
-- `CorePushHost` (in `flare_core_flutter_sdk`, `lib/src/push/`) calls the generated APIs above;
+- `CorePushHost` (in `flare_core_flutter_push`) calls the generated APIs above;
   `FlareSocialPushHost` sends the same operations through the social SDK's IM passthrough. Both are
   thin: registration, deduplication, collapse and every alert decision stay in the engine.
 - The plugin's channels are `im.flare.push` (both directions: Dart drives the module, the module calls
@@ -258,7 +258,7 @@ await push.signOut();                     // with client.logout(): clears notifi
   the native module from its payload. A remote message waits at most about 3 s for the engine; other
   host calls about 15 s and are retried on the next foreground.
 - On iOS the plugin compiles `FlarePlatformPush`/`FlarePlatformLifecycle` from symbolic links to the
-  Apple SDK sources; `FlareCoreFlutterPushPlugin.prepare()` in `didFinishLaunching` installs the
+  private iOS push package and the Apple SDK lifecycle sources; `FlareCoreFlutterPushPlugin.prepare()` in `didFinishLaunching` installs the
   notification center delegate before a cold-start tap arrives. On Android the plugin depends on the
   `:flare-core-android-push` Gradle project; Getui (`installGetui()`) and the background-restriction
   guidance (`backgroundStatus()`, `backgroundChanges`, battery and vendor auto-start settings) are

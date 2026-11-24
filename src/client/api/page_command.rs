@@ -19,6 +19,7 @@ pub(super) struct PageCommandCall<'a> {
     pub operation: &'a str,
     pub payload: Value,
     pub conversation: Option<&'a str>,
+    pub message_id: Option<&'a str>,
     pub policy: &'a UiPageCommand,
     pub continuation: Option<UiPageTransition>,
 }
@@ -185,6 +186,7 @@ impl CapabilityApi {
             operation,
             mut payload,
             conversation,
+            message_id,
             policy,
             continuation,
         } = call;
@@ -202,6 +204,15 @@ impl CapabilityApi {
             )
         })?;
         let pending = store.pending(&scope).await?;
+        if pending
+            .as_ref()
+            .is_some_and(|record| record.command.message_id.as_deref() != message_id)
+        {
+            return Err(FlareError::localized(
+                ErrorCode::PermissionDenied,
+                "sdk.plugin_command.invalid_scope",
+            ));
+        }
         let command = match policy.mode {
             UiPageCommandMode::Observe => {
                 return self
@@ -244,7 +255,16 @@ impl CapabilityApi {
                 if payload.get("commandId").is_none() {
                     payload["commandId"] = json!(uuid::Uuid::new_v4().to_string());
                 }
-                let command:PluginCommand=crate::shared::util::json::from_value(json!({"commandId":payload["commandId"],"capabilityId":operation,"conversationId":conversation,"payload":payload,"terminalErrorCodes":policy.terminal_error_codes,"continuation":continuation})).map_err(|_|FlareError::system("page command encoding"))?;
+                let command = PluginCommand {
+                    command_id: payload["commandId"].as_str().unwrap_or_default().to_owned(),
+                    capability_id: operation.to_owned(),
+                    conversation_id: conversation.map(str::to_owned),
+                    message_id: message_id.map(str::to_owned),
+                    payload,
+                    reconciliation_capability_id: None,
+                    terminal_error_codes: policy.terminal_error_codes.clone(),
+                    continuation,
+                };
                 command.validate()?;
                 if let Some(old) = pending
                     && old.command != command
@@ -275,6 +295,7 @@ impl CapabilityApi {
         let existing = store
             .pending(&scope)
             .await?
+            .filter(|record| record.command == command)
             .ok_or_else(|| FlareError::system("page command missing"))?;
         let response = if let Some(v) = existing.response {
             crate::shared::util::json::from_value(v)
@@ -287,7 +308,7 @@ impl CapabilityApi {
                     command.conversation_id.as_deref(),
                     Some(&scope.tenant_id),
                     Some(&scope.user_id),
-                    None,
+                    command.message_id.as_deref(),
                 )
                 .await
             {

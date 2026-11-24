@@ -1,11 +1,11 @@
 //! 更新中心的宿主 API：`update.*`。
 //!
-//! 登录前就可用：只依赖 `init` 建好的接入运行时，不依赖 IM 会话。预期内的失败（需要确认计费网络、
+//! 应用在登录前安装发布提供方。预期内的失败（需要确认计费网络、
 //! 强制版本不能跳过等）放在返回值的 `error` 里，不抛错；抛错只有配置问题和参数错误。
 
 use std::sync::Arc;
 
-use flare_access::release::{UpdateInstallPlan, UpdateResources, UpdateStatus};
+use flare_access_contract::update::{UpdateInstallPlan, UpdateResources, UpdateStatus};
 
 use crate::runtime::update::UpdateRuntime;
 use crate::shared::error::{ErrorCode, FlareError, Result};
@@ -13,15 +13,48 @@ use crate::shared::error::{ErrorCode, FlareError, Result};
 use super::IMClient;
 
 impl IMClient {
-    pub(crate) async fn update_runtime(&self) -> Option<Arc<UpdateRuntime>> {
-        self.access_runtime().await?.update()
-    }
-
-    async fn require_update(&self) -> Result<Arc<UpdateRuntime>> {
-        self.update_runtime().await.ok_or_else(|| {
+    /// Install the host's verified release source after initialization and before preparing a session.
+    pub async fn install_update_provider(
+        &self,
+        update: Arc<dyn crate::spi::UpdateService>,
+    ) -> Result<()> {
+        let mut inner = self.inner.write().await;
+        let access = inner.connection.as_ref().ok_or_else(|| {
             FlareError::localized(
                 ErrorCode::ConfigurationError,
-                "the update center is not initialised; call init first",
+                "initialise Core before installing updates",
+            )
+        })?;
+        if self.session_active_sync()
+            || inner
+                .engine
+                .as_ref()
+                .is_some_and(|engine| Arc::ptr_eq(engine.link().connection(), access))
+        {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "install the update provider before preparing a session",
+            ));
+        }
+        crate::runtime::update::observe_upgrade(access, &update);
+        if let Some(network) = &inner.last_network {
+            update
+                .clone()
+                .network_changed(network.available, network.is_metered());
+        }
+        inner.update = Some(update);
+        Ok(())
+    }
+
+    pub(crate) async fn update_runtime(&self) -> Option<Arc<UpdateRuntime>> {
+        self.inner.read().await.update.clone()
+    }
+
+    pub(crate) async fn require_update(&self) -> Result<Arc<UpdateRuntime>> {
+        self.update_runtime().await.ok_or_else(|| {
+            FlareError::localized(
+                ErrorCode::OperationNotSupported,
+                "update.providerUnavailable",
             )
         })
     }

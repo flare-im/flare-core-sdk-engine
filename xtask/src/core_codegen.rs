@@ -332,7 +332,7 @@ impl ClientConfigContract {
             "{header}\n\
              //! C `flare_sdk_init` accepts UTF-8 JSON matching [flare_im_core_sdk::client::SdkConfigOverlay].\n\
              //! Optional wrapper: `{{ \"environment\": \"...\", \"sdkConfig\": {{ ... }} }}` via `flare_sdk_invoke_json(\"client.init\", ...)`.\n\n\
-             /// Example SdkConfigOverlay JSON (development access endpoints + app info).\n\
+             /// Example SdkConfigOverlay JSON (self-hosted Core endpoints + app info).\n\
              pub const FLARE_SDK_CONFIG_EXAMPLE_JSON: &str = {example};\n",
             header = client_config_header(),
             example = rust_raw_string_literal(&example),
@@ -2049,7 +2049,7 @@ fn ensure_client_config_has_no_removed_aliases(doc: &Value) -> Result<()> {
         .collect::<Vec<_>>();
     // 地址、传输策略与重连参数已由 `access`（接入清单）接管；它们出现在 sdkConfig 示例或
     // sdkConfigOverlay 说明里，就是在教宿主配一个 SDK 不再读取的字段。
-    // `wsUrl` 等名字在 `access.developmentEndpoints` 里仍合法，所以只查这两层的直接键与分组列表。
+    // 顶层配置只通过完整的 endpoints 提供服务器地址。
     let removed_overlay_keys = [
         "wsUrl",
         "quicUrl",
@@ -2279,6 +2279,14 @@ impl SchemaCatalog {
             schema_artifact::<SdkConfigOverlay>(
                 "sdk_config_overlay.schema.json",
                 "SdkConfigOverlay",
+            ),
+            schema_artifact::<flare_im_core_sdk::client::CoreEndpoints>(
+                "core_endpoints.schema.json",
+                "CoreEndpoints",
+            ),
+            schema_artifact::<flare_im_core_sdk::client::EndpointUpdate>(
+                "endpoint_update.schema.json",
+                "EndpointUpdate",
             ),
         ];
         Self { artifacts }

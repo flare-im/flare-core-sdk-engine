@@ -19,7 +19,6 @@ import com.flare.im.model.common.error.*
 import com.flare.im.model.content.*
 import com.flare.im.model.entity.*
 import com.flare.im.model.event.*
-import com.flare.im.model.event.access.*
 import com.flare.im.model.event.connection.*
 import com.flare.im.model.event.conversation.*
 import com.flare.im.model.event.lifecycle.*
@@ -113,11 +112,7 @@ class DefaultEventsApi(
     override fun onConnectionStatusChanged(listener: EventCallback<ConnectionStatus>): EventSubscription =
         registerTyped(ConnectionStatus::class.java, listener)
 
-    override fun onAccessSwitched(listener: EventCallback<AccessSwitchedEvent>): EventSubscription =
-        registerTyped(AccessSwitchedEvent::class.java, listener)
 
-    override fun onAccessChanged(listener: EventCallback<AccessChangedEvent>): EventSubscription =
-        registerTyped(AccessChangedEvent::class.java, listener)
 
     override fun onUpdateState(listener: EventCallback<UpdateStatus>): EventSubscription =
         registerTyped(UpdateStatus::class.java, listener)
@@ -272,8 +267,6 @@ class DefaultEventsApi(
                 LifecycleEventName.DISPOSED -> listener.onDisposed(event)
             }
             is ConnectionStatus -> listener.onConnectionStatusChanged(event)
-            is AccessSwitchedEvent -> listener.onAccessSwitched(event)
-            is AccessChangedEvent -> listener.onAccessChanged(event)
             is UpdateStatus -> listener.onUpdateState(event)
             is MessageReceivedEvent -> listener.onMessageReceived(event)
             is MessageReceivedBatchEvent -> listener.onMessageReceivedBatch(event)
@@ -356,8 +349,6 @@ private fun nativeEventFromCode(eventType: Int, payload: Map<String, Any?>): Any
     when (eventType) {
         EventCode.CONNECTION_STATUS -> connectionStatusFromJson(payload)
         EventCode.CONNECTION_SYNC_STATE_CHANGED -> connectionSyncStateEventFromJson(payload)
-        EventCode.ACCESS_SWITCHED -> accessSwitchedEventFromJson(payload)
-        EventCode.ACCESS_CHANGED -> accessChangedEventFromJson(payload)
         EventCode.UPDATE_STATE -> updateStatusFromJson(payload)
         EventCode.MESSAGE_SEND_ACK -> MessageSendAckEvent(
             ack = sendAckFromJson(requiredEventMap(payload["ack"], "ack")),

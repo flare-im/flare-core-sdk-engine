@@ -427,6 +427,7 @@ fn is_api_request_type(name: &str) -> bool {
     matches!(
         name,
         "SdkConfig"
+            | "SdkInitRequest"
             | "CreateClientRequest"
             | "LoginRequest"
             | "UpdateAccessTokenRequest"
@@ -596,12 +597,7 @@ fn emit_typescript_adapter_method_body(method: &Value, spec: &Value, indent: &st
         "ConnectionStatus" => vec![format!(
             "{indent}return connectionStatusFromJson(await invokeMap(this.bridge, {call}));"
         )],
-        "AccessStatus"
-        | "AccessPin"
-        | "AccessRefreshReport"
-        | "AccessRecoveryImport"
-        | "UpdateStatus"
-        | "UpdateInstallPlan" => {
+        "UpdateStatus" | "UpdateInstallPlan" => {
             vec![format!(
                 "{indent}return withoutNullFields(await invokeMap(this.bridge, {call})) as unknown as {res};"
             )]
@@ -647,8 +643,6 @@ fn ts_listener_predicate_expr(name: &str) -> Option<&'static str> {
         "onConnectionStatusChanged" => {
             Some("eventEventIs(event, 'connection', ConnectionEventName.Status)")
         }
-        "onAccessSwitched" => Some("eventEventIs(event, 'access', AccessEventName.Switched)"),
-        "onAccessChanged" => Some("eventEventIs(event, 'access', AccessEventName.Changed)"),
         "onUpdateState" => Some("eventEventIs(event, 'update', UpdateEventName.State)"),
         "onMessageReceived" => Some("eventEventIs(event, 'message', MessageEventName.Received)"),
         "onMessageReceivedBatch" => {
@@ -720,10 +714,7 @@ fn ts_listener_predicate_expr(name: &str) -> Option<&'static str> {
 }
 
 fn ts_listener_takes_payload_only(name: &str) -> bool {
-    matches!(
-        name,
-        "onConnectionStatusChanged" | "onAccessSwitched" | "onAccessChanged" | "onUpdateState"
-    )
+    matches!(name, "onConnectionStatusChanged" | "onUpdateState")
 }
 
 fn ts_event_code_const_name(id: &str) -> String {
@@ -737,8 +728,6 @@ fn ts_event_decoder_expr(entry: &TypescriptEventRegistryEntry) -> String {
     match entry.id.as_str() {
         "connection.status" => "connectionStatusEvent(payload)".to_string(),
         "connection.sync_state_changed" => "connectionSyncStateEvent(payload)".to_string(),
-        "access.switched" => "accessSwitchedEvent(payload)".to_string(),
-        "access.changed" => "accessChangedEvent(payload)".to_string(),
         "update.state" => "updateStateEvent(payload)".to_string(),
         "message.received" => "messageReceivedEvent(payload)".to_string(),
         "message.received_batch" => "messageReceivedBatchEvent(payload)".to_string(),
@@ -976,14 +965,10 @@ fn emit_typescript_native_event_decoder(
         "    developmentMode: requiredBoolean(record.developmentMode, 'developmentMode'),".to_string(),
         "  };".to_string(),
         "  if (record.quality !== undefined && record.quality !== null) status.quality = enumValue(ConnectionQuality, record.quality, 'quality');".to_string(),
-        "  const accessPointId = nullableString(record.accessPointId, 'accessPointId');".to_string(),
-        "  if (accessPointId !== undefined) status.accessPointId = accessPointId;".to_string(),
-        "  const cellId = nullableString(record.cellId, 'cellId');".to_string(),
-        "  if (cellId !== undefined) status.cellId = cellId;".to_string(),
-        "  const regionId = nullableString(record.regionId, 'regionId');".to_string(),
-        "  if (regionId !== undefined) status.regionId = regionId;".to_string(),
         "  const protocol = nullableString(record.protocol, 'protocol');".to_string(),
         "  if (protocol !== undefined) status.protocol = protocol;".to_string(),
+        "  const endpointRevision = optionalNumber(record.endpointRevision, 'endpointRevision');".to_string(),
+        "  if (endpointRevision !== undefined) status.endpointRevision = endpointRevision;".to_string(),
         "  const rttMs = optionalNumber(record.rttMs, 'rttMs');".to_string(),
         "  if (rttMs !== undefined) status.rttMs = rttMs;".to_string(),
         "  const nextRetryAt = optionalNumber(record.nextRetryAt, 'nextRetryAt');".to_string(),
@@ -993,40 +978,6 @@ fn emit_typescript_native_event_decoder(
         "  return status;".to_string(),
         "}".to_string(),
         String::new(),
-        "function accessEndpointFromJson(value: unknown, field: string): AccessEndpoint {".to_string(),
-        "  if (!value || typeof value !== 'object' || Array.isArray(value)) invalidEventField(field, 'object');".to_string(),
-        "  const record = value as Record<string, unknown>;".to_string(),
-        "  return { ap: requiredString(record.ap, `${field}.ap`), protocol: requiredString(record.protocol, `${field}.protocol`) };".to_string(),
-        "}".to_string(),
-        String::new(),
-        "export function accessSwitchedEventFromJson(payload: unknown): AccessSwitchedEvent {".to_string(),
-        "  const record = eventPayloadRecord(payload);".to_string(),
-        "  return {".to_string(),
-        "    from: accessEndpointFromJson(record.from, 'from'),".to_string(),
-        "    to: accessEndpointFromJson(record.to, 'to'),".to_string(),
-        "    reason: requiredString(record.reason, 'reason'),".to_string(),
-        "  };".to_string(),
-        "}".to_string(),
-        String::new(),
-        "export function accessChangedEventFromJson(payload: unknown): AccessChangedEvent {".to_string(),
-        "  const record = eventPayloadRecord(payload);".to_string(),
-        "  const changes = record.changes;".to_string(),
-        "  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) invalidEventField('changes', 'object');".to_string(),
-        "  const changeRecord = changes as Record<string, unknown>;".to_string(),
-        "  const accessChanges: AccessChanges = {".to_string(),
-        "    accessPointsAdded: requiredStringList(changeRecord.accessPointsAdded, 'changes.accessPointsAdded'),".to_string(),
-        "    accessPointsRemoved: requiredStringList(changeRecord.accessPointsRemoved, 'changes.accessPointsRemoved'),".to_string(),
-        "    policyChanged: requiredBoolean(changeRecord.policyChanged, 'changes.policyChanged'),".to_string(),
-        "  };".to_string(),
-        "  return {".to_string(),
-        "    serial: requiredNumber(record.serial, 'serial'),".to_string(),
-        "    source: requiredString(record.source, 'source'),".to_string(),
-        "    stale: requiredBoolean(record.stale, 'stale'),".to_string(),
-        "    developmentMode: requiredBoolean(record.developmentMode, 'developmentMode'),".to_string(),
-        "    changes: accessChanges,".to_string(),
-        "  };".to_string(),
-        "}".to_string(),
-        String::new(),
         "function connectionStatusEvent(payload: unknown): ConnectionStatus & Record<string, unknown> {".to_string(),
         "  return { ...connectionStatusFromJson(payload), type: 'connection', event: ConnectionEventName.Status };".to_string(),
         "}".to_string(),
@@ -1034,14 +985,6 @@ fn emit_typescript_native_event_decoder(
         "function connectionSyncStateEvent(payload: unknown): ConnectionSyncStateEvent & Record<string, unknown> {".to_string(),
         "  const record = eventPayloadRecord(payload);".to_string(),
         "  return { type: 'connection', event: ConnectionEventName.SyncStateChanged, state: requiredString(record.state, 'state') };".to_string(),
-        "}".to_string(),
-        String::new(),
-        "function accessSwitchedEvent(payload: unknown): AccessSwitchedEvent & Record<string, unknown> {".to_string(),
-        "  return { ...accessSwitchedEventFromJson(payload), type: 'access', event: AccessEventName.Switched };".to_string(),
-        "}".to_string(),
-        String::new(),
-        "function accessChangedEvent(payload: unknown): AccessChangedEvent & Record<string, unknown> {".to_string(),
-        "  return { ...accessChangedEventFromJson(payload), type: 'access', event: AccessEventName.Changed };".to_string(),
         "}".to_string(),
         String::new(),
         "function updateStateEvent(payload: unknown): UpdateStatus & Record<string, unknown> {".to_string(),
@@ -1324,11 +1267,6 @@ fn emit_typescript_adapter_events_api(
         .map(|listener| ts_listener_payload_type(str_field(listener, "payload")).to_string())
         .collect::<BTreeSet<_>>();
     let mut model_imports = [
-        "AccessChangedEvent",
-        "AccessChanges",
-        "AccessEndpoint",
-        "AccessEventName",
-        "AccessSwitchedEvent",
         "UpdateEventName",
         "UpdateStatus",
         "ConnectionEventName",
@@ -1489,7 +1427,7 @@ fn emit_typescript_adapter_events_api(
         let payload = ts_listener_payload_type(str_field(listener, "payload"));
         let name = str_field(listener, "name");
         let register_line = match ts_listener_predicate_expr(name) {
-            // Status and access listeners get the payload alone, as the contract defines it.
+            // Status listeners get the payload alone, as the contract defines it.
             Some(predicate) if ts_listener_takes_payload_only(name) => format!(
                 "    return this.registerWhere(listener, (event) => {predicate}, eventPayloadOf);"
             ),
@@ -1648,18 +1586,6 @@ fn emit_typescript_adapter_events_api(
         "        listener.onConnectionStatusChanged?.(eventPayloadOf<ConnectionStatus>(event));".to_string(),
         "      }".to_string(),
         "      return;".to_string(),
-        "    }".to_string(),
-        "    if (type === 'access') {".to_string(),
-        "      switch (eventName) {".to_string(),
-        "        case AccessEventName.Switched:".to_string(),
-        "          listener.onAccessSwitched?.(eventPayloadOf<AccessSwitchedEvent>(event));".to_string(),
-        "          return;".to_string(),
-        "        case AccessEventName.Changed:".to_string(),
-        "          listener.onAccessChanged?.(eventPayloadOf<AccessChangedEvent>(event));".to_string(),
-        "          return;".to_string(),
-        "        default:".to_string(),
-        "          return;".to_string(),
-        "      }".to_string(),
         "    }".to_string(),
         "    if (type === 'update') {".to_string(),
         "      if (eventName === UpdateEventName.State) listener.onUpdateState?.(eventPayloadOf<UpdateStatus>(event));".to_string(),
@@ -2006,7 +1932,6 @@ fn emit_typescript_adapter_message_builder(spec: &Value) -> Option<String> {
 
 const ADAPTER_FACADE_PROPS: &[(&str, &str, &str)] = &[
     ("connection", "ConnectionApi", "Connection"),
-    ("access", "AccessApi", "Access"),
     ("update", "UpdateApi", "Update"),
     ("lifecycle", "LifecycleApi", "Lifecycle"),
     ("conversations", "ConversationsApi", "Conversations"),
@@ -2180,7 +2105,7 @@ fn emit_typescript_adapter_flare_im_client(spec: &Value) -> Result<String> {
                 .with_context(|| format!("missing module key for {prop}"))?
         ));
     }
-    imports.push("import type { CreateClientRequest, CreateClientResponse, CurrentUserIdResponse, LoginRequest, SdkConfig, UpdateAccessTokenRequest } from '../api/types';".to_string());
+    imports.push("import type { CreateClientRequest, CreateClientResponse, CurrentUserIdResponse, LoginRequest, SdkInitRequest, UpdateAccessTokenRequest } from '../api/types';".to_string());
     if !session_model_types.is_empty() {
         imports.push(format!(
             "import type {{ {} }} from '../model';",

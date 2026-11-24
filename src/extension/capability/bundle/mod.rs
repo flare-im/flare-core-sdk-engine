@@ -1,5 +1,4 @@
-//! L3 web bundles on the client: the content-addressed cache ([`cache`],
-//! native only), the bridge broker that checks and routes every request a
+//! L3 web bundles on the client: the bridge broker that checks and routes every request a
 //! bundle sends ([`broker`]), the bundle's own storage ([`storage`]) and the
 //! events it may subscribe to ([`events`]).
 //!
@@ -9,27 +8,22 @@
 //! of the bridge happens here once, for every platform.
 
 pub mod broker;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod cache;
 pub mod events;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod provider;
 pub mod storage;
 
 use flare_plugin_protocol::manifest::ClientPlatform;
 use sha2::{Digest, Sha256};
 
-/// What the client keeps for web bundles across sign-ins: the open pages and,
-/// on native targets, the cache. Lives in the host's plugin slot.
+/// Bundle bridge sessions and the delivery configured by the native host.
 #[derive(Default)]
 pub struct BundleSlot {
     pub sessions: broker::BundleSessions,
     /// Forwards shared entity state to open pages while any is open.
     pub(crate) entity_watch: std::sync::Mutex<Option<crate::kernel::event::Subscription>>,
     #[cfg(not(target_arch = "wasm32"))]
-    cache: std::sync::RwLock<Option<std::sync::Arc<cache::BundleCache>>>,
-    /// The deployment's trust roots for downloads: the built-in roots plus the
-    /// configured private CA, as update artifacts from the same mirrors use.
-    #[cfg(not(target_arch = "wasm32"))]
-    trust: std::sync::RwLock<Option<flare_core::common::config_types::TlsConfig>>,
+    delivery: std::sync::OnceLock<std::sync::Arc<dyn provider::BundleDelivery>>,
 }
 
 impl std::fmt::Debug for BundleSlot {
@@ -38,57 +32,25 @@ impl std::fmt::Debug for BundleSlot {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl BundleSlot {
-    /// Cache bundles under `root` (`{dataRoot}/plugin_bundles`), shared by
-    /// every user of the device: a bundle is the same bytes for everyone.
-    pub fn set_cache_root(&self, root: std::path::PathBuf) {
-        let mut cache = self
-            .cache
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cache
-            .as_ref()
-            .is_none_or(|current| current.root() != root.as_path())
-        {
-            *cache = Some(std::sync::Arc::new(cache::BundleCache::new(root)));
-        }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn install_delivery(
+        &self,
+        delivery: std::sync::Arc<dyn provider::BundleDelivery>,
+    ) -> bool {
+        self.delivery.set(delivery).is_ok()
     }
 
-    /// Trust the deployment's roots (`SdkConfig::core_tls_config`) when
-    /// downloading bundles: a private deployment's mirrors carry its CA.
-    pub fn set_trust(&self, trust: flare_core::common::config_types::TlsConfig) {
-        *self
-            .trust
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(trust);
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn delivery(&self) -> Option<&dyn provider::BundleDelivery> {
+        self.delivery.get().map(std::sync::Arc::as_ref)
     }
 
-    /// A downloader with the deployment's trust roots.
-    pub fn fetcher(&self) -> Option<cache::HttpBundleFetcher> {
-        let trust = self
-            .trust
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .unwrap_or_else(flare_core::common::config_types::TlsConfig::none);
-        cache::HttpBundleFetcher::new(&trust)
-    }
-
-    /// The cache, under the default data root when none was set.
-    pub fn cache(&self) -> std::sync::Arc<cache::BundleCache> {
-        if let Some(cache) = self
-            .cache
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
-            return std::sync::Arc::clone(cache);
-        }
-        self.set_cache_root(
-            crate::shared::util::paths::default_sdk_data_root().join("plugin_bundles"),
-        );
-        self.cache()
+    pub(crate) fn can_open(&self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        return true; // The browser renders the platform's sandbox origin.
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.delivery().is_some();
     }
 }
 

@@ -7,8 +7,6 @@
 
 #![allow(dead_code)]
 
-pub mod bootstrap;
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -412,35 +410,13 @@ impl AccessPoint {
     }
 }
 
-/// 演练用的链路参数：退避短（下限 500 ms）、握手时限 3 s。
-pub fn drill_policy() -> serde_json::Value {
-    serde_json::json!({
-        "backoff": { "baseMs": 500, "capForegroundMs": 5_000 },
-        "connectTimeoutMs": 3_000,
-        "raceStaggerMs": 300
-    })
-}
-
-/// 开发模式接入：第一个是主接入点（ID 固定为 `development`），其余为额外接入点。
-pub fn development_access(points: &[(&str, String)]) -> AccessConfig {
-    let (primary_id, primary_url) = &points[0];
-    assert_eq!(
-        *primary_id, "development",
-        "主接入点的 ID 固定为 development"
-    );
-    AccessConfig::development(DevelopmentEndpoints {
-        ws_url: Some(primary_url.clone()),
-        access_points: points[1..]
-            .iter()
-            .map(|(id, url)| DevelopmentAccessPoint {
-                id: (*id).to_owned(),
-                ws_url: Some(url.clone()),
-                ..Default::default()
-            })
-            .collect(),
-        client_policy: Some(drill_policy()),
-        ..Default::default()
-    })
+pub fn development_endpoints(websocket_url: String) -> CoreEndpoints {
+    CoreEndpoints {
+        base_url: "http://127.0.0.1:9".into(),
+        websocket_url,
+        quic_url: None,
+        media_base_url: None,
+    }
 }
 
 /// Core API 上的签发端（`POST /api/v1/auth/tokens`）：每次签发一枚一小时有效的真 JWT，记下签发时刻。
@@ -561,41 +537,34 @@ pub fn data_root(suite: &str, case: &str) -> PathBuf {
 
 /// 内存存储的客户端（未连接）。`tweak` 可改配置（发送超时、在途窗口等）。
 pub async fn lab_client(
-    access: AccessConfig,
+    endpoints: CoreEndpoints,
     root: &Path,
     tweak: impl FnOnce(&mut SdkConfig),
 ) -> IMClient {
-    lab_client_with(access, root, tweak, None).await
-}
-
-/// 同 [`lab_client`]，`runtime` 是链路要用的接入运行时（生产模式的目录用它连到本机）。
-pub async fn lab_client_with(
-    access: AccessConfig,
-    root: &Path,
-    tweak: impl FnOnce(&mut SdkConfig),
-    runtime: Option<Arc<flare_im_core_sdk::link::AccessRuntime>>,
-) -> IMClient {
-    let mut config = SdkConfig::with_access(access.clone());
+    let mut config = SdkConfig::with_endpoints(endpoints.clone());
     config.ack_timeout_secs = Some(60);
     tweak(&mut config);
-    let mut builder = IMClient::builder()
+    let client = IMClient::builder()
         .config(config)
-        .stores(in_memory_im_provider());
-    if let Some(runtime) = runtime {
-        builder = builder.access_runtime(runtime);
-    }
-    let client = builder.build().expect("build IMClient");
+        .environment(Some("development".into()))
+        .stores(in_memory_im_provider())
+        .build()
+        .expect("build IMClient");
     client
         .init(
-            None,
+            Some("development".into()),
             Some(SdkConfigOverlay {
                 data_url: Some(root.display().to_string()),
-                access: Some(access),
+                endpoints: Some(endpoints),
                 ..Default::default()
             }),
         )
         .await
         .expect("init SDK config");
+    client
+        .prepare(USER_ID, LoginDbKind::IndexedDb(in_memory_im_provider()))
+        .await
+        .expect("prepare test session");
     client
 }
 
@@ -603,7 +572,6 @@ pub async fn lab_client_with(
 #[derive(Default)]
 pub struct Observed {
     pub statuses: Mutex<Vec<(Instant, ConnectionStatus)>>,
-    pub switched: Mutex<Vec<(Instant, AccessSwitched)>>,
     pub accepted: Mutex<Vec<String>>,
     pub failed: Mutex<Vec<(String, String)>>,
 }
@@ -620,12 +588,6 @@ impl Observed {
                             .lock()
                             .unwrap()
                             .push((Instant::now(), status.clone()));
-                    }
-                    SdkEvent::Connection(ConnectionEvent::AccessSwitched(switched)) => {
-                        sink.switched
-                            .lock()
-                            .unwrap()
-                            .push((Instant::now(), switched.clone()));
                     }
                     _ => {}
                 }

@@ -60,6 +60,7 @@ fn send_ack_json(ack: &flare_im_core_sdk::model::SendAck) -> Value {
         "ackId": send_ack_id(ack),
         "timestamp": timestamp,
         "success": success,
+        "stage": crate::dispatch_support::send_ack_stage(ack),
         "errorCode": error_code,
         "errorMessage": error_message,
         "errorDetail": error_detail,
@@ -108,14 +109,6 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
         SdkEvent::Connection(ConnectionEvent::SyncStateChanged { state }) => (
             "connection.sync_state_changed",
             json!({ "state": format!("{state:?}") }),
-        ),
-        SdkEvent::Connection(ConnectionEvent::AccessSwitched(switched)) => (
-            "access.switched",
-            serde_json::to_value(switched).unwrap_or_else(|_| json!({})),
-        ),
-        SdkEvent::Connection(ConnectionEvent::AccessChanged(changed)) => (
-            "access.changed",
-            serde_json::to_value(changed).unwrap_or_else(|_| json!({})),
         ),
         SdkEvent::Connection(ConnectionEvent::UpdateState(status)) => (
             "update.state",
@@ -542,8 +535,30 @@ mod tests {
         assert!(payload.get("ack").is_some_and(Value::is_object));
         assert_eq!(payload["ack"]["ackId"], "client-1");
         assert_eq!(payload["ack"]["success"], true);
+        assert_eq!(payload["ack"]["stage"], "queued");
         assert_eq!(payload["ack"]["errorMessage"], "");
         assert!(payload.get("ackId").is_none());
+    }
+
+    #[test]
+    fn send_ack_event_distinguishes_server_acceptance_from_persistence() {
+        use flare_im_core_sdk::model::message::SendAckDurability;
+
+        let mut ack = SendAck::default();
+        for (durability, stage) in [
+            (SendAckDurability::BrokerAccepted, "accepted"),
+            (SendAckDurability::Persisted, "persisted"),
+        ] {
+            ack.result = Some(send_ack::Result::Accepted(Default::default()));
+            if let Some(send_ack::Result::Accepted(accepted)) = &mut ack.result {
+                accepted.durability = durability as i32;
+            }
+            let payload = send_ack_json(&ack);
+            assert_eq!(payload["stage"], stage);
+            assert_eq!(payload["success"], true);
+        }
+        ack.result = Some(send_ack::Result::Error(Default::default()));
+        assert_eq!(send_ack_json(&ack)["stage"], "failed");
     }
 
     #[test]
@@ -620,13 +635,25 @@ mod tests {
 
     #[test]
     fn update_state_is_forwarded_on_its_own_channel() {
-        use flare_im_core_sdk::link::flare_access::release::{UpdateApp, UpdateMachine};
+        use flare_im_core_sdk::update::{CurrentApp, UpdatePrompt, UpdateState, UpdateStatus};
 
-        let machine = UpdateMachine::new(UpdateApp {
-            channel: "stable".into(),
-            ..UpdateApp::default()
-        });
-        let event = SdkEvent::Connection(ConnectionEvent::UpdateState(Box::new(machine.status(0))));
+        let event = SdkEvent::Connection(ConnectionEvent::UpdateState(Box::new(UpdateStatus {
+            state: UpdateState::Idle,
+            current: CurrentApp {
+                version: None,
+                build: None,
+                channel: "stable".into(),
+                distribution: None,
+            },
+            release: None,
+            progress: None,
+            prompt: UpdatePrompt::None,
+            block_ui: false,
+            read_only: false,
+            last_checked_at: None,
+            error: None,
+            block_reason: None,
+        })));
         let (id, payload) = sdk_event_payload(&event).expect("update event");
         assert_eq!(id, "update.state");
         assert_eq!(payload["state"], "idle");

@@ -1,19 +1,12 @@
 // GENERATED. Do not edit by hand.
 import {
-  AccessChangedEvent,
-  AccessChanges,
-  AccessConnectAck,
-  AccessEndpoint,
-  AccessPin,
-  AccessPinRequest,
-  AccessPointInfo,
-  AccessStatus,
-  AccessSwitchedEvent,
   CompleteConnectTokenRefreshRequest,
   ConnectionPhase,
   ConnectionQuality,
   ConnectionStatus,
   ConnectionSyncStateEvent,
+  CoreEndpoints,
+  EndpointUpdate,
   PluginUiEvaluationRequest,
   PluginCommandRequest,
   CloseViewRequest,
@@ -37,6 +30,7 @@ import {
   MessageReadSummary,
   MessageReceiptStatus,
   MessageReceiptView,
+  MessageSendStage,
   NameEntity,
   NameSource,
   NetworkChangeRequest,
@@ -48,6 +42,7 @@ import {
   SendMessageResponse,
   ServerClockResponse,
   SetAppStateRequest,
+  SetProtocolModeRequest,
   SetConnectTokenRefresherRequest,
   SyncConversationSummariesResponse,
   UpdateConversationDraftRequest,
@@ -88,6 +83,24 @@ export function timelineSyncStateWireValue(value: TimelineSyncState): string {
   return value;
 }
 
+export function setProtocolModeRequestToMap(request: SetProtocolModeRequest): Record<string, Object> {
+  return { mode: request.mode };
+}
+
+export function coreEndpointsToMap(request: CoreEndpoints): Record<string, Object> {
+  return {
+    baseUrl: request.baseUrl,
+    websocketUrl: request.websocketUrl,
+    ...(request.quicUrl !== undefined ? { quicUrl: request.quicUrl } : {}),
+    ...(request.mediaBaseUrl !== undefined ? { mediaBaseUrl: request.mediaBaseUrl } : {}),
+  };
+}
+
+export function endpointUpdateFromJson(value: Object | undefined): EndpointUpdate {
+  const json = recordValue(value);
+  return { changed: field(json, 'changed') === true, revision: intValue(field(json, 'revision')) };
+}
+
 export function networkChangeRequestToMap(request: NetworkChangeRequest): Record<string, Object> {
   return {
     ...(request.available !== undefined ? { available: request.available } : {}),
@@ -102,12 +115,6 @@ export function networkChangeRequestToMap(request: NetworkChangeRequest): Record
 export function setAppStateRequestToMap(request: SetAppStateRequest): Record<string, Object> {
   return {
     appState: request.appState,
-  };
-}
-
-export function accessPinRequestToMap(request: AccessPinRequest): Record<string, Object> {
-  return {
-    accessPointId: request.accessPointId,
   };
 }
 
@@ -136,7 +143,7 @@ export function updateConversationDraftRequestToMap(request: UpdateConversationD
 const CONVERSATION_TYPE_WIRE_VALUES: ConversationType[] = [ConversationType.Unspecified, ConversationType.Single, ConversationType.Group, ConversationType.Ai, ConversationType.System, ConversationType.Customer, ConversationType.Temp, ConversationType.Channel, ConversationType.Broadcast];
 const MESSAGE_CONTENT_TYPE_WIRE_VALUES: MessageContentType[] = [MessageContentType.Text, MessageContentType.Image, MessageContentType.Video, MessageContentType.Audio, MessageContentType.File, MessageContentType.Location, MessageContentType.Card, MessageContentType.Sticker, MessageContentType.Emoji, MessageContentType.Quote, MessageContentType.LinkCard, MessageContentType.Forward, MessageContentType.Thread, MessageContentType.MiniProgram, MessageContentType.RichText, MessageContentType.ImageGroup, MessageContentType.System, MessageContentType.Notification, MessageContentType.Vote, MessageContentType.Task, MessageContentType.Schedule, MessageContentType.Announcement, MessageContentType.Custom, MessageContentType.Placeholder];
 const MESSAGE_SEARCH_KIND_WIRE_ORDER: MessageSearchKind[] = [MessageSearchKind.Message, MessageSearchKind.Text, MessageSearchKind.Media, MessageSearchKind.Image, MessageSearchKind.Video, MessageSearchKind.Audio, MessageSearchKind.File];
-const SDK_EVENT_KIND_WIRE_ORDER: SdkEventKind[] = [SdkEventKind.Lifecycle, SdkEventKind.Connection, SdkEventKind.Access, SdkEventKind.Message, SdkEventKind.Notification, SdkEventKind.Conversation, SdkEventKind.Sync, SdkEventKind.Extension, SdkEventKind.ExtensionEvent, SdkEventKind.Presence, SdkEventKind.Media, SdkEventKind.Plugin, SdkEventKind.View];
+const SDK_EVENT_KIND_WIRE_ORDER: SdkEventKind[] = [SdkEventKind.Lifecycle, SdkEventKind.Connection, SdkEventKind.Message, SdkEventKind.Notification, SdkEventKind.Conversation, SdkEventKind.Sync, SdkEventKind.Extension, SdkEventKind.ExtensionEvent, SdkEventKind.Presence, SdkEventKind.Media, SdkEventKind.Plugin, SdkEventKind.View];
 const LIFECYCLE_EVENT_NAME_WIRE_ORDER: LifecycleEventName[] = [LifecycleEventName.Initializing, LifecycleEventName.Initialized, LifecycleEventName.InitFailed, LifecycleEventName.LoginSucceeded, LifecycleEventName.LoginFailed, LifecycleEventName.LoggedOut, LifecycleEventName.Disposed];
 const CONNECTION_PHASE_WIRE_VALUES: ConnectionPhase[] = [ConnectionPhase.Idle, ConnectionPhase.Connecting, ConnectionPhase.Syncing, ConnectionPhase.Online, ConnectionPhase.Switching, ConnectionPhase.Reconnecting, ConnectionPhase.WaitingForNetwork, ConnectionPhase.ServiceUnavailable, ConnectionPhase.ActionRequired];
 const CONNECTION_QUALITY_WIRE_VALUES: ConnectionQuality[] = [ConnectionQuality.Good, ConnectionQuality.Poor];
@@ -1079,20 +1086,16 @@ function connectionPhaseFromJson(value: Object | undefined): ConnectionPhase {
 export function connectionStatusFromJson(value: Object | undefined): ConnectionStatus {
   const json = recordValue(value);
   const quality = CONNECTION_QUALITY_WIRE_VALUES.find((candidate) => candidate === field(json, 'quality'));
-  const accessPointId = optionalStringField(json, 'accessPointId');
-  const cellId = optionalStringField(json, 'cellId');
-  const regionId = optionalStringField(json, 'regionId');
   const protocol = optionalStringField(json, 'protocol');
+  const endpointRevision = optionalNumberField(json, 'endpointRevision');
   const rttMs = optionalNumberField(json, 'rttMs');
   const nextRetryAt = optionalNumberField(json, 'nextRetryAt');
   const reason = optionalStringField(json, 'reason');
   return {
     phase: connectionPhaseFromJson(field(json, 'phase')),
     ...(quality !== undefined ? { quality } : {}),
-    ...(accessPointId !== undefined ? { accessPointId } : {}),
-    ...(cellId !== undefined ? { cellId } : {}),
-    ...(regionId !== undefined ? { regionId } : {}),
     ...(protocol !== undefined ? { protocol } : {}),
+    ...(endpointRevision !== undefined ? { endpointRevision } : {}),
     ...(rttMs !== undefined ? { rttMs } : {}),
     attempt: intValue(field(json, 'attempt')),
     ...(nextRetryAt !== undefined ? { nextRetryAt } : {}),
@@ -1106,119 +1109,6 @@ export function connectionSyncStateEventFromJson(value: Object | undefined): Con
   const json = recordValue(value);
   return {
     state: stringValue(field(json, 'state')),
-  };
-}
-
-export function accessPinFromJson(value: Object | undefined): AccessPin {
-  const json = recordValue(value);
-  return {
-    accessPointId: stringValue(field(json, 'accessPointId')),
-    expiresAtMs: intValue(field(json, 'expiresAtMs')),
-  };
-}
-
-export function accessStatusFromJson(value: Object | undefined): AccessStatus {
-  const json = recordValue(value);
-  const source = optionalStringField(json, 'source');
-  const expiresAtMs = optionalNumberField(json, 'expiresAtMs');
-  const regionId = optionalStringField(json, 'regionId');
-  const cellId = optionalStringField(json, 'cellId');
-  const keystateSerial = optionalNumberField(json, 'keystateSerial');
-  const accessPointId = optionalStringField(json, 'accessPointId');
-  const protocol = optionalStringField(json, 'protocol');
-  const pinned = field(json, 'pinned');
-  const connectAck = field(json, 'connectAck');
-  return {
-    loaded: field(json, 'loaded') === true,
-    serial: intValue(field(json, 'serial')),
-    ...(source !== undefined ? { source } : {}),
-    stale: field(json, 'stale') === true,
-    developmentMode: field(json, 'developmentMode') === true,
-    ...(expiresAtMs !== undefined ? { expiresAtMs } : {}),
-    ...(regionId !== undefined ? { regionId } : {}),
-    ...(cellId !== undefined ? { cellId } : {}),
-    ...(keystateSerial !== undefined ? { keystateSerial } : {}),
-    ...(accessPointId !== undefined ? { accessPointId } : {}),
-    ...(protocol !== undefined ? { protocol } : {}),
-    ...(pinned !== undefined && pinned !== null ? { pinned: accessPinFromJson(pinned) } : {}),
-    ...(connectAck !== undefined && connectAck !== null ? { connectAck: accessConnectAckFromJson(connectAck) } : {}),
-  };
-}
-
-/** CONNECT_ACK diagnostics of the current connection (`AccessStatus.connectAck`); only shown. */
-export function accessConnectAckFromJson(value: Object | undefined): AccessConnectAck {
-  const json = recordValue(value);
-  const gatewayId = optionalStringField(json, 'gatewayId');
-  const accessPointId = optionalStringField(json, 'accessPointId');
-  const accessSerial = optionalNumberField(json, 'accessSerial');
-  const heartbeatIntervalHintSec = optionalNumberField(json, 'heartbeatIntervalHintSec');
-  return {
-    ...(gatewayId !== undefined ? { gatewayId } : {}),
-    ...(accessPointId !== undefined ? { accessPointId } : {}),
-    ...(accessSerial !== undefined ? { accessSerial } : {}),
-    ...(heartbeatIntervalHintSec !== undefined ? { heartbeatIntervalHintSec } : {}),
-    accessPointMismatch: field(json, 'accessPointMismatch') === true,
-  };
-}
-
-export function accessPointInfoFromJson(value: Object | undefined): AccessPointInfo {
-  const json = recordValue(value);
-  const rttMs = optionalNumberField(json, 'rttMs');
-  const protocolWinner = optionalStringField(json, 'protocolWinner');
-  return {
-    accessPointId: stringValue(field(json, 'accessPointId')),
-    regionId: stringValue(field(json, 'regionId')),
-    host: stringValue(field(json, 'host')),
-    status: stringValue(field(json, 'status')),
-    ...(rttMs !== undefined ? { rttMs } : {}),
-    breaker: stringValue(field(json, 'breaker')),
-    ...(protocolWinner !== undefined ? { protocolWinner } : {}),
-    pinned: field(json, 'pinned') === true,
-    current: field(json, 'current') === true,
-  };
-}
-
-/** `access.listAccessPoints` answers with a bare JSON array. */
-export function accessPointInfoListFromJson(value: Object | undefined): Array<AccessPointInfo> {
-  return listOfMaps(value).map((item) => accessPointInfoFromJson(item));
-}
-
-export function accessEndpointFromJson(value: Object | undefined): AccessEndpoint {
-  const json = recordValue(value);
-  return {
-    ap: stringValue(field(json, 'ap')),
-    protocol: stringValue(field(json, 'protocol')),
-  };
-}
-
-/** Payload of `access://switched`. */
-export function accessSwitchedEventFromJson(value: Object | undefined): AccessSwitchedEvent {
-  const json = recordValue(value);
-  return {
-    from: accessEndpointFromJson(field(json, 'from')),
-    to: accessEndpointFromJson(field(json, 'to')),
-    reason: stringValue(field(json, 'reason')),
-  };
-}
-
-export function accessChangesFromJson(value: Object | undefined): AccessChanges {
-  const json = recordValue(value);
-  return {
-    accessPointsAdded: stringList(field(json, 'accessPointsAdded')),
-    accessPointsRemoved: stringList(field(json, 'accessPointsRemoved')),
-    policyChanged: field(json, 'policyChanged') === true,
-  };
-}
-
-/** Payload of `access://changed`. */
-export function accessChangedEventFromJson(value: Object | undefined): AccessChangedEvent {
-  const json = recordValue(value);
-  return {
-    serial: intValue(field(json, 'serial')),
-    source: stringValue(field(json, 'source')),
-    stale: field(json, 'stale') === true,
-    developmentMode: field(json, 'developmentMode') === true,
-    changes: accessChangesFromJson(field(json, 'changes')),
   };
 }
 
@@ -1469,12 +1359,20 @@ export function messageFromJson(value: Object | undefined): Message {
 
 export function sendAckFromJson(value: Object | undefined): SendMessageResponse {
   const json = (value ?? {}) as Record<string, Object>;
+  const stage = field(json, 'stage');
   return {
+    ackId: String(field(json, 'ackId') ?? ''),
     serverId: String(field(json, 'serverId') ?? ''),
     clientMsgId: String(field(json, 'clientMsgId') ?? ''),
     conversationId: String(field(json, 'conversationId') ?? ''),
     seq: intValue(field(json, 'seq')),
     timestamp: intValue(field(json, 'timestamp')),
+    success: field(json, 'success') === true,
+    stage: stage === MessageSendStage.Queued || stage === MessageSendStage.Accepted
+      || stage === MessageSendStage.Persisted || stage === MessageSendStage.Failed
+      ? stage as MessageSendStage : undefined,
+    errorCode: intValue(field(json, 'errorCode')),
+    errorMessage: String(field(json, 'errorMessage') ?? ''),
   };
 }
 

@@ -28,7 +28,7 @@ use journal::{Intent, Journal};
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PushTokenInput {
-    /// OS delivery provider: fcm, apns or getui.
+    /// OS delivery provider, such as fcm, apns, getui or jpush.
     pub provider: String,
     /// Native platform: android, ios or harmony.
     pub platform: String,
@@ -37,7 +37,7 @@ pub struct PushTokenInput {
     /// iOS bundle id or Android applicationId. The server sends APNs to this topic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_bundle: Option<String>,
-    /// APNs only: sandbox or production, the APNs host the token belongs to.
+    /// APNs environment for direct APNs or iOS JPush: sandbox or production.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
     /// BCP 47 language tag the server renders notification text in, e.g. zh-CN.
@@ -217,7 +217,7 @@ fn binding_body(
     serde_json::Value::Object(body)
 }
 fn valid_provider(provider: &str) -> bool {
-    matches!(provider, "apns" | "fcm" | "getui")
+    matches!(provider, "apns" | "fcm" | "getui" | "jpush")
 }
 /// 已知的推送能力：Android FCM 收数据消息、iOS 通知服务扩展。
 const KNOWN_CAPABILITIES: &[&str] = &["dataMessages", "serviceExtension"];
@@ -236,8 +236,12 @@ fn valid_metadata(input: &PushTokenInput) -> bool {
         .is_none_or(|value| plain(value, 255, b"._-".as_slice()))
         && match input.environment.as_deref() {
             None => true,
-            // APNs 才分沙盒与生产，别的通道带了就是传错了。
-            Some("sandbox" | "production") => input.provider == "apns",
+            Some("sandbox" | "production") => {
+                input.provider == "apns"
+                    || (input.provider == "jpush"
+                        && flare_proto::client_platform::normalize_device_platform(&input.platform)
+                            == Some("ios"))
+            }
             Some(_) => false,
         }
         && input
@@ -319,7 +323,7 @@ impl PushLifecycle {
         // 固定入口（测试替身）仍只接受 https 或本机 http。
         if !http.is_routed() {
             // 带 userinfo 的地址在解析时就被拒绝。
-            let endpoint = flare_access::ParsedUrl::parse(http.base_url())
+            let endpoint = flare_access_contract::ParsedUrl::parse(http.base_url())
                 .map_err(|_| failure(ErrorCode::ConfigurationError))?;
             let host = endpoint.host_str();
             let local = host == "localhost"

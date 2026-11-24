@@ -105,14 +105,16 @@ impl IMClientExtensionComponents {
 /// 清单里没有它的入口，生产构建不给地址，调用会明确报配置错误。
 fn development_capability_grpc_url(config: &SdkConfig) -> String {
     let Some(core_api) = config
-        .access
+        .endpoints
         .as_ref()
-        .and_then(|access| access.development_endpoints.as_ref())
-        .and_then(|endpoints| endpoints.core_api_url.as_deref())
+        .map(|endpoints| endpoints.base_url.as_str())
     else {
         return String::new();
     };
-    match flare_access::ParsedUrl::parse(core_api) {
+    if !core_api.starts_with("http://") {
+        return String::new();
+    }
+    match flare_access_contract::ParsedUrl::parse(core_api) {
         Ok(parsed) => format!("{}://{}:50110", parsed.scheme(), parsed.host_str()),
         Err(_) => String::new(),
     }
@@ -127,7 +129,12 @@ fn development_capability_grpc_url(config: &SdkConfig) -> String {
 ///
 /// ```ignore
 /// let client = IMClient::builder()
-///     .config(SdkConfig::new("wss://im.example.com"))
+///     .config(SdkConfig::builder().endpoints(CoreEndpoints {
+///         base_url: "https://im.example.com".into(),
+///         websocket_url: "wss://im.example.com/ws".into(),
+///         quic_url: None,
+///         media_base_url: None,
+///     }).build())
 ///     .stores(stores)
 ///     .add_sync_task(MyBusinessSync::new())    // 扩展：业务同步任务
 ///     .add_message_interceptor(E2EEncryption::new()) // 扩展：端到端加密
@@ -152,11 +159,14 @@ pub struct IMClientBuilder {
     extension_migrations: Vec<Arc<dyn ExtensionMigration>>,
     metrics_sink: Option<Arc<dyn MetricsSink>>,
     /// 共享的接入运行时（`IMClient::init` 建、各次登录复用）；没有时按配置在内存里建一个。
-    access: Option<Arc<crate::runtime::link::AccessRuntime>>,
+    connection: Option<Arc<crate::runtime::link::ConnectionRuntime>>,
+    update: Option<Arc<crate::runtime::update::UpdateRuntime>>,
     /// 链路状态机的初始网络可用性（登录重建引擎时沿用宿主此前报过的）。
     network_available: bool,
+    environment: Option<String>,
     /// 宿主的插件界面资料槽（登录重建时沿用上一个会话的）；没有时新建一个空的。
     plugin_host: Option<Arc<crate::client::api::PluginHostSlot>>,
+    plugin_file_http: Option<HttpClient>,
     builder_errors: Vec<FlareError>,
 }
 
@@ -181,9 +191,12 @@ impl IMClientBuilder {
             content_codecs: Vec::new(),
             extension_migrations: Vec::new(),
             metrics_sink: None,
-            access: None,
+            connection: None,
+            update: None,
             network_available: true,
+            environment: None,
             plugin_host: None,
+            plugin_file_http: None,
             builder_errors: Vec::new(),
         }
     }
@@ -213,12 +226,35 @@ impl IMClientBuilder {
 
     /// 注入共享 HTTP 鉴权上下文（与 Social Gateway / 媒体 HTTP 共用 Bearer 与链路头）。
     /// 使用已有的接入运行时（跨会话共用健康簿与熔断状态）。
-    pub fn access_runtime(mut self, access: Arc<crate::runtime::link::AccessRuntime>) -> Self {
-        self.access = Some(access);
+    /// Use the named environment when validating the deployment endpoints.
+    pub fn environment(mut self, environment: Option<String>) -> Self {
+        self.environment = environment;
+        self
+    }
+
+    pub(crate) fn connection_runtime(
+        mut self,
+        connection: Arc<crate::runtime::link::ConnectionRuntime>,
+    ) -> Self {
+        self.connection = Some(connection);
+        self
+    }
+
+    pub(crate) fn update_runtime(
+        mut self,
+        update: Option<Arc<crate::runtime::update::UpdateRuntime>>,
+    ) -> Self {
+        self.update = update;
         self
     }
 
     /// 宿主此前设过的插件界面资料（`plugin.set_host_profile`）：登录重建时交给新会话。
+    /// Provide the trusted origin for plugin private-file uploads.
+    pub fn plugin_file_http(mut self, http: Option<HttpClient>) -> Self {
+        self.plugin_file_http = http;
+        self
+    }
+
     pub(crate) fn plugin_host(mut self, slot: Arc<crate::client::api::PluginHostSlot>) -> Self {
         self.plugin_host = Some(slot);
         self
@@ -503,13 +539,22 @@ impl IMClientBuilder {
         sync_handler.start_remote_cursor_flush_worker();
 
         let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new(String::new()));
-        let access = self.access.clone().unwrap_or_else(|| {
-            Arc::new(crate::runtime::link::AccessRuntime::for_platform(
-                self.config.access.clone(),
-                crate::runtime::link::AccessStoreSource::memory(),
-                self.config.core_tls_config(),
-            ))
-        });
+        let connection = match self.connection {
+            Some(connection) => connection,
+            None => {
+                let cleartext = matches!(self.environment.as_deref(), Some("development" | "dev"));
+                let endpoints = self
+                    .config
+                    .endpoints
+                    .clone()
+                    .map(|value| value.validate(cleartext))
+                    .transpose()?;
+                Arc::new(crate::runtime::link::ConnectionRuntime::new(
+                    endpoints, cleartext,
+                ))
+            }
+        };
+        let update = self.update;
         let engine = SdkEngine::new(SdkEngineConfig {
             stores,
             chain: chain.clone(),
@@ -529,7 +574,7 @@ impl IMClientBuilder {
             ack_max_retries: self.config.ack_max_retries,
             ack_max_in_flight: self.config.ack_max_in_flight,
             metrics: metrics.clone(),
-            access: access.clone(),
+            connection: connection.clone(),
             network_available: self.network_available,
             device_id: self.config.effective_device_id(),
             locale: self.config.effective_locale(),
@@ -581,6 +626,9 @@ impl IMClientBuilder {
         );
         let capability_grpc_url = development_capability_grpc_url(&self.config);
         let plugin_host = self.plugin_host.clone().unwrap_or_default();
+        if self.plugin_file_http.is_some() {
+            plugin_host.set_file_http(self.plugin_file_http);
+        }
         let tenant_id = self
             .config
             .tenant_id
@@ -593,22 +641,26 @@ impl IMClientBuilder {
             .unwrap_or_else(|| Arc::new(HttpRequestContext::new()));
         // Core HTTP（媒体、在线状态、能力）按服务路由：每次请求跟随 IM 当前接入点，失败按 §3.9 重试。
         let core_router = crate::infrastructure::transport::http::router::HttpRouter::new(
-            access.clone(),
-            flare_access::ServiceClass::CoreApi,
+            connection.clone(),
+            crate::infrastructure::transport::http::router::CoreHttpService::CoreApi,
         );
         #[cfg(not(target_arch = "wasm32"))]
-        let media_http_client = HttpClient::routed(
+        let core_http_client = HttpClient::routed(
             core_router,
             http_request_context.clone(),
             self.config.core_tls_config(),
         )
         .with_core_bearer();
         #[cfg(target_arch = "wasm32")]
-        let media_http_client =
+        let core_http_client =
             HttpClient::routed(core_router, http_request_context.clone()).with_core_bearer();
         // Presence talks to the same Core API gateway with the same trust and bearer.
-        let presence_http_client = media_http_client.clone();
-        let capability_http_client = media_http_client.clone();
+        let presence_http_client = core_http_client.clone();
+        let capability_http_client = core_http_client.clone();
+        let media_http_client = core_http_client
+            .for_media()
+            .with_gateway_context(http_request_context.clone())
+            .with_core_bearer();
         let default_media_service: Arc<dyn MediaServicePort> = Arc::new(MediaService::new(
             media_http_client,
             current_user_id.clone(),
@@ -707,7 +759,9 @@ impl IMClientBuilder {
             Arc::new(message_build_api.with_plugin_cards(capability_api.clone()));
         engine.set_tenant_notices(Arc::new(TenantNotices::new(
             capability_api.as_ref().clone(),
-            access.clone(),
+            update
+                .as_ref()
+                .map(|update| update.clone().release_notice_handler()),
             bus.clone(),
         )));
         for plugin in self.capability_plugins {
@@ -754,8 +808,10 @@ impl IMClientBuilder {
         ));
 
         Ok(IMClient::from_inner(IMClientInner {
+            environment: self.environment,
             configured_config: Some(configured_config),
-            access: Some(access),
+            connection: Some(connection),
+            update,
             engine: Some(engine),
             message_api: Some(
                 MessageApi::new(

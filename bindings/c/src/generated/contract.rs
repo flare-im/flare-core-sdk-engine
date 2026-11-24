@@ -206,8 +206,6 @@ pub const C_DISPATCH_OPS: &[(&str, &str)] = &[
 pub const EVENT_CODES: &[(&str, i32)] = &[
     ("connection.status", 1010),
     ("connection.sync_state_changed", 1005),
-    ("access.switched", 1011),
-    ("access.changed", 1012),
     ("update.state", 1013),
     ("message.received", 2001),
     ("message.received_batch", 2002),

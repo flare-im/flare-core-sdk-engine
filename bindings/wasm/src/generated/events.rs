@@ -5,8 +5,6 @@
 pub const CONTRACT_EVENT_IDS: &[&str] = &[
     "connection.status",
     "connection.sync_state_changed",
-    "access.switched",
-    "access.changed",
     "update.state",
     "message.received",
     "message.received_batch",
@@ -59,8 +57,6 @@ pub const CONTRACT_EVENT_IDS: &[&str] = &[
 pub const WEB_EVENT_ROUTES: &[(&str, &str)] = &[
     ("connection.status", "connection://status"),
     ("connection.sync_state_changed", "im://sync_state_changed"),
-    ("access.switched", "access://switched"),
-    ("access.changed", "access://changed"),
     ("message.received", "im://message"),
     ("message.received_batch", "im://message_batch"),
     ("message.send_ack", "im://send_ack"),

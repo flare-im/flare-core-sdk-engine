@@ -68,15 +68,6 @@ pub(crate) fn model_package_suffix(name: &str) -> &'static str {
         "event.connection"
     } else if matches!(
         name,
-        "AccessEventName"
-            | "AccessSwitchedEvent"
-            | "AccessEndpoint"
-            | "AccessChangedEvent"
-            | "AccessChanges"
-    ) {
-        "event.access"
-    } else if matches!(
-        name,
         "MessageEventName"
             | "MessageMutationEvent"
             | "MessageReceivedBatchEvent"

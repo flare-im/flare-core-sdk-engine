@@ -50,8 +50,6 @@ mod session_watchers;
 mod sync_api;
 mod update_api;
 
-pub use link_api::PinnedAccessPoint;
-
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkChangeEvent {
@@ -123,9 +121,9 @@ pub(crate) struct IMClientInner {
     /// 否则宿主在构建期配好的接入配置等会在登录那一刻被默认值顶掉。
     pub configured_config: Option<crate::client::config::SdkConfig>,
     /// 接入运行时（目录、健康簿、选路）。跨会话共用：属于设备与网络，不属于某次登录。
-    pub access: Option<Arc<crate::runtime::link::AccessRuntime>>,
-    /// 宿主注入的登录前全局存储（[`IMClient::set_access_store`]）；没有时 init 用平台默认。
-    pub access_store: Option<InjectedAccessStore>,
+    pub connection: Option<Arc<crate::runtime::link::ConnectionRuntime>>,
+    /// 更新中心属于 SDK 实例，登录时交给新会话转发通知。
+    pub update: Option<Arc<crate::runtime::update::UpdateRuntime>>,
     /// 宿主最后一次报的网络状态（`notify_network_change` 的完整输入）。平台常在登录之前首报、之后对
     /// 相同状态去重不再重报：之后新建的接入运行时与链路状态机都从它起步。没报过为 `None`（视为可用）。
     pub last_network: Option<NetworkChangeEvent>,
@@ -161,19 +159,6 @@ pub(crate) struct IMClientInner {
     pub session_generation: u64,
     pub metrics: MetricsRecorder,
 }
-
-/// 宿主注入的登录前全局存储。
-///
-/// 浏览器宿主的存储握着 JS 对象，不是 `Send`；wasm32-unknown-unknown 只有页面线程，值不可能离开它，
-/// 所以与 [`crate::runtime::link::AccessRuntime`] 同样只在 wasm 上声明 `Send + Sync`，
-/// 让 [`IMClientInner`] 的线程约束在两端保持一致。
-#[derive(Clone)]
-pub(crate) struct InjectedAccessStore(pub(crate) Arc<dyn flare_access::AccessStore>);
-
-#[cfg(target_arch = "wasm32")]
-unsafe impl Send for InjectedAccessStore {}
-#[cfg(target_arch = "wasm32")]
-unsafe impl Sync for InjectedAccessStore {}
 
 /// 会话结束信号：会话世代每变一次（登出、断开、重新登录、终止会话）唤醒所有在等的会话监视器；
 /// 最后一个 [`IMClient`] 句柄释放（客户端销毁）时也唤醒一次。
@@ -525,13 +510,6 @@ impl IMClient {
         Ok(apis)
     }
 
-    /// 装上登录前全局存储（接入清单 LKG、密钥状态、健康簿），下一次 [`Self::init`] 起生效。
-    ///
-    /// 浏览器宿主用它接 IndexedDB；`None` 还原平台默认（原生在数据根下开 SQLite，wasm 在内存里）。
-    pub async fn set_access_store(&self, store: Option<Arc<dyn flare_access::AccessStore>>) {
-        self.inner.write().await.access_store = store.map(InjectedAccessStore);
-    }
-
     /// 初始化运行环境与 SDK 配置快照。
     ///
     /// - 更新本地配置，不建立 IM 连接；配置稳定设备和 Core HTTP 后可恢复旧推送撤销；
@@ -543,9 +521,28 @@ impl IMClient {
         environment: Option<String>,
         sdk_config: Option<SdkConfigOverlay>,
     ) -> Result<()> {
-        self.push_lifecycle.detach();
         let mut g = self.inner.write().await;
-        g.environment = environment;
+        let merged = crate::client::lifecycle::merge_sdk_config_onto(
+            g.configured_config.clone().unwrap_or_default(),
+            sdk_config.as_ref(),
+        );
+        let environment = environment.or_else(|| g.environment.clone());
+        let allow_cleartext = matches!(environment.as_deref(), Some("development" | "dev"));
+        let direct = merged
+            .endpoints
+            .clone()
+            .map(|value| value.validate(allow_cleartext))
+            .transpose()?;
+        if self.session_active_sync() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "end the active session before reinitialising; use connection.replaceEndpoints to change addresses",
+            ));
+        }
+        // SDK 托管令牌只走 Core API：签发路径写成绝对地址等在这里就报配置错误，不等到登录。
+        if let Some(auth) = merged.auth.as_ref() {
+            auth.token_path()?;
+        }
         let data_root =
             resolve_sdk_data_root(sdk_config.as_ref().and_then(|cfg| cfg.data_url.as_deref()))?;
         // Synchronous dir creation: this runs inside a host command future (e.g. the Tauri
@@ -559,47 +556,17 @@ impl IMClient {
                 format!("sdk data root create_dir_all failed: {}", e),
             )
         })?;
-        // 接入配置：init 的覆盖项优先，其次构建期配置。装配（读 LKG、验签、加载健康簿）在后台开始，
-        // 不占调用线程；第一次建连时若还没完成再等它。
-        let access_config = sdk_config
-            .as_ref()
-            .and_then(|cfg| cfg.access.clone())
-            .or_else(|| {
-                g.configured_config
-                    .as_ref()
-                    .and_then(|cfg| cfg.access.clone())
-            });
-        let merged = crate::client::lifecycle::merge_sdk_config_onto(
-            g.configured_config.clone().unwrap_or_default(),
-            sdk_config.as_ref(),
-        );
-        // SDK 托管令牌只走 Core API：签发路径写成绝对地址等在这里就报配置错误，不等到登录。
-        if let Some(auth) = merged.auth.as_ref() {
-            auth.token_path()?;
-        }
-        // 探活用部署的信任根（私有 CA）；接入点的钉扎在探活时按接入点叠加。
-        let trust = merged.core_tls_config();
-        // Web 包从同一批镜像下载，信任根与更新包一致。
-        #[cfg(not(target_arch = "wasm32"))]
-        g.plugin_host.bundles.set_trust(trust.clone());
-        let store = match g.access_store.clone() {
-            Some(InjectedAccessStore(store)) => {
-                crate::runtime::link::AccessStoreSource::Ready(store)
-            }
-            None => {
-                crate::runtime::link::AccessStoreSource::platform_default(Some(data_root.clone()))
-            }
-        };
-        let access = Arc::new(crate::runtime::link::AccessRuntime::for_platform(
-            access_config,
-            store,
-            trust,
+        let connection = Arc::new(crate::runtime::link::ConnectionRuntime::new(
+            direct,
+            allow_cleartext,
         ));
-        if let Some(previous) = &g.access {
-            access.set_protocol_mode(previous.protocol_mode());
+        self.push_lifecycle.detach();
+        g.environment = environment;
+        if let Some(previous) = &g.connection {
+            connection.set_protocol_mode(previous.protocol_mode());
         }
         if let Some(network) = g.last_network.as_ref() {
-            access.report_network(
+            connection.report_network(
                 network.available,
                 network.interface.as_deref(),
                 network.fingerprint_hint.as_deref(),
@@ -607,22 +574,39 @@ impl IMClient {
         }
         // 后台心跳按网络学到的间隔存在数据根下，换了进程也接着用。
         #[cfg(not(target_arch = "wasm32"))]
-        access.persist_heartbeat_learning(&data_root);
-        access.warm_up();
-        let previous_update = g.access.as_ref().and_then(|previous| previous.update());
-        access.install_update(
-            crate::runtime::update::UpdateOptions::new(&merged, data_root.join("update"), &access),
-            previous_update,
-        );
-        if let (Some(update), Some(network)) = (access.update(), g.last_network.as_ref()) {
-            update.network_changed(network.available, network.is_metered());
-        }
-        g.access = Some(access);
+        connection.heartbeat_learning.persist_under(&data_root);
+        g.update = None;
+        g.connection = Some(connection);
         g.data_root = Some(data_root);
         g.sdk_config = sdk_config;
         drop(g);
         self.configure_push_transport().await;
         self.reconcile_push_in_background();
+        Ok(())
+    }
+
+    /// Set the host's trusted HTTP origin for plugin private-file uploads.
+    pub async fn set_plugin_file_http(&self, http: crate::infrastructure::transport::HttpClient) {
+        self.inner
+            .read()
+            .await
+            .plugin_host
+            .set_file_http(Some(http));
+    }
+
+    /// Install native bundle delivery for this client before opening a session.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn install_bundle_delivery(
+        &self,
+        delivery: Arc<dyn crate::extension::capability::bundle::provider::BundleDelivery>,
+    ) -> Result<()> {
+        let inner = self.inner.write().await;
+        if self.session_active_sync() || !inner.plugin_host.bundles.install_delivery(delivery) {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "install bundle delivery once, before opening a session",
+            ));
+        }
         Ok(())
     }
 

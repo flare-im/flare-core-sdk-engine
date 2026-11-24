@@ -103,7 +103,7 @@ impl IMClient {
         let (changed, link, update) = {
             let mut current = self.inner.write().await;
             current.last_network = Some(event.clone());
-            let changed = current.access.as_ref().is_some_and(|access| {
+            let changed = current.connection.as_ref().is_some_and(|access| {
                 access.report_network(
                     event.available,
                     event.interface.as_deref(),
@@ -111,7 +111,7 @@ impl IMClient {
                 )
             });
             let link = current.engine.as_ref().map(|engine| engine.link().clone());
-            let update = current.access.as_ref().and_then(|access| access.update());
+            let update = current.update.clone();
             (changed, link, update)
         };
         tracing::info!(
@@ -354,7 +354,7 @@ impl IMClient {
                 g.data_root.clone(),
                 g.http_request_context.clone(),
                 g.extension_components.clone(),
-                g.access.clone(),
+                g.connection.clone(),
                 g.connect_token_refresher.clone(),
                 g.configured_config.clone(),
                 // 上一个会话属于谁：决定发件箱是原样恢复（同一用户）还是清空（换了用户）。
@@ -362,12 +362,11 @@ impl IMClient {
                     .clone()
                     .or_else(|| g.last_session_user.clone()),
                 g.last_network.clone(),
-                // 宿主注入的登录前全局存储（wasm 的 IndexedDB）：属于宿主，跨会话保留，之后的 init 仍用它。
-                g.access_store.clone(),
                 // 上一个会话的刷新令牌保管处：换了账号时用它删掉上一个账号的刷新令牌。
                 g.refresh_token_vault.clone(),
                 // 宿主的插件界面资料：属于宿主，跨会话保留。
                 g.plugin_host.clone(),
+                g.update.clone(),
             )
         };
         let vault = refresh_token_vault_for(&db, snap.1.as_ref());
@@ -437,12 +436,13 @@ impl IMClient {
         if let Some(ctx) = snap.3.clone() {
             child_builder = child_builder.http_request_context(ctx);
         }
-        // 接入运行时跨会话共用：健康簿、熔断、UDP 封锁记忆属于设备与网络，不属于某次登录。
-        if let Some(access) = snap.5.clone() {
-            child_builder = child_builder.access_runtime(access);
+        // 地址快照和传输配置由宿主客户端跨会话持有。
+        if let Some(connection) = snap.5.clone() {
+            child_builder = child_builder.connection_runtime(connection);
         }
         // 宿主此前报过的网络状态：新链路从它起步（离线时登录直接显示等网络）。
-        child_builder = child_builder.plugin_host(snap.12.clone());
+        child_builder = child_builder.plugin_host(snap.11.clone());
+        child_builder = child_builder.update_runtime(snap.12);
         let network_available = snap.9.as_ref().is_none_or(|network| network.available);
         child_builder = child_builder.initial_network_available(network_available);
         child_builder = snap.4.apply_to_builder(child_builder);
@@ -450,22 +450,14 @@ impl IMClient {
         let mut inner = child.into_inner()?;
         inner.environment = snap.0;
         inner.sdk_config = snap.1;
-        #[cfg(not(target_arch = "wasm32"))]
-        let data_root_for_bundles = data_root.clone();
         inner.data_root = Some(data_root);
         if inner.http_request_context.is_none() {
             inner.http_request_context = snap.3;
         }
         // 宿主装的续期回调跨会话保留：它属于宿主，不属于某一次登录。
         inner.connect_token_refresher = snap.6;
-        inner.access_store = snap.10;
         inner.refresh_token_vault = vault.clone();
-        inner.plugin_host = snap.12;
-        #[cfg(not(target_arch = "wasm32"))]
-        inner
-            .plugin_host
-            .bundles
-            .set_cache_root(data_root_for_bundles.join("plugin_bundles"));
+        inner.plugin_host = snap.11;
         inner.current_user_id = Some(user_id.to_string());
         inner.last_session_user = Some(user_id.to_string());
         let previous_user = match snap.8 {
@@ -483,7 +475,7 @@ impl IMClient {
         // （宿主的安全存储是同一个，按用户分项）。
         if !same_user
             && let Some(previous) = previous_user.as_deref()
-            && let Some(previous_vault) = snap.11.as_ref().or(vault.as_ref())
+            && let Some(previous_vault) = snap.10.as_ref().or(vault.as_ref())
         {
             previous_vault.clear(previous).await;
         }
@@ -494,14 +486,14 @@ impl IMClient {
         }
         {
             let mut current = self.inner.write().await;
-            if let (Some(previous), Some(next)) = (&current.access, &inner.access) {
+            if let (Some(previous), Some(next)) = (&current.connection, &inner.connection) {
                 next.set_protocol_mode(previous.protocol_mode());
             }
             // Opening SQLite or closing the previous session can overlap a platform
             // network report. Apply the latest input to the private link before
             // publishing it so a subsequent report can't overtake this one.
             if let Some(network) = current.last_network.as_ref() {
-                let changed = inner.access.as_ref().is_some_and(|access| {
+                let changed = inner.connection.as_ref().is_some_and(|access| {
                     access.report_network(
                         network.available,
                         network.interface.as_deref(),
@@ -614,24 +606,16 @@ impl IMClient {
             engine.adopt_app_state(foreground);
             // 后台展示方与正在看的会话同样常在登录前就报过：引擎每次登录新建，从客户端那份接过来。
             engine.adopt_notification_host(self.notification_host.clone());
-            // 没经 prepare/login、直接在构建器建好的引擎上 connect 时，引擎用的是构建器那份接入运行时，
-            // 而 init 另建了数据根下的一份：以链路实际用的为准，状态、诊断、固定接入点才落在同一份上。
-            if g.access
+            if g.connection
                 .as_ref()
-                .is_none_or(|access| !Arc::ptr_eq(access, link.access()))
+                .is_none_or(|runtime| !Arc::ptr_eq(runtime, link.connection()))
             {
-                if let Some(previous) = &g.access {
-                    link.access().set_protocol_mode(previous.protocol_mode());
-                }
-                if let Some(network) = g.last_network.as_ref() {
-                    link.access().report_network(
-                        network.available,
-                        network.interface.as_deref(),
-                        network.fingerprint_hint.as_deref(),
-                    );
-                }
-                g.access = Some(link.access().clone());
+                return Err(FlareError::localized(
+                    ErrorCode::NotConnected,
+                    "prepare or log in after initialising Core endpoints",
+                ));
             }
+            link.connection().endpoint_store()?;
             g.current_user_id = Some(user_id.to_string());
             g.connect_token = token.clone();
             g.refresh_token = None;

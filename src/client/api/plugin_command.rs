@@ -84,6 +84,12 @@ impl CapabilityApi {
     }
     async fn prepare_plugin_command_now(&self, request: Value) -> Result<Value> {
         let request: Prepare = parse(request)?;
+        if request.command.message_id.is_some() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "sdk.plugin_command.invalid_command",
+            ));
+        }
         self.session_guard
             .run_with_user(|user_id| async {
                 let scope = self.command_scope(

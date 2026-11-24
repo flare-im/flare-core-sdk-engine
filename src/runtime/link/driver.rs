@@ -2,11 +2,9 @@
 //! 状态机只决定「何时、连哪里」，这样状态机可以用假驱动单测，引擎改动也不碰决策。
 
 use std::future::Future;
-use std::net::IpAddr;
 use std::pin::Pin;
 use std::time::Duration;
 
-use flare_access::ApId;
 use flare_core::client::link::{ConnectFailure, ConnectReport};
 use flare_core::common::config_types::TransportProtocol;
 
@@ -34,9 +32,7 @@ where
     Box::pin(future)
 }
 
-/// 一条连接的心跳节奏，来自生效的 `clientPolicy.heartbeat`（开发模式即 `developmentEndpoints.clientPolicy`）。
-/// 已由 [`flare_access::ClientPolicy::resolve`] 按 POLICY_BOUNDS 夹紧，并保证超时 ≥ 2 × 前台间隔、
-/// 后台间隔 ≥ 前台间隔。
+/// A connection’s foreground and background heartbeat intervals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinkHeartbeat {
     /// 前台心跳间隔（`intervalSec`）。
@@ -48,36 +44,28 @@ pub struct LinkHeartbeat {
     pub background_interval: Duration,
 }
 
-impl LinkHeartbeat {
-    pub fn from_policy(policy: &flare_access::ClientPolicy) -> Self {
-        let heartbeat = &policy.heartbeat;
+impl Default for LinkHeartbeat {
+    fn default() -> Self {
         Self {
-            interval: Duration::from_secs(u64::from(heartbeat.interval_sec)),
-            timeout: Duration::from_secs(u64::from(heartbeat.timeout_sec)),
-            background_interval: Duration::from_secs(u64::from(heartbeat.background_interval_sec)),
+            interval: Duration::from_secs(30),
+            timeout: Duration::from_secs(90),
+            background_interval: Duration::from_secs(120),
         }
     }
 }
 
-/// 一次建连的目标：一个接入点与它的协议入口。
+/// Transports available for one host-selected address group.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkTarget {
-    pub access_point_id: ApId,
     /// 协议优先序与各自入口（第一个立即发起，交错间隔后再发起下一个）。
     pub protocols: Vec<(TransportProtocol, String)>,
     pub stagger: Duration,
     /// 单次握手（传输 + TLS + CONNECT_ACK）时限。
     pub connect_timeout: Duration,
-    /// 这条连接上一次即时验活等 PONG 的窗口（`clientPolicy.probeWakeTimeoutMs`），窗口内没有 PONG 即判死。
+    /// 这条连接上一次即时验活等 PONG 的窗口，窗口内没有 PONG 即判死。
     pub probe_timeout: Duration,
-    /// 这条连接的心跳节奏（`clientPolicy.heartbeat`）。
+    /// 这条连接的心跳节奏。
     pub heartbeat: LinkHeartbeat,
-    /// 该接入点的 SPKI 钉扎（来自接入清单；空表示只做 CA 校验）。
-    pub spki_pins: Vec<String>,
-    /// 该接入点的 `ipHints`：主机名 DNS 失败或结果可疑时才直连，TLS 仍按主机名。浏览器不能指定 IP，不起作用。
-    pub ip_hints: Vec<IpAddr>,
-    /// 客户端当前清单 serial（CONNECT 元数据）。
-    pub access_serial: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -91,9 +79,6 @@ pub struct OpenRequest {
     /// CONNECT 里带的初始设备状态（[`DeviceLinkState::Active`] / [`DeviceLinkState::Standby`] /
     /// [`DeviceLinkState::Deferred`]）：服务端从第一帧起就知道提示归谁，不必等连上之后的那次上报。
     pub device_state: DeviceLinkState,
-    /// DoH 备用解析，和 REST、引导拉取共用一份。
-    #[cfg(not(target_arch = "wasm32"))]
-    pub doh: Option<std::sync::Arc<flare_core::client::dial::DohCache>>,
 }
 
 /// 新连接上线的方式：决定发件箱怎么恢复、同步怎么跑。

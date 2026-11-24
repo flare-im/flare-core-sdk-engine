@@ -1,14 +1,15 @@
 //! Explicit test endpoints/storage. Never redirect HOME or reuse the evaluator's SDK database.
-//!
-//! 端点经开发模式接入配置传入（`access.developmentEndpoints`），SDK 没有其他地址字段。
 use flare_im_core_sdk::client::lifecycle::SdkConfigOverlay;
-use flare_im_core_sdk::prelude::{AccessConfig, DevelopmentEndpoints};
+use flare_im_core_sdk::prelude::CoreEndpoints;
 use std::{io, path::Path};
 
 pub fn overlay() -> io::Result<Option<SdkConfigOverlay>> {
     from_values(
         std::env::var("FLARE_SMOKE_DATA_ROOT").ok().as_deref(),
-        std::env::var("FLARE_SMOKE_WS_URL").ok().as_deref(),
+        std::env::var("FLARE_SMOKE_WS_URL")
+            .or_else(|_| std::env::var("FLARE_IM_SERVER_URL"))
+            .ok()
+            .as_deref(),
         std::env::var("FLARE_SMOKE_HTTP_URL").ok().as_deref(),
     )
 }
@@ -18,9 +19,6 @@ fn from_values(
     ws: Option<&str>,
     http: Option<&str>,
 ) -> io::Result<Option<SdkConfigOverlay>> {
-    if root.is_none() && ws.is_none() && http.is_none() {
-        return Ok(None);
-    }
     if root.is_some_and(|root| root.trim().is_empty() || !Path::new(root).is_absolute()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -43,17 +41,14 @@ fn from_values(
             }
         }
     }
-    let access = (ws.is_some() || http.is_some()).then(|| {
-        AccessConfig::development(DevelopmentEndpoints {
-            ws_url: ws.map(str::to_owned),
-            core_api_url: http.map(str::to_owned),
-            media_url: http.map(str::to_owned),
-            ..Default::default()
-        })
-    });
     Ok(Some(SdkConfigOverlay {
         data_url: root.map(str::to_owned),
-        access,
+        endpoints: Some(CoreEndpoints {
+            base_url: http.unwrap_or("http://127.0.0.1:41050").into(),
+            websocket_url: ws.unwrap_or("ws://localhost:60051").into(),
+            quic_url: None,
+            media_base_url: None,
+        }),
         ..Default::default()
     }))
 }
@@ -64,7 +59,7 @@ mod tests {
 
     #[test]
     fn optional_absolute_storage_override_preserves_network_and_identity_defaults() {
-        assert!(from_values(None, None, None).unwrap().is_none());
+        let defaults = from_values(None, None, None).unwrap().unwrap();
         for invalid in ["", " ", "relative", "../data"] {
             assert!(from_values(Some(invalid), None, None).is_err());
         }
@@ -72,7 +67,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(configured.data_url.as_deref(), Some("/tmp/smoke-data"));
-        assert!(configured.access.is_none());
+        assert_eq!(configured.endpoints, defaults.endpoints);
         assert!(configured.tenant_id.is_none());
     }
 
@@ -85,16 +80,9 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let endpoints = configured
-            .access
-            .as_ref()
-            .and_then(|access| access.development_endpoints.as_ref())
-            .expect("development endpoints");
-        assert_eq!(endpoints.ws_url.as_deref(), Some("ws://127.0.0.1:8080"));
-        assert_eq!(
-            endpoints.core_api_url.as_deref(),
-            Some("http://127.0.0.1:50050")
-        );
+        let endpoints = configured.endpoints.expect("development endpoints");
+        assert_eq!(endpoints.websocket_url, "ws://127.0.0.1:8080");
+        assert_eq!(endpoints.base_url, "http://127.0.0.1:50050");
         assert!(configured.data_url.is_none());
         for invalid in [
             "",

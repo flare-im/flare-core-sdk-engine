@@ -5,7 +5,7 @@
       "route": "sdk.init",
       "result": "unit",
       "skip_client": true,
-      "body": "\n            let environment = dispatch_support::optional_string(request, \"environment\");\n            let sdk_config = dispatch_support::optional_value::<flare_im_core_sdk::client::lifecycle::SdkConfigOverlay>(request, \"sdkConfig\")?;\n            session.client().init(environment, sdk_config).await?;\n        "
+      "body": "\n            let (environment, sdk_config) = dispatch_support::init_request(request)?;\n            session.client().init(environment, sdk_config).await?;\n        "
     },
     {
       "route": "sdk.uninit",
@@ -80,50 +80,15 @@
       "body": "\n            client.reconnect_now().await?;\n        "
     },
     {
+      "route": "connection.replace_endpoints",
+      "result": "json",
+      "body": "\n            let endpoints = dispatch_support::from_value::<flare_im_core_sdk::client::CoreEndpoints>(\n                request.clone(),\n                \"Core endpoints\",\n            )?;\n            let result = client.replace_endpoints(endpoints).await?;\n        ",
+      "json_expr": "result"
+    },
+    {
       "route": "connection.set_protocol_mode",
       "result": "unit",
       "body": "\n            let mode = dispatch_support::json_string(request, \"mode\")?;\n            client.set_protocol_mode(&mode).await?;\n        "
-    },
-    {
-      "route": "access.get_status",
-      "result": "json",
-      "body": "\n            let status = client.access_status().await?;\n        ",
-      "json_expr": "status"
-    },
-    {
-      "route": "access.list_access_points",
-      "result": "json",
-      "body": "\n            let access_points = client.list_access_points().await?;\n        ",
-      "json_expr": "access_points"
-    },
-    {
-      "route": "access.pin",
-      "result": "json",
-      "body": "\n            let access_point_id = dispatch_support::json_string(request, \"accessPointId\")?;\n            let pinned = client.pin_access_point(&access_point_id).await?;\n        ",
-      "json_expr": "pinned"
-    },
-    {
-      "route": "access.unpin",
-      "result": "unit",
-      "body": "\n            client.unpin_access_point().await?;\n        "
-    },
-    {
-      "route": "access.refresh",
-      "result": "json",
-      "body": "\n            let report = client.refresh_access().await?;\n        ",
-      "json_expr": "report"
-    },
-    {
-      "route": "access.import_recovery",
-      "result": "json",
-      "body": "\n            let link = dispatch_support::json_string(request, \"link\")?;\n            let imported = client.import_access_recovery(&link).await?;\n        ",
-      "json_expr": "imported"
-    },
-    {
-      "route": "access.export_diagnostics",
-      "result": "json",
-      "body": "\n            let diagnostics = client.export_access_diagnostics().await?;\n        ",
-      "json_expr": "diagnostics"
     },
     {
       "route": "update.get_state",

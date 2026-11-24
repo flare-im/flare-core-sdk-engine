@@ -239,9 +239,14 @@ async fn stopped_in_the_background(presenter: bool) -> Harness {
     h.lose(h.current_epoch(), DisconnectReason::HeartbeatTimeout);
 
     let stopped = h
-        .wait_status("the link to stop retrying", LONG, |status| {
-            status.phase == ConnectionPhase::ServiceUnavailable && status.next_retry_at.is_none()
-        })
+        .wait_status(
+            "the link to stop retrying",
+            Duration::from_secs(45),
+            |status| {
+                status.phase == ConnectionPhase::ServiceUnavailable
+                    && status.next_retry_at.is_none()
+            },
+        )
         .await;
     assert_eq!(stopped.attempt, 3, "三轮之后停下");
     let opened = h.driver.opened().len();

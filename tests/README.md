@@ -14,9 +14,9 @@ rtk cargo test --workspace
 覆盖范围：
 
 - `core_sdk_contract_test.rs`：当前 `IMClient::builder()` 装配合同、未登录写侧拒绝语义、内存 message/conversation store 对当前 `IMMessage` / `Conversation` 模型的保存与查询。
-- `link_failover.rs`：本机回环起两个「接入点」（flare-core WebSocket 服务端 + 可控 TCP 中继），SDK 以开发模式多接入点接入：当前接入点挂掉时切到另一个、不重登（会话世代不变），期间连发 100 条零失败零重复且服务端收到的顺序即发送顺序；过载（OVERLOADED）在同一接入点等待不迁移；排空（CLOSE DRAIN 带窗口与优先接入点）在窗口内重连到建议的接入点；半开连接在发送卡住后验活判死并切换；同一用户重新 prepare 后发件箱原样恢复发送；开了 `quic` 特性时，QUIC 被静默丢弃三次后记住 UDP 封锁、之后直接走 WebSocket。
-- `link_lifecycle.rs`：单 / 双接入点：断网只由链路状态机按退避重建、断线期间的消息只发一次；服务端停机在 CLOSE 给的 1–5 s 窗口内重连；暂时性拒绝（`SERVICE_UNAVAILABLE`）退避直到放行；租户不可用与结束会话的踢线终止（`actionRequired`），不再尝试；网络变化对半开连接立即验活并换线路；无网络时挂起、发件箱等待；CONNECT 带上应用信息，每次重连的连接代数递增。
-- `link_recovery.rs`：生产模式的目录与信任链（真实验签、LKG）、真实 WebSocket 服务端与 HTTP 假镜像：全部接入点失效时连续两轮失败进入恢复，从镜像拿到新地址后连上，发件箱零丢失、零重复、会话内有序，不重登；重启后新地址来自 LKG；CONNECT 报本地 serial，CONNECT_ACK 报更新的 serial 时客户端自己去拉。
+- `core_endpoints.rs`：用本地 WebSocket 服务验证地址组替换、版本更新、会话保持和发件箱恢复。
+- `link_lifecycle.rs`：验证当前地址的连接与重连、网络状态变化、网关排空、临时拒绝以及终止性会话错误。
+- 签名目录、商用探活和故障切换由 `flare-commercial-client-runtime` 的测试覆盖。
 - `transient_send_rejection_retry.rs`：同样的回环服务端按脚本回 SendAck：暂时性拒绝（`UNAVAILABLE`）时 SDK 退避后用同一个 `client_msg_id` 重发直到接收，本地只有一条消息；次数以 `ack_max_retries` 为界；`TENANT_UNAVAILABLE` 立即判失败、不重发。
 - crate 内 `#[cfg(test)]` 单元测试：消息内容 oneof 映射、dispatcher、sync adapter、event applier、reliable queue、SQLite repository 等靠近领域和协议边界的行为。
 - `bindings/shared` crate test：binding contract route discovery 覆盖生成 API ids 与 vNext runtime routes。
@@ -37,11 +37,11 @@ rtk bash scripts/verify.sh
 
 ## 服务端验证状态
 
-本仓当前 vNext 测试不会伪造真实服务端 E2E。服务端健康检查入口在：
+`scripts/live_stack.py` 使用独立端口、数据库和消息队列启动本地服务。换址验收用两台客户端先收发消息，再切换发送端的 WebSocket 网关并检查会话世代及接收端消息序号。
 
 ```bash
-rtk bash ../flare-core-server/scripts/check_services.sh
-rtk cargo test -p flare-im-core-sdk --features integration-tests --test <new_live_gateway_test>
+rtk proxy python3 scripts/live_stack.py up
+eval "$(rtk proxy python3 scripts/live_stack.py env)"
+rtk cargo test --test reachability_acceptance direct_endpoint_refresh_preserves_session_and_message_order -- --ignored --nocapture
+rtk proxy python3 scripts/live_stack.py down
 ```
-
-live gateway E2E 需要按当前 `SocketTransport` / `PacketSender` / typed API 重建，不再沿用旧 `memory://local` 和 route facade。media、presence/typing、rich-doc、capability/RTC/SFU 的 provider-backed 服务端 E2E 可在对应服务暴露稳定测试接口后继续扩展。

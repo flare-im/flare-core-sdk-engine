@@ -51,6 +51,16 @@ struct CoreSchemaSpec {
 
 const CORE_SCHEMA_SPECS: &[CoreSchemaSpec] = &[
     CoreSchemaSpec {
+        group: "connection",
+        file_name: "core_endpoints.schema.json",
+        sdk_name: "CoreEndpoints",
+    },
+    CoreSchemaSpec {
+        group: "connection",
+        file_name: "endpoint_update.schema.json",
+        sdk_name: "EndpointUpdate",
+    },
+    CoreSchemaSpec {
         group: "session",
         file_name: "push_token_input.schema.json",
         sdk_name: "PushTokenInput",

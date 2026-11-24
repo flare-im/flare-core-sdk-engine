@@ -295,12 +295,13 @@ fn trace_stages(user: &str, trace_key: &str) -> Vec<String> {
 
 // --------------------------------------------------------------- clients --
 
-fn access(ws: String) -> AccessConfig {
-    AccessConfig::development(DevelopmentEndpoints {
-        ws_url: Some(ws),
-        core_api_url: Some(env("LIVE_SMOKE_CORE_API")),
-        ..Default::default()
-    })
+fn endpoints(ws: String) -> CoreEndpoints {
+    CoreEndpoints {
+        base_url: env("LIVE_SMOKE_CORE_API"),
+        websocket_url: ws,
+        quic_url: None,
+        media_base_url: None,
+    }
 }
 
 fn data_root(case: &str, device: &str) -> PathBuf {
@@ -323,10 +324,10 @@ async fn online_at(case: &str, user: &str, device: &str, ws: String) -> IMClient
     let client = IMClient::new();
     client
         .init(
-            None,
+            Some("development".into()),
             Some(SdkConfigOverlay {
                 data_url: Some(data_root(case, device).display().to_string()),
-                access: Some(access(ws)),
+                endpoints: Some(endpoints(ws)),
                 tenant_id: Some(env("LIVE_SMOKE_TENANT")),
                 device_id: Some(device.to_owned()),
                 auth: Some(SdkAuthConfig::default()),
@@ -719,6 +720,74 @@ async fn r02_desktop_in_use_follows_the_multi_device_policy() {
     assert!(
         immediate_ms <= 3_000,
         "immediate policy rang after {immediate_ms} ms"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs the live stack (scripts/live_stack.py)"]
+async fn direct_endpoint_refresh_preserves_session_and_message_order() {
+    init_tracing();
+    let case = "direct-endpoint-refresh";
+    let sender_user = format!("switch-sender-{}", run_id());
+    let receiver_user = format!("switch-receiver-{}", run_id());
+    let sender = online(case, &sender_user, &format!("sender-{}", run_id()), PRIMARY).await;
+    let receiver = online(
+        case,
+        &receiver_user,
+        &format!("receiver-{}", run_id()),
+        SECONDARY,
+    )
+    .await;
+    let conversation = single_chat(&sender, &receiver_user).await;
+    let before = send(&sender, &conversation, "before address refresh", &[]).await;
+    let (_, before_seq) = persisted(&before).await;
+    wait_local(&receiver, &conversation, before_seq).await;
+
+    let generation = sender.session_generation().await;
+    let initial = sender.connection_status().await;
+    assert_eq!(initial.endpoint_revision, Some(1));
+    let update = sender
+        .replace_endpoints(endpoints(env("LIVE_SMOKE_WS_B")))
+        .await
+        .expect("replace endpoints");
+    assert!(update.changed);
+    assert_eq!(update.revision, 2);
+    wait_phase(&sender, ConnectionPhase::Online, Duration::from_secs(30)).await;
+    assert_eq!(sender.connection_status().await.endpoint_revision, Some(2));
+    assert_eq!(sender.session_generation().await, generation);
+    assert_eq!(
+        sender.current_user_id().await.as_deref(),
+        Some(sender_user.as_str())
+    );
+
+    let after = send(&sender, &conversation, "after address refresh", &[]).await;
+    let (_, after_seq) = persisted(&after).await;
+    wait_local(&receiver, &conversation, after_seq).await;
+    // The conversation sequence also advances for non-message events.
+    assert!(after_seq > before_seq);
+    let messages = receiver
+        .message()
+        .expect("receiver message API")
+        .list(&conversation, 0, 50)
+        .await
+        .expect("receiver history");
+    for seq in [before_seq, after_seq] {
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.conversation_seq == seq)
+                .count(),
+            1
+        );
+    }
+
+    evidence(
+        case,
+        json!({
+            "endpointRevision": update.revision,
+            "sessionGeneration": generation,
+            "receiverSeqs": [before_seq, after_seq],
+        }),
     );
 }
 

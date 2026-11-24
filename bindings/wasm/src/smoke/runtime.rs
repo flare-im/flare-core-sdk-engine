@@ -30,6 +30,7 @@ const CONTRACT_VERSION: &str = "flare-im-ffi/v2";
 
 #[derive(Debug, Default, Clone)]
 struct SmokeInitState {
+    environment: Option<String>,
     overlay: SdkConfigOverlay,
 }
 
@@ -401,10 +402,8 @@ impl FlareImWasmRuntime {
                     .unwrap_or_default();
                 Ok(json!({
                     "dataUrl": overlay.data_url.clone().unwrap_or_else(|| "memory://flare-im-core-sdk-wasm".to_string()),
-                    "developmentMode": overlay
-                        .access
-                        .as_ref()
-                        .is_some_and(|access| access.development_endpoints.is_some()),
+                    "developmentMode": self.init.as_ref().and_then(|init| init.environment.as_deref())
+                        .is_some_and(|environment| matches!(environment, "development" | "dev")),
                     "tenantId": overlay.tenant_id
                 }))
             }
@@ -1180,9 +1179,13 @@ fn parse_init_request(value: Value) -> SmokeInitState {
             .cloned()
             .and_then(|v| flare_im_core_sdk::json::from_value::<SdkConfigOverlay>(v).ok())
             .unwrap_or_default();
-        return SmokeInitState { overlay };
+        return SmokeInitState {
+            environment: string_field(&value, "environment"),
+            overlay,
+        };
     }
     SmokeInitState {
+        environment: None,
         overlay: flare_im_core_sdk::json::from_value(value).unwrap_or_default(),
     }
 }

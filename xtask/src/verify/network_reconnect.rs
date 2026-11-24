@@ -28,7 +28,7 @@ pub(crate) fn verify_network_reconnect_gate(root: &Path) -> Result<()> {
         "network change runtime",
         &[
             "pub async fn notify_network_change",
-            "access.set_network(",
+            ".report_network(",
             "link.network_changed(event.available, changed)",
         ],
     );

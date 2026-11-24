@@ -155,16 +155,6 @@ Map<String, Object?> completeConnectTokenRefreshRequestToMap(
   };
 }
 
-Map<String, Object?> accessPinRequestToMap(AccessPinRequest request) {
-  return {'accessPointId': request.accessPointId};
-}
-
-Map<String, Object?> accessImportRecoveryRequestToMap(
-  AccessImportRecoveryRequest request,
-) {
-  return {'link': request.link};
-}
-
 Map<String, Object?> updateCheckRequestToMap(UpdateCheckRequest request) {
   return {'manual': request.manual};
 }
@@ -349,6 +339,21 @@ Map<String, Object?> updateUserNotificationSettingsRequestToMap(
   };
 }
 
+Map<String, Object?> coreEndpointsToMap(CoreEndpoints request) => {
+  'baseUrl': request.baseUrl,
+  'websocketUrl': request.websocketUrl,
+  if (request.quicUrl != null) 'quicUrl': request.quicUrl,
+  if (request.mediaBaseUrl != null) 'mediaBaseUrl': request.mediaBaseUrl,
+};
+
+EndpointUpdate endpointUpdateFromJson(Object? value) {
+  final json = mapValue(value);
+  return EndpointUpdate(
+    changed: _requiredBoolField(json, 'changed', 'EndpointUpdate'),
+    revision: requiredIntField(json, 'revision', 'EndpointUpdate'),
+  );
+}
+
 Map<String, Object?> networkChangeRequestToMap(NetworkChangeRequest request) {
   return {
     if (request.available != null) 'available': request.available!,
@@ -393,10 +398,8 @@ ConnectionStatus connectionStatusFromJson(Object? value) {
   return ConnectionStatus(
     phase: connectionPhaseFromValue(json['phase']),
     quality: quality == null ? null : connectionQualityFromValue(quality),
-    accessPointId: _optionalStringField(json, 'accessPointId', context),
-    cellId: _optionalStringField(json, 'cellId', context),
-    regionId: _optionalStringField(json, 'regionId', context),
     protocol: _optionalStringField(json, 'protocol', context),
+    endpointRevision: _optionalUnsignedField(json, 'endpointRevision', context),
     rttMs: _optionalUnsignedField(json, 'rttMs', context),
     attempt: requiredIntField(json, 'attempt', context),
     nextRetryAt: _optionalSignedField(json, 'nextRetryAt', context),
@@ -409,93 +412,6 @@ ConnectionStatus connectionStatusFromJson(Object? value) {
 ConnectionSyncStateEvent connectionSyncStateEventFromJson(Object? value) {
   final state = mapValue(value)['state'];
   return ConnectionSyncStateEvent(state: state is String ? state : '');
-}
-
-AccessPin accessPinFromJson(Object? value) {
-  const context = 'AccessPin';
-  final json = mapValue(value);
-  return AccessPin(
-    accessPointId: requiredStringField(json, 'accessPointId', context),
-    expiresAtMs: _requiredSignedField(json, 'expiresAtMs', context),
-  );
-}
-
-AccessStatus accessStatusFromJson(Object? value) {
-  const context = 'AccessStatus';
-  final json = mapValue(value);
-  final pinned = json['pinned'];
-  final connectAck = json['connectAck'];
-  final refresh = json['refresh'];
-  final recovering = json['recovering'];
-  return AccessStatus(
-    loaded: _requiredBoolField(json, 'loaded', context),
-    serial: requiredIntField(json, 'serial', context),
-    source: _optionalStringField(json, 'source', context),
-    stale: _requiredBoolField(json, 'stale', context),
-    developmentMode: _requiredBoolField(json, 'developmentMode', context),
-    issuedAtMs: _optionalSignedField(json, 'issuedAtMs', context),
-    expiresAtMs: _optionalSignedField(json, 'expiresAtMs', context),
-    fetchedAtMs: _optionalSignedField(json, 'fetchedAtMs', context),
-    regionId: _optionalStringField(json, 'regionId', context),
-    cellId: _optionalStringField(json, 'cellId', context),
-    keystateSerial: _optionalUnsignedField(json, 'keystateSerial', context),
-    accessPointId: _optionalStringField(json, 'accessPointId', context),
-    protocol: _optionalStringField(json, 'protocol', context),
-    pinned: pinned == null
-        ? null
-        : accessPinFromJson(_requiredMapField(json, 'pinned', context)),
-    connectAck: connectAck == null
-        ? null
-        : accessConnectAckFromJson(
-            _requiredMapField(json, 'connectAck', context),
-          ),
-    refresh: refresh == null
-        ? null
-        : accessRefreshStatusFromJson(
-            _requiredMapField(json, 'refresh', context),
-          ),
-    recovering: recovering == null
-        ? null
-        : accessRecoveringStatusFromJson(
-            _requiredMapField(json, 'recovering', context),
-          ),
-  );
-}
-
-/// 清单刷新进度（`AccessStatus.refresh`）。
-AccessRefreshStatus accessRefreshStatusFromJson(Object? value) {
-  const context = 'AccessRefreshStatus';
-  final json = mapValue(value);
-  return AccessRefreshStatus(
-    lastAttemptAtMs: _optionalSignedField(json, 'lastAttemptAtMs', context),
-    lastSuccessAtMs: _optionalSignedField(json, 'lastSuccessAtMs', context),
-    lastOutcome: _optionalStringField(json, 'lastOutcome', context),
-    nextAtMs: _optionalSignedField(json, 'nextAtMs', context),
-  );
-}
-
-/// 全部接入点失败时的恢复状态（`AccessStatus.recovering`）。
-AccessRecoveringStatus accessRecoveringStatusFromJson(Object? value) {
-  const context = 'AccessRecoveringStatus';
-  final json = mapValue(value);
-  return AccessRecoveringStatus(
-    sinceMs: _requiredSignedField(json, 'sinceMs', context),
-    rounds: requiredIntField(json, 'rounds', context),
-    nextRoundAtMs: _optionalSignedField(json, 'nextRoundAtMs', context),
-  );
-}
-
-AccessRefreshAttempt accessRefreshAttemptFromJson(Object? value) {
-  const context = 'AccessRefreshAttempt';
-  final json = mapValue(value);
-  return AccessRefreshAttempt(
-    source: requiredStringField(json, 'source', context),
-    tier: requiredStringField(json, 'tier', context),
-    document: requiredStringField(json, 'document', context),
-    result: requiredStringField(json, 'result', context),
-    code: _optionalStringField(json, 'code', context),
-    serial: _optionalUnsignedField(json, 'serial', context),
-  );
 }
 
 /// `update.getState` 等 `update.*` 的返回值，也是 `update://state` 的载荷。
@@ -623,113 +539,6 @@ UpdateInstallPlan updateInstallPlanFromJson(Object? value) {
     blockUi: optionalFlag('blockUi'),
     version: _optionalStringField(json, 'version', context),
     target: _optionalStringField(json, 'target', context),
-  );
-}
-
-/// `access.refresh` 的返回值。
-AccessRefreshReport accessRefreshReportFromJson(Object? value) {
-  const context = 'AccessRefreshReport';
-  final json = mapValue(value);
-  return AccessRefreshReport(
-    outcome: requiredStringField(json, 'outcome', context),
-    mode: requiredStringField(json, 'mode', context),
-    serial: requiredIntField(json, 'serial', context),
-    source: _optionalStringField(json, 'source', context),
-    keystateSerial: _optionalUnsignedField(json, 'keystateSerial', context),
-    attempts: requiredWireListOfMaps(json['attempts'], 'attempts', context)
-        .map(accessRefreshAttemptFromJson)
-        .toList(growable: false),
-  );
-}
-
-/// `access.importRecovery` 的返回值：链接有问题也在这里，不抛错。
-AccessRecoveryImport accessRecoveryImportFromJson(Object? value) {
-  const context = 'AccessRecoveryImport';
-  final json = mapValue(value);
-  return AccessRecoveryImport(
-    outcome: requiredStringField(json, 'outcome', context),
-    code: _optionalStringField(json, 'code', context),
-    serial: requiredIntField(json, 'serial', context),
-  );
-}
-
-/// 当前连接 CONNECT_ACK 带回的诊断字段（`AccessStatus.connectAck`），只用于展示。
-AccessConnectAck accessConnectAckFromJson(Object? value) {
-  const context = 'AccessConnectAck';
-  final json = mapValue(value);
-  return AccessConnectAck(
-    gatewayId: _optionalStringField(json, 'gatewayId', context),
-    accessPointId: _optionalStringField(json, 'accessPointId', context),
-    accessSerial: _optionalUnsignedField(json, 'accessSerial', context),
-    heartbeatIntervalHintSec:
-        _optionalUnsignedField(json, 'heartbeatIntervalHintSec', context),
-    accessPointMismatch:
-        _requiredBoolField(json, 'accessPointMismatch', context),
-  );
-}
-
-AccessPointInfo accessPointInfoFromJson(Object? value) {
-  const context = 'AccessPointInfo';
-  final json = mapValue(value);
-  return AccessPointInfo(
-    accessPointId: requiredStringField(json, 'accessPointId', context),
-    regionId: requiredStringField(json, 'regionId', context),
-    host: requiredStringField(json, 'host', context),
-    status: requiredStringField(json, 'status', context),
-    rttMs: _optionalDoubleField(json, 'rttMs', context),
-    breaker: requiredStringField(json, 'breaker', context),
-    protocolWinner: _optionalStringField(json, 'protocolWinner', context),
-    pinned: _requiredBoolField(json, 'pinned', context),
-    current: _requiredBoolField(json, 'current', context),
-  );
-}
-
-/// `access.listAccessPoints` 的响应是裸 JSON 数组；桥把数组包成 `{items: [...]}` 时同样接受。
-List<AccessPointInfo> accessPointInfoListFromJson(Object? value) {
-  final items = value is Map && value['items'] is List ? value['items'] : value;
-  return requiredWireListOfMaps(items, 'items', 'AccessPointInfoList')
-      .map(accessPointInfoFromJson)
-      .toList(growable: false);
-}
-
-AccessEndpoint accessEndpointFromJson(Object? value) {
-  const context = 'AccessEndpoint';
-  final json = mapValue(value);
-  return AccessEndpoint(
-    ap: requiredStringField(json, 'ap', context),
-    protocol: requiredStringField(json, 'protocol', context),
-  );
-}
-
-AccessSwitchedEvent accessSwitchedEventFromJson(Object? value) {
-  const context = 'AccessSwitchedEvent';
-  final json = mapValue(value);
-  return AccessSwitchedEvent(
-    from: accessEndpointFromJson(_requiredMapField(json, 'from', context)),
-    to: accessEndpointFromJson(_requiredMapField(json, 'to', context)),
-    reason: requiredStringField(json, 'reason', context),
-  );
-}
-
-AccessChanges accessChangesFromJson(Object? value) {
-  const context = 'AccessChanges';
-  final json = mapValue(value);
-  return AccessChanges(
-    accessPointsAdded: stringList(json['accessPointsAdded']),
-    accessPointsRemoved: stringList(json['accessPointsRemoved']),
-    policyChanged: _requiredBoolField(json, 'policyChanged', context),
-  );
-}
-
-AccessChangedEvent accessChangedEventFromJson(Object? value) {
-  const context = 'AccessChangedEvent';
-  final json = mapValue(value);
-  return AccessChangedEvent(
-    serial: requiredIntField(json, 'serial', context),
-    source: requiredStringField(json, 'source', context),
-    stale: _requiredBoolField(json, 'stale', context),
-    developmentMode: _requiredBoolField(json, 'developmentMode', context),
-    changes: accessChangesFromJson(_requiredMapField(json, 'changes', context)),
   );
 }
 
@@ -1685,6 +1494,7 @@ SendMessageResponse sendAckFromJson(Object? value) {
         ? requiredIntField(json, 'timestamp', 'SendMessageResponse')
         : 0,
     success: success,
+    stage: MessageSendStage.values.where((stage) => stage.name == json['stage']).firstOrNull,
     errorCode: json['errorCode'] == null ? 0 : intValue(json['errorCode']),
     errorMessage: json['errorMessage']?.toString() ?? '',
   );

@@ -4,8 +4,7 @@
 //! 对外只给 Kit 需要区分的九种；显示与否、文案、延迟阈值全部由 Kit 按 `phase` 决定，宿主不再判断。
 
 pub use crate::kernel::event::link_status::{
-    AccessEndpoint, AccessSwitched, ActionRequiredReason, ConnectionPhase, ConnectionStatus,
-    LinkQuality, SwitchReason,
+    ActionRequiredReason, ConnectionPhase, ConnectionStatus, LinkQuality, SwitchReason,
 };
 
 /// 链路状态机的内部阶段（§3.11）。
@@ -13,7 +12,7 @@ pub use crate::kernel::event::link_status::{
 pub enum LinkPhase {
     /// 没有会话，或会话已主动断开。
     Idle,
-    /// 正在向选路器要候选。
+    /// 正在准备地址与连接令牌。
     Resolving,
     /// 正在建传输（交错竞速）。
     Connecting,
@@ -24,9 +23,9 @@ pub enum LinkPhase {
     Ready,
     /// 连接还在，但有理由怀疑它（网络变化、心跳 RTT 劣化）：已发起验活，等结果。
     Degraded,
-    /// 本轮候选全部失败，按退避等待下一轮。
+    /// 本轮连接失败，按退避等待下一轮。
     Backoff,
-    /// 连续两轮全部失败：服务暂时不可用，按更长的退避继续从现有目录恢复。
+    /// 连续两轮全部失败：服务暂时不可用，按更长的退避重连。
     Recovering,
     /// 设备没有网络：停止一切尝试，发件箱计时冻结。
     Suspended,
@@ -42,13 +41,11 @@ pub enum LinkPhase {
 pub struct LinkFacts {
     /// 本会话里是否已经上线过：首次建连显示「正在连接」，之后的建连显示「正在切换线路」。
     pub was_online: bool,
-    pub access_point_id: Option<String>,
-    pub cell_id: Option<String>,
-    pub region_id: Option<String>,
     pub protocol: Option<String>,
     pub rtt_ms: Option<u32>,
     pub attempt: u32,
     pub next_retry_at: Option<i64>,
+    pub retry_reason: Option<&'static str>,
     pub switch_reason: Option<SwitchReason>,
     pub action_reason: Option<ActionRequiredReason>,
     pub development_mode: bool,
@@ -58,9 +55,6 @@ pub struct LinkFacts {
 pub fn project(phase: LinkPhase, facts: &LinkFacts) -> ConnectionStatus {
     let mut status = ConnectionStatus::idle(facts.development_mode);
     let located = |status: &mut ConnectionStatus| {
-        status.access_point_id = facts.access_point_id.clone();
-        status.cell_id = facts.cell_id.clone();
-        status.region_id = facts.region_id.clone();
         status.protocol = facts.protocol.clone();
     };
     match phase {
@@ -96,16 +90,17 @@ pub fn project(phase: LinkPhase, facts: &LinkFacts) -> ConnectionStatus {
             });
         }
         LinkPhase::Backoff => {
-            // 报下一次要尝试的接入点（同点等待时就是当前点）。
             located(&mut status);
             status.phase = ConnectionPhase::Reconnecting;
             status.attempt = facts.attempt;
             status.next_retry_at = facts.next_retry_at;
+            status.reason = facts.retry_reason.map(str::to_owned);
         }
         LinkPhase::Recovering => {
             status.phase = ConnectionPhase::ServiceUnavailable;
             status.attempt = facts.attempt;
             status.next_retry_at = facts.next_retry_at;
+            status.reason = facts.retry_reason.map(str::to_owned);
         }
         LinkPhase::Suspended => {
             status.phase = ConnectionPhase::WaitingForNetwork;
@@ -130,9 +125,6 @@ mod tests {
 
     fn facts() -> LinkFacts {
         LinkFacts {
-            access_point_id: Some("ap-a".into()),
-            cell_id: Some("cell-1".into()),
-            region_id: Some("cn-east".into()),
             protocol: Some("quic".into()),
             rtt_ms: Some(42),
             attempt: 2,
@@ -160,7 +152,6 @@ mod tests {
         ] {
             let status = project(phase, &first);
             assert_eq!(status.phase, ConnectionPhase::Connecting);
-            assert_eq!(status.access_point_id.as_deref(), Some("ap-a"));
             assert_eq!(status.protocol.as_deref(), Some("quic"));
 
             let status = project(phase, &switching);
@@ -184,13 +175,6 @@ mod tests {
         assert_eq!(backoff.phase, ConnectionPhase::Reconnecting);
         assert_eq!(backoff.next_retry_at, Some(1_700_000_000_000));
         assert_eq!(backoff.attempt, 2);
-        assert_eq!(
-            backoff.access_point_id.as_deref(),
-            Some("ap-a"),
-            "reconnecting names the access point it will try next"
-        );
-        assert_eq!(backoff.cell_id.as_deref(), Some("cell-1"));
-        assert_eq!(backoff.region_id.as_deref(), Some("cn-east"));
 
         assert_eq!(
             project(LinkPhase::Suspended, &first).phase,

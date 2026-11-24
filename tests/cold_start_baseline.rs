@@ -54,21 +54,17 @@ fn step<F: Future>(
     (output, spent, started.elapsed())
 }
 
-/// 初始化配置：开发模式接入（不会连接）。`FLARE_COLD_START_NO_ACCESS=1` 不给接入配置
-/// （接入运行时不装配、不开 `access.db`），用来把接入运行时的开销单独量出来。
+/// 初始化本机地址，用于测量本地准备阶段。
 fn overlay(root: &std::path::Path) -> SdkConfigOverlay {
-    use flare_im_core_sdk::prelude::{AccessConfig, DevelopmentEndpoints};
-    let access = std::env::var_os("FLARE_COLD_START_NO_ACCESS")
-        .is_none()
-        .then(|| {
-            AccessConfig::development(DevelopmentEndpoints {
-                ws_url: Some("ws://127.0.0.1:9".into()),
-                ..Default::default()
-            })
-        });
+    let endpoints = Some(flare_im_core_sdk::client::CoreEndpoints {
+        base_url: "http://127.0.0.1:9".into(),
+        websocket_url: "ws://127.0.0.1:9".into(),
+        quic_url: None,
+        media_base_url: None,
+    });
     SdkConfigOverlay {
         data_url: Some(root.display().to_string()),
-        access,
+        endpoints,
         ..Default::default()
     }
 }
@@ -94,7 +90,10 @@ fn cold_start_once() {
     let started = Instant::now();
     let client = runtime.block_on(async { IMClient::new() });
     let new = started.elapsed();
-    let (init, init_sync, init_wall) = step(&runtime, client.init(None, Some(overlay(&root))));
+    let (init, init_sync, init_wall) = step(
+        &runtime,
+        client.init(Some("development".into()), Some(overlay(&root))),
+    );
     init.expect("init");
     let (prepare, prepare_sync, prepare_wall) = step(
         &runtime,

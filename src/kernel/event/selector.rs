@@ -190,8 +190,6 @@ impl From<PluginEventType> for SdkEventType {
 pub enum ConnectionEventType {
     Status,
     SyncStateChanged,
-    AccessSwitched,
-    AccessChanged,
     UpdateState,
 }
 
@@ -204,8 +202,6 @@ impl ConnectionEventType {
                     Self::SyncStateChanged,
                     ConnectionEvent::SyncStateChanged { .. }
                 )
-                | (Self::AccessSwitched, ConnectionEvent::AccessSwitched(_))
-                | (Self::AccessChanged, ConnectionEvent::AccessChanged(_))
                 | (Self::UpdateState, ConnectionEvent::UpdateState(_))
         )
     }
@@ -557,12 +553,6 @@ impl SdkEvent {
             }
             Self::Connection(ConnectionEvent::SyncStateChanged { .. }) => {
                 SdkEventType::Connection(ConnectionEventType::SyncStateChanged)
-            }
-            Self::Connection(ConnectionEvent::AccessSwitched(_)) => {
-                SdkEventType::Connection(ConnectionEventType::AccessSwitched)
-            }
-            Self::Connection(ConnectionEvent::AccessChanged(_)) => {
-                SdkEventType::Connection(ConnectionEventType::AccessChanged)
             }
             Self::Connection(ConnectionEvent::UpdateState(_)) => {
                 SdkEventType::Connection(ConnectionEventType::UpdateState)

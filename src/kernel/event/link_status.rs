@@ -1,4 +1,4 @@
-//! 链路相关事件的载荷：`connection://status`、`access://switched`、`access://changed`。
+//! `connection://status` 事件载荷。
 //!
 //! 只有数据定义；状态机（`runtime::link`）负责何时、以什么值发出。字段名与取值是跨端契约
 //! （Kit `ConnectionNotice`、平台包事件类型），改名要同步契约与 Kit 向量。
@@ -72,67 +72,39 @@ impl ActionRequiredReason {
     }
 }
 
-/// 一次切换线路的原因（`access://switched` 的 `reason`，切换中的 `connection://status.reason`）。
+/// `connection://status.reason` 中的计划重连原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum SwitchReason {
-    /// 当前接入点失败（判死、建连失败）。
-    Failure,
     /// 服务端计划性关闭（排空、停机、再均衡）。
     Drain,
-    /// 恢复切回首选接入点。
-    Failback,
-    /// 用户手动固定了别的接入点。
+    /// 宿主刷新地址或主动请求重连。
     Manual,
-    /// 新清单把当前接入点标为不可用。
-    Manifest,
 }
 
 impl SwitchReason {
     pub fn as_str(self) -> &'static str {
         match self {
-            SwitchReason::Failure => "failure",
             SwitchReason::Drain => "drain",
-            SwitchReason::Failback => "failback",
             SwitchReason::Manual => "manual",
-            SwitchReason::Manifest => "manifest",
         }
     }
 }
 
-/// 切换线路一端的接入点与协议。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AccessEndpoint {
-    pub ap: String,
-    /// `quic` / `ws`。
-    pub protocol: String,
-}
-
-/// `access://switched` 的载荷：IM 换到了另一个接入点（切换完成、补同步就绪时发出一次）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AccessSwitched {
-    pub from: AccessEndpoint,
-    pub to: AccessEndpoint,
-    pub reason: SwitchReason,
-}
-
 /// `connection://status` 的载荷，也是 `connection.get_status` 的返回值。
 ///
-/// 每个字段都会出现（没有值时为 `null`）：宿主每收到一个事件就整体替换状态，不做字段合并。
+/// 除直连配置的版本号外，没有值的字段为 `null`。宿主每收到一个事件就整体替换状态。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionStatus {
     pub phase: ConnectionPhase,
     /// 只在 `online` 有值。
     pub quality: Option<LinkQuality>,
-    /// 当前（或正在连接的）接入点。
-    pub access_point_id: Option<String>,
-    pub cell_id: Option<String>,
-    pub region_id: Option<String>,
     /// `quic` / `ws`。
     pub protocol: Option<String>,
+    /// Generation of the host-selected address group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_revision: Option<u32>,
     /// 最近的心跳往返（没有样本时为握手耗时）。
     pub rtt_ms: Option<u32>,
     /// 本次恢复中的第几轮尝试（上线后归零）。
@@ -140,9 +112,10 @@ pub struct ConnectionStatus {
     /// 下一轮尝试的时刻：设备时钟的 Unix 毫秒（不是服务端时钟、不是相对延迟）。
     pub next_retry_at: Option<i64>,
     /// `actionRequired`：`kicked` / `expired` / `upgradeRequired` / `tenantUnavailable`；
-    /// `switching`：切换原因（`failure` / `drain` / `failback` / `manual` / `manifest`）。
+    /// `switching`：计划重连的原因（`drain` / `manual`）。
+    /// `reconnecting` / `serviceUnavailable`：`transportUnavailable` 或 `overloaded`。
     pub reason: Option<String>,
-    /// 端点来自开发模式配置（未签名清单）：Kit 在任何阶段都显示「开发模式」角标。
+    /// 端点来自开发模式配置：Kit 在任何阶段都显示「开发模式」角标。
     pub development_mode: bool,
 }
 
@@ -151,10 +124,8 @@ impl ConnectionStatus {
         Self {
             phase: ConnectionPhase::Idle,
             quality: None,
-            access_point_id: None,
-            cell_id: None,
-            region_id: None,
             protocol: None,
+            endpoint_revision: None,
             rtt_ms: None,
             attempt: 0,
             next_retry_at: None,
@@ -178,25 +149,6 @@ impl ConnectionStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AccessChanges {
-    pub access_points_added: Vec<String>,
-    pub access_points_removed: Vec<String>,
-    pub policy_changed: bool,
-}
-
-/// `access://changed` 的载荷。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AccessChanged {
-    pub serial: u64,
-    pub source: String,
-    pub stale: bool,
-    pub development_mode: bool,
-    pub changes: AccessChanges,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,9 +168,6 @@ mod tests {
             serde_json::json!({
                 "phase": "reconnecting",
                 "quality": null,
-                "accessPointId": null,
-                "cellId": null,
-                "regionId": null,
                 "protocol": null,
                 "rttMs": null,
                 "attempt": 2,

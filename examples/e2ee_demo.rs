@@ -65,7 +65,7 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .conversation_encryption(resolver, alice_codec)
         .build()?;
     client
-        .init(Some("e2ee-demo".into()), smoke_config::overlay()?)
+        .init(Some("development".into()), smoke_config::overlay()?)
         .await?;
 
     let token = IMClient::generate_core_token(CoreTokenConfig {

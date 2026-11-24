@@ -27,7 +27,7 @@
       ]
     },
     "environment": {
-      "description": "APNs only: sandbox or production, the APNs host the token belongs to.",
+      "description": "APNs environment for direct APNs or iOS JPush: sandbox or production.",
       "type": [
         "string",
         "null"
@@ -45,7 +45,7 @@
       "type": "string"
     },
     "provider": {
-      "description": "OS delivery provider: fcm, apns or getui.",
+      "description": "OS delivery provider, such as fcm, apns, getui or jpush.",
       "type": "string"
     },
     "timeZone": {

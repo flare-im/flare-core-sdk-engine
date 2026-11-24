@@ -49,7 +49,12 @@ pub(crate) fn run(client_root: &Path, args: &[String]) -> Result<()> {
     }
 
     let core_root = crate::core_root(client_root);
-    let layout = ArtifactLayout::new(client_root, &core_root);
+    let product_dist = env::var_os("FLARE_SDK_PRODUCT_DIST").map(PathBuf::from);
+    if let Some(dist) = &product_dist {
+        fs::create_dir_all(dist)?;
+        fs::write(dist.join(".commercial-sdk"), "Flare commercial SDK\n")?;
+    }
+    let layout = ArtifactLayout::new(client_root, &core_root, product_dist);
     let mut built = BTreeSet::new();
     for step in &plan.steps {
         match step {
@@ -200,7 +205,7 @@ struct ArtifactLayout {
 }
 
 impl ArtifactLayout {
-    fn new(client_root: &Path, core_root: &Path) -> Self {
+    fn new(client_root: &Path, core_root: &Path, product_dist: Option<PathBuf>) -> Self {
         let flutter_example = client_root
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -209,6 +214,12 @@ impl ArtifactLayout {
         let target_dir = env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| resolve_cargo_target_dir(core_root, &core_manifest));
+        let dist = product_dist
+            .clone()
+            .unwrap_or_else(|| core_root.join("dist"));
+        let wasm_pkg_dir = product_dist
+            .map(|dist| dist.join("wasm/pkg"))
+            .unwrap_or_else(|| core_root.join("bindings/wasm/pkg"));
         Self {
             core_root: core_root.to_path_buf(),
             core_manifest,
@@ -222,11 +233,11 @@ impl ArtifactLayout {
             flutter_android_jni_root: flutter_example.join("android/app/src/main/jniLibs"),
             // Canonical artifact output lives in the core repo under dist/ (single source of
             // truth). The client repo pulls from here via its `make sync` command.
-            native_host_dir: core_root.join("dist/host"),
-            native_wasm_dir: core_root.join("dist/wasm"),
-            native_ios_dir: core_root.join("dist/ios"),
-            native_android_dir: core_root.join("dist/android"),
-            wasm_pkg_dir: core_root.join("bindings/wasm/pkg"),
+            native_host_dir: dist.join("host"),
+            native_wasm_dir: dist.join("wasm"),
+            native_ios_dir: dist.join("ios"),
+            native_android_dir: dist.join("android"),
+            wasm_pkg_dir,
             flutter_example,
         }
     }
@@ -410,7 +421,7 @@ fn build_wasm(layout: &ArtifactLayout) -> Result<()> {
                 "--target",
                 "web",
                 "--out-dir",
-                "pkg",
+                path_str(&layout.wasm_pkg_dir)?,
                 "--out-name",
                 "flare_im_core_sdk",
             ],
@@ -1417,6 +1428,7 @@ mod tests {
         let paths = ArtifactLayout::new(
             Path::new("/repo/flare-im-core-client-sdk"),
             Path::new("/repo/flare-im-core-sdk"),
+            None,
         );
 
         assert_eq!(

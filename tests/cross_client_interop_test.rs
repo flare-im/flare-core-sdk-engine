@@ -48,16 +48,16 @@ async fn login(ws_url: &str, user_id: &str, token: &str) -> (Session, UnboundedR
     let client = IMClient::new();
     client
         .init(
-            None,
+            Some("development".into()),
             Some(SdkConfigOverlay {
                 data_url: Some(format!("file://{}", root.display())),
                 // 联调：开发模式接入，端点就是给定的网关。
-                access: Some(flare_im_core_sdk::prelude::AccessConfig::development(
-                    flare_im_core_sdk::prelude::DevelopmentEndpoints {
-                        ws_url: Some(ws_url.to_string()),
-                        ..Default::default()
-                    },
-                )),
+                endpoints: Some(flare_im_core_sdk::client::CoreEndpoints {
+                    base_url: "http://127.0.0.1:9".into(),
+                    websocket_url: ws_url.to_string(),
+                    quic_url: None,
+                    media_base_url: None,
+                }),
                 tenant_id: Some("0".to_string()),
                 ..Default::default()
             }),

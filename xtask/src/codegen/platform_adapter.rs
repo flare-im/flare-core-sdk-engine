@@ -355,7 +355,6 @@ fn platform_wire_codec_targets(root: &Path) -> Vec<GeneratedTextTarget> {
 fn platform_map_adapter_module_keys() -> &'static [&'static str] {
     &[
         "connection",
-        "access",
         "update",
         "lifecycle",
         "diagnostics",
@@ -1101,7 +1100,7 @@ mod tests {
     fn native_link_adapters_decode_model_and_list_responses() {
         let root = crate::context::workspace_root().unwrap();
         let spec = load_expanded_client_spec(&root).unwrap();
-        for key in ["connection", "access", "update", "lifecycle"] {
+        for key in ["connection", "update", "lifecycle"] {
             let module = find_module(&spec, key).unwrap();
             for target in platform_map_adapter_targets(&root, &spec, module) {
                 for method in child_arr(module, "methods") {
