@@ -24,7 +24,7 @@ authors = ["Flare Team"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
-flare-proto = { version = "2.1.0", path = "../flare-protocol-grpc/crates/flare-proto" }
+flare-proto = { version = "2.2.0", path = "../flare-protocol-grpc/crates/flare-proto" }
 flare-grpc-proto = { version = "2.1.0", path = "../flare-protocol-grpc" }
 flare-core = { version = "1.1.1", path = "../flare-transport", default-features = false }
 tonic = "0.14"
