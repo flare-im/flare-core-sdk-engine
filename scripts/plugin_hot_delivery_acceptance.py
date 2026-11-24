@@ -587,7 +587,7 @@ def case_payment(case):
     pages = [c for c in wallet["extensions"].get("contributions", []) if c.get("kind") == "page"]
     case.check("no wallet contribution is served as a web bundle", not any(c.get("bundle") for c in pages)
                and not web_bundles_of(catalog, WALLET), [contribution_summary(c) for c in pages])
-    protocol = ROOT / "flare-protocol" / "flare-plugin-protocol"
+    protocol = ROOT / "flare-plugin-devkit" / "flare-plugin-protocol"
     run_tests(case, "a bundle.json naming a transient operation is refused and the grant never includes one",
               ["cargo", "test", "--test", "web_bundles", "--",
                "bundle_json_asks_for_manifest_operations_and_declared_capabilities",

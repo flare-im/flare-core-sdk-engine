@@ -29,6 +29,8 @@ jobs:
           }
           clone https://github.com/flare-im/flare-transport.git "../flare-transport"
           clone https://github.com/flare-im/flare-protocol.git "../flare-protocol"
+          clone https://github.com/flare-im/flare-plugin-devkit.git "../flare-plugin-devkit"
+          clone https://github.com/flare-im/flare-notify-rules.git "../flare-notify-rules"
           clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
           # 架构边界测试会跨仓校验七端 SDK 的事件分发实现，需要它在场
           clone https://github.com/flare-im/flare-core-sdk.git "../flare-core-sdk"
@@ -71,7 +73,7 @@ jobs:
         run: cargo test --features storage-sqlite
 
       # 根包的 cargo test 不跑成员 crate。flare-access 的两种依赖方式都要过：
-      # 客户端带全部模块，控制面只带 manifest 与 trust；两种都会比对 flare-protocol/schemas。
+      # 客户端带全部模块，控制面只带 manifest 与 trust；两种都会比对 access/schemas。
       - name: test（flare-access）
         run: |
           cargo test -p flare-access
@@ -98,6 +100,8 @@ jobs:
           }
           clone https://github.com/flare-im/flare-transport.git "../flare-transport"
           clone https://github.com/flare-im/flare-protocol.git "../flare-protocol"
+          clone https://github.com/flare-im/flare-plugin-devkit.git "../flare-plugin-devkit"
+          clone https://github.com/flare-im/flare-notify-rules.git "../flare-notify-rules"
           clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
           # 架构边界测试会跨仓校验七端 SDK 的事件分发实现，需要它在场
           clone https://github.com/flare-im/flare-core-sdk.git "../flare-core-sdk"
@@ -150,6 +154,8 @@ jobs:
           }
           clone https://github.com/flare-im/flare-transport.git "../flare-transport"
           clone https://github.com/flare-im/flare-protocol.git "../flare-protocol"
+          clone https://github.com/flare-im/flare-plugin-devkit.git "../flare-plugin-devkit"
+          clone https://github.com/flare-im/flare-notify-rules.git "../flare-notify-rules"
           clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
 
       - uses: dtolnay/rust-toolchain@stable
@@ -319,6 +325,8 @@ jobs:
           }
           clone https://github.com/flare-im/flare-transport.git "../flare-transport"
           clone https://github.com/flare-im/flare-protocol.git "../flare-protocol"
+          clone https://github.com/flare-im/flare-plugin-devkit.git "../flare-plugin-devkit"
+          clone https://github.com/flare-im/flare-notify-rules.git "../flare-notify-rules"
           clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
 
       - uses: dtolnay/rust-toolchain@stable
@@ -366,6 +374,8 @@ jobs:
           }
           clone https://github.com/flare-im/flare-transport.git "../flare-transport"
           clone https://github.com/flare-im/flare-protocol.git "../flare-protocol"
+          clone https://github.com/flare-im/flare-plugin-devkit.git "../flare-plugin-devkit"
+          clone https://github.com/flare-im/flare-notify-rules.git "../flare-notify-rules"
           clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
           # 判据要读客户端 SDK 的 packages / sdk-spec / examples；xtask 解析根目录时
           # 找不到它会直接 bail，不是跳过。

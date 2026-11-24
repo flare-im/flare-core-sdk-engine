@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "KeyScope": {
+      "properties": {
+        "bootstrapIds": {
+          "description": "`\"*\"` 表示全部；否则只覆盖列出的 bootstrapId。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "bootstrapIds"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://flare.im/schemas/keycert.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "keyid": {
+      "type": "string"
+    },
+    "notAfter": {
+      "description": "RFC 3339；与 `notBefore` 相距不超过 180 天。",
+      "format": "date-time",
+      "type": "string"
+    },
+    "notBefore": {
+      "description": "RFC 3339。",
+      "format": "date-time",
+      "type": "string"
+    },
+    "publicKey": {
+      "description": "base64url(32 字节 Ed25519 公钥)。",
+      "type": "string"
+    },
+    "rootKeyId": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "flare.keycert.v1",
+      "description": "固定为 `flare.keycert.v1`。",
+      "type": "string"
+    },
+    "scope": {
+      "$ref": "#/$defs/KeyScope"
+    },
+    "usages": {
+      "description": "`access`、`release`。",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "keyid",
+    "publicKey",
+    "usages",
+    "scope",
+    "notBefore",
+    "notAfter",
+    "rootKeyId"
+  ],
+  "title": "Flare online key certificate v1",
+  "type": "object"
+}

@@ -1,4 +1,4 @@
-//! 四份公开 JSON Schema 的真源是本 crate 的 Rust 类型；这里保证 `flare-protocol/schemas/` 不漂移。
+//! 四份公开 JSON Schema 的真源是本 crate 的 Rust 类型；这里保证 `flare-core-sdk-engine/access/schemas/` 不漂移。
 //!
 //! 类型变了就重新生成并审阅 diff：
 //! `FLARE_ACCESS_WRITE_SCHEMAS=1 cargo test -p flare-access --test json_schemas`。
@@ -13,7 +13,7 @@ use schemars::{JsonSchema, schema_for};
 use serde_json::{Value, json};
 
 fn schemas_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../flare-protocol/schemas")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("schemas")
 }
 
 fn generate<T: JsonSchema>(file: &str, title: &str) -> Value {

@@ -48,7 +48,7 @@
 
 ## 3. JSON Schema
 
-见 `flare-protocol/schemas/rich_doc_v2.schema.json`（与 Rust 校验白名单对齐；演进时以 Rust 为先更新）。
+见 `flare-core-sdk-engine/src/content/rich_doc_v2/schema.json`（与 Rust 校验白名单对齐；演进时以 Rust 为先更新）。
 
 ---
 

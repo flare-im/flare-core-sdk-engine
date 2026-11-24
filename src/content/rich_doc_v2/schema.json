@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flare.im/schemas/rich_doc_v2.schema.json",
+  "title": "IM RichDoc v2",
+  "description": "与 flare-im-core-sdk::rich_doc_v2 校验白名单一致；权威实现以 Rust 为准。",
+  "oneOf": [{ "$ref": "#/$defs/docRoot" }],
+  "$defs": {
+    "docRoot": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "version", "children"],
+      "properties": {
+        "type": { "const": "doc" },
+        "version": { "const": 2 },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/block" } }
+      }
+    },
+    "block": {
+      "oneOf": [
+        { "$ref": "#/$defs/paragraph" },
+        { "$ref": "#/$defs/heading" },
+        { "$ref": "#/$defs/quote" },
+        { "$ref": "#/$defs/codeBlock" },
+        { "$ref": "#/$defs/bulletList" },
+        { "$ref": "#/$defs/orderedList" },
+        { "$ref": "#/$defs/listItem" },
+        { "$ref": "#/$defs/divider" },
+        { "$ref": "#/$defs/customBlock" }
+      ]
+    },
+    "paragraph": {
+      "type": "object",
+      "required": ["type", "children"],
+      "properties": {
+        "type": { "const": "paragraph" },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/inline" } }
+      },
+      "additionalProperties": true
+    },
+    "heading": {
+      "type": "object",
+      "required": ["type", "level", "children"],
+      "properties": {
+        "type": { "const": "heading" },
+        "level": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/inline" } }
+      },
+      "additionalProperties": true
+    },
+    "quote": {
+      "type": "object",
+      "required": ["type", "children"],
+      "properties": {
+        "type": { "const": "quote" },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/block" } }
+      },
+      "additionalProperties": true
+    },
+    "codeBlock": {
+      "type": "object",
+      "required": ["type", "children"],
+      "properties": {
+        "type": { "const": "code_block" },
+        "language": { "type": "string" },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/inline" }, "minItems": 1 }
+      },
+      "additionalProperties": true
+    },
+    "bulletList": {
+      "type": "object",
+      "required": ["type", "children"],
+      "properties": {
+        "type": { "const": "bullet_list" },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/listItem" } }
+      },
+      "additionalProperties": true
+    },
+    "orderedList": {
+      "type": "object",
+      "required": ["type", "children"],
+      "properties": {
+        "type": { "const": "ordered_list" },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/listItem" } }
+      },
+      "additionalProperties": true
+    },
+    "listItem": {
+      "type": "object",
+      "required": ["type", "children"],
+      "properties": {
+        "type": { "const": "list_item" },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/block" } }
+      },
+      "additionalProperties": true
+    },
+    "divider": {
+      "type": "object",
+      "required": ["type"],
+      "properties": { "type": { "const": "divider" } },
+      "additionalProperties": true
+    },
+    "customBlock": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "custom_block" },
+        "custom_type": { "type": "string" },
+        "attrs": { "type": "object", "additionalProperties": true },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/block" } }
+      },
+      "additionalProperties": true
+    },
+    "inline": {
+      "oneOf": [
+        { "$ref": "#/$defs/text" },
+        { "$ref": "#/$defs/mention" },
+        { "$ref": "#/$defs/emoji" },
+        { "$ref": "#/$defs/link" },
+        { "$ref": "#/$defs/inlineCode" },
+        { "$ref": "#/$defs/hardBreak" },
+        { "$ref": "#/$defs/customInline" }
+      ]
+    },
+    "text": {
+      "type": "object",
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "text" },
+        "text": { "type": "string" },
+        "marks": { "type": "array", "items": { "$ref": "#/$defs/mark" } }
+      },
+      "additionalProperties": true
+    },
+    "mark": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": ["bold", "italic", "underline", "strike", "spoiler"]
+        }
+      },
+      "additionalProperties": true
+    },
+    "mention": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "mention" },
+        "user_id": { "type": "string" },
+        "text": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "emoji": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "emoji" },
+        "key": { "type": "string" },
+        "text": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "link": {
+      "type": "object",
+      "required": ["type", "href", "children"],
+      "properties": {
+        "type": { "const": "link" },
+        "href": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/inline" } }
+      },
+      "additionalProperties": true
+    },
+    "inlineCode": {
+      "type": "object",
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "inline_code" },
+        "text": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "hardBreak": {
+      "type": "object",
+      "required": ["type"],
+      "properties": { "type": { "const": "hard_break" } },
+      "additionalProperties": true
+    },
+    "customInline": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "custom_inline" },
+        "attrs": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": true
+    }
+  }
+}

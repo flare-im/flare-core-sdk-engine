@@ -1,0 +1,44 @@
+{
+  "$id": "https://flare.im/schemas/keystate.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "certificates": {
+      "default": [],
+      "description": "当前有效的在线密钥证书（与清单 `keyCerts` 同格式）。清单轮换时客户端可以从这里拿到新证书。",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "issuedAt": {
+      "description": "RFC 3339。",
+      "format": "date-time",
+      "type": "string"
+    },
+    "revokedKeyIds": {
+      "default": [],
+      "description": "已吊销的在线密钥 keyid。",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "const": "flare.keystate.v1",
+      "description": "固定为 `flare.keystate.v1`。",
+      "type": "string"
+    },
+    "serial": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema",
+    "serial",
+    "issuedAt"
+  ],
+  "title": "Flare key state document v1",
+  "type": "object"
+}

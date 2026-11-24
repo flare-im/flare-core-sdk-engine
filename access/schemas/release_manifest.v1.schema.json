@@ -1,0 +1,370 @@
+{
+  "$defs": {
+    "ArtifactTarget": {
+      "properties": {
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signature": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sizeBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "urls": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "urls"
+      ],
+      "type": "object"
+    },
+    "BlockedBuilds": {
+      "description": "被封禁的 build 闭区间。",
+      "properties": {
+        "from": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reason": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "语言标签 → 提示语。",
+          "type": "object"
+        },
+        "to": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "ReleaseArtifact": {
+      "description": "一个分发渠道的制品。`kind` 用字符串而不是封闭枚举：新版控制面可以加制品类型，\n旧客户端找不到自己认识的类型时按「没有制品」处理。",
+      "properties": {
+        "appId": {
+          "description": "商店内的应用 ID。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "buildId": {
+          "description": "Web 构建标识，`web_bundle` 时必填。Web 的 `build` 不单调可比，是否更新看它。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "`store` | `apk` | `tauri` | `electron` | `web_bundle`。",
+          "type": "string"
+        },
+        "packageName": {
+          "description": "商店包名。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "description": "小写十六进制。`web_bundle` 时是资产清单的哈希。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signature": {
+          "description": "平台自己的包签名，例如 Tauri 的 minisign。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signingCertSha256": {
+          "description": "APK 签名证书指纹，小写十六进制。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sizeBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "storeUrl": {
+          "description": "商店详情页。",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targets": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ArtifactTarget"
+          },
+          "description": "桌面平台目标（`darwin-aarch64` 等）→ 该目标的制品。",
+          "type": "object"
+        },
+        "urls": {
+          "description": "下载地址，按顺序故障转移。`web_bundle` 时是资产清单的地址。",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ReleaseEntry": {
+      "properties": {
+        "artifacts": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ReleaseArtifact"
+          },
+          "description": "分发渠道（`play`、`appgallery`、`direct` 等）→ 制品。",
+          "type": "object"
+        },
+        "build": {
+          "description": "单调整数。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "notes": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "default": {},
+          "description": "语言标签 → 更新说明条目。",
+          "type": "object"
+        },
+        "publishedAt": {
+          "description": "RFC 3339。",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "releaseId": {
+          "type": "string"
+        },
+        "resourcePacks": {
+          "items": {
+            "$ref": "#/$defs/ResourcePack"
+          },
+          "type": "array"
+        },
+        "rollout": {
+          "$ref": "#/$defs/Rollout"
+        },
+        "version": {
+          "description": "只用于显示；版本比较只用 `build`。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "releaseId",
+        "version",
+        "build",
+        "rollout",
+        "artifacts"
+      ],
+      "type": "object"
+    },
+    "ReleasePolicy": {
+      "properties": {
+        "blockUi": {
+          "default": false,
+          "description": "强制更新时阻断界面。",
+          "type": "boolean"
+        },
+        "blockedBuilds": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/BlockedBuilds"
+          },
+          "type": "array"
+        },
+        "minBuild": {
+          "default": 0,
+          "description": "低于此 build 必须更新。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recommendBelowBuild": {
+          "default": 0,
+          "description": "低于此 build 标记为推荐更新。",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "ResourcePack": {
+      "description": "资源包：只含数据（词条、表情、token、帮助文档），不含可执行内容。",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "`strings` | `emoji` | `tokens` | `help`。",
+          "type": "string"
+        },
+        "minBuild": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "packVersion": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "小写十六进制。",
+          "type": "string"
+        },
+        "sizeBytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "url": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "packVersion",
+        "url",
+        "sha256",
+        "sizeBytes"
+      ],
+      "type": "object"
+    },
+    "Rollout": {
+      "properties": {
+        "basisPoints": {
+          "description": "灰度比例，0–10000。",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "halted": {
+          "default": false,
+          "type": "boolean"
+        },
+        "salt": {
+          "description": "分桶盐：同一安装在同一版本的灰度中结果稳定。",
+          "type": "string"
+        }
+      },
+      "required": [
+        "basisPoints",
+        "salt"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://flare.im/schemas/release_manifest.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "bootstrapId": {
+      "type": "string"
+    },
+    "channel": {
+      "description": "`stable`、`beta`、`internal` 等；进入镜像路径。",
+      "type": "string"
+    },
+    "expiresAt": {
+      "description": "RFC 3339；过期后不再据此给出强制更新。",
+      "format": "date-time",
+      "type": "string"
+    },
+    "issuedAt": {
+      "description": "RFC 3339。",
+      "format": "date-time",
+      "type": "string"
+    },
+    "platform": {
+      "description": "`android`、`ios`、`web`、`tauri` 等；进入镜像路径。",
+      "type": "string"
+    },
+    "policy": {
+      "$ref": "#/$defs/ReleasePolicy"
+    },
+    "releases": {
+      "description": "同渠道最近的版本：最新灰度版、当前全量版、上一个全量版。",
+      "items": {
+        "$ref": "#/$defs/ReleaseEntry"
+      },
+      "type": "array"
+    },
+    "schema": {
+      "const": "flare.release.v1",
+      "description": "固定为 `flare.release.v1`。",
+      "type": "string"
+    },
+    "serial": {
+      "description": "同一（`bootstrapId`, `platform`, `channel`）单调递增。",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema",
+    "bootstrapId",
+    "platform",
+    "channel",
+    "serial",
+    "issuedAt",
+    "expiresAt",
+    "policy",
+    "releases"
+  ],
+  "title": "Flare release manifest v1",
+  "type": "object"
+}
