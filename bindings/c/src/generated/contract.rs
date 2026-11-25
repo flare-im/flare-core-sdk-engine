@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 pub const PLATFORM_BINDING: &str = "c";
-pub const BINDING_CONTRACT_VERSION: &str = "flare-im-ffi/v2";
+pub const BINDING_CONTRACT_VERSION: &str = "flare-im-core-ffi/v2";
 
 pub const C_API_SYMBOLS: &[&str] = &[
     "flare_capability_dispatch_json",

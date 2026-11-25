@@ -21,7 +21,7 @@ function nativeOutbox(dataRoot) {
   const query = `
 import json, sqlite3, sys
 from pathlib import Path
-db_path, = Path(sys.argv[1]).rglob("flare_im_sdk.db")
+db_path, = Path(sys.argv[1]).rglob("flare_im_core_sdk.db")
 with sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True) as db:
     print(json.dumps(db.execute("SELECT client_msg_id, conversation_id FROM pending_sends ORDER BY enqueued_at_ms, rowid").fetchall()))
 `;

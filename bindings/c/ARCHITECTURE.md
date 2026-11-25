@@ -335,7 +335,7 @@ let handle = flare_sdk_create()
 // 加载动态库
 companion object {
     init {
-        System.loadLibrary("flare_im_sdk")
+        System.loadLibrary("flare_im_core_sdk")
     }
 }
 

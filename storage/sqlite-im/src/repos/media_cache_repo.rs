@@ -34,7 +34,7 @@ impl MediaCacheState {
 
 pub struct SqliteMediaCacheRepo {
     pool: SqlitePool,
-    /// 与 `flare_im_sdk.db` 同目录下的 `media_cache`（未自定义目录时生效）
+    /// 与 `flare_im_core_sdk.db` 同目录下的 `media_cache`（未自定义目录时生效）
     default_root: PathBuf,
     state: Arc<RwLock<MediaCacheState>>,
     format_paths: Mutex<()>,

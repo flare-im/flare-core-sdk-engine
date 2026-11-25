@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "eventContractVersion": "flare-im-events/v2",
+  "eventContractVersion": "flare-im-core-events/v2",
   "rules": [
     "Rust core SdkEvent is the source of truth.",
     "C ABI event_json uses camelCase SDK JSON fields and always includes type and event.",

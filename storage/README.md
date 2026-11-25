@@ -174,9 +174,9 @@ ACK_BENCH_STAGES=1 ACK_BENCH_LEVELS=16,32 ACK_BENCH_MESSAGES=1024 ACK_BENCH_ROUN
 
 `build_web_store_provider(namespace, tenant_id, user_id)` 返回 `Result<StoreProvider>`。分区由 Core 的 `local_storage_scope` 生成，覆盖消息、待发和游标；插件存储继续使用显式的 tenant / user / plugin 身份，不把消息缓存的分区键当作真实用户；JS 宿主的 `userId` 是该不透明分区键，不是消息发送者的用户 ID。
 
-SQLite 的 `resolve_user_db_path(base, namespace, tenant_id, user_id)` 使用 `scopes/v2-<SHA-256>/flare_im_sdk.db`，媒体缓存与库同目录；加密和非加密路径都使用同一组身份，Social 也共享该分区。长度前缀与完整摘要避免分隔符和文件名净化导致的身份碰撞。
+SQLite 的 `resolve_user_db_path(base, namespace, tenant_id, user_id)` 使用 `scopes/v2-<SHA-256>/flare_im_core_sdk.db`，媒体缓存与库同目录；加密和非加密路径都使用同一组身份，Social 也共享该分区。长度前缀与完整摘要避免分隔符和文件名净化导致的身份碰撞。
 
-旧 `users/<user>/flare_im_sdk.db` 和 IndexedDB 中未分区的行保留原位，不自动导入或删除。它们没有可信租户归属，不能因为当前登录者同名就迁移。恢复旧离线草稿时应先停止 SDK、备份原数据，并从宿主配置 / 创建记录核实来源租户，再迁入对应分区；无法核实的旧数据保持隔离。新分区中的服务端历史由正常同步恢复。
+旧 `users/<user>/flare_im_core_sdk.db` 和 IndexedDB 中未分区的行保留原位，不自动导入或删除。它们没有可信租户归属，不能因为当前登录者同名就迁移。恢复旧离线草稿时应先停止 SDK、备份原数据，并从宿主配置 / 创建记录核实来源租户，再迁入对应分区；无法核实的旧数据保持隔离。新分区中的服务端历史由正常同步恢复。
 
 IndexedDB 快照保存正文 protobuf 缓存与保留策略 / 状态，和面向界面的消息 JSON 分开；这些存储字段不扩展平台 SDK 的公开消息合同。快照读取或解码失败会阻止登录 / 预热完成，可在存储恢复后重试。
 

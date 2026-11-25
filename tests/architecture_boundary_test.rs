@@ -527,8 +527,8 @@ fn platform_bindings_do_not_construct_resync_markers_directly() {
 fn core_source_does_not_depend_on_business_or_plugin_crates() {
     let core_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let forbidden = [
-        "flare_social",
-        "flare-social",
+        "flare_im",
+        "flare-im",
         "flare_sdk_plugin",
         "flare-sdk-plugin",
     ];

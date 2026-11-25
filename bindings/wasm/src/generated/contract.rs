@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 pub const PLATFORM_BINDING: &str = "wasm";
-pub const BINDING_CONTRACT_VERSION: &str = "flare-im-ffi/v2";
+pub const BINDING_CONTRACT_VERSION: &str = "flare-im-core-ffi/v2";
 
 pub const WASM_ACCEPTS_OPERATION_INVOKE: bool = true;
 pub const WASM_CANONICAL_OPERATIONS: &[&str] = &[

@@ -34,7 +34,7 @@ pub fn resolve_user_db_path(
 ) -> PathBuf {
     base.join("scopes")
         .join(local_storage_scope(namespace, tenant_id, user_id))
-        .join("flare_im_sdk.db")
+        .join("flare_im_core_sdk.db")
 }
 
 /// 与 SQLite 数据库文件**同目录**下的 `media_cache`（默认缓存根，与库文件并列）。

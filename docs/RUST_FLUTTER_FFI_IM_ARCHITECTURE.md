@@ -88,7 +88,7 @@ Server Push -> Rust `core/dispatcher`
 ### 3.1 版本握手
 
 - Rust 暴露：`flare_sdk_ffi_contract_version() -> FlareString`
-- 当前契约：`flare-im-ffi/v1`
+- 当前契约：`flare-im-core-ffi/v1`
 - Flutter `SdkWrapper.init()` 必须先校验契约版本，不匹配立即 fail-fast
 
 ### 3.2 事件统一结构

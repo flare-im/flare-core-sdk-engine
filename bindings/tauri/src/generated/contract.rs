@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 pub const PLATFORM_BINDING: &str = "tauri";
-pub const BINDING_CONTRACT_VERSION: &str = "flare-im-ffi/v2";
+pub const BINDING_CONTRACT_VERSION: &str = "flare-im-core-ffi/v2";
 
 pub const TAURI_COMMANDS: &[&str] = &[
     "sdk_batch_get_user_presence",

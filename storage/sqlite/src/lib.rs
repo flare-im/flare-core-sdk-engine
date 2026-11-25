@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn database_url_from_path_encodes_spaces() {
-        let url = database_url_from_path(Path::new("/tmp/Application Support/flare_im_sdk.db"));
+        let url = database_url_from_path(Path::new("/tmp/Application Support/flare_im_core_sdk.db"));
 
         assert!(url.starts_with("sqlite:///tmp/"));
         assert!(url.contains("Application%20Support"));

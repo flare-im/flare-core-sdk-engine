@@ -6,7 +6,7 @@ import sys
 
 
 def snapshot(data_root, user, cid):
-    db_file, = Path(data_root).rglob("flare_im_sdk.db")
+    db_file, = Path(data_root).rglob("flare_im_core_sdk.db")
     with sqlite3.connect(db_file.as_uri() + "?mode=ro", uri=True) as db:
         db.execute("BEGIN")
         messages = db.execute(

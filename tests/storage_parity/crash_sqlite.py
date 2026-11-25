@@ -22,7 +22,7 @@ def contains_marker(wal, marker):
 
 def crash(data_root, pid, client_id, point, target):
     # Only a private database created by withBindings is ever instrumented.
-    db_file, = Path(data_root).rglob("flare_im_sdk.db")
+    db_file, = Path(data_root).rglob("flare_im_core_sdk.db")
     marker = (client_id + ":before-commit").encode()
     wal = db_file.with_name(db_file.name + "-wal")
     with sqlite3.connect(db_file, timeout=3) as observer:

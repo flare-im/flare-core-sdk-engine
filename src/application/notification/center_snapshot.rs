@@ -15,7 +15,7 @@ use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::path::Path;
 
-use flare_notify_rules::text::{Phrase, phrase};
+use flare_im_notify_rules::text::{Phrase, phrase};
 use serde::Serialize;
 
 use super::*;

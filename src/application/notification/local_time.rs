@@ -3,7 +3,7 @@
 //! 规则 crate 不认识时区，只要「一周中的第几分钟」；偏移由这里按系统时区算出（含夏令时），
 //! 原生取操作系统的时区，浏览器取 `Date` 的时区偏移。
 
-use flare_notify_rules::MinuteOfWeek;
+use flare_im_notify_rules::MinuteOfWeek;
 
 /// `utc_ms` 这一刻设备所在时区相对 UTC 的偏移（分钟，东八区为 480）。读不出时区时按 UTC。
 #[cfg(not(target_arch = "wasm32"))]

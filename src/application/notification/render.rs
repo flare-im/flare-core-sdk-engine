@@ -9,7 +9,7 @@
 //! - 只显示发送者：保留标题，正文换成「发来一条消息」（群里接在发送者后面）；
 //! - 隐藏、内容不可见、E2EE 密文：通用标题与通用正文。
 
-use flare_notify_rules::text::{Lang, Phrase, count_prefix, digest_text, mentions_already, phrase};
+use flare_im_notify_rules::text::{Lang, Phrase, count_prefix, digest_text, mentions_already, phrase};
 
 use crate::content::message_elem::{Elem, elem_preview_storage_payload};
 use crate::content::preview_storage::keys;

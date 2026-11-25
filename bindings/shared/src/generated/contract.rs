@@ -34,10 +34,10 @@ pub struct ErrorCode {
     pub meaning: &'static str,
 }
 
-pub const BINDING_CONTRACT_VERSION: &str = "flare-im-ffi/v2";
-pub const API_CONTRACT_VERSION: &str = "flare-im-api/v2";
-pub const EVENT_CONTRACT_VERSION: &str = "flare-im-events/v2";
-pub const ERROR_CONTRACT_VERSION: &str = "flare-im-errors/v2";
+pub const BINDING_CONTRACT_VERSION: &str = "flare-im-core-ffi/v2";
+pub const API_CONTRACT_VERSION: &str = "flare-im-core-api/v2";
+pub const EVENT_CONTRACT_VERSION: &str = "flare-im-core-events/v2";
+pub const ERROR_CONTRACT_VERSION: &str = "flare-im-core-errors/v2";
 
 pub const API_OPERATIONS: &[ApiOperation] = &[
     ApiOperation {

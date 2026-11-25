@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "errorContractVersion": "flare-im-errors/v2",
+  "errorContractVersion": "flare-im-core-errors/v2",
   "rules": [
     "C ABI synchronous return codes describe submit/argument failure only.",
     "Asynchronous failures are delivered through FlareResultCallback(error, result_json).",

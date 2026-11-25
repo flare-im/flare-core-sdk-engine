@@ -250,7 +250,7 @@ await push.signOut();                     // with client.logout(): clears notifi
 ```
 
 - `CorePushHost` (in `flare_core_flutter_push`) calls the generated APIs above;
-  `FlareSocialPushHost` sends the same operations through the social SDK's IM passthrough. Both are
+  `FlareIMPushHost` sends the same operations through the social SDK's IM passthrough. Both are
   thin: registration, deduplication, collapse and every alert decision stay in the engine.
 - The plugin's channels are `im.flare.push` (both directions: Dart drives the module, the module calls
   the host and reports `permissionChanged`) and `im.flare.push/routes` for tap routes.

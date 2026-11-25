@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "apiContractVersion": "flare-im-api/v2",
+  "apiContractVersion": "flare-im-core-api/v2",
   "rules": [
     "Canonical API ids are singular dot-separated operation ids matching the Rust binding runtime route.",
     "C direct functions are preferred for hot lifecycle, media, and simple message paths; conversation APIs use the canonical contract invoke boundary.",

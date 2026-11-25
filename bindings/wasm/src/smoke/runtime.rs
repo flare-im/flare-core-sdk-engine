@@ -26,7 +26,7 @@ use super::web_model::{
 use flare_im_core_sdk_bindings_runtime::{message_build_catalog, normalize_operation};
 use flare_proto::common::MentionType;
 
-const CONTRACT_VERSION: &str = "flare-im-ffi/v2";
+const CONTRACT_VERSION: &str = "flare-im-core-ffi/v2";
 
 #[derive(Debug, Default, Clone)]
 struct SmokeInitState {

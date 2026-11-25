@@ -113,9 +113,9 @@ SOCIAL_SERVICES = {
     "social-group": ("flare-group", "social-group", port(41203)),
     "social-moments": ("flare-moments", "social-moments", port(41204)),
     "social-moderation": ("flare-moderation", "social-moderation", port(41205)),
-    "social-control": ("flare-social-control", "social-control", port(41206)),
-    "social-hook": ("flare-social-hook", "social-hook", port(41210)),
-    "social-worker": ("flare-social-worker", "social-worker", None),
+    "social-control": ("flare-im-control", "social-control", port(41206)),
+    "social-hook": ("flare-im-hook", "social-hook", port(41210)),
+    "social-worker": ("flare-im-worker", "social-worker", None),
     "social-gateway": ("flare-gateway", "social-gateway", SOCIAL_API),
 }
 SOCIAL_REQUIRED = ("social-user", "social-gateway")

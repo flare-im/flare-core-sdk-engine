@@ -22,8 +22,8 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use flare_notify_rules::text::Lang;
-use flare_notify_rules::{
+use flare_im_notify_rules::text::Lang;
+use flare_im_notify_rules::{
     AlertClass, ConversationKind, ConversationPrefs, ConversationTag, DecideInput, DeviceState,
     DueAction, Gate, GateInput, Mentioned, MultiDevicePolicy, PreviewMode,
     QuietHours as QuietWindow, SlotAction, SlotState, Tier, UserPrefs, decide,
