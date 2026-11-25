@@ -26,7 +26,7 @@ pub use capability::{
     CapabilityHostAnswer, CapabilityHostRequests, CapturedFile, ConsentDecision,
     DocumentCapturePrompt, FilePickPrompt, LocationFix, LocationPrompt, PaymentConfirmationError,
     PaymentConfirmationPrompt, PaymentSettled, PluginCapabilityHost, PluginFileUploadPage,
-    PluginFileUploadRequest, PluginUpgradeStatus, manifest_major,
+    PluginFileUploadRequest, manifest_major,
 };
 pub use conversation::ConversationApi;
 pub use media::{

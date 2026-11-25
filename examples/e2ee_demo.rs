@@ -80,7 +80,7 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .login(
             "e2ee_alice",
             Some(&token),
-            LoginDbKind::IndexedDb(in_memory_im_provider()),
+            LoginDbKind::Provided(in_memory_im_provider()),
             |_, _| {},
         )
         .await?;

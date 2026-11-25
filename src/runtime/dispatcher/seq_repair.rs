@@ -40,7 +40,7 @@ impl Dispatcher {
     }
 
     /// 持久化一批 durable 消息（save_batch → 会话投影），成功后推进同步游标。
-    /// 返回是否 durable：事件批路径据此回滚去重键（事件下次重放）；push 路径先投递后持久化可忽略。
+    /// 返回是否 durable：事件批据此完成去重，实时下行据此发送送达确认。
     /// A2：已与视图投递（finish_batch）解耦；win#2 将把对本方法的调用移到有界串行后台 worker，
     /// 使 socket 读循环不再被持久化 I/O 头阻塞。单 worker 串行可保持游标推进无竞态。
     pub(super) async fn persist_durable_batch(
@@ -48,27 +48,28 @@ impl Dispatcher {
         durable_messages: &[IMMessage],
         current_user_id: &str,
     ) -> bool {
-        let Some(stores) = self.stores.as_ref() else {
+        let Some(inbound) = &self.inbound else {
             return true;
         };
         if durable_messages.is_empty() {
             return true;
         }
-        let mut durable = true;
-        if let Err(e) = stores.messages.save_batch(durable_messages).await {
-            warn!(error = %e, "MessagePush save_batch failed");
-            durable = false;
-        } else if let Some(applier) = &self.conversation_projection_applier
-            && let Err(e) = applier
-                .apply_messages(durable_messages, current_user_id)
-                .await
+        if let Err(error) = inbound
+            .persist(
+                durable_messages,
+                current_user_id,
+                InboundSource::RealtimePush,
+            )
+            .await
         {
-            warn!(error = %e, "MessagePush conversation projection failed");
-            durable = false;
+            warn!(%error, "inbound message commit failed");
+            self.repair_message_seq_after_persist(durable_messages)
+                .await;
+            return false;
         }
         self.repair_message_seq_after_persist(durable_messages)
             .await;
-        durable
+        true
     }
 
     pub(super) async fn repair_message_seq_after_persist(&self, messages: &[IMMessage]) {

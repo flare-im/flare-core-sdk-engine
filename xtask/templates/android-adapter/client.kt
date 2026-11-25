@@ -6,7 +6,6 @@ import com.flare.im.adapter.codec.*
 import com.flare.im.adapter.module.*
 import com.flare.im.api.FlareImClient
 import com.flare.im.api.connection.ConnectionApi
-import com.flare.im.api.update.UpdateApi
 import com.flare.im.api.lifecycle.LifecycleApi
 import com.flare.im.api.conversations.ConversationsApi
 import com.flare.im.api.messagebuilder.MessageBuilderApi
@@ -58,7 +57,6 @@ class DefaultFlareImClient(
     private var installedLifecycle: PlatformLifecycle? = null
 
     override val connection: ConnectionApi = DefaultConnectionApi(bridge)
-    override val update: UpdateApi = DefaultUpdateApi(bridge)
     override val lifecycle: LifecycleApi = DefaultLifecycleApi(bridge)
     override val conversations: ConversationsApi = DefaultConversationsApi(bridge)
     override val messageBuilder: MessageBuilderApi = DefaultMessageBuilderApi(bridge)

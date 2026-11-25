@@ -66,7 +66,7 @@
           ]
         },
         "locale": {
-          "description": "界面语言（BCP-47，如 `zh-Hant-TW`）：更新说明按它选，回退链见 `flare_access_contract::update::locale`。",
+          "description": "界面语言（BCP-47，如 `zh-Hant-TW`）。",
           "type": [
             "string",
             "null"

@@ -11,7 +11,7 @@ use crate::platform::runtime::PlatformKind;
 
 pub use media::{MediaAdapterProfile, MediaSourceSupport, UploadOnlyMediaService};
 pub use platform::{AdapterPlatform, AdapterProvisioning};
-pub use storage::{StorageAdapterProfile, open_store_from_runtime_config};
+pub use storage::StorageAdapterProfile;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PlatformAdapterProfile {

@@ -240,10 +240,10 @@ impl Fixture {
     }
 }
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[path = "capability_page_observe_tests.rs"]
 mod page_observe;
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn page_acknowledging_a_known_refusal_succeeds_without_repeating_the_command() {
     use crate::client::api::page_command::PageCommandCall;
@@ -308,7 +308,7 @@ async fn page_acknowledging_a_known_refusal_succeeds_without_repeating_the_comma
     );
 }
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn plugin_command_public_api_reconciles_lost_response_without_replacing_intent() {
     use crate::domain::PluginCommandStore;
@@ -655,7 +655,7 @@ async fn plugin_ui_native_pending_work_is_cancelled_on_logout() {
     );
 }
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn plugin_command_transient_business_failure_remains_reconcilable() {
     use crate::infrastructure::persistence::sqlite::{SqlitePluginCommandRepo, init_schema};
@@ -692,7 +692,7 @@ async fn plugin_command_transient_business_failure_remains_reconcilable() {
     assert_eq!(f.calls.lock().unwrap().len(), 2);
 }
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn plugin_command_refused_with_a_terminal_code_ends_and_any_other_refusal_stays() {
     use crate::infrastructure::persistence::sqlite::{SqlitePluginCommandRepo, init_schema};
@@ -763,7 +763,7 @@ async fn plugin_command_refused_with_a_terminal_code_ends_and_any_other_refusal_
     assert!(f.api.pending_plugin_command(slot).await.unwrap()["record"].is_null());
 }
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn plugin_command_query_observation_is_persisted_without_second_mutation() {
     use crate::infrastructure::persistence::sqlite::{SqlitePluginCommandRepo, init_schema};

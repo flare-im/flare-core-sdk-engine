@@ -622,7 +622,7 @@ impl SyncEventApplier {
     }
 }
 
-#[cfg(all(test, feature = "storage-sqlite"))]
+#[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
 mod tests {
     use super::{ReplayMode, SyncEventApplier};
     use crate::application::services::{EventClaim, EventDeduper};
@@ -772,6 +772,7 @@ mod tests {
             conversation_participants: None,
             cursors: Arc::new(NoopSyncCursorStore),
             timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+            outgoing: None,
             pending_send_reader: None,
             pending_send_writer: None,
             upload_manifest_store: None,
@@ -866,6 +867,7 @@ mod tests {
                 conversation_participants: None,
                 cursors: Arc::new(NoopSyncCursorStore),
                 timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+                outgoing: None,
                 pending_send_reader: None,
                 pending_send_writer: None,
                 upload_manifest_store: None,
@@ -937,6 +939,7 @@ mod tests {
                 conversation_participants: None,
                 cursors: Arc::new(NoopSyncCursorStore),
                 timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+                outgoing: None,
                 pending_send_reader: None,
                 pending_send_writer: None,
                 upload_manifest_store: None,
@@ -1038,6 +1041,7 @@ mod tests {
                 conversation_participants: None,
                 cursors: Arc::new(NoopSyncCursorStore),
                 timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+                outgoing: None,
                 pending_send_reader: None,
                 pending_send_writer: None,
                 upload_manifest_store: None,

@@ -1506,10 +1506,10 @@ mod roster_tests {
     use crate::infrastructure::transport::http::{HttpClient, http_client::HttpRequestContext};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     struct Profiles;
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[async_trait::async_trait]
     impl crate::domain::UserReader for Profiles {
         async fn get(&self, id: &str) -> Result<Option<crate::domain::UserProfile>> {
@@ -1520,7 +1520,7 @@ mod roster_tests {
         }
     }
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     async fn roster_with_partial_cache(api: CapabilityApi) -> CapabilityApi {
         use crate::domain::ConversationParticipantStore as _;
         use crate::infrastructure::persistence::sqlite::{
@@ -1623,7 +1623,7 @@ mod roster_tests {
         server.await.unwrap();
     }
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn roster_cache_miss_filters_profiles_and_preserves_authorization_failures() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -371,7 +371,12 @@ async fn main() -> Result<()> {
         tenant_id: Some(tenant_id.clone()),
     })?;
     let apis = client
-        .login(&user, Some(&token), LoginDbKind::Sqlite, |_, _| {})
+        .login(
+            &user,
+            Some(&token),
+            flare_im_core_sdk_sqlite_im::sqlite(),
+            |_, _| {},
+        )
         .await?;
 
     let side = ChatSide {

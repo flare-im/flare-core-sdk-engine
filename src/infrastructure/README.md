@@ -36,9 +36,8 @@
     入队:
         → core::reliable_queue::actor  Enqueue
         → 构造乐观消息 (server_id=client_msg_id, sending=true, is_local=true)
-        → MessageStore.save_batch([乐观消息])     ← persistence/message_store.rs (trait)
-        → 实现: persistence/sqlite/message_repo.rs (SqliteMessageRepo.save_batch)
-        → 同时 PendingSendWriter.push (pending_sends 表)
+        → OutgoingSendStore.enqueue_send
+        → SQLite 在同一事务写入乐观消息、会话摘要和 pending_sends
     发出:
         → PacketSender.send_message (协议层)
     收 ACK:
@@ -46,8 +45,8 @@
         → core::reliable_queue::actor  AckReceived
         → MessageStateFsm::transition(Sending, SendAckReceived) → Sent
         → MessageStateFsm::to_local_state_flags(Sent) 写回 local_state
-        → MessageStore.update_after_ack(client_msg_id, &msg)   ← 原子：删旧行 + 插新行
-        → 实现: persistence/sqlite/message_repo.rs (SqliteMessageRepo.update_after_ack)
+        → 持久 ACK 调用 OutgoingSendStore.complete_send
+        → SQLite 在同一事务迁移消息主键、推进摘要、移除 pending_sends
         → EventBus MessageEvent::SendAck
     没发出去(未连接/写失败/发送超时):
         → 计一次尝试，留在发送中，按超时重发
@@ -55,7 +54,7 @@
     发送失败(超时/重试耗尽):
         → core::reliable_queue::actor check_timeout / try_send_next
         → local_state = { sending: false, failed: true, is_local: true }
-        → MessageStore.save_batch([failed_msg])   ← 覆盖原乐观行 (server_id=client_msg_id)
+        → OutgoingSendStore.complete_send 写入失败态并移除待发
         → EventBus MessageEvent::SendFailed
 
 [直发路径]（存储不带 PendingSend 仓储时）
@@ -64,22 +63,21 @@
     没有暂时性重试：不等 SendAck，服务端的暂时性拒绝不会重发；未连接、发送超时直接返回错误
     （长连接断开后 flare-core 客户端不再自己重连，重连只走会话的重连监视器）。生产登录路径
     （SQLite、加密 SQLite、Web 的 IndexedDB 存储）都带 PendingSend 仓储、走可靠队列；只有
-    in_memory_empty_im_provider、运行时 StorageKind::Memory、FlareAppClientBuilder 在登录前的
-    默认存储会走直发，供联调与测试使用。
+    通过低层 builder 显式注入不带发件箱的最小仓储时，可走联调与测试用的直发路径。
 ```
 
 ### 1.4 消息存储接口与实现位置
 
 | 能力 | 接口定义 | 实现位置（本层） |
 |------|----------|------------------|
-| 批量/单条写入 | `MessageStore::save_batch` / `save_one` | `persistence/message_store.rs` (trait)<br>**persistence/sqlite/message_repo.rs** (SqliteMessageRepo) |
+| 批量/单条写入 | `MessageStore::save_batch` / `save_one` | `persistence/message_store.rs` (trait)<br>**storage/sqlite-im/src/repos/message_repo/writer.rs** (SqliteMessageRepo) |
 | 按 server_id 查询 | `MessageStore::get` | 同上 |
 | 按 client_msg_id 查询 | `MessageStore::get_by_client_msg_id` | 同上 |
 | 按会话分页 | `MessageStore::get_by_conversation(conversation_id, before_seq, limit)` | 同上 |
 | 状态/内容更新 | `MessageStore::update_status` / `update_content` | 同上 |
 | 删除 | `MessageStore::delete` | 同上 |
 | 搜索 | `MessageStore::search`（依赖 text 列） | 同上 |
-| **ACK 后主键迁移** | **MessageStore::update_after_ack(client_msg_id, message)** | **persistence/sqlite/message_repo.rs**（事务内 DELETE 旧 server_id + INSERT 新行） |
+| **ACK 后主键迁移** | **MessageStore::update_after_ack(client_msg_id, message)** | **storage/sqlite-im/src/repos/message_repo/writer.rs**（事务内 DELETE 旧 server_id + INSERT 新行） |
 
 领域层读写拆分在 **domain**（本目录外）：
 
@@ -88,7 +86,7 @@
 
 SQLite 表结构（消息本地状态列）：
 
-- **persistence/sqlite/schema.rs**：`messages` 表，含 `sending` / `failed` / `is_local` / `sort_ts` 等列；主键 `server_id`；索引 `conversation_id + seq`、`client_msg_id`。
+- **storage/sqlite-im/src/repos/schema.rs**：`messages` 表，含 `sending` / `failed` / `is_local` / `sort_ts` 等列；主键 `server_id`；索引 `conversation_id + seq`、`client_msg_id`。
 
 ### 1.5 消息相关文件速查
 
@@ -97,8 +95,8 @@ SQLite 表结构（消息本地状态列）：
 | 消息 FSM 与状态映射 | `src/core/fsm/message_state.rs` |
 | 消息模型与 MessageLocalState | `src/model/message.rs` |
 | 消息存储 trait | `src/infrastructure/persistence/message_store.rs` |
-| 消息 SQLite 实现 + update_after_ack | `src/infrastructure/persistence/sqlite/message_repo.rs` |
-| 消息表结构 | `src/infrastructure/persistence/sqlite/schema.rs` |
+| 消息 SQLite 实现 + update_after_ack | `storage/sqlite-im/src/repos/message_repo/writer.rs` |
+| 消息表结构 | `storage/sqlite-im/src/repos/schema.rs` |
 | 可靠队列入队/ACK/失败写库 | `src/core/reliable_queue/actor.rs` |
 | 领域仓储 trait（MessageReader/Writer） | `src/domain/repository/message_repository.rs` |
 
@@ -122,7 +120,7 @@ SQLite 表结构（消息本地状态列）：
     → 收 SyncConversationsResponse → handle_sync_conversations_response
     → 将 patches 转为 Conversation 列表
     → ConversationStore.save_batch(conversations)   ← persistence/conversation_store.rs (trait)
-    → 实现: persistence/sqlite/conversation_repo.rs (SqliteConversationRepo.save_batch)
+    → 实现: storage/sqlite-im/src/repos/conversation_repo.rs (SqliteConversationRepo.save_batch)
     → EventBus ConversationEvent::Synced
 
 [单会话消息同步]
@@ -135,7 +133,7 @@ SQLite 表结构（消息本地状态列）：
     → 取本批中 seq 最大的消息 latest，ConversationStore.update_last_message(
           conversation_id, latest.server_id(), latest.sender_id(), latest.created_at,
           latest.text_for_storage().as_deref(), max_seq)
-    → 实现: persistence/sqlite/conversation_repo.rs (SqliteConversationRepo.update_last_message)
+    → 实现: storage/sqlite-im/src/repos/conversation_repo.rs (SqliteConversationRepo.update_last_message)
     → SyncCursorStore.save("sync:{conversation_id}", envelope.max_seq)
     → EventBus MessageEvent::Received（逐条）
 ```
@@ -144,14 +142,14 @@ SQLite 表结构（消息本地状态列）：
 
 | 能力 | 接口定义 | 实现位置（本层） |
 |------|----------|------------------|
-| 批量/单条写入 | `ConversationStore::save_batch` / `save_one` | `persistence/conversation_store.rs` (trait)<br>**persistence/sqlite/conversation_repo.rs** (SqliteConversationRepo) |
+| 批量/单条写入 | `ConversationStore::save_batch` / `save_one` | `persistence/conversation_store.rs` (trait)<br>**storage/sqlite-im/src/repos/conversation_repo.rs** (SqliteConversationRepo) |
 | 按 id 查询 | `ConversationStore::get` | 同上 |
 | 列表（置顶+last_message_at 排序） | `ConversationStore::list` | 同上 |
 | 未读更新 | `ConversationStore::update_unread(conversation_id, unread_count, last_read_seq)` | 同上 |
 | 置顶/静音/大群全部消息通知/归档 | `ConversationStore::set_pinned` / `set_muted` / `set_notify_all` / `set_archived` | 同上 |
 | 草稿 | `ConversationStore::update_draft` | 同上 |
 | 删除 | `ConversationStore::delete` | 同上 |
-| **最后一条消息更新** | **ConversationStore::update_last_message(conversation_id, last_message_id, last_sender_id, last_message_at, preview, max_seq)** | **persistence/sqlite/conversation_repo.rs**（UPDATE 会话表） |
+| **最后一条消息更新** | **ConversationStore::update_last_message(conversation_id, last_message_id, last_sender_id, last_message_at, preview, max_seq)** | **storage/sqlite-im/src/repos/conversation_repo.rs**（UPDATE 会话表） |
 
 领域层：
 
@@ -159,18 +157,18 @@ SQLite 表结构（消息本地状态列）：
 
 SQLite 表结构：
 
-- **persistence/sqlite/schema.rs**：`conversations` 表，含 `last_message_id` / `last_sender_id` / `last_message_at` / `last_message_preview` / `max_seq` / `unread_count` / `last_read_seq` 等；索引按 `is_archived`、`is_pinned`、`last_message_at` 排序。
+- **storage/sqlite-im/src/repos/schema.rs**：`conversations` 表，含 `last_message_id` / `last_sender_id` / `last_message_at` / `last_message_preview` / `max_seq` / `unread_count` / `last_read_seq` 等；索引按 `is_archived`、`is_pinned`、`last_message_at` 排序。
 
 ### 2.4 会话相关文件速查
 
 | 职责 | 文件路径（相对 crate 根） |
 |------|----------------------------|
 | 会话存储 trait | `src/infrastructure/persistence/conversation_store.rs` |
-| 会话 SQLite 实现 + update_last_message | `src/infrastructure/persistence/sqlite/conversation_repo.rs` |
-| 会话表结构 | `src/infrastructure/persistence/sqlite/schema.rs` |
+| 会话 SQLite 实现 + update_last_message | `storage/sqlite-im/src/repos/conversation_repo.rs` |
+| 会话表结构 | `storage/sqlite-im/src/repos/schema.rs` |
 | 会话模型 | `src/model/conversation.rs` |
 | 同步响应处理 + 消息落库 + 会话 last_message 更新 | `src/application/handlers/sync_handler.rs` |
-| 同步游标存储 | `src/infrastructure/persistence/db.rs` (SyncCursorStore)<br>**persistence/sqlite/cursor_repo.rs** (SqliteSyncCursorRepo) |
+| 同步游标存储 | `src/infrastructure/persistence/db.rs` (SyncCursorStore)<br>**storage/sqlite-im/src/repos/cursor_repo.rs** (SqliteSyncCursorRepo) |
 | 领域仓储 trait（ConversationReader/Writer） | `src/domain/repository/conversation_repository.rs` |
 
 ---
@@ -178,30 +176,9 @@ SQLite 表结构：
 ## 三、存储提供者与目录结构
 
 - **StoreProvider**（`persistence/db.rs`）：统一持有 `MessageStore`、`ConversationStore`、`SyncCursorStore`、可选 PendingSend 与 UserProfile 的 Reader/Writer，供应用层与可靠队列注入。
-- 本层目录结构（仅列持久化相关）：
-
-```
-infrastructure/
-├── README.md                    ← 本文档
-├── mod.rs
-├── persistence/
-│   ├── mod.rs
-│   ├── db.rs                    ← StoreProvider, SyncCursorStore
-│   ├── message_store.rs        ← MessageStore trait
-│   ├── conversation_store.rs   ← ConversationStore trait
-│   ├── memory.rs                ← 内存兜底（UserProfile / PendingSend 等）
-│   ├── layered.rs               ← PendingSend 分层
-│   └── sqlite/
-│       ├── mod.rs
-│       ├── schema.rs            ← messages / conversations / pending_sends / sync_cursors 等表
-│       ├── message_repo.rs      ← 消息 CRUD + update_after_ack
-│       ├── conversation_repo.rs ← 会话 CRUD + update_last_message
-│       ├── cursor_repo.rs       ← 同步游标
-│       ├── pending_send_repo.rs
-│       └── user_repo.rs
-├── protocol/
-└── transport/
-```
+- [Engine 存储组合](persistence/db.rs)持有各领域端口。[内存实现](persistence/memory_im.rs)同时服务 Native 和 Web 的热状态。
+- [SQLite IM 适配器](../../storage/sqlite-im/src/repos/)持有 schema、迁移和各个仓储，通过 [账号开库器](../../storage/sqlite-im/src/lib.rs) 接入。
+- [SQLite 连接底座](../../storage/sqlite/)负责 pool、加密连接和 schema 注册。[IndexedDB 适配器](../../storage/indexeddb/)负责浏览器宿主的事务和恢复。
 
 ---
 
@@ -209,12 +186,12 @@ infrastructure/
 
 | 场景 | 写什么 | 调用的 Store / 方法 | 实现文件 |
 |------|--------|---------------------|----------|
-| 发送入队（可靠队列） | 乐观消息（sending=1） | MessageStore.save_batch | sqlite/message_repo.rs |
-| 发送 ACK 到达 | 终态消息（主键迁移） | MessageStore.update_after_ack | sqlite/message_repo.rs |
-| 发送失败 | 失败态消息 | MessageStore.save_batch | sqlite/message_repo.rs |
-| 同步/推送收到消息 | 新消息 | MessageStore.save_batch | sqlite/message_repo.rs |
-| 同步响应后更新会话 | 会话 last_message、max_seq | ConversationStore.update_last_message | sqlite/conversation_repo.rs |
-| 会话列表同步 | 会话列表 | ConversationStore.save_batch | sqlite/conversation_repo.rs |
-| 单会话拉取游标 | 游标 | SyncCursorStore.save | sqlite/cursor_repo.rs |
+| 发送入队（可靠队列） | 乐观消息、会话摘要和待发记录 | OutgoingSendStore.enqueue_send | storage/sqlite-im/src/repos/message_repo/writer.rs |
+| 发送 ACK 到达 | 持久确认、摘要和待发清理 | OutgoingSendStore.complete_send | storage/sqlite-im/src/repos/message_repo/writer.rs |
+| 发送失败 | 失败态、摘要和待发清理 | OutgoingSendStore.complete_send | storage/sqlite-im/src/repos/message_repo/writer.rs |
+| 同步/推送收到消息 | 新消息 | MessageStore.save_batch | storage/sqlite-im/src/repos/message_repo/writer.rs |
+| 同步响应后更新会话 | 会话 last_message、max_seq | ConversationStore.update_last_message | storage/sqlite-im/src/repos/conversation_repo.rs |
+| 会话列表同步 | 会话列表 | ConversationStore.save_batch | storage/sqlite-im/src/repos/conversation_repo.rs |
+| 单会话拉取游标 | 游标 | SyncCursorStore.save | storage/sqlite-im/src/repos/cursor_repo.rs |
 
 按上述表格和「消息/会话生命周期与存储调用链」即可从设计理清线路、在对应文件中找到实现。

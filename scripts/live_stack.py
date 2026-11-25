@@ -365,10 +365,14 @@ def infrastructure(state, keys):
         busy = [p for p in ALL_PORTS if port_open(p)]
         require(not busy, f"ports of this stack are already in use: {busy}")
     disk_guard("infrastructure")
-    container(state, "postgres", "docker.io/timescale/timescaledb:latest-pg16",
+    pg_settings = ["postgres", "-c", "max_connections=300", "-c", "shared_buffers=128MB"]
+    pg_image = os.environ.get("LIVE_STACK_POSTGRES_IMAGE", "docker.io/timescale/timescaledb:latest-pg16")
+    if os.environ.get("LIVE_STACK_ACK_PROFILE") == "1":
+        pg_settings.extend(["-c", "shared_preload_libraries=timescaledb,pg_stat_statements"])
+    container(state, "postgres", pg_image,
               ["-p", f"127.0.0.1:{PG_PORT}:5432", "-e", "POSTGRES_USER=flare",
                "-e", f"POSTGRES_PASSWORD={keys.pg}", "-v", f"{PREFIX}-pgdata:/var/lib/postgresql/data"],
-              ["postgres", "-c", "max_connections=300", "-c", "shared_buffers=128MB"])
+              pg_settings)
     if f"{PREFIX}-pgdata" not in state.setdefault("volumes", []):
         state["volumes"].append(f"{PREFIX}-pgdata")
         save_state(state)
@@ -590,6 +594,12 @@ def service_command(keys, name, extra=None):
     if name in CORE_SERVICES:
         binary, manifest_name, _ = CORE_SERVICES[name]
         env = manifest_env(CORE / "release/supervise-core.toml", manifest_name, core_environment(keys))
+        if os.environ.get("LIVE_STACK_ACK_PROFILE") == "1":
+            profile_targets = {"message-ingest": "flare_message_ingest::archive_receipt=trace",
+                               "storage-writer": "flare_storage_writer::archive_commit=trace",
+                               "gw-a": "flare_core::inbound_queue=trace,flare_signaling_gateway::inbound_message=trace"}
+            if name in profile_targets:
+                env["RUST_LOG"] = env.get("RUST_LOG", "info") + "," + profile_targets[name]
         if name == "api-gateway":
             # SDK-managed tokens (`auth: {}`) need the development issuer of the API gateway.
             env["FLARE_API_GATEWAY_AUTH_DEV_ISSUE"] = "true"
@@ -788,6 +798,7 @@ def command_env(_args):
     values = {
         "LIVE_SMOKE_WS_A": f"ws://127.0.0.1:{GATEWAYS['gw-a'][0]}",
         "LIVE_SMOKE_WS_B": f"ws://127.0.0.1:{GATEWAYS['gw-b'][0]}",
+        "LIVE_SMOKE_INGEST_METRICS": f"http://127.0.0.1:{PORTS[19180]}/metrics",
         "LIVE_SMOKE_CORE_API": f"http://127.0.0.1:{API}",
         "LIVE_SMOKE_SOCIAL_API": f"http://127.0.0.1:{SOCIAL_API}",
         "LIVE_SMOKE_TENANT": keys.tenant,

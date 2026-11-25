@@ -13,6 +13,40 @@ pub struct ConversationIdRewrite {
 }
 
 impl ConversationIdentityService {
+    pub fn outgoing_conversation(message: &IMMessage) -> Option<Conversation> {
+        let conversation_id = message.conversation_id.trim();
+        if conversation_id.is_empty() {
+            return None;
+        }
+        let conversation_type = ConversationType::from_proto_int(message.conversation_type);
+        if matches!(conversation_type, ConversationType::Unspecified) {
+            return None;
+        }
+
+        let channel_id = message.channel_id.trim();
+        if channel_id.is_empty() {
+            return None;
+        }
+
+        let business_type = message
+            .attributes
+            .get("business_type")
+            .map(String::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| conversation_type.as_str());
+
+        let mut conversation = Self.build_local_conversation(
+            conversation_id,
+            Some(channel_id),
+            conversation_type,
+            business_type,
+            channel_id.to_string(),
+        );
+        conversation.updated_at = message.created_at;
+        conversation.created_at = conversation.updated_at;
+        Some(conversation)
+    }
+
     pub fn resolve_conversation_id(
         &self,
         current_user_id: &str,

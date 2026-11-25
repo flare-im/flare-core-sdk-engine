@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use flare_im_core_sdk::SdkEvent;
 use flare_im_core_sdk::client::IMClient;
-use flare_im_core_sdk::client::lifecycle::{LoginDbKind, SdkConfigOverlay};
+use flare_im_core_sdk::client::lifecycle::SdkConfigOverlay;
 use flare_im_core_sdk::model::StartupHomeSyncRequest;
 use flare_im_core_sdk::prelude::MessageEvent;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -67,16 +67,21 @@ async fn login(ws_url: &str, user_id: &str, token: &str) -> (Session, UnboundedR
 
     let (tx, rx) = unbounded_channel::<SdkEvent>();
     client
-        .login(user_id, Some(token), LoginDbKind::Sqlite, move |bus, _| {
-            let mut raw = bus.subscribe_shared_raw();
-            tokio::spawn(async move {
-                while let Ok(event) = raw.recv().await {
-                    if tx.send(event.cloned_event()).is_err() {
-                        break;
+        .login(
+            user_id,
+            Some(token),
+            flare_im_core_sdk_sqlite_im::sqlite(),
+            move |bus, _| {
+                let mut raw = bus.subscribe_shared_raw();
+                tokio::spawn(async move {
+                    while let Ok(event) = raw.recv().await {
+                        if tx.send(event.cloned_event()).is_err() {
+                            break;
+                        }
                     }
-                }
-            });
-        })
+                });
+            },
+        )
         .await
         .unwrap_or_else(|e| panic!("{user_id} 登录失败: {e}"));
 

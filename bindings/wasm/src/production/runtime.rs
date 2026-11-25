@@ -100,7 +100,7 @@ impl FlareImWasmRuntime {
 
     /// Install the JS persistence host before `sdk.login`: one object with the
     /// methods `loadSnapshot`, `saveMessage`, `saveConversation`, `saveCursor`,
-    /// `savePendingSend`, `deleteMessage`, `deleteConversation` and
+    /// `commitOutgoing`, `savePendingSend`, `deleteMessage`, `deleteConversation` and
     /// `deletePendingSend`. Throws `INVALID_PARAMETER` when one is missing.
     #[wasm_bindgen(js_name = setStorageHost)]
     pub fn set_storage_host(&self, host: JsValue) -> Result<(), JsValue> {
@@ -225,7 +225,7 @@ async fn invoke_impl(
                 .login(
                     &user_id,
                     token,
-                    LoginDbKind::IndexedDb(store_provider),
+                    LoginDbKind::Provided(store_provider),
                     move |bus, _| {
                         let rx = bus.subscribe_shared_raw();
                         spawn_event_bridge(rx, event_bridge_for_login.clone(), runtime_id);
@@ -263,7 +263,7 @@ async fn invoke_impl(
                 .await
                 .map_err(|e| map_sdk_err(operation, e))?;
             client
-                .prepare(&user_id, LoginDbKind::IndexedDb(store_provider))
+                .prepare(&user_id, LoginDbKind::Provided(store_provider))
                 .await
                 .map_err(|e| map_sdk_err(operation, e))?;
             // 预热后立即订阅事件总线 → 转发 JS（等价 login 闭包在 connect 前所做）。

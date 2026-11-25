@@ -490,18 +490,21 @@ async fn send_ack_is_published_once_when_reliable_queue_enabled() {
     let bus = EventBus::new();
     let mut receiver = bus.subscribe_raw();
     let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
-    let pending_store = Arc::new(MemoryPendingSendStore::new());
-    let message_store = Arc::new(MemoryMessageStore::new());
+    let pending_store = Arc::new(crate::storage::MemoryPendingSendStore::new());
+    let message_store = Arc::new(crate::storage::MemoryMessageStore::new());
     let sender = Arc::new(PacketSender::new(
         Arc::new(Mutex::new(None)),
         Arc::new(ProtobufCodec) as Arc<dyn Codec>,
     ));
     let reliable_queue = Arc::new(ReliableSendQueue::new(ReliableSendQueueConfig {
+        outgoing: Arc::new(crate::storage::MemoryOutgoingStore::new(
+            message_store.clone(),
+            pending_store.clone(),
+        )),
         pending_reader: pending_store.clone(),
         pending_writer: pending_store,
         sender,
         message_store,
-        conversation_store: Arc::new(MemoryConversationStore::new()),
         current_user_id: current_user_id.clone(),
         bus: bus.clone(),
         timeout_secs: Some(60),
@@ -565,12 +568,12 @@ async fn send_ack_is_published_once_when_reliable_queue_enabled() {
 }
 
 #[tokio::test]
-async fn self_sent_realtime_message_converges_to_send_ack_without_received() {
+async fn pending_send_requires_a_matching_receipt_or_storage_backed_sync() {
     let bus = EventBus::new();
     let mut receiver = bus.subscribe_raw();
     let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
-    let pending_store = Arc::new(MemoryPendingSendStore::new());
-    let message_store = Arc::new(MemoryMessageStore::new());
+    let pending_store = Arc::new(crate::storage::MemoryPendingSendStore::new());
+    let message_store = Arc::new(crate::storage::MemoryMessageStore::new());
     let stores = StoreProvider {
         plugin_commands: None,
         plugin_consents: None,
@@ -580,6 +583,7 @@ async fn self_sent_realtime_message_converges_to_send_ack_without_received() {
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -594,11 +598,14 @@ async fn self_sent_realtime_message_converges_to_send_ack_without_received() {
         Arc::new(ProtobufCodec) as Arc<dyn Codec>,
     ));
     let reliable_queue = Arc::new(ReliableSendQueue::new(ReliableSendQueueConfig {
+        outgoing: Arc::new(crate::storage::MemoryOutgoingStore::new(
+            message_store.clone(),
+            pending_store.clone(),
+        )),
         pending_reader: pending_store.clone(),
-        pending_writer: pending_store,
+        pending_writer: pending_store.clone(),
         sender,
         message_store: message_store.clone(),
-        conversation_store: Arc::new(MemoryConversationStore::new()),
         current_user_id: current_user_id.clone(),
         bus: bus.clone(),
         timeout_secs: Some(60),
@@ -652,10 +659,47 @@ async fn self_sent_realtime_message_converges_to_send_ack_without_received() {
     dispatcher
         .dispatch(DownlinkPayload::MessagePush(
             flare_proto::common::MessagePush {
-                messages: vec![proto_message],
+                messages: vec![proto_message.clone()],
                 notifications: Vec::new(),
             },
         ))
+        .await
+        .unwrap();
+
+    dispatcher
+        .dispatch(DownlinkPayload::SendAck(accepted_ack(
+            "client-self-1",
+            "other-conversation",
+            "foreign-row",
+            99,
+        )))
+        .await
+        .unwrap();
+    assert!(
+        timeout(Duration::from_millis(80), receiver.recv())
+            .await
+            .is_err()
+    );
+    assert!(pending_store.get("client-self-1").await.unwrap().is_some());
+    assert!(
+        message_store
+            .get_by_client_msg_id("client-self-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .local_state
+            .sending
+    );
+
+    dispatcher
+        .inbound
+        .as_ref()
+        .unwrap()
+        .prepare(
+            "u1",
+            vec![IMMessage::new(proto_message)],
+            crate::application::InboundSource::SyncReplay,
+        )
         .await
         .unwrap();
 
@@ -671,6 +715,7 @@ async fn self_sent_realtime_message_converges_to_send_ack_without_received() {
         other => panic!("unexpected event: {other:?}"),
     }
 
+    assert!(pending_store.get("client-self-1").await.unwrap().is_none());
     let second = timeout(Duration::from_millis(80), receiver.recv()).await;
     assert!(
         second.is_err(),
@@ -683,18 +728,21 @@ async fn out_of_order_ack_is_buffered_and_applied_once() {
     let bus = EventBus::new();
     let mut receiver = bus.subscribe_raw();
     let current_user_id: CurrentUserIdStore = Arc::new(RwLock::new("u1".to_string()));
-    let pending_store = Arc::new(MemoryPendingSendStore::new());
-    let message_store = Arc::new(MemoryMessageStore::new());
+    let pending_store = Arc::new(crate::storage::MemoryPendingSendStore::new());
+    let message_store = Arc::new(crate::storage::MemoryMessageStore::new());
     let sender = Arc::new(PacketSender::new(
         Arc::new(Mutex::new(None)),
         Arc::new(ProtobufCodec) as Arc<dyn Codec>,
     ));
     let reliable_queue = Arc::new(ReliableSendQueue::new(ReliableSendQueueConfig {
+        outgoing: Arc::new(crate::storage::MemoryOutgoingStore::new(
+            message_store.clone(),
+            pending_store.clone(),
+        )),
         pending_reader: pending_store.clone(),
         pending_writer: pending_store,
         sender,
         message_store,
-        conversation_store: Arc::new(MemoryConversationStore::new()),
         current_user_id: current_user_id.clone(),
         bus: bus.clone(),
         timeout_secs: Some(60),
@@ -804,6 +852,7 @@ async fn realtime_and_sync_replay_share_event_deduper() {
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -883,6 +932,7 @@ async fn realtime_and_sync_message_replay_share_message_deduper() {
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -993,6 +1043,7 @@ async fn sync_page_cursor_stops_before_failed_event_seq() {
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -1097,6 +1148,7 @@ async fn clamped_cursor_save_proves_only_window_above_prior_cursor() {
         conversation_participants: None,
         cursors: cursor_store.clone(),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -1179,6 +1231,7 @@ async fn cursor_advances_past_seqs_the_server_proved_have_no_message() {
         conversation_participants: None,
         cursors: cursor_store.clone(),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -1260,6 +1313,7 @@ async fn cursor_still_stops_at_messages_that_failed_to_persist() {
         conversation_participants: None,
         cursors: cursor_store.clone(),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -1327,6 +1381,7 @@ async fn watermark_cursor_save_persists_pseudo_keys_that_clamped_save_skips() {
         conversation_participants: None,
         cursors: cursor_store.clone(),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -1385,6 +1440,7 @@ async fn snapshot_row_apply_persists_messages_and_returns_cutover_seq() {
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -1443,6 +1499,7 @@ async fn message_push_delivers_to_view_even_when_persist_fails() {
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -1531,6 +1588,7 @@ async fn concurrent_message_push_dispatch_is_lossless_for_slow_subscriber() {
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -1641,6 +1699,7 @@ async fn persist_worker_persists_asynchronously_when_started() {
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -1725,6 +1784,7 @@ async fn persist_worker_under_concurrent_dispatch_loses_nothing() {
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -2160,6 +2220,7 @@ fn waterline_fixture() -> (
         conversation_participants: None,
         cursors: cursor_store.clone(),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -2523,6 +2584,7 @@ async fn recall_event_without_outer_conversation_id_publishes_local_message_conv
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -2587,6 +2649,7 @@ async fn recall_event_before_message_arrival_is_forgotten_and_replayable() {
         conversation_participants: None,
         cursors: Arc::new(NoopSyncCursorStore),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -2684,6 +2747,7 @@ async fn waterline_uses_materialized_message_seq_not_cursor_seq() {
         conversation_participants: None,
         cursors: Arc::new(CursorAtSeqStore { last_seq: 2 }),
         timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,
@@ -2900,7 +2964,7 @@ async fn projection_receipts_compact_interleaved_operations_at_the_proven_cursor
     );
 }
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn snapshot_projection_failure_does_not_return_a_cutover_watermark() {
     use crate::infrastructure::persistence::{
@@ -2975,7 +3039,7 @@ async fn snapshot_projection_failure_does_not_return_a_cutover_watermark() {
     );
 }
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn failed_read_and_conversation_delete_events_remain_replayable() {
     use crate::infrastructure::persistence::{
@@ -3068,7 +3132,7 @@ async fn failed_read_and_conversation_delete_events_remain_replayable() {
     }
 }
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn stored_message_with_failed_projection_blocks_both_cursors_until_replay() {
     use crate::infrastructure::persistence::{
@@ -3213,7 +3277,7 @@ async fn stored_message_with_failed_projection_blocks_both_cursors_until_replay(
     );
 }
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn persist_worker_counts_duplicate_queued_messages_and_mentions_once() {
     use crate::infrastructure::persistence::{
@@ -3258,6 +3322,7 @@ async fn persist_worker_counts_duplicate_queued_messages_and_mentions_once() {
             .try_send(super::PersistJob {
                 messages: vec![message.clone()],
                 user_id: "u1".into(),
+                delivery_due: vec![],
             })
             .unwrap_or_else(|_| panic!("two jobs fit the queue"));
     }

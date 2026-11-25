@@ -24,6 +24,7 @@ thread_local! {
 struct StorageHost {
     load_snapshot: Function,
     read_messages: Option<Function>,
+    commit_outgoing: Function,
     save_message: Function,
     save_messages: Option<Function>,
     save_conversation: Function,
@@ -38,6 +39,8 @@ struct StorageHost {
 pub(crate) struct SnapshotPayload {
     #[serde(default)]
     pub messages: Vec<StoredMessage>,
+    #[serde(default, rename = "previewRepairs")]
+    pub preview_repairs: Vec<StoredMessage>,
     #[serde(default)]
     pub conversations: Vec<Conversation>,
     #[serde(default)]
@@ -58,6 +61,8 @@ struct PersistMessageArgs<'a> {
 struct PersistMessagesArgs<'a> {
     user_id: &'a str,
     messages: &'a [StoredMessage],
+    previews: Vec<Conversation>,
+    redacted_ids: Vec<(String, String)>,
 }
 
 #[derive(Serialize)]
@@ -163,6 +168,7 @@ impl StorageHost {
         Ok(Self {
             load_snapshot: host_method(host, "loadSnapshot")?,
             read_messages: optional_host_method(host, "readMessages"),
+            commit_outgoing: host_method(host, "commitOutgoing")?,
             save_message: host_method(host, "saveMessage")?,
             save_messages: optional_host_method(host, "saveMessages"),
             save_conversation: host_method(host, "saveConversation")?,
@@ -270,26 +276,88 @@ pub async fn persist_message(user_id: &str, message: &IMMessage) -> Result<()> {
     call_host_void(&host.save_message, &payload).await
 }
 
-pub(crate) async fn persist_messages(user_id: &str, messages: Vec<IMMessage>) -> Result<()> {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OutgoingArgs<'a> {
+    user_id: &'a str,
+    message: StoredMessage,
+    conversation: Conversation,
+    entry: Option<StoredPendingSend>,
+}
+
+pub(crate) async fn commit_outgoing(
+    user_id: &str,
+    message: IMMessage,
+    conversation: Conversation,
+    entry: Option<PendingSendVo>,
+) -> Result<()> {
+    let host = STORAGE_HOST
+        .with(|slot| slot.borrow().clone())
+        .ok_or_else(|| {
+            flare_im_core_sdk::FlareError::system("storage host removed during outgoing commit")
+        })?;
+    let payload = to_host_value(
+        &OutgoingArgs {
+            user_id,
+            message: message.into(),
+            conversation,
+            entry: entry.map(Into::into),
+        },
+        "commit outgoing send",
+    )?;
+    call_host_void(&host.commit_outgoing, &payload).await
+}
+
+pub(crate) async fn persist_messages(
+    user_id: &str,
+    messages: Vec<IMMessage>,
+    previews: Vec<Conversation>,
+) -> Result<Option<Vec<Conversation>>> {
     let host = STORAGE_HOST.with(|slot| slot.borrow().clone());
     let Some(host) = host else {
-        return Ok(());
+        return Ok(None);
     };
     if let Some(save_messages) = &host.save_messages {
+        let redacted: Vec<_> = messages
+            .iter()
+            .filter(|m| {
+                m.retention_state
+                    .as_ref()
+                    .is_some_and(flare_im_core_sdk::storage::retention_hides_content)
+            })
+            .map(|m| {
+                (
+                    m.conversation_id.clone(),
+                    if m.server_id.is_empty() {
+                        m.client_msg_id.clone()
+                    } else {
+                        m.server_id.clone()
+                    },
+                )
+            })
+            .collect();
         let stored: Vec<_> = messages.into_iter().map(StoredMessage::from).collect();
         let payload = to_host_value(
             &PersistMessagesArgs {
                 user_id,
                 messages: &stored,
+                previews,
+                redacted_ids: redacted,
             },
             "persist messages",
         )?;
-        return call_host_void(save_messages, &payload).await;
+        let committed = call_host_string(save_messages, &payload).await?;
+        if committed.is_empty() {
+            return Ok(None);
+        }
+        return serde_json::from_str(&committed)
+            .map(Some)
+            .map_err(|e| FlareError::system(format!("decode staged conversations: {e}")));
     }
     for message in &messages {
         persist_message(user_id, message).await?;
     }
-    Ok(())
+    Ok(None)
 }
 
 pub async fn persist_conversation(user_id: &str, conversation: &Conversation) -> Result<()> {

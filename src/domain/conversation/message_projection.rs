@@ -2,6 +2,24 @@ use crate::domain::{SeqRange, TimelineCoverage};
 use crate::model::Conversation;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
+/// Business label for a locally materialized conversation shell.
+pub fn projected_business_type(message: &crate::model::IMMessage) -> &str {
+    let conv_type =
+        crate::model::conversation::ConversationType::from_proto_int(message.conversation_type);
+    if message.local_state.is_local && !message.channel_id.trim().is_empty() {
+        message
+            .attributes
+            .get("business_type")
+            .map(String::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| conv_type.as_str())
+    } else if conv_type.is_single_chat_conversation() {
+        "single"
+    } else {
+        "chat"
+    }
+}
+
 pub const EXT_MESSAGE_PROJECTION: &str = "_local.messageProjectionRanges";
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -67,6 +85,7 @@ pub fn copy_message_projection(current: &mut Conversation, projected: &Conversat
     current.last_message_id = projected.last_message_id.clone();
     current.last_sender_id = projected.last_sender_id.clone();
     current.last_message_at = projected.last_message_at;
+    current.updated_at_ts = current.updated_at_ts.max(projected.last_message_at);
     current.last_message_preview = projected.last_message_preview.clone();
     current.last_message = projected.last_message.clone();
     current.ext = projected.ext.clone();

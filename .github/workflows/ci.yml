@@ -22,7 +22,7 @@ jobs:
       # 所以这里按开发时的布局把依赖仓拉到同级位置。
       - name: 拉取同级仓库
         run: |
-          BR="${GITHUB_REF_NAME:-main}"
+          BR="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-main}}"
           clone() {
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
@@ -72,6 +72,13 @@ jobs:
       - name: test
         run: cargo test --features storage-sqlite
 
+      - name: SQLite feature 组合与生成契约
+        run: |
+          cargo test --locked -p flare-im-core-sdk-sqlite-im --lib
+          cargo test --locked --lib --features storage-sqlite,e2ee
+          cargo test --locked --lib --features lifecycle-sqlite,e2ee
+          cargo run --locked -p xtask -- core-codegen-check
+
       # 签名契约由 flare-protocol-grpc 的 CI 校验。
       - name: test（flare-access）
         run: cargo test -p flare-access
@@ -90,7 +97,7 @@ jobs:
       # 所以这里按开发时的布局把依赖仓拉到同级位置。
       - name: 拉取同级仓库
         run: |
-          BR="${GITHUB_REF_NAME:-main}"
+          BR="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-main}}"
           clone() {
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
@@ -143,7 +150,7 @@ jobs:
 
       - name: 拉取同级仓库
         run: |
-          BR="${GITHUB_REF_NAME:-main}"
+          BR="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-main}}"
           clone() {
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
@@ -313,7 +320,7 @@ jobs:
 
       - name: 拉取同级仓库
         run: |
-          BR="${GITHUB_REF_NAME:-main}"
+          BR="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-main}}"
           clone() {
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
@@ -352,7 +359,7 @@ jobs:
 
       - name: 拉取同级仓库
         run: |
-          BR="${GITHUB_REF_NAME:-main}"
+          BR="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-main}}"
           clone() {
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"

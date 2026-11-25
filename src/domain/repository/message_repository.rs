@@ -28,7 +28,7 @@ pub enum OperationApplyResult {
     NotFound,
 }
 
-pub(crate) fn message_attribute_seq(attributes: &HashMap<String, String>, key: &str) -> u64 {
+pub fn message_attribute_seq(attributes: &HashMap<String, String>, key: &str) -> u64 {
     if key == "lastMarkEventSeq" {
         // Fold the previously persisted per-type clocks into the single marker clock.
         return attributes
@@ -44,7 +44,7 @@ pub(crate) fn message_attribute_seq(attributes: &HashMap<String, String>, key: &
         .unwrap_or(0)
 }
 
-pub(crate) fn write_message_mark(
+pub fn write_message_mark(
     attributes: &mut HashMap<String, String>,
     mark_type: i32,
     color: Option<&str>,
@@ -96,7 +96,7 @@ pub(crate) fn mark_outgoing_message_read(
     true
 }
 
-pub(crate) fn advance_message_event(
+pub fn advance_message_event(
     attributes: &mut HashMap<String, String>,
     key: &str,
     event_seq: Option<u64>,
@@ -111,7 +111,7 @@ pub(crate) fn advance_message_event(
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum RetentionEventKind {
+pub enum RetentionEventKind {
     Scheduled,
     Expired,
     Purged,
@@ -133,7 +133,7 @@ fn clear_retained_content(message: &mut IMMessage) {
     message.attributes.remove("contentText");
 }
 
-pub(crate) fn retention_hides_content(state: &MessageRetentionState) -> bool {
+pub fn retention_hides_content(state: &MessageRetentionState) -> bool {
     state.lifecycle == flare_proto::common::MessageRetentionLifecycle::Purged as i32
         || matches!(
             ContentVisibility::try_from(state.content_visibility).ok(),
@@ -147,7 +147,7 @@ fn retention_is_terminal(state: &MessageRetentionState) -> bool {
     retention_hides_content(state) || state.lifecycle == MessageRetentionLifecycle::Expired as i32
 }
 
-pub(crate) fn enforce_retention_visibility(message: &mut IMMessage) {
+pub fn enforce_retention_visibility(message: &mut IMMessage) {
     if message
         .retention_state
         .as_ref()
@@ -157,7 +157,7 @@ pub(crate) fn enforce_retention_visibility(message: &mut IMMessage) {
     }
 }
 
-pub(crate) fn merge_message_event_state(incoming: &mut IMMessage, existing: &IMMessage) {
+pub fn merge_message_event_state(incoming: &mut IMMessage, existing: &IMMessage) {
     let explicit_reactions = incoming.attributes.contains_key("reactionsJson");
     if explicit_reactions {
         incoming.reactions =
@@ -271,7 +271,7 @@ pub(crate) fn merge_message_event_state(incoming: &mut IMMessage, existing: &IMM
 }
 
 /// All backends apply the same lifecycle and cross-phase ordering before persisting.
-pub(crate) fn apply_retention_event(
+pub fn apply_retention_event(
     message: &mut IMMessage,
     kind: RetentionEventKind,
     policy: Option<&MessageRetentionPolicy>,
@@ -367,7 +367,7 @@ fn carry_plugin_message_state(
 }
 
 /// 序列化一份待写入的插件卡片状态；不满足协议边界时拒绝。
-pub(crate) fn encode_plugin_message_state(state: &PluginMessageState) -> Result<String> {
+pub fn encode_plugin_message_state(state: &PluginMessageState) -> Result<String> {
     let invalid = || {
         FlareError::localized(
             ErrorCode::InvalidParameter,
@@ -380,7 +380,7 @@ pub(crate) fn encode_plugin_message_state(state: &PluginMessageState) -> Result<
 
 /// 按版本单调写入：更旧的版本返回 `false`，相同版本以后到者为准。`basedOnVersion` 随这份值一起
 /// 写入（没有时删掉旧的），它描述的是这份值。
-pub(crate) fn write_plugin_message_state(
+pub fn write_plugin_message_state(
     attributes: &mut HashMap<String, String>,
     state: &PluginMessageState,
     values_json: &str,
@@ -444,7 +444,7 @@ pub(crate) fn carry_plugin_shared_state(
 
 /// 按版本单调写入共享层：只有更新的版本落盘（[`SharedStateOrder::Newer`]），相同版本是重复、
 /// 更旧的是乱序，都不改动。调用方先校验 `state`。
-pub(crate) fn write_plugin_shared_state(
+pub fn write_plugin_shared_state(
     attributes: &mut HashMap<String, String>,
     state: &SharedState,
 ) -> SharedStateOrder {
@@ -464,7 +464,7 @@ pub(crate) fn write_plugin_shared_state(
 }
 
 /// 校验一份待写入的共享层；不满足协议边界时拒绝。
-pub(crate) fn validate_plugin_shared_state(state: &SharedState) -> Result<()> {
+pub fn validate_plugin_shared_state(state: &SharedState) -> Result<()> {
     state.validate().map_err(|_| {
         FlareError::localized(
             ErrorCode::InvalidParameter,

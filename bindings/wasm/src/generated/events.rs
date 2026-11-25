@@ -5,7 +5,6 @@
 pub const CONTRACT_EVENT_IDS: &[&str] = &[
     "connection.status",
     "connection.sync_state_changed",
-    "update.state",
     "message.received",
     "message.received_batch",
     "message.send_ack",

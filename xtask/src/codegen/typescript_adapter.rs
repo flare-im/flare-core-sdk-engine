@@ -597,11 +597,6 @@ fn emit_typescript_adapter_method_body(method: &Value, spec: &Value, indent: &st
         "ConnectionStatus" => vec![format!(
             "{indent}return connectionStatusFromJson(await invokeMap(this.bridge, {call}));"
         )],
-        "UpdateStatus" | "UpdateInstallPlan" => {
-            vec![format!(
-                "{indent}return withoutNullFields(await invokeMap(this.bridge, {call})) as unknown as {res};"
-            )]
-        }
         "Record<string, unknown>" => {
             vec![format!(
                 "{indent}return await invokeMap(this.bridge, {call});"
@@ -643,7 +638,6 @@ fn ts_listener_predicate_expr(name: &str) -> Option<&'static str> {
         "onConnectionStatusChanged" => {
             Some("eventEventIs(event, 'connection', ConnectionEventName.Status)")
         }
-        "onUpdateState" => Some("eventEventIs(event, 'update', UpdateEventName.State)"),
         "onMessageReceived" => Some("eventEventIs(event, 'message', MessageEventName.Received)"),
         "onMessageReceivedBatch" => {
             Some("eventEventIs(event, 'message', MessageEventName.ReceivedBatch)")
@@ -714,7 +708,7 @@ fn ts_listener_predicate_expr(name: &str) -> Option<&'static str> {
 }
 
 fn ts_listener_takes_payload_only(name: &str) -> bool {
-    matches!(name, "onConnectionStatusChanged" | "onUpdateState")
+    name == "onConnectionStatusChanged"
 }
 
 fn ts_event_code_const_name(id: &str) -> String {
@@ -728,7 +722,6 @@ fn ts_event_decoder_expr(entry: &TypescriptEventRegistryEntry) -> String {
     match entry.id.as_str() {
         "connection.status" => "connectionStatusEvent(payload)".to_string(),
         "connection.sync_state_changed" => "connectionSyncStateEvent(payload)".to_string(),
-        "update.state" => "updateStateEvent(payload)".to_string(),
         "message.received" => "messageReceivedEvent(payload)".to_string(),
         "message.received_batch" => "messageReceivedBatchEvent(payload)".to_string(),
         "message.send_ack" => "messageSendAckEvent(payload)".to_string(),
@@ -985,10 +978,6 @@ fn emit_typescript_native_event_decoder(
         "function connectionSyncStateEvent(payload: unknown): ConnectionSyncStateEvent & Record<string, unknown> {".to_string(),
         "  const record = eventPayloadRecord(payload);".to_string(),
         "  return { type: 'connection', event: ConnectionEventName.SyncStateChanged, state: requiredString(record.state, 'state') };".to_string(),
-        "}".to_string(),
-        String::new(),
-        "function updateStateEvent(payload: unknown): UpdateStatus & Record<string, unknown> {".to_string(),
-        "  return { ...(withoutNullFields(eventPayloadRecord(payload)) as unknown as UpdateStatus), type: 'update', event: UpdateEventName.State };".to_string(),
         "}".to_string(),
         String::new(),
         "/** The event's own payload without the `type` / `event` routing keys the decoder adds. */".to_string(),
@@ -1267,8 +1256,6 @@ fn emit_typescript_adapter_events_api(
         .map(|listener| ts_listener_payload_type(str_field(listener, "payload")).to_string())
         .collect::<BTreeSet<_>>();
     let mut model_imports = [
-        "UpdateEventName",
-        "UpdateStatus",
         "ConnectionEventName",
         "ConnectionPhase",
         "ConnectionQuality",
@@ -1585,10 +1572,6 @@ fn emit_typescript_adapter_events_api(
         "      if (eventName === ConnectionEventName.Status) {".to_string(),
         "        listener.onConnectionStatusChanged?.(eventPayloadOf<ConnectionStatus>(event));".to_string(),
         "      }".to_string(),
-        "      return;".to_string(),
-        "    }".to_string(),
-        "    if (type === 'update') {".to_string(),
-        "      if (eventName === UpdateEventName.State) listener.onUpdateState?.(eventPayloadOf<UpdateStatus>(event));".to_string(),
         "      return;".to_string(),
         "    }".to_string(),
         "    if (type === 'view') {".to_string(),
@@ -1932,7 +1915,6 @@ fn emit_typescript_adapter_message_builder(spec: &Value) -> Option<String> {
 
 const ADAPTER_FACADE_PROPS: &[(&str, &str, &str)] = &[
     ("connection", "ConnectionApi", "Connection"),
-    ("update", "UpdateApi", "Update"),
     ("lifecycle", "LifecycleApi", "Lifecycle"),
     ("conversations", "ConversationsApi", "Conversations"),
     ("messageBuilder", "MessageBuilderApi", "MessageBuilder"),

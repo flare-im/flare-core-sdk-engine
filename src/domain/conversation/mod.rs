@@ -17,7 +17,7 @@ pub use local_clear::{
 pub use message_projection::{
     EXT_MESSAGE_PROJECTION, MessageProjectionReceipt, copy_message_projection,
     message_projection_coverage, message_projection_matches, message_projection_receipt,
-    preserve_message_projection,
+    preserve_message_projection, projected_business_type,
 };
 pub use models::ConversationReadDecision;
 pub use read::ConversationReadService;

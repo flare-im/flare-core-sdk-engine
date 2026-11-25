@@ -1,0 +1,25 @@
+[package]
+name = "flare-im-core-sdk-sqlite-im"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Native SQLite IM storage adapter for the Flare Core SDK"
+
+[dependencies]
+flare-im-core-sdk = { version = "1.2", path = "../.." }
+flare-im-core-sdk-storage-sqlite = { version = "1.1", path = "../sqlite" }
+flare-proto.workspace = true
+flare-plugin-protocol = { version = "0.1", path = "../../../flare-plugin-devkit/flare-plugin-protocol" }
+async-trait = "0.1"
+base64 = "0.22"
+hex = "0.4"
+anyhow.workspace = true
+chrono.workspace = true
+prost.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"

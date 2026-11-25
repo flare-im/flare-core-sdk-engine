@@ -26,18 +26,6 @@ pub const DIRECT_INVOKE_ROUTES: &[&str] = &[
     "connection.reconnect_now",
     "connection.replace_endpoints",
     "connection.set_protocol_mode",
-    "update.get_state",
-    "update.check",
-    "update.download",
-    "update.install",
-    "update.report_install",
-    "update.defer",
-    "update.skip",
-    "update.mark_prompted",
-    "update.set_locale",
-    "update.get_resources",
-    "update.plugin_upgrade_status",
-    "update.open_flow",
     "plugin.set_host_profile",
     "plugin.capability_complete",
     "connection.server_clock",
@@ -96,18 +84,6 @@ pub fn is_direct_invoke_route(route: &str) -> bool {
         "connection.reconnect_now" => true,
         "connection.replace_endpoints" => true,
         "connection.set_protocol_mode" => true,
-        "update.get_state" => true,
-        "update.check" => true,
-        "update.download" => true,
-        "update.install" => true,
-        "update.report_install" => true,
-        "update.defer" => true,
-        "update.skip" => true,
-        "update.mark_prompted" => true,
-        "update.set_locale" => true,
-        "update.get_resources" => true,
-        "update.plugin_upgrade_status" => true,
-        "update.open_flow" => true,
         "plugin.set_host_profile" => true,
         "plugin.capability_complete" => true,
         "connection.server_clock" => true,
@@ -286,80 +262,6 @@ pub async fn dispatch_direct(
             let mode = dispatch_support::json_string(request, "mode")?;
             client.set_protocol_mode(&mode).await?;
             Ok(BindingResponse::unit())
-        }
-        "update.get_state" => {
-            let client = session.client();
-            let foreground =
-                dispatch_support::optional_bool(request, "foreground")?.unwrap_or(false);
-            let status = client.update_state(foreground).await?;
-            dispatch_support::json(status)
-        }
-        "update.check" => {
-            let client = session.client();
-            let manual = dispatch_support::optional_bool(request, "manual")?.unwrap_or(false);
-            let status = client.check_update(manual).await?;
-            dispatch_support::json(status)
-        }
-        "update.download" => {
-            let client = session.client();
-            let allow_metered =
-                dispatch_support::optional_bool(request, "allowMetered")?.unwrap_or(false);
-            let status = client.download_update(allow_metered).await?;
-            dispatch_support::json(status)
-        }
-        "update.install" => {
-            let client = session.client();
-            let plan = client.install_update().await?;
-            dispatch_support::json(plan)
-        }
-        "update.report_install" => {
-            let client = session.client();
-            let outcome = dispatch_support::json_string(request, "outcome")?;
-            let code = dispatch_support::optional_string(request, "code");
-            let status = client
-                .report_update_install(&outcome, code.as_deref())
-                .await?;
-            dispatch_support::json(status)
-        }
-        "update.defer" => {
-            let client = session.client();
-            let status = client.defer_update().await?;
-            dispatch_support::json(status)
-        }
-        "update.skip" => {
-            let client = session.client();
-            let build = dispatch_support::json_u64(request, "build")?;
-            let status = client.skip_update(build).await?;
-            dispatch_support::json(status)
-        }
-        "update.mark_prompted" => {
-            let client = session.client();
-            let build = dispatch_support::optional_value::<u64>(request, "build")?;
-            let form = dispatch_support::json_string(request, "form")?;
-            let status = client.mark_update_prompted(build, &form).await?;
-            dispatch_support::json(status)
-        }
-        "update.set_locale" => {
-            let client = session.client();
-            let locale = dispatch_support::json_string(request, "locale")?;
-            let status = client.set_update_locale(locale).await?;
-            dispatch_support::json(status)
-        }
-        "update.get_resources" => {
-            let client = session.client();
-            let resources = client.update_resources().await?;
-            dispatch_support::json(resources)
-        }
-        "update.plugin_upgrade_status" => {
-            let client = session.client();
-            let min_build = dispatch_support::optional_value::<u64>(request, "minBuild")?;
-            let status = client.plugin_upgrade_status(min_build).await?;
-            dispatch_support::json(status)
-        }
-        "update.open_flow" => {
-            let client = session.client();
-            let status = client.open_update_flow().await?;
-            dispatch_support::json(status)
         }
         "plugin.set_host_profile" => {
             let client = session.client();

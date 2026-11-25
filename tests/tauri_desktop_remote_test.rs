@@ -1,5 +1,5 @@
 //! Tauri 桌面端联调：走**与 app 完全相同**的入口——`IMClient::login` +
-//! `LoginDbKind::Sqlite`（`sdk_login` 命令就是这两行的透传），连真实网关，
+//! `flare_im_core_sdk_sqlite_im::sqlite()`（`sdk_login` 命令就是这两行的透传），连真实网关，
 //! 断言登录 → 会话同步 → **实时推送到达**。
 //!
 //! 为什么不驱动窗口：Tauri 是原生 macOS 窗口，没有可靠的自动化输入通道，
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use flare_im_core_sdk::SdkEvent;
 use flare_im_core_sdk::client::IMClient;
 use flare_im_core_sdk::client::config::SdkAuthConfig;
-use flare_im_core_sdk::client::lifecycle::{LoginDbKind, SdkConfigOverlay};
+use flare_im_core_sdk::client::lifecycle::SdkConfigOverlay;
 use flare_im_core_sdk::model::StartupHomeSyncRequest;
 use flare_im_core_sdk::prelude::CoreEndpoints;
 use flare_im_core_sdk::prelude::MessageEvent;
@@ -101,7 +101,7 @@ async fn desktop_stack_logs_in_and_receives_realtime_push() {
         .login(
             &user_id,
             token.as_deref(),
-            LoginDbKind::Sqlite,
+            flare_im_core_sdk_sqlite_im::sqlite(),
             move |bus, _| {
                 let mut raw = bus.subscribe_shared_raw();
                 tokio::spawn(async move {

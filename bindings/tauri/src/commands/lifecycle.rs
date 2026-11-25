@@ -5,7 +5,7 @@ use tokio::sync::oneshot;
 use tracing::{info, warn};
 
 use crate::state::SdkState;
-use flare_im_core_sdk::client::{LoginDbKind, SdkAppConfig, SdkConfigOverlay};
+use flare_im_core_sdk::client::{SdkAppConfig, SdkConfigOverlay};
 use flare_im_core_sdk::event::{SdkEvent, SharedEventReceiver};
 use flare_im_core_sdk_bindings_runtime::{SessionTaskSlot, platform_event_bridge_resync_marker};
 
@@ -137,7 +137,7 @@ pub async fn sdk_login(
         .login(
             &user_id,
             token.as_deref(),
-            LoginDbKind::Sqlite,
+            flare_im_core_sdk_sqlite_im::sqlite(),
             move |bus, _msg_store| {
                 let rx = bus.subscribe_shared_raw();
                 let app = app.clone();
@@ -171,7 +171,7 @@ pub async fn sdk_prepare(
     let event_bridge = state.event_bridge();
     event_bridge.clear();
     client
-        .prepare(&user_id, LoginDbKind::Sqlite)
+        .prepare(&user_id, flare_im_core_sdk_sqlite_im::sqlite())
         .await
         .map_err(super::map_sdk_err)?;
     // 预热后订阅事件总线 → webview（等价 login 闭包在 connect 前所做）。

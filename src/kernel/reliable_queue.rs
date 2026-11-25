@@ -9,6 +9,11 @@ use crate::shared::error::Result;
 /// actor implementation.
 #[async_trait]
 pub trait ReliableSendQueuePort: Send + Sync {
+    /// True when enqueue owns the first conversation row and its message preview.
+    fn projects_outgoing_conversation(&self) -> bool {
+        false
+    }
+
     async fn enqueue(&self, message: IMMessage) -> Result<()>;
 
     async fn on_ack(&self, ack: SendAck) -> Result<()>;

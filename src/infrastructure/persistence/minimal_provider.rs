@@ -18,6 +18,7 @@ pub fn in_memory_empty_im_provider() -> StoreProvider {
         conversation_participants: None,
         cursors: Arc::new(MemorySyncCursorStore::new()),
         timeline_coverage: Arc::new(super::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,

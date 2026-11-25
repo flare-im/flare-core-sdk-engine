@@ -378,6 +378,13 @@ fn latest_message_id(message: &IMMessage) -> String {
 }
 
 fn latest_message_preview(message: &IMMessage) -> Option<String> {
+    if message
+        .retention_state
+        .as_ref()
+        .is_some_and(flare_im_core_sdk::storage::retention_hides_content)
+    {
+        return None;
+    }
     message.text_for_storage().or_else(|| {
         let preview = message.text_preview.trim();
         (!preview.is_empty()).then(|| preview.to_string())
@@ -432,6 +439,38 @@ fn hydrate_conversation_latest(
     updated.updated_at = updated.updated_at.max(time);
     updated.updated_at_ts = Some(updated.updated_at_ts.unwrap_or(0).max(time));
     Some(updated)
+}
+
+/// A batch stages one visible preview candidate per conversation. Unread and replay
+/// receipts are written independently by ApplyInbound after the host commits these rows.
+fn batch_previews(rows: &[IMMessage]) -> Vec<Conversation> {
+    let mut latest = HashMap::<&str, &IMMessage>::new();
+    for row in rows {
+        if row.conversation_id.trim().is_empty() || row.conversation_id.starts_with("sync:") {
+            continue;
+        }
+        let current = latest.entry(&row.conversation_id).or_insert(row);
+        if IMMessage::compare_for_timeline_asc(row, current).is_ge() {
+            *current = row;
+        }
+    }
+    latest
+        .into_values()
+        .filter_map(|message| {
+            let shell = Conversation {
+                conversation_id: message.conversation_id.clone(),
+                conversation_type:
+                    flare_im_core_sdk::model::conversation::ConversationType::from_proto_int(
+                        message.conversation_type,
+                    ),
+                business_type: flare_im_core_sdk::storage::projected_business_type(message).into(),
+                channel_id: message.channel_id.clone(),
+                created_at: message.display_time_ms(),
+                ..Default::default()
+            };
+            hydrate_conversation_latest(&shell, message)
+        })
+        .collect()
 }
 
 async fn hydrate_conversation_latest_from_messages(
@@ -490,13 +529,55 @@ impl PersistingSyncCursorStore {
     }
 }
 
-impl PersistingPendingSendStore {
-    fn new(user_id: String, inner: Arc<MemoryPendingSendStore>) -> Self {
-        Self {
-            user_id,
-            inner,
-            writes: Arc::new(tokio::sync::Semaphore::new(1)),
-        }
+struct PersistingOutgoingStore {
+    user_id: String,
+    messages: Arc<MemoryMessageStore>,
+    memory: Arc<flare_im_core_sdk::storage::MemoryOutgoingStore>,
+    writes: Arc<tokio::sync::Semaphore>,
+}
+
+impl PersistingOutgoingStore {
+    async fn commit(&self, message: IMMessage, entry: Option<PendingSendVo>) -> Result<bool> {
+        let permit = reserve_write(&self.writes).await?;
+        let user = self.user_id.clone();
+        let memory = self.memory.clone();
+        let messages = self.messages.clone();
+        await_storage_write(
+            async move {
+                restore_message_rows(
+                    &user,
+                    &messages,
+                    MessageRead::Ids {
+                        ids: vec![message.server_id.clone(), message.client_msg_id.clone()],
+                    },
+                )
+                .await?;
+                let outbox = entry.clone();
+                memory
+                    .commit_with(&message, entry.as_ref(), |row, summary| async move {
+                        super::host::commit_outgoing(&user, row, summary, outbox).await
+                    })
+                    .await
+            },
+            Some(permit),
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl flare_im_core_sdk::storage::OutgoingSendStore for PersistingOutgoingStore {
+    fn survives_restart(&self) -> bool {
+        true
+    }
+
+    async fn enqueue_send(&self, message: &IMMessage, entry: &PendingSendVo) -> Result<()> {
+        self.commit(message.clone(), Some(entry.clone()))
+            .await
+            .map(|_| ())
+    }
+    async fn complete_send(&self, message: &IMMessage) -> Result<bool> {
+        self.commit(message.clone(), None).await
     }
 }
 
@@ -704,12 +785,17 @@ impl MessageWriter for PersistingMessageStore {
             }
             rows.push(persisted);
         }
+        let conversations = self.conversations.clone();
         let user_id = self.user_id.clone();
         await_storage_write(
             async move {
-                persist_messages(&user_id, rows).await?;
-                for conversation in previews.into_values() {
-                    persist_conversation(&user_id, &conversation).await?;
+                let staged = batch_previews(&rows);
+                if let Some(committed) = persist_messages(&user_id, rows, staged).await? {
+                    conversations.install_staged_previews(committed).await;
+                } else {
+                    for conversation in previews.into_values() {
+                        persist_conversation(&user_id, &conversation).await?;
+                    }
                 }
                 Ok(())
             },
@@ -1584,6 +1670,18 @@ pub async fn build_web_store_provider(
             conversations
                 .restore_local_snapshot(&snapshot.conversations)
                 .await?;
+            if !snapshot.preview_repairs.is_empty() {
+                let repaired = snapshot
+                    .preview_repairs
+                    .into_iter()
+                    .map(TryInto::try_into)
+                    .collect::<Result<Vec<IMMessage>>>()?;
+                if let Some(staged) =
+                    persist_messages(user_id, vec![], batch_previews(&repaired)).await?
+                {
+                    conversations.install_staged_previews(staged).await;
+                }
+            }
             for conversation_id in id_named {
                 if let Some(conversation) = conversations.get(&conversation_id).await? {
                     persist_conversation_now(user_id, conversation, None).await?;
@@ -1605,10 +1703,20 @@ pub async fn build_web_store_provider(
     }
 
     let user_id = user_id.to_string();
-    let pending = Arc::new(PersistingPendingSendStore::new(
-        user_id.clone(),
-        pending_inner,
-    ));
+    let outgoing = Arc::new(PersistingOutgoingStore {
+        user_id: user_id.clone(),
+        messages: messages.clone(),
+        writes: writes.clone(),
+        memory: Arc::new(flare_im_core_sdk::storage::MemoryOutgoingStore::new(
+            messages.clone(),
+            pending_inner.clone(),
+        )),
+    });
+    let pending = Arc::new(PersistingPendingSendStore {
+        user_id: user_id.clone(),
+        inner: pending_inner,
+        writes: writes.clone(),
+    });
     let user_profiles = Arc::new(MemoryUserProfileStore::new());
     let cursors = Arc::new(PersistingSyncCursorStore::new(user_id.clone(), cursors));
     // 区间存进同步游标键值：经宿主 saveCursor 持久化，随 loadSnapshot 的游标一起载回。
@@ -1648,6 +1756,7 @@ pub async fn build_web_store_provider(
         conversation_participants: None,
         cursors,
         timeline_coverage,
+        outgoing: Some(outgoing),
         pending_send_reader: Some(pending.clone()),
         pending_send_writer: Some(pending),
         upload_manifest_store: None,
@@ -1676,6 +1785,7 @@ mod durability_tests {
                     eventStorage.messages = eventStorage.messages.filter(m => m.serverId !== message.serverId);
                     eventStorage.messages.push(message); return Promise.resolve();
                 },
+                commitOutgoing: () => Promise.reject("unused by this test"),
                 savePendingSend: ({entry}) => {eventStorage.pendingSends = [entry]; return Promise.resolve()},
                 saveCursor: ({key, value}) => {eventStorage.cursors[key] = value; return Promise.resolve()},
                 saveConversation: ({conversation}) => {
@@ -2494,6 +2604,7 @@ mod durability_tests {
                     const owner = scopedStorage.owners[userId] ||= {};
                     owner.messages = [message]; return Promise.resolve();
                 },
+                commitOutgoing: () => Promise.reject("unused by this test"),
                 savePendingSend: ({userId, entry}) => {
                     (scopedStorage.owners[userId] ||= {}).pendingSends = [entry]; return Promise.resolve();
                 },
@@ -2628,6 +2739,7 @@ mod durability_tests {
                     storageTest.messages = [message];
                     return Promise.resolve();
                 },
+                commitOutgoing: () => Promise.reject("unused by this test"),
                 savePendingSend: ({entry}) => {
                     if (storageTest.fail) return Promise.reject('disk full');
                     storageTest.pendingSends = [entry];

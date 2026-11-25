@@ -190,7 +190,6 @@ impl From<PluginEventType> for SdkEventType {
 pub enum ConnectionEventType {
     Status,
     SyncStateChanged,
-    UpdateState,
 }
 
 impl ConnectionEventType {
@@ -202,7 +201,6 @@ impl ConnectionEventType {
                     Self::SyncStateChanged,
                     ConnectionEvent::SyncStateChanged { .. }
                 )
-                | (Self::UpdateState, ConnectionEvent::UpdateState(_))
         )
     }
 }
@@ -553,9 +551,6 @@ impl SdkEvent {
             }
             Self::Connection(ConnectionEvent::SyncStateChanged { .. }) => {
                 SdkEventType::Connection(ConnectionEventType::SyncStateChanged)
-            }
-            Self::Connection(ConnectionEvent::UpdateState(_)) => {
-                SdkEventType::Connection(ConnectionEventType::UpdateState)
             }
             Self::Message(MessageEvent::Received { .. }) => {
                 SdkEventType::Message(MessageEventType::Received)

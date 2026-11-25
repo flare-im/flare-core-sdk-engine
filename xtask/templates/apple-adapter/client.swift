@@ -4,7 +4,6 @@ import FlarePlatformLifecycle
 /// GENERATED. Do not edit by hand.
 public final class DefaultFlareImClient: FlareImClientProtocol {
     public let connection: any ConnectionApiProtocol
-    public let update: any UpdateApiProtocol
     public let lifecycle: any LifecycleApiProtocol
     public let conversations: any ConversationsApiProtocol
     public let messageBuilder: any MessageBuilderApiProtocol
@@ -32,7 +31,6 @@ public final class DefaultFlareImClient: FlareImClientProtocol {
         self.bridge = bridge
         self.platformLifecycleFactory = platformLifecycle
         self.connection = DefaultConnectionApi(bridge: bridge)
-        self.update = DefaultUpdateApi(bridge: bridge)
         self.lifecycle = DefaultLifecycleApi(bridge: bridge)
         self.conversations = DefaultConversationsApi(bridge: bridge)
         self.messageBuilder = DefaultMessageBuilderApi(bridge: bridge)

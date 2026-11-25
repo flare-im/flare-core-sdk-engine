@@ -56,17 +56,26 @@ impl UserWriter for MemoryUserProfileStore {
 /// 发送顺序按入队时刻（发件箱保证它在一个队列里严格递增）；入队时刻相同的旧条目按写入先后，
 /// 与 SQLite 实现（`rowid`）一致，不看 `client_msg_id`（随机值，按它排会打乱会话内顺序）。
 pub struct MemoryPendingSendStore {
-    data: Arc<RwLock<PendingEntries>>,
+    pub(super) data: Arc<RwLock<PendingEntries>>,
 }
 
 #[derive(Default)]
-struct PendingEntries {
+pub(super) struct PendingEntries {
     /// client_msg_id -> (写入序号, 条目)
     by_id: HashMap<String, (u64, PendingSendVo)>,
     next_seq: u64,
 }
 
 impl PendingEntries {
+    pub(super) fn insert(&mut self, entry: PendingSendVo) {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.by_id.insert(entry.client_msg_id.clone(), (seq, entry));
+    }
+    pub(super) fn remove(&mut self, id: &str) -> Option<PendingSendVo> {
+        self.by_id.remove(id).map(|(_, entry)| entry)
+    }
+
     fn ordered(&self) -> Vec<&(u64, PendingSendVo)> {
         let mut entries = self.by_id.values().collect::<Vec<_>>();
         entries.sort_by_key(|(seq, entry)| (entry.enqueued_at_ms, *seq));
@@ -140,15 +149,13 @@ impl PendingSendReader for MemoryPendingSendStore {
 impl PendingSendWriter for MemoryPendingSendStore {
     async fn push(&self, entry: PendingSendVo) -> Result<()> {
         let mut data = self.data.write().await;
-        let seq = data.next_seq;
-        data.next_seq += 1;
-        data.by_id.insert(entry.client_msg_id.clone(), (seq, entry));
+        data.insert(entry);
         Ok(())
     }
 
     async fn pop(&self, client_msg_id: &str) -> Result<Option<PendingSendVo>> {
         let mut data = self.data.write().await;
-        Ok(data.by_id.remove(client_msg_id).map(|(_, entry)| entry))
+        Ok(data.remove(client_msg_id))
     }
 }
 

@@ -19,8 +19,8 @@ pub mod timeline_coverage;
 /// 待发送队列：内存 + 后端分层（推荐与 sqlite 组合使用）
 pub mod layered;
 
-#[cfg(feature = "storage-sqlite")]
-pub mod sqlite;
+#[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
+pub(crate) use crate::sqlite_test_adapter::repos as sqlite;
 
 pub use db::StoreProvider;
 pub use empty_stores::MemorySyncCursorStore;
@@ -34,7 +34,7 @@ pub use timeline_coverage::{
     CursorBackedTimelineCoverageStore, MemoryTimelineCoverageStore, timeline_coverage_cursor_key,
 };
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
 pub use sqlite::{
     SqliteConversationParticipantRepo, SqliteConversationRepo, SqliteMediaCacheRepo,
     SqliteMessageRepo, SqlitePendingSendRepo, SqlitePluginConsentRepo, SqliteSyncCursorRepo,

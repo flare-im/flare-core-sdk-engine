@@ -12,7 +12,6 @@ use crate::infrastructure::protocol::PacketSender;
 use crate::kernel::event::{EventBus, MessageEvent, SdkEvent};
 use crate::kernel::{CurrentUserIdStore, ReliableSendQueuePort};
 use crate::model::UploadedMedia;
-use crate::model::conversation::ConversationType;
 use crate::model::message::{IMMessage, MessageLocalState, MessageStatus, SendAck};
 use crate::platform::ports::media::{
     MediaMetadata, MediaServicePort, MediaSourceDescriptor, MediaSourceKind, ProcessedMedia,
@@ -33,7 +32,6 @@ pub struct MessageSendUseCase {
     media_service: Arc<dyn MediaServicePort>,
     bus: EventBus,
     draft_service: MessageDraftService,
-    conversation_identity: ConversationIdentityService,
 }
 
 impl MessageSendUseCase {
@@ -58,7 +56,6 @@ impl MessageSendUseCase {
             media_service,
             bus,
             draft_service: MessageDraftService::default(),
-            conversation_identity: ConversationIdentityService,
         }
     }
 
@@ -104,7 +101,13 @@ impl MessageSendUseCase {
     }
 
     async fn dispatch_prepared_message(&self, message: IMMessage) -> Result<SendAck> {
-        self.ensure_optimistic_conversation(&message).await?;
+        if self
+            .reliable_queue
+            .as_ref()
+            .is_none_or(|queue| !queue.projects_outgoing_conversation())
+        {
+            self.ensure_optimistic_conversation(&message).await?;
+        }
         if let Some(queue) = &self.reliable_queue {
             // 仅取构建 ack 所需的两个 id，避免在发送热路径整体 clone IMMessage
             // （含 encoded_content/attributes，文本消息小、媒体消息可达 KB 级）。
@@ -141,32 +144,9 @@ impl MessageSendUseCase {
             return Ok(());
         }
 
-        let conversation_type = ConversationType::from_proto_int(message.conversation_type);
-        if matches!(conversation_type, ConversationType::Unspecified) {
+        let Some(conversation) = ConversationIdentityService::outgoing_conversation(message) else {
             return Ok(());
-        }
-
-        let channel_id = message.channel_id.trim();
-        if channel_id.is_empty() {
-            return Ok(());
-        }
-
-        let business_type = message
-            .attributes
-            .get("business_type")
-            .map(String::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| conversation_type.as_str());
-
-        let mut conversation = self.conversation_identity.build_local_conversation(
-            conversation_id,
-            Some(channel_id),
-            conversation_type,
-            business_type,
-            channel_id.to_string(),
-        );
-        conversation.updated_at = message.created_at;
-        conversation.created_at = conversation.updated_at;
+        };
         self.conversation_store.save_batch(&[conversation]).await
     }
 
@@ -179,6 +159,16 @@ impl MessageSendUseCase {
         if message.local_state.is_local && message.server_id == message.client_msg_id {
             // The stored local row ID is not a server-assigned ID on a retry.
             message.server_id.clear();
+        }
+        let atomic_queue = self
+            .reliable_queue
+            .as_ref()
+            .is_some_and(|queue| queue.projects_outgoing_conversation());
+        if atomic_queue && !requires_media_upload(message.content.as_ref()) {
+            message.status = MessageStatus::Created as i32;
+            message.materialize_encoded_content_from_elem();
+            self.draft_service.validate_outbound_message(&message)?;
+            return self.dispatch_prepared_message(message).await;
         }
         let sort_ts = message.timeline_sort_ts();
         message.status = MessageStatus::Created as i32;
@@ -218,13 +208,15 @@ impl MessageSendUseCase {
                     sort_ts,
                 };
                 normalized.materialize_encoded_content_from_elem();
-                persist_local_message_update(
-                    &self.store,
-                    &self.conversation_store,
-                    &self.bus,
-                    &normalized,
-                )
-                .await?;
+                if !atomic_queue {
+                    persist_local_message_update(
+                        &self.store,
+                        &self.conversation_store,
+                        &self.bus,
+                        &normalized,
+                    )
+                    .await?;
+                }
                 normalized
             }
             Err(error) => {
@@ -356,9 +348,7 @@ impl MessageSendUseCase {
         if let Some(ref mut content) = message.content {
             match content {
                 Elem::File(file) => {
-                    if let Some(source) = extract_media_source(&file.file_id)
-                        .or_else(|| extract_media_source(&file.url))
-                    {
+                    if let Some(source) = upload_source(&file.file_id, Some(&file.url)) {
                         #[cfg(target_arch = "wasm32")]
                         let source = if matches!(source.kind, MediaSourceKind::Blob) {
                             source.with_metadata(MediaMetadata {
@@ -420,12 +410,10 @@ impl MessageSendUseCase {
                     }
                 }
                 Elem::Video(video) => {
-                    if let Some(source) = extract_media_source(&video.video_id).or_else(|| {
-                        video
-                            .source
-                            .as_ref()
-                            .and_then(|info| extract_media_source(&info.url))
-                    }) {
+                    if let Some(source) = upload_source(
+                        &video.video_id,
+                        video.source.as_ref().map(|s| s.url.as_str()),
+                    ) {
                         let uploaded = self
                             .upload_media_source(source, on_progress.clone())
                             .await?;
@@ -436,12 +424,10 @@ impl MessageSendUseCase {
                     }
                 }
                 Elem::Audio(audio) => {
-                    if let Some(source) = extract_media_source(&audio.audio_id).or_else(|| {
-                        audio
-                            .source
-                            .as_ref()
-                            .and_then(|info| extract_media_source(&info.url))
-                    }) {
+                    if let Some(source) = upload_source(
+                        &audio.audio_id,
+                        audio.source.as_ref().map(|s| s.url.as_str()),
+                    ) {
                         let uploaded = self
                             .upload_media_source(source, on_progress.clone())
                             .await?;
@@ -916,6 +902,36 @@ fn file_url_to_path_string(after_scheme: &str) -> Option<String> {
         return Some(after_scheme[1..].to_string());
     }
     Some(after_scheme.to_string())
+}
+
+fn requires_media_upload(content: Option<&Elem>) -> bool {
+    match content {
+        Some(Elem::File(file)) => upload_source(&file.file_id, Some(&file.url)).is_some(),
+        Some(Elem::Image(image)) => image
+            .source
+            .iter()
+            .chain(image.thumbnail.iter())
+            .any(|info| image_info_media_source(info).is_some()),
+        Some(Elem::Video(video)) => upload_source(
+            &video.video_id,
+            video.source.as_ref().map(|s| s.url.as_str()),
+        )
+        .is_some(),
+        Some(Elem::Audio(audio)) => upload_source(
+            &audio.audio_id,
+            audio.source.as_ref().map(|s| s.url.as_str()),
+        )
+        .is_some(),
+        Some(Elem::ImageGroup(group)) => group
+            .images
+            .iter()
+            .any(|info| image_info_media_source(info).is_some()),
+        _ => false,
+    }
+}
+
+fn upload_source(id: &str, url: Option<&str>) -> Option<MediaSourceDescriptor> {
+    extract_media_source(id).or_else(|| url.and_then(extract_media_source))
 }
 
 fn image_info_media_source(info: &ImageInfoElem) -> Option<MediaSourceDescriptor> {
@@ -2172,7 +2188,7 @@ mod tests {
         assert_eq!(sent.local_state.upload_progress, 100);
     }
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn failed_uploads_survive_sqlite_reopen_and_retry_the_original_row() {
         use super::upload_progress_percent;

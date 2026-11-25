@@ -91,11 +91,12 @@ impl ReadPosition {
     /// 上报服务端的已读 seq；`None` 表示无可信读位可推。
     #[must_use]
     pub fn ack_read_seq(self) -> Option<u64> {
-        let pos = self.normalize_local();
-        let seq = if pos.unread_count == 0 && pos.max_seq > pos.last_read_seq {
-            pos.max_seq
+        // An unread count excludes own messages and non-message events. With any
+        // unread remaining, only the stored cursor proves a contiguous read prefix.
+        let seq = if self.unread_count == 0 {
+            self.max_seq.max(self.last_read_seq)
         } else {
-            pos.last_read_seq
+            self.last_read_seq
         };
         (seq > 0).then_some(seq)
     }
@@ -196,6 +197,12 @@ mod tests {
     fn message_skip_replay_when_read_not_established() {
         let local = ReadPosition::from_parts(100, 0, 0);
         assert!(!local.should_recompute_unread_after_message(100, true));
+    }
+
+    #[test]
+    fn ack_read_seq_does_not_infer_a_prefix_from_sparse_unread() {
+        assert_eq!(ReadPosition::from_parts(2, 0, 1).ack_read_seq(), None);
+        assert_eq!(ReadPosition::from_parts(10, 3, 1).ack_read_seq(), Some(3));
     }
 
     #[test]

@@ -47,3 +47,39 @@ pub trait PendingSendWriter: Send + Sync {
     async fn push(&self, entry: PendingSendVo) -> Result<()>;
     async fn pop(&self, client_msg_id: &str) -> Result<Option<PendingSendVo>>;
 }
+
+impl PendingSendVo {
+    pub fn validate_message(&self, message: &crate::model::IMMessage) -> Result<()> {
+        if self.client_msg_id.trim().is_empty()
+            || self.conversation_id.trim().is_empty()
+            || self.client_msg_id != message.client_msg_id
+            || self.client_msg_id != self.message.client_msg_id
+            || self.conversation_id != message.conversation_id
+            || self.conversation_id != self.message.conversation_id
+            || self.message.sender_id != message.sender_id
+        {
+            return Err(crate::shared::error::FlareError::localized(
+                crate::shared::error::ErrorCode::InvalidParameter,
+                "outbox and message identity differ",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// One account's message, conversation summary and outbox share a single commit.
+/// A returned error leaves all three in their previous state.
+#[async_trait]
+pub trait OutgoingSendStore: Send + Sync {
+    /// Whether a successful commit survives closing and reopening this account's storage.
+    fn survives_restart(&self) -> bool;
+
+    async fn enqueue_send(
+        &self,
+        message: &crate::model::IMMessage,
+        entry: &PendingSendVo,
+    ) -> Result<()>;
+    /// Complete a successful durable ACK, or store a terminal local failure.
+    /// Returns false when an already confirmed row supersedes this outcome.
+    async fn complete_send(&self, message: &crate::model::IMMessage) -> Result<bool>;
+}

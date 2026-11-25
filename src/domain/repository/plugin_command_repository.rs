@@ -94,13 +94,13 @@ pub struct PluginCommandRecord {
     /// other outcomes remain None and cannot be acknowledged or replaced.
     pub response: Option<Value>,
 }
-pub(crate) fn valid_key(s: &str) -> bool {
+pub fn valid_key(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
 }
-pub(crate) fn command_error(reason: &str) -> FlareError {
+pub fn command_error(reason: &str) -> FlareError {
     FlareError::localized(
         ErrorCode::InvalidParameter,
         format!("sdk.plugin_command.{reason}"),

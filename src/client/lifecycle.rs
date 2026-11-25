@@ -1,20 +1,15 @@
-//! 配置合并、连接 token、登录存储选型；路径类工具在 [`crate::shared::util::paths`]。
-//!
-//! - **SQLite 仓储构建**：[`crate::shared::util::sqlite_store`]（`feature = "lifecycle-sqlite"`），由 [`super::IMClient::login`] 在 `LoginDbKind::Sqlite` 时调用。
-//! - **IndexedDB（Web）**：宿主实现 [`crate::infrastructure::persistence`] 后 [`LoginDbKind::IndexedDb`] 传入 [`super::IMClient::login`]。
+//! Session storage is supplied by the host, either already opened or through an account-scoped factory.
 
 pub use crate::shared::util::paths::{
     default_sdk_data_root, dev_data_dir_relative_to_cwd, parse_data_url_to_path,
-    resolve_sdk_data_root, resolve_user_db_path, sanitize_user_id_for_dir,
+    resolve_sdk_data_root, sanitize_user_id_for_dir,
 };
 
 use crate::client::config::SdkAppConfig;
 use crate::client::{SdkConfig, SdkResourceProfile};
-#[cfg(feature = "lifecycle-sqlite")]
 use crate::platform::ports::storage::SecureKeyStore;
 use crate::shared::error::Result;
 use crate::shared::error::{ErrorCode, FlareError};
-#[cfg(feature = "lifecycle-sqlite")]
 use std::sync::Arc;
 
 /// 上层可选覆盖项（JSON 字段为 SDK canonical camelCase）。
@@ -159,44 +154,25 @@ pub fn resolve_connect_token(user_id: &str, explicit_token: Option<&str>) -> Res
     ))
 }
 
-/// 登录时存储选型，配合 [`super::IMClient::login`]。
-pub enum LoginDbKind {
-    #[cfg(feature = "lifecycle-sqlite")]
-    Sqlite,
-    #[cfg(feature = "lifecycle-sqlite")]
-    EncryptedSqlite {
-        key_store: Arc<dyn SecureKeyStore>,
-        key_namespace: Option<String>,
-        tenant_id: Option<String>,
-        key_name: Option<String>,
-    },
-    IndexedDb(crate::infrastructure::persistence::StoreProvider),
+/// A composition root opens its backend for the account selected by prepare.
+#[async_trait::async_trait]
+pub trait AccountStoreOpener: std::any::Any + Send + Sync {
+    async fn open(
+        &self,
+        data_root: &std::path::Path,
+        tenant: &str,
+        user: &str,
+    ) -> Result<crate::storage::StoreProvider>;
+
+    /// Optional host credential vault and its namespace/tenant, shared across reconnects.
+    fn credential_store(&self, _tenant: &str) -> Option<(Arc<dyn SecureKeyStore>, String, String)> {
+        None
+    }
 }
 
-#[cfg(feature = "lifecycle-sqlite")]
-impl LoginDbKind {
-    pub fn encrypted_sqlite(key_store: Arc<dyn SecureKeyStore>) -> Self {
-        Self::EncryptedSqlite {
-            key_store,
-            key_namespace: None,
-            tenant_id: None,
-            key_name: None,
-        }
-    }
-
-    pub fn encrypted_sqlite_with_descriptor(
-        key_store: Arc<dyn SecureKeyStore>,
-        key_namespace: impl Into<String>,
-        tenant_id: impl Into<String>,
-        key_name: impl Into<String>,
-    ) -> Self {
-        Self::EncryptedSqlite {
-            key_store,
-            key_namespace: Some(key_namespace.into()),
-            tenant_id: Some(tenant_id.into()),
-            key_name: Some(key_name.into()),
-        }
-    }
+pub enum LoginDbKind {
+    Open(Arc<dyn AccountStoreOpener>),
+    Provided(crate::storage::StoreProvider),
 }
 
 #[cfg(test)]

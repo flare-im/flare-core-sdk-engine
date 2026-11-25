@@ -1,0 +1,3367 @@
+{
+  "sample": "tests/storage_parity/send.json",
+  "levels": [
+    16,
+    32
+  ],
+  "messagesPerWindow": 1024,
+  "rounds": 2,
+  "pg": "16.15",
+  "timescale": "2.30.0",
+  "wasmSha256": "c560e06ce41f5870fdafa5bf0991d76333713598d05701fc663b5af18c49b5d0",
+  "runs": {
+    "sharedStackPool2": [
+      {
+        "round": 1,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 176.55,
+            "p99": 200.43,
+            "slowestWire1pctMean": 226.89
+          },
+          "queue": {
+            "p95": 0.28,
+            "p99": 0.62,
+            "slowestWire1pctMean": 0.07
+          },
+          "admission": {
+            "p95": 76.18,
+            "p99": 95.75,
+            "slowestWire1pctMean": 63.96
+          },
+          "archive": {
+            "p95": 111.49,
+            "p99": 138.59,
+            "slowestWire1pctMean": 152.31
+          },
+          "historicalPool": {
+            "p95": 69.02,
+            "p99": 89.13,
+            "slowestWire1pctMean": 58.02
+          },
+          "historicalQuery": {
+            "p95": 5.43,
+            "p99": 8.63,
+            "slowestWire1pctMean": 2.75
+          },
+          "receiptPool": {
+            "p95": 88.06,
+            "p99": 111.09,
+            "slowestWire1pctMean": 123.07
+          },
+          "receiptQuery": {
+            "p95": 7.81,
+            "p99": 11.14,
+            "slowestWire1pctMean": 7.9
+          },
+          "transaction": {
+            "p95": 33.01,
+            "p99": 46.5,
+            "slowestWire1pctMean": 25.19
+          },
+          "commit": {
+            "p95": 9.48,
+            "p99": 17.94,
+            "slowestWire1pctMean": 6.4
+          },
+          "wireToCommit": {
+            "p95": 129.45,
+            "p99": 152.84,
+            "slowestWire1pctMean": 142.5
+          },
+          "commitToAck": {
+            "p95": 65,
+            "p99": 81.93,
+            "slowestWire1pctMean": 84.4
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 9602.5,
+        "sdkPersistedPerSec": 106.64,
+        "wirePersistedPerSec": 106.64,
+        "syncOnly": 0,
+        "verifyPerSec": 106.64,
+        "firstAckP95Ms": 176.55,
+        "firstAckP99Ms": 200.43,
+        "sdkP95Ms": 179.55,
+        "sdkP99Ms": 207.31,
+        "wirePersistedP95Ms": 176.55,
+        "wirePersistedP99Ms": 200.43,
+        "verifyP95Ms": 111.489,
+        "verifyP99Ms": 138.588,
+        "sqlCalls": 1107,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 1.081,
+        "sqlExecMs": 78.93,
+        "outcomes": {
+          "confirmed": 1024
+        },
+        "provisional": 0
+      },
+      {
+        "round": 1,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 394.66,
+            "p99": 463.21,
+            "slowestWire1pctMean": 472.54
+          },
+          "queue": {
+            "p95": 0.49,
+            "p99": 1.57,
+            "slowestWire1pctMean": 0.07
+          },
+          "admission": {
+            "p95": 194.7,
+            "p99": 233.4,
+            "slowestWire1pctMean": 244.02
+          },
+          "archive": {
+            "p95": 205.53,
+            "p99": 228.53,
+            "slowestWire1pctMean": 216.51
+          },
+          "historicalPool": {
+            "p95": 186.77,
+            "p99": 222.88,
+            "slowestWire1pctMean": 235.7
+          },
+          "historicalQuery": {
+            "p95": 6.11,
+            "p99": 9.14,
+            "slowestWire1pctMean": 4.1
+          },
+          "receiptPool": {
+            "p95": 198.89,
+            "p99": 223.64,
+            "slowestWire1pctMean": 208.37
+          },
+          "receiptQuery": {
+            "p95": 7.11,
+            "p99": 10.84,
+            "slowestWire1pctMean": 8.02
+          },
+          "transaction": {
+            "p95": 40.84,
+            "p99": 65.54,
+            "slowestWire1pctMean": 40.18
+          },
+          "commit": {
+            "p95": 11.69,
+            "p99": 19.12,
+            "slowestWire1pctMean": 8.56
+          },
+          "wireToCommit": {
+            "p95": 257.17,
+            "p99": 307.11,
+            "slowestWire1pctMean": 308.3
+          },
+          "commitToAck": {
+            "p95": 154.98,
+            "p99": 187.61,
+            "slowestWire1pctMean": 164.24
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 10541.5,
+        "sdkPersistedPerSec": 97.14,
+        "wirePersistedPerSec": 97.14,
+        "syncOnly": 0,
+        "verifyPerSec": 97.14,
+        "firstAckP95Ms": 394.66,
+        "firstAckP99Ms": 463.21,
+        "sdkP95Ms": 398.5,
+        "sdkP99Ms": 466.34,
+        "wirePersistedP95Ms": 394.66,
+        "wirePersistedP99Ms": 463.21,
+        "verifyP95Ms": 205.535,
+        "verifyP99Ms": 228.53,
+        "sqlCalls": 1025,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 1.001,
+        "sqlExecMs": 52.78,
+        "outcomes": {
+          "confirmed": 1024
+        },
+        "provisional": 0
+      },
+      {
+        "round": 2,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 340.78,
+            "p99": 373.54,
+            "slowestWire1pctMean": 377.33
+          },
+          "queue": {
+            "p95": 0.36,
+            "p99": 1.04,
+            "slowestWire1pctMean": 0.04
+          },
+          "admission": {
+            "p95": 169.27,
+            "p99": 225.34,
+            "slowestWire1pctMean": 211.14
+          },
+          "archive": {
+            "p95": 172.29,
+            "p99": 214.93,
+            "slowestWire1pctMean": 157.62
+          },
+          "historicalPool": {
+            "p95": 160.99,
+            "p99": 220.98,
+            "slowestWire1pctMean": 203.96
+          },
+          "historicalQuery": {
+            "p95": 6.12,
+            "p99": 9.79,
+            "slowestWire1pctMean": 2.98
+          },
+          "receiptPool": {
+            "p95": 166.91,
+            "p99": 211.09,
+            "slowestWire1pctMean": 152.61
+          },
+          "receiptQuery": {
+            "p95": 7.04,
+            "p99": 10.42,
+            "slowestWire1pctMean": 4.92
+          },
+          "transaction": {
+            "p95": 35.6,
+            "p99": 50.38,
+            "slowestWire1pctMean": 21.47
+          },
+          "commit": {
+            "p95": 9.94,
+            "p99": 14.5,
+            "slowestWire1pctMean": 4.54
+          },
+          "wireToCommit": {
+            "p95": 226.48,
+            "p99": 269.15,
+            "slowestWire1pctMean": 252.83
+          },
+          "commitToAck": {
+            "p95": 136.62,
+            "p99": 171.93,
+            "slowestWire1pctMean": 124.51
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 10071.8,
+        "sdkPersistedPerSec": 101.67,
+        "wirePersistedPerSec": 101.67,
+        "syncOnly": 0,
+        "verifyPerSec": 101.67,
+        "firstAckP95Ms": 340.78,
+        "firstAckP99Ms": 373.54,
+        "sdkP95Ms": 345.01,
+        "sdkP99Ms": 376.61,
+        "wirePersistedP95Ms": 340.78,
+        "wirePersistedP99Ms": 373.54,
+        "verifyP95Ms": 172.295,
+        "verifyP99Ms": 214.925,
+        "sqlCalls": 1024,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 1,
+        "sqlExecMs": 51.57,
+        "outcomes": {
+          "confirmed": 1024
+        },
+        "provisional": 0
+      },
+      {
+        "round": 2,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 196.44,
+            "p99": 231.64,
+            "slowestWire1pctMean": 262.97
+          },
+          "queue": {
+            "p95": 0.28,
+            "p99": 0.63,
+            "slowestWire1pctMean": 0.05
+          },
+          "admission": {
+            "p95": 86.98,
+            "p99": 119.82,
+            "slowestWire1pctMean": 76.43
+          },
+          "archive": {
+            "p95": 123.43,
+            "p99": 146.67,
+            "slowestWire1pctMean": 174.63
+          },
+          "historicalPool": {
+            "p95": 79.89,
+            "p99": 115.26,
+            "slowestWire1pctMean": 69.82
+          },
+          "historicalQuery": {
+            "p95": 5.92,
+            "p99": 10.29,
+            "slowestWire1pctMean": 3.04
+          },
+          "receiptPool": {
+            "p95": 98.89,
+            "p99": 126.78,
+            "slowestWire1pctMean": 148.73
+          },
+          "receiptQuery": {
+            "p95": 8.22,
+            "p99": 15.63,
+            "slowestWire1pctMean": 10.49
+          },
+          "transaction": {
+            "p95": 37.15,
+            "p99": 52.58,
+            "slowestWire1pctMean": 37.52
+          },
+          "commit": {
+            "p95": 10.71,
+            "p99": 16.83,
+            "slowestWire1pctMean": 11.83
+          },
+          "wireToCommit": {
+            "p95": 145.18,
+            "p99": 178.29,
+            "slowestWire1pctMean": 170.99
+          },
+          "commitToAck": {
+            "p95": 68.75,
+            "p99": 91.88,
+            "slowestWire1pctMean": 91.98
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 10220.5,
+        "sdkPersistedPerSec": 100.19,
+        "wirePersistedPerSec": 100.19,
+        "syncOnly": 0,
+        "verifyPerSec": 100.19,
+        "firstAckP95Ms": 196.44,
+        "firstAckP99Ms": 231.64,
+        "sdkP95Ms": 199.26,
+        "sdkP99Ms": 233.69,
+        "wirePersistedP95Ms": 196.44,
+        "wirePersistedP99Ms": 231.64,
+        "verifyP95Ms": 123.429,
+        "verifyP99Ms": 146.674,
+        "sqlCalls": 1104,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 1.078,
+        "sqlExecMs": 46.47,
+        "outcomes": {
+          "confirmed": 1024
+        },
+        "provisional": 0
+      },
+      {
+        "pooled": true,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 190.22,
+            "p99": 225.44,
+            "slowestWire1pctMean": 250.76
+          },
+          "queue": {
+            "p95": 0.28,
+            "p99": 0.63,
+            "slowestWire1pctMean": 0.08
+          },
+          "admission": {
+            "p95": 81.37,
+            "p99": 114.05,
+            "slowestWire1pctMean": 85.21
+          },
+          "archive": {
+            "p95": 116.73,
+            "p99": 144.82,
+            "slowestWire1pctMean": 154.39
+          },
+          "historicalPool": {
+            "p95": 73.53,
+            "p99": 106.09,
+            "slowestWire1pctMean": 78.6
+          },
+          "historicalQuery": {
+            "p95": 5.8,
+            "p99": 9.14,
+            "slowestWire1pctMean": 3.11
+          },
+          "receiptPool": {
+            "p95": 94.92,
+            "p99": 117.79,
+            "slowestWire1pctMean": 131.67
+          },
+          "receiptQuery": {
+            "p95": 7.92,
+            "p99": 13.88,
+            "slowestWire1pctMean": 8.55
+          },
+          "transaction": {
+            "p95": 35.72,
+            "p99": 50.27,
+            "slowestWire1pctMean": 35.71
+          },
+          "commit": {
+            "p95": 10.36,
+            "p99": 17.23,
+            "slowestWire1pctMean": 9.76
+          },
+          "wireToCommit": {
+            "p95": 137.86,
+            "p99": 165.88,
+            "slowestWire1pctMean": 167.23
+          },
+          "commitToAck": {
+            "p95": 67.29,
+            "p99": 88.01,
+            "slowestWire1pctMean": 83.53
+          }
+        },
+        "messages": 2048,
+        "attempts": 2048,
+        "elapsedMs": 19823,
+        "sdkPersistedPerSec": 103.31,
+        "wirePersistedPerSec": 103.31,
+        "syncOnly": 0,
+        "verifyPerSec": 103.31,
+        "firstAckP95Ms": 190.22,
+        "firstAckP99Ms": 225.44,
+        "sdkP95Ms": 193.1,
+        "sdkP99Ms": 228.83,
+        "wirePersistedP95Ms": 190.22,
+        "wirePersistedP99Ms": 225.44,
+        "verifyP95Ms": 116.729,
+        "verifyP99Ms": 144.822,
+        "sqlCalls": 2211,
+        "historicalCalls": 2048,
+        "sqlPerMessage": 1.08,
+        "sqlExecMs": 125.41,
+        "outcomes": {
+          "confirmed": 2048
+        },
+        "provisional": 0
+      },
+      {
+        "pooled": true,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 366.97,
+            "p99": 430.46,
+            "slowestWire1pctMean": 458.01
+          },
+          "queue": {
+            "p95": 0.45,
+            "p99": 1.43,
+            "slowestWire1pctMean": 0.23
+          },
+          "admission": {
+            "p95": 179.23,
+            "p99": 230.86,
+            "slowestWire1pctMean": 228.39
+          },
+          "archive": {
+            "p95": 183.49,
+            "p99": 226.76,
+            "slowestWire1pctMean": 218.42
+          },
+          "historicalPool": {
+            "p95": 171.08,
+            "p99": 222.88,
+            "slowestWire1pctMean": 218.86
+          },
+          "historicalQuery": {
+            "p95": 6.12,
+            "p99": 9.4,
+            "slowestWire1pctMean": 5.09
+          },
+          "receiptPool": {
+            "p95": 178.16,
+            "p99": 221.85,
+            "slowestWire1pctMean": 211.58
+          },
+          "receiptQuery": {
+            "p95": 7.11,
+            "p99": 10.84,
+            "slowestWire1pctMean": 6.72
+          },
+          "transaction": {
+            "p95": 37.91,
+            "p99": 56.34,
+            "slowestWire1pctMean": 42.26
+          },
+          "commit": {
+            "p95": 10.99,
+            "p99": 17.95,
+            "slowestWire1pctMean": 8.38
+          },
+          "wireToCommit": {
+            "p95": 240.52,
+            "p99": 284.63,
+            "slowestWire1pctMean": 290.03
+          },
+          "commitToAck": {
+            "p95": 142.06,
+            "p99": 185.27,
+            "slowestWire1pctMean": 167.98
+          }
+        },
+        "messages": 2048,
+        "attempts": 2048,
+        "elapsedMs": 20613.3,
+        "sdkPersistedPerSec": 99.35,
+        "wirePersistedPerSec": 99.35,
+        "syncOnly": 0,
+        "verifyPerSec": 99.35,
+        "firstAckP95Ms": 366.97,
+        "firstAckP99Ms": 430.46,
+        "sdkP95Ms": 368.88,
+        "sdkP99Ms": 434.96,
+        "wirePersistedP95Ms": 366.97,
+        "wirePersistedP99Ms": 430.46,
+        "verifyP95Ms": 183.493,
+        "verifyP99Ms": 226.756,
+        "sqlCalls": 2049,
+        "historicalCalls": 2048,
+        "sqlPerMessage": 1,
+        "sqlExecMs": 104.35,
+        "outcomes": {
+          "confirmed": 2048
+        },
+        "provisional": 0
+      }
+    ],
+    "sharedStackPool8": [
+      {
+        "round": 1,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 182.12,
+            "p99": 309,
+            "slowestWire1pctMean": 357.27
+          },
+          "queue": {
+            "p95": 0.33,
+            "p99": 0.76,
+            "slowestWire1pctMean": 0.04
+          },
+          "admission": {
+            "p95": 22.94,
+            "p99": 95.1,
+            "slowestWire1pctMean": 37.43
+          },
+          "archive": {
+            "p95": 128.94,
+            "p99": 281.11,
+            "slowestWire1pctMean": 296.98
+          },
+          "historicalPool": {
+            "p95": 10.99,
+            "p99": 83.69,
+            "slowestWire1pctMean": 29.67
+          },
+          "historicalQuery": {
+            "p95": 9.2,
+            "p99": 14.66,
+            "slowestWire1pctMean": 4.13
+          },
+          "receiptPool": {
+            "p95": 23.29,
+            "p99": 40.92,
+            "slowestWire1pctMean": 30.02
+          },
+          "receiptQuery": {
+            "p95": 21.48,
+            "p99": 27.8,
+            "slowestWire1pctMean": 20.98
+          },
+          "transaction": {
+            "p95": 46.53,
+            "p99": 78.27,
+            "slowestWire1pctMean": 43.71
+          },
+          "commit": {
+            "p95": 13.45,
+            "p99": 22.11,
+            "slowestWire1pctMean": 5.71
+          },
+          "wireToCommit": {
+            "p95": 131.65,
+            "p99": 180.05,
+            "slowestWire1pctMean": 213.11
+          },
+          "commitToAck": {
+            "p95": 76.81,
+            "p99": 160.42,
+            "slowestWire1pctMean": 144.16
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 9598.3,
+        "sdkPersistedPerSec": 106.69,
+        "wirePersistedPerSec": 106.69,
+        "syncOnly": 0,
+        "verifyPerSec": 106.69,
+        "firstAckP95Ms": 182.12,
+        "firstAckP99Ms": 309,
+        "sdkP95Ms": 186.98,
+        "sdkP99Ms": 312.22,
+        "wirePersistedP95Ms": 182.12,
+        "wirePersistedP99Ms": 309,
+        "verifyP95Ms": 128.943,
+        "verifyP99Ms": 281.113,
+        "sqlCalls": 2665,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 2.603,
+        "sqlExecMs": 103.98,
+        "outcomes": {
+          "confirmed": 1024
+        },
+        "provisional": 0
+      },
+      {
+        "round": 1,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 286.17,
+            "p99": 374.73,
+            "slowestWire1pctMean": 387.34
+          },
+          "queue": {
+            "p95": 0.34,
+            "p99": 1.38,
+            "slowestWire1pctMean": 0.06
+          },
+          "admission": {
+            "p95": 58.15,
+            "p99": 76.34,
+            "slowestWire1pctMean": 28.04
+          },
+          "archive": {
+            "p95": 318.03,
+            "p99": 351.74,
+            "slowestWire1pctMean": 337.11
+          },
+          "historicalPool": {
+            "p95": 45.05,
+            "p99": 59.56,
+            "slowestWire1pctMean": 18.4
+          },
+          "historicalQuery": {
+            "p95": 12.94,
+            "p99": 19.13,
+            "slowestWire1pctMean": 5.35
+          },
+          "receiptPool": {
+            "p95": 100.3,
+            "p99": 121.25,
+            "slowestWire1pctMean": 65.3
+          },
+          "receiptQuery": {
+            "p95": 28.86,
+            "p99": 39.55,
+            "slowestWire1pctMean": 26.17
+          },
+          "transaction": {
+            "p95": 84.53,
+            "p99": 99.56,
+            "slowestWire1pctMean": 71.16
+          },
+          "commit": {
+            "p95": 19.25,
+            "p99": 27.87,
+            "slowestWire1pctMean": 10.28
+          },
+          "wireToCommit": {
+            "p95": 235.63,
+            "p99": 306.88,
+            "slowestWire1pctMean": 240.79
+          },
+          "commitToAck": {
+            "p95": 101.53,
+            "p99": 175.41,
+            "slowestWire1pctMean": 146.55
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 8431,
+        "sdkPersistedPerSec": 121.46,
+        "wirePersistedPerSec": 117.31,
+        "syncOnly": 35,
+        "verifyPerSec": 121.46,
+        "firstAckP95Ms": 360,
+        "firstAckP99Ms": 407.2,
+        "sdkP95Ms": 365.26,
+        "sdkP99Ms": 630.64,
+        "wirePersistedP95Ms": 286.17,
+        "wirePersistedP99Ms": 374.73,
+        "verifyP95Ms": 318.03,
+        "verifyP99Ms": 351.744,
+        "sqlCalls": 2545,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 2.485,
+        "sqlExecMs": 98.87,
+        "outcomes": {
+          "confirmed": 989,
+          "timeout": 31,
+          "unconfirmed": 4
+        },
+        "provisional": 35
+      },
+      {
+        "round": 2,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 304.03,
+            "p99": 399.45,
+            "slowestWire1pctMean": 416.07
+          },
+          "queue": {
+            "p95": 0.36,
+            "p99": 2.04,
+            "slowestWire1pctMean": 0.03
+          },
+          "admission": {
+            "p95": 68.47,
+            "p99": 103.26,
+            "slowestWire1pctMean": 71.15
+          },
+          "archive": {
+            "p95": 333.66,
+            "p99": 352.27,
+            "slowestWire1pctMean": 324.13
+          },
+          "historicalPool": {
+            "p95": 51.9,
+            "p99": 74.33,
+            "slowestWire1pctMean": 56.68
+          },
+          "historicalQuery": {
+            "p95": 13.84,
+            "p99": 22.33,
+            "slowestWire1pctMean": 9.06
+          },
+          "receiptPool": {
+            "p95": 114.92,
+            "p99": 185.45,
+            "slowestWire1pctMean": 116.93
+          },
+          "receiptQuery": {
+            "p95": 33.24,
+            "p99": 43.27,
+            "slowestWire1pctMean": 26.24
+          },
+          "transaction": {
+            "p95": 93.24,
+            "p99": 125.59,
+            "slowestWire1pctMean": 75.33
+          },
+          "commit": {
+            "p95": 20.71,
+            "p99": 29.34,
+            "slowestWire1pctMean": 8.48
+          },
+          "wireToCommit": {
+            "p95": 249.44,
+            "p99": 320.03,
+            "slowestWire1pctMean": 286.47
+          },
+          "commitToAck": {
+            "p95": 108.97,
+            "p99": 167.21,
+            "slowestWire1pctMean": 129.6
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 8929.1,
+        "sdkPersistedPerSec": 114.68,
+        "wirePersistedPerSec": 110.31,
+        "syncOnly": 39,
+        "verifyPerSec": 114.68,
+        "firstAckP95Ms": 380.12,
+        "firstAckP99Ms": 431.19,
+        "sdkP95Ms": 384.51,
+        "sdkP99Ms": 641.31,
+        "wirePersistedP95Ms": 304.03,
+        "wirePersistedP99Ms": 399.45,
+        "verifyP95Ms": 333.664,
+        "verifyP99Ms": 352.272,
+        "sqlCalls": 2515,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 2.456,
+        "sqlExecMs": 119.77,
+        "outcomes": {
+          "confirmed": 985,
+          "timeout": 39,
+          "unconfirmed": 0
+        },
+        "provisional": 39
+      },
+      {
+        "round": 2,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 165.06,
+            "p99": 318.88,
+            "slowestWire1pctMean": 337
+          },
+          "queue": {
+            "p95": 0.38,
+            "p99": 1.08,
+            "slowestWire1pctMean": 0.28
+          },
+          "admission": {
+            "p95": 23.99,
+            "p99": 31.63,
+            "slowestWire1pctMean": 14.09
+          },
+          "archive": {
+            "p95": 135.93,
+            "p99": 286.67,
+            "slowestWire1pctMean": 295.64
+          },
+          "historicalPool": {
+            "p95": 12.06,
+            "p99": 19.8,
+            "slowestWire1pctMean": 6.38
+          },
+          "historicalQuery": {
+            "p95": 9.92,
+            "p99": 13.75,
+            "slowestWire1pctMean": 3.98
+          },
+          "receiptPool": {
+            "p95": 27.11,
+            "p99": 44.14,
+            "slowestWire1pctMean": 27.1
+          },
+          "receiptQuery": {
+            "p95": 25.51,
+            "p99": 36.47,
+            "slowestWire1pctMean": 24.16
+          },
+          "transaction": {
+            "p95": 52.71,
+            "p99": 74.47,
+            "slowestWire1pctMean": 47.99
+          },
+          "commit": {
+            "p95": 15.96,
+            "p99": 24.72,
+            "slowestWire1pctMean": 8.96
+          },
+          "wireToCommit": {
+            "p95": 128.54,
+            "p99": 172.23,
+            "slowestWire1pctMean": 185.37
+          },
+          "commitToAck": {
+            "p95": 82.17,
+            "p99": 162.67,
+            "slowestWire1pctMean": 151.64
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 10504.9,
+        "sdkPersistedPerSec": 97.48,
+        "wirePersistedPerSec": 97.38,
+        "syncOnly": 1,
+        "verifyPerSec": 97.48,
+        "firstAckP95Ms": 165.69,
+        "firstAckP99Ms": 319.2,
+        "sdkP95Ms": 169.43,
+        "sdkP99Ms": 321.61,
+        "wirePersistedP95Ms": 165.06,
+        "wirePersistedP99Ms": 318.88,
+        "verifyP95Ms": 135.927,
+        "verifyP99Ms": 286.67,
+        "sqlCalls": 2727,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 2.663,
+        "sqlExecMs": 110.83,
+        "outcomes": {
+          "confirmed": 1023,
+          "timeout": 1,
+          "unconfirmed": 0
+        },
+        "provisional": 1
+      },
+      {
+        "pooled": true,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 167.41,
+            "p99": 314.93,
+            "slowestWire1pctMean": 349.42
+          },
+          "queue": {
+            "p95": 0.36,
+            "p99": 0.9,
+            "slowestWire1pctMean": 0.17
+          },
+          "admission": {
+            "p95": 23.5,
+            "p99": 66.06,
+            "slowestWire1pctMean": 26.31
+          },
+          "archive": {
+            "p95": 130.99,
+            "p99": 286.22,
+            "slowestWire1pctMean": 298.63
+          },
+          "historicalPool": {
+            "p95": 11.63,
+            "p99": 38.57,
+            "slowestWire1pctMean": 18.44
+          },
+          "historicalQuery": {
+            "p95": 9.6,
+            "p99": 14.46,
+            "slowestWire1pctMean": 4.06
+          },
+          "receiptPool": {
+            "p95": 25.63,
+            "p99": 43.26,
+            "slowestWire1pctMean": 29.61
+          },
+          "receiptQuery": {
+            "p95": 23.14,
+            "p99": 33.9,
+            "slowestWire1pctMean": 24.33
+          },
+          "transaction": {
+            "p95": 50.21,
+            "p99": 75.79,
+            "slowestWire1pctMean": 48.47
+          },
+          "commit": {
+            "p95": 14.88,
+            "p99": 23.19,
+            "slowestWire1pctMean": 7.95
+          },
+          "wireToCommit": {
+            "p95": 130.26,
+            "p99": 177.77,
+            "slowestWire1pctMean": 198.72
+          },
+          "commitToAck": {
+            "p95": 79.82,
+            "p99": 162.67,
+            "slowestWire1pctMean": 150.7
+          }
+        },
+        "messages": 2048,
+        "attempts": 2048,
+        "elapsedMs": 20103.2,
+        "sdkPersistedPerSec": 101.87,
+        "wirePersistedPerSec": 101.82,
+        "syncOnly": 1,
+        "verifyPerSec": 101.87,
+        "firstAckP95Ms": 168.39,
+        "firstAckP99Ms": 314.97,
+        "sdkP95Ms": 170.99,
+        "sdkP99Ms": 317.56,
+        "wirePersistedP95Ms": 167.41,
+        "wirePersistedP99Ms": 314.93,
+        "verifyP95Ms": 130.991,
+        "verifyP99Ms": 286.216,
+        "sqlCalls": 5392,
+        "historicalCalls": 2048,
+        "sqlPerMessage": 2.633,
+        "sqlExecMs": 214.81,
+        "outcomes": {
+          "confirmed": 2047,
+          "timeout": 1,
+          "unconfirmed": 0
+        },
+        "provisional": 1
+      },
+      {
+        "pooled": true,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 294.77,
+            "p99": 382.56,
+            "slowestWire1pctMean": 402.73
+          },
+          "queue": {
+            "p95": 0.35,
+            "p99": 1.66,
+            "slowestWire1pctMean": 0.04
+          },
+          "admission": {
+            "p95": 63.6,
+            "p99": 86.16,
+            "slowestWire1pctMean": 49.59
+          },
+          "archive": {
+            "p95": 325.67,
+            "p99": 352.01,
+            "slowestWire1pctMean": 331.98
+          },
+          "historicalPool": {
+            "p95": 48.69,
+            "p99": 68.15,
+            "slowestWire1pctMean": 37.3
+          },
+          "historicalQuery": {
+            "p95": 13.56,
+            "p99": 21.98,
+            "slowestWire1pctMean": 7.28
+          },
+          "receiptPool": {
+            "p95": 107.44,
+            "p99": 143.21,
+            "slowestWire1pctMean": 93.15
+          },
+          "receiptQuery": {
+            "p95": 30.93,
+            "p99": 41.68,
+            "slowestWire1pctMean": 25.74
+          },
+          "transaction": {
+            "p95": 89.09,
+            "p99": 117,
+            "slowestWire1pctMean": 74.16
+          },
+          "commit": {
+            "p95": 19.77,
+            "p99": 28.57,
+            "slowestWire1pctMean": 10.23
+          },
+          "wireToCommit": {
+            "p95": 242.46,
+            "p99": 320.03,
+            "slowestWire1pctMean": 270.11
+          },
+          "commitToAck": {
+            "p95": 106.72,
+            "p99": 170.8,
+            "slowestWire1pctMean": 132.62
+          }
+        },
+        "messages": 2048,
+        "attempts": 2048,
+        "elapsedMs": 17360,
+        "sdkPersistedPerSec": 117.97,
+        "wirePersistedPerSec": 113.71,
+        "syncOnly": 74,
+        "verifyPerSec": 117.97,
+        "firstAckP95Ms": 372.72,
+        "firstAckP99Ms": 416.1,
+        "sdkP95Ms": 376.43,
+        "sdkP99Ms": 637.53,
+        "wirePersistedP95Ms": 294.77,
+        "wirePersistedP99Ms": 382.56,
+        "verifyP95Ms": 325.673,
+        "verifyP99Ms": 352.008,
+        "sqlCalls": 5060,
+        "historicalCalls": 2048,
+        "sqlPerMessage": 2.471,
+        "sqlExecMs": 218.64,
+        "outcomes": {
+          "confirmed": 1974,
+          "timeout": 70,
+          "unconfirmed": 4
+        },
+        "provisional": 74
+      }
+    ],
+    "sharedStackPool4": [
+      {
+        "round": 1,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 182.12,
+            "p99": 208.61,
+            "slowestWire1pctMean": 239.39
+          },
+          "queue": {
+            "p95": 0.32,
+            "p99": 0.97,
+            "slowestWire1pctMean": 0.04
+          },
+          "admission": {
+            "p95": 41.32,
+            "p99": 53.63,
+            "slowestWire1pctMean": 34.16
+          },
+          "archive": {
+            "p95": 146.39,
+            "p99": 165.51,
+            "slowestWire1pctMean": 187.97
+          },
+          "historicalPool": {
+            "p95": 31.86,
+            "p99": 42.91,
+            "slowestWire1pctMean": 25.65
+          },
+          "historicalQuery": {
+            "p95": 8.37,
+            "p99": 12.27,
+            "slowestWire1pctMean": 3.74
+          },
+          "receiptPool": {
+            "p95": 60.68,
+            "p99": 74.48,
+            "slowestWire1pctMean": 71.01
+          },
+          "receiptQuery": {
+            "p95": 16.63,
+            "p99": 23.46,
+            "slowestWire1pctMean": 19.41
+          },
+          "transaction": {
+            "p95": 42.81,
+            "p99": 54.97,
+            "slowestWire1pctMean": 34.99
+          },
+          "commit": {
+            "p95": 12.08,
+            "p99": 18.84,
+            "slowestWire1pctMean": 6.47
+          },
+          "wireToCommit": {
+            "p95": 121.48,
+            "p99": 156.25,
+            "slowestWire1pctMean": 151.75
+          },
+          "commitToAck": {
+            "p95": 79.48,
+            "p99": 90.17,
+            "slowestWire1pctMean": 87.64
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 9403.9,
+        "sdkPersistedPerSec": 108.89,
+        "wirePersistedPerSec": 108.89,
+        "syncOnly": 0,
+        "verifyPerSec": 108.89,
+        "firstAckP95Ms": 182.12,
+        "firstAckP99Ms": 208.61,
+        "sdkP95Ms": 184.48,
+        "sdkP99Ms": 213.55,
+        "wirePersistedP95Ms": 182.12,
+        "wirePersistedP99Ms": 208.61,
+        "verifyP95Ms": 146.388,
+        "verifyP99Ms": 165.51,
+        "sqlCalls": 2203,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 2.151,
+        "sqlExecMs": 123.38,
+        "outcomes": {
+          "confirmed": 1024
+        },
+        "provisional": 0
+      },
+      {
+        "round": 1,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 321.2,
+            "p99": 374.78,
+            "slowestWire1pctMean": 412.18
+          },
+          "queue": {
+            "p95": 0.62,
+            "p99": 3.97,
+            "slowestWire1pctMean": 0.7
+          },
+          "admission": {
+            "p95": 126.04,
+            "p99": 204.59,
+            "slowestWire1pctMean": 123.18
+          },
+          "archive": {
+            "p95": 206.91,
+            "p99": 265.48,
+            "slowestWire1pctMean": 258.41
+          },
+          "historicalPool": {
+            "p95": 112.57,
+            "p99": 192.9,
+            "slowestWire1pctMean": 113.82
+          },
+          "historicalQuery": {
+            "p95": 10.62,
+            "p99": 14.25,
+            "slowestWire1pctMean": 5.71
+          },
+          "receiptPool": {
+            "p95": 176.8,
+            "p99": 213.71,
+            "slowestWire1pctMean": 205.66
+          },
+          "receiptQuery": {
+            "p95": 14.4,
+            "p99": 23.68,
+            "slowestWire1pctMean": 25.46
+          },
+          "transaction": {
+            "p95": 57.07,
+            "p99": 69.03,
+            "slowestWire1pctMean": 39.79
+          },
+          "commit": {
+            "p95": 16.89,
+            "p99": 25.36,
+            "slowestWire1pctMean": 10.02
+          },
+          "wireToCommit": {
+            "p95": 246.66,
+            "p99": 291.67,
+            "slowestWire1pctMean": 260.61
+          },
+          "commitToAck": {
+            "p95": 112.09,
+            "p99": 151.13,
+            "slowestWire1pctMean": 151.57
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 8941.3,
+        "sdkPersistedPerSec": 114.52,
+        "wirePersistedPerSec": 114.52,
+        "syncOnly": 0,
+        "verifyPerSec": 114.52,
+        "firstAckP95Ms": 321.2,
+        "firstAckP99Ms": 374.78,
+        "sdkP95Ms": 325.16,
+        "sdkP99Ms": 380.11,
+        "wirePersistedP95Ms": 321.2,
+        "wirePersistedP99Ms": 374.78,
+        "verifyP95Ms": 206.908,
+        "verifyP99Ms": 265.478,
+        "sqlCalls": 1232,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 1.203,
+        "sqlExecMs": 65.33,
+        "outcomes": {
+          "confirmed": 1024
+        },
+        "provisional": 0
+      },
+      {
+        "round": 2,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 324.22,
+            "p99": 376.39,
+            "slowestWire1pctMean": 409.28
+          },
+          "queue": {
+            "p95": 0.59,
+            "p99": 2.38,
+            "slowestWire1pctMean": 1.97
+          },
+          "admission": {
+            "p95": 125.52,
+            "p99": 166.9,
+            "slowestWire1pctMean": 123.09
+          },
+          "archive": {
+            "p95": 214.75,
+            "p99": 248.09,
+            "slowestWire1pctMean": 265.59
+          },
+          "historicalPool": {
+            "p95": 113.26,
+            "p99": 137.15,
+            "slowestWire1pctMean": 112.16
+          },
+          "historicalQuery": {
+            "p95": 10.31,
+            "p99": 15.21,
+            "slowestWire1pctMean": 5.69
+          },
+          "receiptPool": {
+            "p95": 180.96,
+            "p99": 209.3,
+            "slowestWire1pctMean": 229.99
+          },
+          "receiptQuery": {
+            "p95": 14.98,
+            "p99": 22.67,
+            "slowestWire1pctMean": 11.49
+          },
+          "transaction": {
+            "p95": 60.63,
+            "p99": 86.55,
+            "slowestWire1pctMean": 59.94
+          },
+          "commit": {
+            "p95": 18.68,
+            "p99": 27.27,
+            "slowestWire1pctMean": 14.42
+          },
+          "wireToCommit": {
+            "p95": 242.84,
+            "p99": 286.79,
+            "slowestWire1pctMean": 295.27
+          },
+          "commitToAck": {
+            "p95": 107.59,
+            "p99": 128.5,
+            "slowestWire1pctMean": 114.01
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 9111.3,
+        "sdkPersistedPerSec": 112.39,
+        "wirePersistedPerSec": 112.39,
+        "syncOnly": 0,
+        "verifyPerSec": 112.39,
+        "firstAckP95Ms": 324.22,
+        "firstAckP99Ms": 376.39,
+        "sdkP95Ms": 327.68,
+        "sdkP99Ms": 378.44,
+        "wirePersistedP95Ms": 324.22,
+        "wirePersistedP99Ms": 376.39,
+        "verifyP95Ms": 214.753,
+        "verifyP99Ms": 248.095,
+        "sqlCalls": 1243,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 1.214,
+        "sqlExecMs": 61.78,
+        "outcomes": {
+          "confirmed": 1024
+        },
+        "provisional": 0
+      },
+      {
+        "round": 2,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 198.72,
+            "p99": 224.79,
+            "slowestWire1pctMean": 244.61
+          },
+          "queue": {
+            "p95": 0.34,
+            "p99": 0.88,
+            "slowestWire1pctMean": 0.03
+          },
+          "admission": {
+            "p95": 45.95,
+            "p99": 60.09,
+            "slowestWire1pctMean": 24.24
+          },
+          "archive": {
+            "p95": 162.34,
+            "p99": 188.59,
+            "slowestWire1pctMean": 208.95
+          },
+          "historicalPool": {
+            "p95": 36.51,
+            "p99": 47.2,
+            "slowestWire1pctMean": 15.94
+          },
+          "historicalQuery": {
+            "p95": 8.96,
+            "p99": 14.43,
+            "slowestWire1pctMean": 4.28
+          },
+          "receiptPool": {
+            "p95": 71.84,
+            "p99": 93.39,
+            "slowestWire1pctMean": 93.78
+          },
+          "receiptQuery": {
+            "p95": 17.68,
+            "p99": 22.8,
+            "slowestWire1pctMean": 16.16
+          },
+          "transaction": {
+            "p95": 46.96,
+            "p99": 63.55,
+            "slowestWire1pctMean": 55.6
+          },
+          "commit": {
+            "p95": 14.01,
+            "p99": 20.11,
+            "slowestWire1pctMean": 7.36
+          },
+          "wireToCommit": {
+            "p95": 130.49,
+            "p99": 155.98,
+            "slowestWire1pctMean": 154.09
+          },
+          "commitToAck": {
+            "p95": 82.55,
+            "p99": 97.98,
+            "slowestWire1pctMean": 90.52
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 10280.8,
+        "sdkPersistedPerSec": 99.6,
+        "wirePersistedPerSec": 99.51,
+        "syncOnly": 1,
+        "verifyPerSec": 99.6,
+        "firstAckP95Ms": 200.37,
+        "firstAckP99Ms": 225.45,
+        "sdkP95Ms": 203.07,
+        "sdkP99Ms": 229.05,
+        "wirePersistedP95Ms": 198.72,
+        "wirePersistedP99Ms": 224.79,
+        "verifyP95Ms": 162.342,
+        "verifyP99Ms": 188.588,
+        "sqlCalls": 2131,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 2.081,
+        "sqlExecMs": 81.41,
+        "outcomes": {
+          "confirmed": 1023,
+          "timeout": 1
+        },
+        "provisional": 1
+      },
+      {
+        "pooled": true,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 190.85,
+            "p99": 218.19,
+            "slowestWire1pctMean": 244.5
+          },
+          "queue": {
+            "p95": 0.33,
+            "p99": 0.95,
+            "slowestWire1pctMean": 0.03
+          },
+          "admission": {
+            "p95": 43.75,
+            "p99": 56.69,
+            "slowestWire1pctMean": 29.26
+          },
+          "archive": {
+            "p95": 154.94,
+            "p99": 179.59,
+            "slowestWire1pctMean": 200.35
+          },
+          "historicalPool": {
+            "p95": 35.09,
+            "p99": 46.06,
+            "slowestWire1pctMean": 21.44
+          },
+          "historicalQuery": {
+            "p95": 8.69,
+            "p99": 13.57,
+            "slowestWire1pctMean": 3.93
+          },
+          "receiptPool": {
+            "p95": 67.49,
+            "p99": 82.19,
+            "slowestWire1pctMean": 83.53
+          },
+          "receiptQuery": {
+            "p95": 17.23,
+            "p99": 22.82,
+            "slowestWire1pctMean": 17.87
+          },
+          "transaction": {
+            "p95": 45.76,
+            "p99": 59.7,
+            "slowestWire1pctMean": 44.84
+          },
+          "commit": {
+            "p95": 12.93,
+            "p99": 19.89,
+            "slowestWire1pctMean": 6.99
+          },
+          "wireToCommit": {
+            "p95": 126.39,
+            "p99": 156.25,
+            "slowestWire1pctMean": 153.63
+          },
+          "commitToAck": {
+            "p95": 81.02,
+            "p99": 94.89,
+            "slowestWire1pctMean": 90.88
+          }
+        },
+        "messages": 2048,
+        "attempts": 2048,
+        "elapsedMs": 19684.7,
+        "sdkPersistedPerSec": 104.04,
+        "wirePersistedPerSec": 103.99,
+        "syncOnly": 1,
+        "verifyPerSec": 104.04,
+        "firstAckP95Ms": 191.04,
+        "firstAckP99Ms": 219.36,
+        "sdkP95Ms": 194.59,
+        "sdkP99Ms": 223.93,
+        "wirePersistedP95Ms": 190.85,
+        "wirePersistedP99Ms": 218.19,
+        "verifyP95Ms": 154.938,
+        "verifyP99Ms": 179.586,
+        "sqlCalls": 4334,
+        "historicalCalls": 2048,
+        "sqlPerMessage": 2.116,
+        "sqlExecMs": 204.79,
+        "outcomes": {
+          "confirmed": 2047,
+          "timeout": 1
+        },
+        "provisional": 1
+      },
+      {
+        "pooled": true,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 323.13,
+            "p99": 376.39,
+            "slowestWire1pctMean": 412.44
+          },
+          "queue": {
+            "p95": 0.62,
+            "p99": 3.51,
+            "slowestWire1pctMean": 1.4
+          },
+          "admission": {
+            "p95": 125.88,
+            "p99": 201.68,
+            "slowestWire1pctMean": 125.19
+          },
+          "archive": {
+            "p95": 210.57,
+            "p99": 255.2,
+            "slowestWire1pctMean": 261
+          },
+          "historicalPool": {
+            "p95": 113.26,
+            "p99": 192,
+            "slowestWire1pctMean": 114.94
+          },
+          "historicalQuery": {
+            "p95": 10.43,
+            "p99": 14.79,
+            "slowestWire1pctMean": 5.81
+          },
+          "receiptPool": {
+            "p95": 179.55,
+            "p99": 212.44,
+            "slowestWire1pctMean": 216.57
+          },
+          "receiptQuery": {
+            "p95": 14.76,
+            "p99": 22.97,
+            "slowestWire1pctMean": 18.53
+          },
+          "transaction": {
+            "p95": 58.41,
+            "p99": 78.38,
+            "slowestWire1pctMean": 50.03
+          },
+          "commit": {
+            "p95": 17.64,
+            "p99": 27.08,
+            "slowestWire1pctMean": 12.51
+          },
+          "wireToCommit": {
+            "p95": 243.48,
+            "p99": 289.54,
+            "slowestWire1pctMean": 280.91
+          },
+          "commitToAck": {
+            "p95": 109.78,
+            "p99": 138.77,
+            "slowestWire1pctMean": 131.54
+          }
+        },
+        "messages": 2048,
+        "attempts": 2048,
+        "elapsedMs": 18052.6,
+        "sdkPersistedPerSec": 113.45,
+        "wirePersistedPerSec": 113.45,
+        "syncOnly": 0,
+        "verifyPerSec": 113.45,
+        "firstAckP95Ms": 323.13,
+        "firstAckP99Ms": 376.39,
+        "sdkP95Ms": 326.03,
+        "sdkP99Ms": 380.11,
+        "wirePersistedP95Ms": 323.13,
+        "wirePersistedP99Ms": 376.39,
+        "verifyP95Ms": 210.574,
+        "verifyP99Ms": 255.2,
+        "sqlCalls": 2475,
+        "historicalCalls": 2048,
+        "sqlPerMessage": 1.208,
+        "sqlExecMs": 127.12,
+        "outcomes": {
+          "confirmed": 2048
+        },
+        "provisional": 0
+      }
+    ],
+    "sharedStackPool4ConditionalPing": [
+      {
+        "round": 1,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 214.63,
+            "p99": 325.67,
+            "slowestWire1pctMean": 349.03
+          },
+          "queue": {
+            "p95": 0.43,
+            "p99": 2.73,
+            "slowestWire1pctMean": 0.08
+          },
+          "admission": {
+            "p95": 37.01,
+            "p99": 55.53,
+            "slowestWire1pctMean": 26.86
+          },
+          "archive": {
+            "p95": 170.44,
+            "p99": 298.84,
+            "slowestWire1pctMean": 306.09
+          },
+          "historicalPool": {
+            "p95": 23.15,
+            "p99": 46.69,
+            "slowestWire1pctMean": 14.57
+          },
+          "historicalQuery": {
+            "p95": 11.04,
+            "p99": 18.5,
+            "slowestWire1pctMean": 5.58
+          },
+          "receiptPool": {
+            "p95": 49.26,
+            "p99": 69.64,
+            "slowestWire1pctMean": 36.69
+          },
+          "receiptQuery": {
+            "p95": 29.5,
+            "p99": 48.77,
+            "slowestWire1pctMean": 24.53
+          },
+          "transaction": {
+            "p95": 67.96,
+            "p99": 109.26,
+            "slowestWire1pctMean": 58.62
+          },
+          "commit": {
+            "p95": 17.91,
+            "p99": 29.73,
+            "slowestWire1pctMean": 12.38
+          },
+          "wireToCommit": {
+            "p95": 151.86,
+            "p99": 200.59,
+            "slowestWire1pctMean": 184.85
+          },
+          "commitToAck": {
+            "p95": 87.01,
+            "p99": 165.56,
+            "slowestWire1pctMean": 164.17
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 11735.3,
+        "sdkPersistedPerSec": 87.26,
+        "wirePersistedPerSec": 87,
+        "syncOnly": 3,
+        "verifyPerSec": 87.26,
+        "firstAckP95Ms": 221.41,
+        "firstAckP99Ms": 340.27,
+        "sdkP95Ms": 227.97,
+        "sdkP99Ms": 341.9,
+        "wirePersistedP95Ms": 214.63,
+        "wirePersistedP99Ms": 325.67,
+        "verifyP95Ms": 170.442,
+        "verifyP99Ms": 298.837,
+        "sqlCalls": 2740,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 2.676,
+        "sqlExecMs": 88.96,
+        "outcomes": {
+          "confirmed": 1021,
+          "timeout": 3
+        },
+        "provisional": 3
+      },
+      {
+        "round": 1,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 351.21,
+            "p99": 410.88,
+            "slowestWire1pctMean": 423.19
+          },
+          "queue": {
+            "p95": 0.46,
+            "p99": 2.23,
+            "slowestWire1pctMean": 0.2
+          },
+          "admission": {
+            "p95": 115.89,
+            "p99": 139.58,
+            "slowestWire1pctMean": 83.84
+          },
+          "archive": {
+            "p95": 269.24,
+            "p99": 350.37,
+            "slowestWire1pctMean": 323.73
+          },
+          "historicalPool": {
+            "p95": 100.9,
+            "p99": 123.77,
+            "slowestWire1pctMean": 72.21
+          },
+          "historicalQuery": {
+            "p95": 14.74,
+            "p99": 23.84,
+            "slowestWire1pctMean": 4.84
+          },
+          "receiptPool": {
+            "p95": 184.18,
+            "p99": 218.95,
+            "slowestWire1pctMean": 208.93
+          },
+          "receiptQuery": {
+            "p95": 25.84,
+            "p99": 36.72,
+            "slowestWire1pctMean": 28.85
+          },
+          "transaction": {
+            "p95": 94.6,
+            "p99": 129.28,
+            "slowestWire1pctMean": 85.21
+          },
+          "commit": {
+            "p95": 25.58,
+            "p99": 38.85,
+            "slowestWire1pctMean": 20.38
+          },
+          "wireToCommit": {
+            "p95": 277.64,
+            "p99": 343.94,
+            "slowestWire1pctMean": 302.84
+          },
+          "commitToAck": {
+            "p95": 122.27,
+            "p99": 152.28,
+            "slowestWire1pctMean": 120.35
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 10295.8,
+        "sdkPersistedPerSec": 99.46,
+        "wirePersistedPerSec": 98.29,
+        "syncOnly": 12,
+        "verifyPerSec": 99.46,
+        "firstAckP95Ms": 368.12,
+        "firstAckP99Ms": 438.1,
+        "sdkP95Ms": 373.73,
+        "sdkP99Ms": 621.08,
+        "wirePersistedP95Ms": 351.21,
+        "wirePersistedP99Ms": 410.88,
+        "verifyP95Ms": 269.244,
+        "verifyP99Ms": 350.374,
+        "sqlCalls": 1795,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 1.753,
+        "sqlExecMs": 76.2,
+        "outcomes": {
+          "confirmed": 1012,
+          "timeout": 12
+        },
+        "provisional": 12
+      },
+      {
+        "round": 2,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 372.84,
+            "p99": 428.61,
+            "slowestWire1pctMean": 445.13
+          },
+          "queue": {
+            "p95": 0.43,
+            "p99": 2.36,
+            "slowestWire1pctMean": 0.05
+          },
+          "admission": {
+            "p95": 120.19,
+            "p99": 160.06,
+            "slowestWire1pctMean": 115.78
+          },
+          "archive": {
+            "p95": 287.88,
+            "p99": 350.93,
+            "slowestWire1pctMean": 308.17
+          },
+          "historicalPool": {
+            "p95": 105.16,
+            "p99": 135.45,
+            "slowestWire1pctMean": 104.28
+          },
+          "historicalQuery": {
+            "p95": 15.32,
+            "p99": 22.4,
+            "slowestWire1pctMean": 7.45
+          },
+          "receiptPool": {
+            "p95": 193.6,
+            "p99": 223.34,
+            "slowestWire1pctMean": 201.34
+          },
+          "receiptQuery": {
+            "p95": 27.77,
+            "p99": 39.06,
+            "slowestWire1pctMean": 22.89
+          },
+          "transaction": {
+            "p95": 109.59,
+            "p99": 160.31,
+            "slowestWire1pctMean": 64.08
+          },
+          "commit": {
+            "p95": 25.23,
+            "p99": 40.2,
+            "slowestWire1pctMean": 13.88
+          },
+          "wireToCommit": {
+            "p95": 305.84,
+            "p99": 373.26,
+            "slowestWire1pctMean": 331.14
+          },
+          "commitToAck": {
+            "p95": 120.14,
+            "p99": 154.44,
+            "slowestWire1pctMean": 113.99
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 10471.9,
+        "sdkPersistedPerSec": 97.79,
+        "wirePersistedPerSec": 95.78,
+        "syncOnly": 21,
+        "verifyPerSec": 97.79,
+        "firstAckP95Ms": 394.17,
+        "firstAckP99Ms": 457.07,
+        "sdkP95Ms": 401.87,
+        "sdkP99Ms": 709.83,
+        "wirePersistedP95Ms": 372.84,
+        "wirePersistedP99Ms": 428.61,
+        "verifyP95Ms": 287.885,
+        "verifyP99Ms": 350.931,
+        "sqlCalls": 1768,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 1.727,
+        "sqlExecMs": 98.01,
+        "outcomes": {
+          "confirmed": 1003,
+          "timeout": 21
+        },
+        "provisional": 21
+      },
+      {
+        "round": 2,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 296.71,
+            "p99": 381.56,
+            "slowestWire1pctMean": 435.46
+          },
+          "queue": {
+            "p95": 0.59,
+            "p99": 2.44,
+            "slowestWire1pctMean": 0.23
+          },
+          "admission": {
+            "p95": 48.33,
+            "p99": 73.07,
+            "slowestWire1pctMean": 77.62
+          },
+          "archive": {
+            "p95": 296.5,
+            "p99": 350.95,
+            "slowestWire1pctMean": 322.68
+          },
+          "historicalPool": {
+            "p95": 31.3,
+            "p99": 50.41,
+            "slowestWire1pctMean": 44.72
+          },
+          "historicalQuery": {
+            "p95": 16.57,
+            "p99": 26.6,
+            "slowestWire1pctMean": 22.53
+          },
+          "receiptPool": {
+            "p95": 69.51,
+            "p99": 109.92,
+            "slowestWire1pctMean": 81.4
+          },
+          "receiptQuery": {
+            "p95": 41.91,
+            "p99": 73.32,
+            "slowestWire1pctMean": 84.55
+          },
+          "transaction": {
+            "p95": 84.93,
+            "p99": 168.01,
+            "slowestWire1pctMean": 117.91
+          },
+          "commit": {
+            "p95": 24.99,
+            "p99": 38.42,
+            "slowestWire1pctMean": 16.86
+          },
+          "wireToCommit": {
+            "p95": 194.79,
+            "p99": 264.64,
+            "slowestWire1pctMean": 275.19
+          },
+          "commitToAck": {
+            "p95": 106.36,
+            "p99": 176.94,
+            "slowestWire1pctMean": 160.27
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 14889.2,
+        "sdkPersistedPerSec": 68.77,
+        "wirePersistedPerSec": 67.83,
+        "syncOnly": 14,
+        "verifyPerSec": 68.77,
+        "firstAckP95Ms": 329.67,
+        "firstAckP99Ms": 411.39,
+        "sdkP95Ms": 335.71,
+        "sdkP99Ms": 568.07,
+        "wirePersistedP95Ms": 296.71,
+        "wirePersistedP99Ms": 381.56,
+        "verifyP95Ms": 296.495,
+        "verifyP99Ms": 350.954,
+        "sqlCalls": 2682,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 2.619,
+        "sqlExecMs": 141.06,
+        "outcomes": {
+          "confirmed": 1010,
+          "timeout": 14
+        },
+        "provisional": 14
+      },
+      {
+        "pooled": true,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 244.22,
+            "p99": 360.15,
+            "slowestWire1pctMean": 404.29
+          },
+          "queue": {
+            "p95": 0.49,
+            "p99": 2.73,
+            "slowestWire1pctMean": 0.14
+          },
+          "admission": {
+            "p95": 44.39,
+            "p99": 68.62,
+            "slowestWire1pctMean": 54.01
+          },
+          "archive": {
+            "p95": 218.01,
+            "p99": 345.15,
+            "slowestWire1pctMean": 322.57
+          },
+          "historicalPool": {
+            "p95": 28.89,
+            "p99": 46.94,
+            "slowestWire1pctMean": 30.66
+          },
+          "historicalQuery": {
+            "p95": 14.01,
+            "p99": 23.58,
+            "slowestWire1pctMean": 14.35
+          },
+          "receiptPool": {
+            "p95": 62.06,
+            "p99": 94.01,
+            "slowestWire1pctMean": 65.49
+          },
+          "receiptQuery": {
+            "p95": 36.78,
+            "p99": 66.49,
+            "slowestWire1pctMean": 58.91
+          },
+          "transaction": {
+            "p95": 75.92,
+            "p99": 132.41,
+            "slowestWire1pctMean": 87.92
+          },
+          "commit": {
+            "p95": 22.82,
+            "p99": 35.01,
+            "slowestWire1pctMean": 16.44
+          },
+          "wireToCommit": {
+            "p95": 179.13,
+            "p99": 244.82,
+            "slowestWire1pctMean": 245.05
+          },
+          "commitToAck": {
+            "p95": 100.46,
+            "p99": 175.1,
+            "slowestWire1pctMean": 159.24
+          }
+        },
+        "messages": 2048,
+        "attempts": 2048,
+        "elapsedMs": 26624.5,
+        "sdkPersistedPerSec": 76.92,
+        "wirePersistedPerSec": 76.28,
+        "syncOnly": 17,
+        "verifyPerSec": 76.92,
+        "firstAckP95Ms": 272.28,
+        "firstAckP99Ms": 389.79,
+        "sdkP95Ms": 275.18,
+        "sdkP99Ms": 417.32,
+        "wirePersistedP95Ms": 244.22,
+        "wirePersistedP99Ms": 360.15,
+        "verifyP95Ms": 218.012,
+        "verifyP99Ms": 345.148,
+        "sqlCalls": 5422,
+        "historicalCalls": 2048,
+        "sqlPerMessage": 2.647,
+        "sqlExecMs": 230.02,
+        "outcomes": {
+          "confirmed": 2031,
+          "timeout": 17
+        },
+        "provisional": 17
+      },
+      {
+        "pooled": true,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 362.97,
+            "p99": 415.28,
+            "slowestWire1pctMean": 435.58
+          },
+          "queue": {
+            "p95": 0.44,
+            "p99": 2.36,
+            "slowestWire1pctMean": 0.12
+          },
+          "admission": {
+            "p95": 118.45,
+            "p99": 152.93,
+            "slowestWire1pctMean": 98.03
+          },
+          "archive": {
+            "p95": 277.77,
+            "p99": 350.87,
+            "slowestWire1pctMean": 319.13
+          },
+          "historicalPool": {
+            "p95": 103.26,
+            "p99": 134.7,
+            "slowestWire1pctMean": 86.11
+          },
+          "historicalQuery": {
+            "p95": 14.93,
+            "p99": 22.55,
+            "slowestWire1pctMean": 6.47
+          },
+          "receiptPool": {
+            "p95": 189.6,
+            "p99": 223.34,
+            "slowestWire1pctMean": 209.2
+          },
+          "receiptQuery": {
+            "p95": 26.71,
+            "p99": 37.36,
+            "slowestWire1pctMean": 25.72
+          },
+          "transaction": {
+            "p95": 103.35,
+            "p99": 151.61,
+            "slowestWire1pctMean": 72.13
+          },
+          "commit": {
+            "p95": 25.37,
+            "p99": 39.05,
+            "slowestWire1pctMean": 15.26
+          },
+          "wireToCommit": {
+            "p95": 287.48,
+            "p99": 358.19,
+            "slowestWire1pctMean": 315.36
+          },
+          "commitToAck": {
+            "p95": 121.06,
+            "p99": 154.44,
+            "slowestWire1pctMean": 120.22
+          }
+        },
+        "messages": 2048,
+        "attempts": 2048,
+        "elapsedMs": 20767.7,
+        "sdkPersistedPerSec": 98.61,
+        "wirePersistedPerSec": 97.03,
+        "syncOnly": 33,
+        "verifyPerSec": 98.61,
+        "firstAckP95Ms": 382.36,
+        "firstAckP99Ms": 450.41,
+        "sdkP95Ms": 387.98,
+        "sdkP99Ms": 671.12,
+        "wirePersistedP95Ms": 362.97,
+        "wirePersistedP99Ms": 415.28,
+        "verifyP95Ms": 277.769,
+        "verifyP99Ms": 350.868,
+        "sqlCalls": 3563,
+        "historicalCalls": 2048,
+        "sqlPerMessage": 1.74,
+        "sqlExecMs": 174.21,
+        "outcomes": {
+          "confirmed": 2015,
+          "timeout": 33
+        },
+        "provisional": 33
+      }
+    ],
+    "freshPool2": [
+      {
+        "round": 1,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 250.56,
+            "p99": 316.17,
+            "slowestWire1pctMean": 349.41
+          },
+          "queue": {
+            "p95": 0.52,
+            "p99": 1.39,
+            "slowestWire1pctMean": 0.06
+          },
+          "admission": {
+            "p95": 103.29,
+            "p99": 133.83,
+            "slowestWire1pctMean": 54.84
+          },
+          "archive": {
+            "p95": 159.67,
+            "p99": 224.45,
+            "slowestWire1pctMean": 281.61
+          },
+          "historicalPool": {
+            "p95": 93.74,
+            "p99": 128.07,
+            "slowestWire1pctMean": 48.21
+          },
+          "historicalQuery": {
+            "p95": 8.64,
+            "p99": 14.14,
+            "slowestWire1pctMean": 3.27
+          },
+          "receiptPool": {
+            "p95": 123.38,
+            "p99": 184.69,
+            "slowestWire1pctMean": 129.17
+          },
+          "receiptQuery": {
+            "p95": 11.05,
+            "p99": 17.55,
+            "slowestWire1pctMean": 11.38
+          },
+          "transaction": {
+            "p95": 52.21,
+            "p99": 92.41,
+            "slowestWire1pctMean": 71.75
+          },
+          "commit": {
+            "p95": 14.9,
+            "p99": 24.19,
+            "slowestWire1pctMean": 9.2
+          },
+          "wireToCommit": {
+            "p95": 189.23,
+            "p99": 262.55,
+            "slowestWire1pctMean": 242.49
+          },
+          "commitToAck": {
+            "p95": 81.89,
+            "p99": 114.81,
+            "slowestWire1pctMean": 106.92
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 13715.9,
+        "sdkPersistedPerSec": 74.66,
+        "wirePersistedPerSec": 74.59,
+        "syncOnly": 1,
+        "verifyPerSec": 74.66,
+        "firstAckP95Ms": 252.64,
+        "firstAckP99Ms": 318.95,
+        "sdkP95Ms": 258.87,
+        "sdkP99Ms": 325.51,
+        "wirePersistedP95Ms": 250.56,
+        "wirePersistedP99Ms": 316.17,
+        "verifyP95Ms": 159.666,
+        "verifyP99Ms": 224.453,
+        "sqlCalls": 1167,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 1.14,
+        "sqlExecMs": 79.3,
+        "outcomes": {
+          "confirmed": 1023,
+          "timeout": 1
+        },
+        "provisional": 1
+      },
+      {
+        "round": 1,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 766.15,
+            "p99": 859.42,
+            "slowestWire1pctMean": 990.22
+          },
+          "queue": {
+            "p95": 0.51,
+            "p99": 2.2,
+            "slowestWire1pctMean": 0.01
+          },
+          "admission": {
+            "p95": 495.12,
+            "p99": 581.5,
+            "slowestWire1pctMean": 645.94
+          },
+          "archive": {
+            "p95": 357.04,
+            "p99": 389.05,
+            "slowestWire1pctMean": 316.78
+          },
+          "historicalPool": {
+            "p95": 467,
+            "p99": 553.45,
+            "slowestWire1pctMean": 555.62
+          },
+          "historicalQuery": {
+            "p95": 29.76,
+            "p99": 66.22,
+            "slowestWire1pctMean": 71.5
+          },
+          "receiptPool": {
+            "p95": 323.88,
+            "p99": 339.85,
+            "slowestWire1pctMean": 298.87
+          },
+          "receiptQuery": {
+            "p95": 15.49,
+            "p99": 27.69,
+            "slowestWire1pctMean": 17.43
+          },
+          "transaction": {
+            "p95": 205.51,
+            "p99": 377.87,
+            "slowestWire1pctMean": 108.39
+          },
+          "commit": {
+            "p95": 44.62,
+            "p99": 148.69,
+            "slowestWire1pctMean": 22.23
+          },
+          "wireToCommit": {
+            "p95": 664.57,
+            "p99": 956.14,
+            "slowestWire1pctMean": 783.75
+          },
+          "commitToAck": {
+            "p95": 275.76,
+            "p99": 299.23,
+            "slowestWire1pctMean": 206.47
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 23703.7,
+        "sdkPersistedPerSec": 43.2,
+        "wirePersistedPerSec": 32.4,
+        "syncOnly": 256,
+        "verifyPerSec": 43.2,
+        "firstAckP95Ms": 821.6,
+        "firstAckP99Ms": 953.79,
+        "sdkP95Ms": 1536.54,
+        "sdkP99Ms": 2374.19,
+        "wirePersistedP95Ms": 766.15,
+        "wirePersistedP99Ms": 859.42,
+        "verifyP95Ms": 357.035,
+        "verifyP99Ms": 389.054,
+        "sqlCalls": 808,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 0.789,
+        "sqlExecMs": 44.41,
+        "outcomes": {
+          "confirmed": 768,
+          "timeout": 256
+        },
+        "provisional": 256
+      },
+      {
+        "round": 2,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 760.35,
+            "p99": 871.9,
+            "slowestWire1pctMean": 902.09
+          },
+          "queue": {
+            "p95": 0.62,
+            "p99": 2.47,
+            "slowestWire1pctMean": 0.59
+          },
+          "admission": {
+            "p95": 459.94,
+            "p99": 547.43,
+            "slowestWire1pctMean": 562.19
+          },
+          "archive": {
+            "p95": 352.47,
+            "p99": 377.69,
+            "slowestWire1pctMean": 311.31
+          },
+          "historicalPool": {
+            "p95": 431.66,
+            "p99": 528.6,
+            "slowestWire1pctMean": 530.43
+          },
+          "historicalQuery": {
+            "p95": 16.93,
+            "p99": 42.67,
+            "slowestWire1pctMean": 23.25
+          },
+          "receiptPool": {
+            "p95": 317.52,
+            "p99": 337.08,
+            "slowestWire1pctMean": 299.4
+          },
+          "receiptQuery": {
+            "p95": 14.52,
+            "p99": 30.81,
+            "slowestWire1pctMean": 11.8
+          },
+          "transaction": {
+            "p95": 125.66,
+            "p99": 200.23,
+            "slowestWire1pctMean": 116.12
+          },
+          "commit": {
+            "p95": 29.35,
+            "p99": 93.55,
+            "slowestWire1pctMean": 34.41
+          },
+          "wireToCommit": {
+            "p95": 604.86,
+            "p99": 722.96,
+            "slowestWire1pctMean": 706.05
+          },
+          "commitToAck": {
+            "p95": 264.27,
+            "p99": 297.24,
+            "slowestWire1pctMean": 196.04
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 19128.3,
+        "sdkPersistedPerSec": 53.53,
+        "wirePersistedPerSec": 43.91,
+        "syncOnly": 184,
+        "verifyPerSec": 53.53,
+        "firstAckP95Ms": 798.4,
+        "firstAckP99Ms": 894.71,
+        "sdkP95Ms": 983.69,
+        "sdkP99Ms": 1214.82,
+        "wirePersistedP95Ms": 760.35,
+        "wirePersistedP99Ms": 871.9,
+        "verifyP95Ms": 352.474,
+        "verifyP99Ms": 377.69,
+        "sqlCalls": 883,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 0.862,
+        "sqlExecMs": 67.99,
+        "outcomes": {
+          "confirmed": 840,
+          "timeout": 184
+        },
+        "provisional": 184
+      },
+      {
+        "round": 2,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 233.93,
+            "p99": 270.3,
+            "slowestWire1pctMean": 286.89
+          },
+          "queue": {
+            "p95": 0.46,
+            "p99": 1.19,
+            "slowestWire1pctMean": 0.02
+          },
+          "admission": {
+            "p95": 101.79,
+            "p99": 138.16,
+            "slowestWire1pctMean": 96.01
+          },
+          "archive": {
+            "p95": 148.9,
+            "p99": 175.78,
+            "slowestWire1pctMean": 178.75
+          },
+          "historicalPool": {
+            "p95": 94.17,
+            "p99": 128.04,
+            "slowestWire1pctMean": 86.4
+          },
+          "historicalQuery": {
+            "p95": 8.43,
+            "p99": 12.84,
+            "slowestWire1pctMean": 4.87
+          },
+          "receiptPool": {
+            "p95": 123.69,
+            "p99": 142.46,
+            "slowestWire1pctMean": 151.31
+          },
+          "receiptQuery": {
+            "p95": 11.04,
+            "p99": 15.61,
+            "slowestWire1pctMean": 11.76
+          },
+          "transaction": {
+            "p95": 50.43,
+            "p99": 74.25,
+            "slowestWire1pctMean": 51.82
+          },
+          "commit": {
+            "p95": 14.43,
+            "p99": 26.27,
+            "slowestWire1pctMean": 20.81
+          },
+          "wireToCommit": {
+            "p95": 172.25,
+            "p99": 212.92,
+            "slowestWire1pctMean": 190.13
+          },
+          "commitToAck": {
+            "p95": 78.41,
+            "p99": 108.89,
+            "slowestWire1pctMean": 96.76
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 13064.4,
+        "sdkPersistedPerSec": 78.38,
+        "wirePersistedPerSec": 78.38,
+        "syncOnly": 0,
+        "verifyPerSec": 78.38,
+        "firstAckP95Ms": 233.93,
+        "firstAckP99Ms": 270.3,
+        "sdkP95Ms": 238.09,
+        "sdkP99Ms": 275.23,
+        "wirePersistedP95Ms": 233.93,
+        "wirePersistedP99Ms": 270.3,
+        "verifyP95Ms": 148.895,
+        "verifyP99Ms": 175.78,
+        "sqlCalls": 1104,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 1.078,
+        "sqlExecMs": 50.74,
+        "outcomes": {
+          "confirmed": 1024,
+          "timeout": 0
+        },
+        "provisional": 0
+      },
+      {
+        "pooled": true,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 240.08,
+            "p99": 301.42,
+            "slowestWire1pctMean": 332.33
+          },
+          "queue": {
+            "p95": 0.49,
+            "p99": 1.37,
+            "slowestWire1pctMean": 0.06
+          },
+          "admission": {
+            "p95": 102.37,
+            "p99": 138.16,
+            "slowestWire1pctMean": 97.2
+          },
+          "archive": {
+            "p95": 153.48,
+            "p99": 202.08,
+            "slowestWire1pctMean": 219.76
+          },
+          "historicalPool": {
+            "p95": 94.06,
+            "p99": 128.07,
+            "slowestWire1pctMean": 88.53
+          },
+          "historicalQuery": {
+            "p95": 8.56,
+            "p99": 14.14,
+            "slowestWire1pctMean": 3.74
+          },
+          "receiptPool": {
+            "p95": 123.69,
+            "p99": 158.24,
+            "slowestWire1pctMean": 130.99
+          },
+          "receiptQuery": {
+            "p95": 11.05,
+            "p99": 16.05,
+            "slowestWire1pctMean": 10.7
+          },
+          "transaction": {
+            "p95": 51.15,
+            "p99": 85.06,
+            "slowestWire1pctMean": 62.59
+          },
+          "commit": {
+            "p95": 14.78,
+            "p99": 26.25,
+            "slowestWire1pctMean": 8.19
+          },
+          "wireToCommit": {
+            "p95": 179.92,
+            "p99": 235.38,
+            "slowestWire1pctMean": 243.44
+          },
+          "commitToAck": {
+            "p95": 81.42,
+            "p99": 111.82,
+            "slowestWire1pctMean": 88.89
+          }
+        },
+        "messages": 2048,
+        "attempts": 2048,
+        "elapsedMs": 26780.3,
+        "sdkPersistedPerSec": 76.47,
+        "wirePersistedPerSec": 76.44,
+        "syncOnly": 1,
+        "verifyPerSec": 76.47,
+        "firstAckP95Ms": 240.59,
+        "firstAckP99Ms": 302.69,
+        "sdkP95Ms": 244.69,
+        "sdkP99Ms": 306.92,
+        "wirePersistedP95Ms": 240.08,
+        "wirePersistedP99Ms": 301.42,
+        "verifyP95Ms": 153.479,
+        "verifyP99Ms": 202.078,
+        "sqlCalls": 2271,
+        "historicalCalls": 2048,
+        "sqlPerMessage": 1.109,
+        "sqlExecMs": 130.04,
+        "outcomes": {
+          "confirmed": 2047,
+          "timeout": 1
+        },
+        "provisional": 1
+      },
+      {
+        "pooled": true,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 765.56,
+            "p99": 861,
+            "slowestWire1pctMean": 944
+          },
+          "queue": {
+            "p95": 0.58,
+            "p99": 2.31,
+            "slowestWire1pctMean": 0.32
+          },
+          "admission": {
+            "p95": 481.4,
+            "p99": 574.53,
+            "slowestWire1pctMean": 600.81
+          },
+          "archive": {
+            "p95": 354.35,
+            "p99": 382.97,
+            "slowestWire1pctMean": 314.44
+          },
+          "historicalPool": {
+            "p95": 448.84,
+            "p99": 545.83,
+            "slowestWire1pctMean": 543
+          },
+          "historicalQuery": {
+            "p95": 23.04,
+            "p99": 51.64,
+            "slowestWire1pctMean": 44.77
+          },
+          "receiptPool": {
+            "p95": 321.92,
+            "p99": 339.21,
+            "slowestWire1pctMean": 299.87
+          },
+          "receiptQuery": {
+            "p95": 15.04,
+            "p99": 29.41,
+            "slowestWire1pctMean": 14.29
+          },
+          "transaction": {
+            "p95": 158.05,
+            "p99": 304.16,
+            "slowestWire1pctMean": 112.28
+          },
+          "commit": {
+            "p95": 37.7,
+            "p99": 125.75,
+            "slowestWire1pctMean": 28.37
+          },
+          "wireToCommit": {
+            "p95": 644.2,
+            "p99": 804.87,
+            "slowestWire1pctMean": 742.34
+          },
+          "commitToAck": {
+            "p95": 269.18,
+            "p99": 298.91,
+            "slowestWire1pctMean": 201.66
+          }
+        },
+        "messages": 2048,
+        "attempts": 2048,
+        "elapsedMs": 42831.9,
+        "sdkPersistedPerSec": 47.81,
+        "wirePersistedPerSec": 37.54,
+        "syncOnly": 440,
+        "verifyPerSec": 47.81,
+        "firstAckP95Ms": 811.76,
+        "firstAckP99Ms": 931.11,
+        "sdkP95Ms": 1137.72,
+        "sdkP99Ms": 2213.01,
+        "wirePersistedP95Ms": 765.56,
+        "wirePersistedP99Ms": 861,
+        "verifyP95Ms": 354.353,
+        "verifyP99Ms": 382.973,
+        "sqlCalls": 1691,
+        "historicalCalls": 2048,
+        "sqlPerMessage": 0.826,
+        "sqlExecMs": 112.41,
+        "outcomes": {
+          "confirmed": 1608,
+          "timeout": 440
+        },
+        "provisional": 440
+      }
+    ],
+    "freshPool4": [
+      {
+        "round": 1,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 221.23,
+            "p99": 327.46,
+            "slowestWire1pctMean": 387.83
+          },
+          "queue": {
+            "p95": 0.5,
+            "p99": 1.33,
+            "slowestWire1pctMean": 0.06
+          },
+          "admission": {
+            "p95": 54.72,
+            "p99": 78.12,
+            "slowestWire1pctMean": 48.6
+          },
+          "archive": {
+            "p95": 167.47,
+            "p99": 252.63,
+            "slowestWire1pctMean": 325.01
+          },
+          "historicalPool": {
+            "p95": 43.27,
+            "p99": 59.51,
+            "slowestWire1pctMean": 39.91
+          },
+          "historicalQuery": {
+            "p95": 10.17,
+            "p99": 17.22,
+            "slowestWire1pctMean": 3
+          },
+          "receiptPool": {
+            "p95": 88.62,
+            "p99": 115.21,
+            "slowestWire1pctMean": 87.23
+          },
+          "receiptQuery": {
+            "p95": 21.03,
+            "p99": 32.04,
+            "slowestWire1pctMean": 22.89
+          },
+          "transaction": {
+            "p95": 59.12,
+            "p99": 98.15,
+            "slowestWire1pctMean": 56.11
+          },
+          "commit": {
+            "p95": 17.34,
+            "p99": 32.33,
+            "slowestWire1pctMean": 6.87
+          },
+          "wireToCommit": {
+            "p95": 157.64,
+            "p99": 239.32,
+            "slowestWire1pctMean": 261.69
+          },
+          "commitToAck": {
+            "p95": 90.21,
+            "p99": 114.08,
+            "slowestWire1pctMean": 126.14
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 12034.6,
+        "sdkPersistedPerSec": 85.09,
+        "wirePersistedPerSec": 85.09,
+        "syncOnly": 0,
+        "verifyPerSec": 85.09,
+        "firstAckP95Ms": 221.23,
+        "firstAckP99Ms": 327.46,
+        "sdkP95Ms": 224.34,
+        "sdkP99Ms": 330.83,
+        "wirePersistedP95Ms": 221.23,
+        "wirePersistedP99Ms": 327.46,
+        "verifyP95Ms": 167.473,
+        "verifyP99Ms": 252.629,
+        "sqlCalls": 2204,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 2.152,
+        "sqlExecMs": 74.01,
+        "outcomes": {
+          "confirmed": 1024
+        },
+        "provisional": 0
+      },
+      {
+        "round": 1,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 378.29,
+            "p99": 436.32,
+            "slowestWire1pctMean": 486.64
+          },
+          "queue": {
+            "p95": 0.6,
+            "p99": 3.12,
+            "slowestWire1pctMean": 0.1
+          },
+          "admission": {
+            "p95": 156.51,
+            "p99": 212.32,
+            "slowestWire1pctMean": 153.42
+          },
+          "archive": {
+            "p95": 244.56,
+            "p99": 326.84,
+            "slowestWire1pctMean": 293.91
+          },
+          "historicalPool": {
+            "p95": 139.33,
+            "p99": 184.37,
+            "slowestWire1pctMean": 141.83
+          },
+          "historicalQuery": {
+            "p95": 14.22,
+            "p99": 27.11,
+            "slowestWire1pctMean": 5.83
+          },
+          "receiptPool": {
+            "p95": 204.18,
+            "p99": 254.19,
+            "slowestWire1pctMean": 244.17
+          },
+          "receiptQuery": {
+            "p95": 22.33,
+            "p99": 37.41,
+            "slowestWire1pctMean": 22.98
+          },
+          "transaction": {
+            "p95": 77.16,
+            "p99": 119.91,
+            "slowestWire1pctMean": 89.04
+          },
+          "commit": {
+            "p95": 23.19,
+            "p99": 39.41,
+            "slowestWire1pctMean": 15.14
+          },
+          "wireToCommit": {
+            "p95": 285.8,
+            "p99": 350.43,
+            "slowestWire1pctMean": 348.3
+          },
+          "commitToAck": {
+            "p95": 130.75,
+            "p99": 182.65,
+            "slowestWire1pctMean": 138.35
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 11662.4,
+        "sdkPersistedPerSec": 87.8,
+        "wirePersistedPerSec": 87.2,
+        "syncOnly": 7,
+        "verifyPerSec": 87.8,
+        "firstAckP95Ms": 382.88,
+        "firstAckP99Ms": 451.91,
+        "sdkP95Ms": 387.29,
+        "sdkP99Ms": 519.08,
+        "wirePersistedP95Ms": 378.29,
+        "wirePersistedP99Ms": 436.32,
+        "verifyP95Ms": 244.555,
+        "verifyP99Ms": 326.844,
+        "sqlCalls": 1319,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 1.288,
+        "sqlExecMs": 68.27,
+        "outcomes": {
+          "confirmed": 1017,
+          "timeout": 7
+        },
+        "provisional": 7
+      },
+      {
+        "round": 2,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 354.1,
+            "p99": 420.36,
+            "slowestWire1pctMean": 449.84
+          },
+          "queue": {
+            "p95": 0.56,
+            "p99": 3.22,
+            "slowestWire1pctMean": 0.3
+          },
+          "admission": {
+            "p95": 143,
+            "p99": 210.81,
+            "slowestWire1pctMean": 142.05
+          },
+          "archive": {
+            "p95": 233.53,
+            "p99": 335.49,
+            "slowestWire1pctMean": 281.7
+          },
+          "historicalPool": {
+            "p95": 124.77,
+            "p99": 186.74,
+            "slowestWire1pctMean": 124.16
+          },
+          "historicalQuery": {
+            "p95": 13.15,
+            "p99": 21,
+            "slowestWire1pctMean": 6.03
+          },
+          "receiptPool": {
+            "p95": 194.69,
+            "p99": 248.01,
+            "slowestWire1pctMean": 247.65
+          },
+          "receiptQuery": {
+            "p95": 20.24,
+            "p99": 31.5,
+            "slowestWire1pctMean": 12.27
+          },
+          "transaction": {
+            "p95": 81.93,
+            "p99": 127.67,
+            "slowestWire1pctMean": 55.66
+          },
+          "commit": {
+            "p95": 21.86,
+            "p99": 34.02,
+            "slowestWire1pctMean": 10.26
+          },
+          "wireToCommit": {
+            "p95": 274.77,
+            "p99": 362.72,
+            "slowestWire1pctMean": 318.49
+          },
+          "commitToAck": {
+            "p95": 123.03,
+            "p99": 152.5,
+            "slowestWire1pctMean": 131.34
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 10990.7,
+        "sdkPersistedPerSec": 93.17,
+        "wirePersistedPerSec": 92.53,
+        "syncOnly": 7,
+        "verifyPerSec": 93.17,
+        "firstAckP95Ms": 357.75,
+        "firstAckP99Ms": 445.64,
+        "sdkP95Ms": 361.41,
+        "sdkP99Ms": 464.51,
+        "wirePersistedP95Ms": 354.1,
+        "wirePersistedP99Ms": 420.36,
+        "verifyP95Ms": 233.533,
+        "verifyP99Ms": 335.494,
+        "sqlCalls": 1299,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 1.269,
+        "sqlExecMs": 98.92,
+        "outcomes": {
+          "confirmed": 1017,
+          "timeout": 7
+        },
+        "provisional": 7
+      },
+      {
+        "round": 2,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 346.07,
+            "p99": 451.52,
+            "slowestWire1pctMean": 568.21
+          },
+          "queue": {
+            "p95": 0.7,
+            "p99": 2.68,
+            "slowestWire1pctMean": 0.22
+          },
+          "admission": {
+            "p95": 124.51,
+            "p99": 266.09,
+            "slowestWire1pctMean": 239.42
+          },
+          "archive": {
+            "p95": 280.39,
+            "p99": 354.46,
+            "slowestWire1pctMean": 298.97
+          },
+          "historicalPool": {
+            "p95": 102.59,
+            "p99": 193.89,
+            "slowestWire1pctMean": 183.27
+          },
+          "historicalQuery": {
+            "p95": 18.62,
+            "p99": 43.74,
+            "slowestWire1pctMean": 34.91
+          },
+          "receiptPool": {
+            "p95": 165.99,
+            "p99": 240.12,
+            "slowestWire1pctMean": 209.71
+          },
+          "receiptQuery": {
+            "p95": 41.37,
+            "p99": 84.48,
+            "slowestWire1pctMean": 50.33
+          },
+          "transaction": {
+            "p95": 139.1,
+            "p99": 295.63,
+            "slowestWire1pctMean": 198.35
+          },
+          "commit": {
+            "p95": 39.36,
+            "p99": 94.14,
+            "slowestWire1pctMean": 57.73
+          },
+          "wireToCommit": {
+            "p95": 302.08,
+            "p99": 561.59,
+            "slowestWire1pctMean": 491.32
+          },
+          "commitToAck": {
+            "p95": 116.57,
+            "p99": 156.96,
+            "slowestWire1pctMean": 76.88
+          }
+        },
+        "messages": 1024,
+        "attempts": 1024,
+        "elapsedMs": 18332.1,
+        "sdkPersistedPerSec": 55.86,
+        "wirePersistedPerSec": 54.39,
+        "syncOnly": 27,
+        "verifyPerSec": 55.86,
+        "firstAckP95Ms": 396.19,
+        "firstAckP99Ms": 574.83,
+        "sdkP95Ms": 413.09,
+        "sdkP99Ms": 1041.9,
+        "wirePersistedP95Ms": 346.07,
+        "wirePersistedP99Ms": 451.52,
+        "verifyP95Ms": 280.391,
+        "verifyP99Ms": 354.457,
+        "sqlCalls": 2070,
+        "historicalCalls": 1024,
+        "sqlPerMessage": 2.021,
+        "sqlExecMs": 102.45,
+        "outcomes": {
+          "confirmed": 997,
+          "timeout": 27
+        },
+        "provisional": 27
+      },
+      {
+        "pooled": true,
+        "concurrency": 16,
+        "stages": {
+          "wire": {
+            "p95": 304.54,
+            "p99": 409.55,
+            "slowestWire1pctMean": 492.38
+          },
+          "queue": {
+            "p95": 0.61,
+            "p99": 2.52,
+            "slowestWire1pctMean": 0.16
+          },
+          "admission": {
+            "p95": 97.42,
+            "p99": 176.05,
+            "slowestWire1pctMean": 169.62
+          },
+          "archive": {
+            "p95": 234.69,
+            "p99": 351.29,
+            "slowestWire1pctMean": 298.44
+          },
+          "historicalPool": {
+            "p95": 75.13,
+            "p99": 145.92,
+            "slowestWire1pctMean": 131.17
+          },
+          "historicalQuery": {
+            "p95": 14.94,
+            "p99": 32.96,
+            "slowestWire1pctMean": 24.13
+          },
+          "receiptPool": {
+            "p95": 141.3,
+            "p99": 211.54,
+            "slowestWire1pctMean": 182.06
+          },
+          "receiptQuery": {
+            "p95": 31.98,
+            "p99": 66.08,
+            "slowestWire1pctMean": 47.69
+          },
+          "transaction": {
+            "p95": 109.34,
+            "p99": 217.05,
+            "slowestWire1pctMean": 150.89
+          },
+          "commit": {
+            "p95": 29.43,
+            "p99": 61.7,
+            "slowestWire1pctMean": 45.84
+          },
+          "wireToCommit": {
+            "p95": 253.39,
+            "p99": 436.84,
+            "slowestWire1pctMean": 403.41
+          },
+          "commitToAck": {
+            "p95": 102.08,
+            "p99": 148.18,
+            "slowestWire1pctMean": 88.97
+          }
+        },
+        "messages": 2048,
+        "attempts": 2048,
+        "elapsedMs": 30366.7,
+        "sdkPersistedPerSec": 67.44,
+        "wirePersistedPerSec": 66.55,
+        "syncOnly": 27,
+        "verifyPerSec": 67.44,
+        "firstAckP95Ms": 325.52,
+        "firstAckP99Ms": 513.71,
+        "sdkP95Ms": 332.6,
+        "sdkP99Ms": 721.71,
+        "wirePersistedP95Ms": 304.54,
+        "wirePersistedP99Ms": 409.55,
+        "verifyP95Ms": 234.693,
+        "verifyP99Ms": 351.287,
+        "sqlCalls": 4274,
+        "historicalCalls": 2048,
+        "sqlPerMessage": 2.087,
+        "sqlExecMs": 176.46,
+        "outcomes": {
+          "confirmed": 2021,
+          "timeout": 27
+        },
+        "provisional": 27
+      },
+      {
+        "pooled": true,
+        "concurrency": 32,
+        "stages": {
+          "wire": {
+            "p95": 367.5,
+            "p99": 431.85,
+            "slowestWire1pctMean": 470.76
+          },
+          "queue": {
+            "p95": 0.58,
+            "p99": 3.15,
+            "slowestWire1pctMean": 0.19
+          },
+          "admission": {
+            "p95": 149.59,
+            "p99": 211.47,
+            "slowestWire1pctMean": 140.97
+          },
+          "archive": {
+            "p95": 240.38,
+            "p99": 335.49,
+            "slowestWire1pctMean": 296.52
+          },
+          "historicalPool": {
+            "p95": 134.45,
+            "p99": 185.51,
+            "slowestWire1pctMean": 125.71
+          },
+          "historicalQuery": {
+            "p95": 13.66,
+            "p99": 24.47,
+            "slowestWire1pctMean": 6.02
+          },
+          "receiptPool": {
+            "p95": 200.9,
+            "p99": 251.53,
+            "slowestWire1pctMean": 253.43
+          },
+          "receiptQuery": {
+            "p95": 21.08,
+            "p99": 32.25,
+            "slowestWire1pctMean": 18.73
+          },
+          "transaction": {
+            "p95": 79.27,
+            "p99": 126.38,
+            "slowestWire1pctMean": 75.7
+          },
+          "commit": {
+            "p95": 22.23,
+            "p99": 37.23,
+            "slowestWire1pctMean": 12.91
+          },
+          "wireToCommit": {
+            "p95": 279.58,
+            "p99": 362.72,
+            "slowestWire1pctMean": 330.42
+          },
+          "commitToAck": {
+            "p95": 125.99,
+            "p99": 169.48,
+            "slowestWire1pctMean": 140.34
+          }
+        },
+        "messages": 2048,
+        "attempts": 2048,
+        "elapsedMs": 22653.1,
+        "sdkPersistedPerSec": 90.41,
+        "wirePersistedPerSec": 89.79,
+        "syncOnly": 14,
+        "verifyPerSec": 90.41,
+        "firstAckP95Ms": 374.7,
+        "firstAckP99Ms": 447.8,
+        "sdkP95Ms": 378.39,
+        "sdkP99Ms": 472.23,
+        "wirePersistedP95Ms": 367.5,
+        "wirePersistedP99Ms": 431.85,
+        "verifyP95Ms": 240.375,
+        "verifyP99Ms": 335.494,
+        "sqlCalls": 2618,
+        "historicalCalls": 2048,
+        "sqlPerMessage": 1.278,
+        "sqlExecMs": 167.18,
+        "outcomes": {
+          "confirmed": 2034,
+          "timeout": 14
+        },
+        "provisional": 14
+      }
+    ]
+  },
+  "timeoutRetry": [
+    {
+      "mode": "online",
+      "binding": "C",
+      "clientId": "phase12-client-z",
+      "cid": "1A68QK8BDG9JADZJVW",
+      "serverId": "9377d2d9-ad31-4ac7-be6f-4c32aaaf3e43",
+      "seq": 2,
+      "attempts": 2,
+      "admissionMs": 373,
+      "retryMs": 2536,
+      "retryForwardMs": 2757,
+      "durableMs": 2783
+    },
+    {
+      "mode": "online",
+      "binding": "WASM",
+      "clientId": "phase12-client-z",
+      "cid": "1ARHC2AS8WA0PNHDCT",
+      "serverId": "65fe8281-2312-4aa9-befc-781ff0552bb7",
+      "seq": 3,
+      "attempts": 2,
+      "admissionMs": 371,
+      "retryMs": 2536,
+      "retryForwardMs": 2756,
+      "durableMs": 2872
+    },
+    {
+      "mode": "online",
+      "binding": "C",
+      "clientId": "phase12-client-a",
+      "cid": "1A68QK8BDG9JADZJVW",
+      "serverId": "4606087e-62a3-4cbd-b634-4d60eda6e5eb",
+      "seq": 3,
+      "attempts": 2,
+      "admissionMs": 387,
+      "retryMs": 3230,
+      "retryForwardMs": 3558,
+      "durableMs": 3593
+    },
+    {
+      "mode": "online",
+      "binding": "WASM",
+      "clientId": "phase12-client-a",
+      "cid": "1ARHC2AS8WA0PNHDCT",
+      "serverId": "b9e4b3dd-bf36-436f-8b71-d6c6e5183d35",
+      "seq": 4,
+      "attempts": 2,
+      "admissionMs": 398,
+      "retryMs": 3232,
+      "retryForwardMs": 3567,
+      "durableMs": 3666
+    },
+    {
+      "mode": "reopen",
+      "binding": "C",
+      "clientId": "phase12-client-z",
+      "cid": "1A1HJ38VPNY94K376N",
+      "serverId": "6a9eb570-1156-4d0d-81b2-0e083ae523c1",
+      "seq": 2,
+      "attempts": 2,
+      "admissionMs": 367,
+      "retryMs": 1385,
+      "retryForwardMs": 1385,
+      "durableMs": 1489
+    },
+    {
+      "mode": "reopen",
+      "binding": "WASM",
+      "clientId": "phase12-client-z",
+      "cid": "1AMD1C6VWGYSFXEEA3",
+      "serverId": "9afd8f38-fb6a-4465-a5e7-fd75742dc7ab",
+      "seq": 3,
+      "attempts": 2,
+      "admissionMs": 366,
+      "retryMs": 3540,
+      "retryForwardMs": 3540,
+      "durableMs": 3572
+    },
+    {
+      "mode": "reopen",
+      "binding": "C",
+      "clientId": "phase12-client-a",
+      "cid": "1A1HJ38VPNY94K376N",
+      "serverId": "b261259d-5f71-4d26-a49e-abb040d2113b",
+      "seq": 5,
+      "attempts": 2,
+      "admissionMs": 405,
+      "retryMs": 2024,
+      "retryForwardMs": 2024,
+      "durableMs": 2114
+    },
+    {
+      "mode": "reopen",
+      "binding": "WASM",
+      "clientId": "phase12-client-a",
+      "cid": "1AMD1C6VWGYSFXEEA3",
+      "serverId": "7b0ea7d7-947f-49d7-9c5a-d1ef54ea0034",
+      "seq": 6,
+      "attempts": 2,
+      "admissionMs": 401,
+      "retryMs": 4750,
+      "retryForwardMs": 4750,
+      "durableMs": 4837
+    }
+  ],
+  "finalIngestSha256": "7e1755d2b561fbe2c0931728ac3f4861f5bc6f8b8fb7d0dca5a362d6399f2655",
+  "sourceImageDigest": "sha256:8f29596fa1046f4a71c3adb67e0054fb23f1ed068f1389318f00a85c2cc06a9a"
+}

@@ -381,7 +381,6 @@ impl EventBus {
                         f(s);
                     });
                 }
-                ConnectionEvent::UpdateState(_) => {}
             },
             SdkEvent::Message(me) => match me {
                 MessageEvent::Received { message } => {

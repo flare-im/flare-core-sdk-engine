@@ -66,11 +66,13 @@ cd flare-im-core-sdk && cargo check
 | `application/` | 用例编排、message/sync/presence/capability adapter、projection 更新 |
 | `domain/` | 消息、会话、同步游标、pending send 等业务不变量 |
 | `core/` | 事件总线、dispatcher、可靠队列、sync orchestrator |
-| `infrastructure/` | protobuf codec、packet sender、socket/http transport、memory/sqlite persistence |
+| `infrastructure/` | protobuf codec、packet sender、socket/http transport、内存仓储 |
 | `platform/` | media、transport、宿主能力端口 |
 | `extension/` | capability registry、插件 UI 与页面、middleware |
 
 ## 安装
+
+以下安装方式与快速开始对应已发布的 1.2 API。本分支源码的账号开库用法见 [SQLite IM 适配器](storage/README.md)。
 
 ```toml
 [dependencies]

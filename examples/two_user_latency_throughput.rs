@@ -176,12 +176,17 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .login(
             &alice_user,
             Some(&alice_token),
-            LoginDbKind::Sqlite,
+            flare_im_core_sdk_sqlite_im::sqlite(),
             |_, _| {},
         )
         .await?;
     let _bob_apis = bob
-        .login(&bob_user, Some(&bob_token), LoginDbKind::Sqlite, |_, _| {})
+        .login(
+            &bob_user,
+            Some(&bob_token),
+            flare_im_core_sdk_sqlite_im::sqlite(),
+            |_, _| {},
+        )
         .await?;
 
     let (ack_tx, mut ack_rx) = mpsc::unbounded_channel();

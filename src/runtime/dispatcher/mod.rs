@@ -1,5 +1,6 @@
 //! Router：下行载荷 → EventBus。与 flare-proto 对齐：消息=MessagePush，事件=Event/EventEnvelope，回执=SendAck；同步=`DataPacket.sync_response`→`SyncRes`，扩展=`DataPacket.user_custom`/`CustomData`。
 
+use crate::application::InboundSource;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -16,12 +17,10 @@ use self::delivery::{DeliveryConfirmation, arrived_message};
 use self::typing_presence::TypingPresence;
 use crate::application::notification::{
     AlertLedger, NotificationInboundPipeline, USER_SETTINGS_CHANGED_TYPE,
-    partition_notification_durability,
 };
-use crate::application::projections::ConversationProjectionApplier;
-use crate::application::services::IncomingMessageConverger;
 use crate::application::services::MessageDeduper;
 use crate::application::services::{EventClaim, EventDeduper, EventReservation};
+use crate::application::usecases::inbound::{ApplyInbound, InboundBatch};
 use crate::domain::{DEFAULT_SYNC_LIMIT, SyncCursorVo, local_cleared_through_seq};
 use crate::infrastructure::persistence::StoreProvider;
 use crate::infrastructure::protocol::{DeliveryAcks, DownlinkPayload};
@@ -83,6 +82,7 @@ const PERSIST_QUEUE_CAP: usize = 256;
 struct PersistJob {
     messages: Vec<IMMessage>,
     user_id: String,
+    delivery_due: Vec<(String, u64)>,
 }
 
 const PERSIST_WORKER_BATCH_MAX_MESSAGES: usize = 128;
@@ -97,8 +97,7 @@ pub struct Dispatcher {
     current_user_id: Arc<RwLock<String>>,
     event_deduper: EventDeduper,
     notification_pipeline: NotificationInboundPipeline,
-    incoming_message_converger: Option<IncomingMessageConverger>,
-    conversation_projection_applier: Option<ConversationProjectionApplier>,
+    inbound: Option<ApplyInbound>,
     seq_repair_state: Arc<AsyncMutex<HashMap<String, SeqRepairState>>>,
     waterline_pull_state: Arc<AsyncMutex<HashMap<String, WaterlinePullState>>>,
     /// 已应用操作事件占据的会话 seq（事件与消息共享 seq 分配器，
@@ -138,17 +137,9 @@ impl Dispatcher {
         let reliable_queue_port: Option<Arc<dyn ReliableSendQueuePort>> = reliable_queue
             .clone()
             .map(|queue| -> Arc<dyn ReliableSendQueuePort> { queue });
-        let incoming_message_converger = stores.as_ref().map(|provider| {
-            IncomingMessageConverger::new(
-                provider.messages.clone(),
-                provider.conversations.clone(),
-                bus.clone(),
-                reliable_queue_port.clone(),
-            )
-        });
-        let conversation_projection_applier = stores
+        let inbound = stores
             .as_ref()
-            .map(|provider| ConversationProjectionApplier::new(provider.clone(), bus.clone()));
+            .map(|stores| ApplyInbound::new(stores, &bus, reliable_queue_port));
         Self {
             bus,
             reliable_queue,
@@ -158,8 +149,7 @@ impl Dispatcher {
             current_user_id,
             event_deduper,
             notification_pipeline,
-            incoming_message_converger,
-            conversation_projection_applier,
+            inbound,
             seq_repair_state: Arc::new(AsyncMutex::new(HashMap::new())),
             waterline_pull_state: Arc::new(AsyncMutex::new(HashMap::new())),
             applied_event_seqs: AppliedEventSeqs::new(),
@@ -274,6 +264,30 @@ impl Dispatcher {
         });
     }
 
+    async fn prepare_inbound(
+        &self,
+        user_id: &str,
+        messages: Vec<IMMessage>,
+    ) -> crate::Result<InboundBatch> {
+        match &self.inbound {
+            Some(inbound) => {
+                inbound
+                    .prepare(user_id, messages, InboundSource::RealtimePush)
+                    .await
+            }
+            None => Ok(InboundBatch::from_messages(messages)),
+        }
+    }
+
+    async fn persist_and_confirm(&self, job: PersistJob) {
+        if self
+            .persist_durable_batch(&job.messages, &job.user_id)
+            .await
+        {
+            self.confirm_delivered(job.delivery_due);
+        }
+    }
+
     /// 启动有界**串行**持久化 worker（A2 win#2）。生产路径在建连后调用一次；测试 harness 不调用
     /// → `dispatch` 走内联持久化分支。单 worker 串行消费，保持 `save_batch` + 游标推进无竞态
     /// （与既有 inline 时序一致，只是搬到独立任务，使 socket 读循环不被落盘 I/O 头阻塞）。
@@ -293,23 +307,21 @@ impl Dispatcher {
                 let Some(this) = weak.upgrade() else {
                     break;
                 };
-                let mut user_id = job.user_id;
-                let mut messages = job.messages;
-                while messages.len() < PERSIST_WORKER_BATCH_MAX_MESSAGES {
+                let mut batch = job;
+                while batch.messages.len() < PERSIST_WORKER_BATCH_MAX_MESSAGES {
                     match rx.try_recv() {
-                        Ok(next) if next.user_id == user_id => {
-                            messages.extend(next.messages);
+                        Ok(next) if next.user_id == batch.user_id => {
+                            batch.messages.extend(next.messages);
+                            batch.delivery_due.extend(next.delivery_due);
                         }
                         Ok(next) => {
-                            this.persist_durable_batch(&messages, &user_id).await;
-                            user_id = next.user_id;
-                            messages = next.messages;
+                            this.persist_and_confirm(batch).await;
+                            batch = next;
                         }
-                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                        Err(_) => break,
                     }
                 }
-                this.persist_durable_batch(&messages, &user_id).await;
+                this.persist_and_confirm(batch).await;
                 drop(this); // 不跨下一次 recv().await 持 Arc，确保 Dispatcher 可释放
             }
         });

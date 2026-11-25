@@ -64,14 +64,14 @@ impl PluginConsent {
     }
 }
 
-pub(crate) fn valid_consent_key(s: &str) -> bool {
+pub fn valid_consent_key(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'))
 }
 
-pub(crate) fn consent_error(reason: &str) -> FlareError {
+pub fn consent_error(reason: &str) -> FlareError {
     FlareError::localized(
         ErrorCode::InvalidParameter,
         format!("sdk.plugin_consent.{reason}"),

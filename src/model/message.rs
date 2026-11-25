@@ -107,7 +107,7 @@ pub struct ReactionEntry {
     pub count: u32,
 }
 
-pub(crate) fn parse_reactions_from_attributes(
+pub fn parse_reactions_from_attributes(
     attributes: &HashMap<String, String>,
 ) -> Vec<ReactionEntry> {
     let raw = match attributes.get(REACTIONS_JSON_KEY) {
@@ -117,8 +117,7 @@ pub(crate) fn parse_reactions_from_attributes(
     serde_json::from_slice::<Vec<ReactionEntry>>(raw.as_bytes()).unwrap_or_default()
 }
 
-#[cfg(feature = "storage-sqlite")]
-pub(crate) fn has_reaction_snapshot_in_attributes(attributes: &HashMap<String, String>) -> bool {
+pub fn has_reaction_snapshot_in_attributes(attributes: &HashMap<String, String>) -> bool {
     attributes.contains_key(REACTIONS_JSON_KEY)
 }
 

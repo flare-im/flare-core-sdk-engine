@@ -1,3 +1,4 @@
+use crate::application::InboundSource;
 use crate::content::message_elem::MessagePreviewElem;
 use crate::domain::conversation::id as conversation_id;
 use crate::domain::{ConversationIdentityService, ReadPosition};
@@ -12,40 +13,36 @@ pub(crate) struct ConversationProjectionApplier {
     bus: EventBus,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum UnreadApplyMode {
-    RealtimePush,
-    SyncReplay,
-}
-
 impl ConversationProjectionApplier {
     pub(crate) fn new(stores: StoreProvider, bus: EventBus) -> Self {
         Self { stores, bus }
     }
 
+    #[cfg(test)]
     pub(crate) async fn apply_messages(
         &self,
         messages: &[IMMessage],
         current_user_id: &str,
     ) -> Result<()> {
-        self.apply_messages_with_mode(messages, current_user_id, UnreadApplyMode::RealtimePush)
+        self.apply_messages_with_mode(messages, current_user_id, InboundSource::RealtimePush)
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn apply_synced_messages(
         &self,
         messages: &[IMMessage],
         current_user_id: &str,
     ) -> Result<()> {
-        self.apply_messages_with_mode(messages, current_user_id, UnreadApplyMode::SyncReplay)
+        self.apply_messages_with_mode(messages, current_user_id, InboundSource::SyncReplay)
             .await
     }
 
-    async fn apply_messages_with_mode(
+    pub(crate) async fn apply_messages_with_mode(
         &self,
         messages: &[IMMessage],
         current_user_id: &str,
-        unread_mode: UnreadApplyMode,
+        unread_mode: InboundSource,
     ) -> Result<()> {
         if messages.is_empty() {
             return Ok(());
@@ -252,7 +249,7 @@ impl ConversationProjectionApplier {
         conversation_id: &str,
         current_user_id: &str,
         previous_read: ReadPosition,
-        unread_mode: UnreadApplyMode,
+        unread_mode: InboundSource,
         summary_seq: u64,
     ) -> u32 {
         messages
@@ -272,7 +269,7 @@ impl ConversationProjectionApplier {
         conversation_id: &str,
         current_user_id: &str,
         previous_read: ReadPosition,
-        unread_mode: UnreadApplyMode,
+        unread_mode: InboundSource,
         summary_seq: u64,
     ) -> u32 {
         messages
@@ -303,15 +300,15 @@ impl ConversationProjectionApplier {
     fn should_count_unread(
         message: &IMMessage,
         previous_read: ReadPosition,
-        unread_mode: UnreadApplyMode,
+        unread_mode: InboundSource,
         accounted_through: u64,
     ) -> bool {
         match unread_mode {
-            UnreadApplyMode::SyncReplay => {
+            InboundSource::SyncReplay => {
                 message.conversation_seq > previous_read.last_read_seq
                     && message.conversation_seq > accounted_through
             }
-            UnreadApplyMode::RealtimePush => {
+            InboundSource::RealtimePush => {
                 if message.conversation_seq > previous_read.last_read_seq
                     && message.conversation_seq > accounted_through
                 {
@@ -766,6 +763,7 @@ mod tests {
             conversation_participants: None,
             cursors: Arc::new(NoopSyncCursorStore),
             timeline_coverage: Arc::new(crate::storage::MemoryTimelineCoverageStore::new()),
+            outgoing: None,
             pending_send_reader: None,
             pending_send_writer: None,
             upload_manifest_store: None,
@@ -1293,7 +1291,7 @@ mod tests {
         assert_eq!(updated.last_message_id.as_deref(), Some("server-new"));
         assert_eq!(updated.max_seq, 9);
     }
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn failed_projection_is_replayed_after_message_storage_and_survives_a_new_applier() {
         use crate::application::notification::{

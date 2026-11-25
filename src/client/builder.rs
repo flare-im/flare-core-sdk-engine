@@ -160,7 +160,6 @@ pub struct IMClientBuilder {
     metrics_sink: Option<Arc<dyn MetricsSink>>,
     /// 共享的接入运行时（`IMClient::init` 建、各次登录复用）；没有时按配置在内存里建一个。
     connection: Option<Arc<crate::runtime::link::ConnectionRuntime>>,
-    update: Option<Arc<crate::runtime::update::UpdateRuntime>>,
     /// 链路状态机的初始网络可用性（登录重建引擎时沿用宿主此前报过的）。
     network_available: bool,
     environment: Option<String>,
@@ -192,7 +191,6 @@ impl IMClientBuilder {
             extension_migrations: Vec::new(),
             metrics_sink: None,
             connection: None,
-            update: None,
             network_available: true,
             environment: None,
             plugin_host: None,
@@ -237,14 +235,6 @@ impl IMClientBuilder {
         connection: Arc<crate::runtime::link::ConnectionRuntime>,
     ) -> Self {
         self.connection = Some(connection);
-        self
-    }
-
-    pub(crate) fn update_runtime(
-        mut self,
-        update: Option<Arc<crate::runtime::update::UpdateRuntime>>,
-    ) -> Self {
-        self.update = update;
         self
     }
 
@@ -476,6 +466,12 @@ impl IMClientBuilder {
                 (stores, transport, None)
             }
         };
+        if stores.pending_send_reader.is_some()
+            || stores.pending_send_writer.is_some()
+            || stores.outgoing.is_some()
+        {
+            stores.require_reliable_outbox()?;
+        }
         let sender = transport.sender();
         let mut chain = MiddlewareChain::new();
         for i in self.message_interceptors {
@@ -554,7 +550,6 @@ impl IMClientBuilder {
                 ))
             }
         };
-        let update = self.update;
         let engine = SdkEngine::new(SdkEngineConfig {
             stores,
             chain: chain.clone(),
@@ -759,9 +754,6 @@ impl IMClientBuilder {
             Arc::new(message_build_api.with_plugin_cards(capability_api.clone()));
         engine.set_tenant_notices(Arc::new(TenantNotices::new(
             capability_api.as_ref().clone(),
-            update
-                .as_ref()
-                .map(|update| update.clone().release_notice_handler()),
             bus.clone(),
         )));
         for plugin in self.capability_plugins {
@@ -811,7 +803,6 @@ impl IMClientBuilder {
             environment: self.environment,
             configured_config: Some(configured_config),
             connection: Some(connection),
-            update,
             engine: Some(engine),
             message_api: Some(
                 MessageApi::new(

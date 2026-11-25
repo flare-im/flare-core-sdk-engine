@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use flare_access_contract::update::UpdateStatus;
-
 use crate::FlareError;
 use crate::client::token_provider::{GatewayTokenProvider, jwt_exp_secs};
 use crate::kernel::SyncRunContext;
@@ -84,42 +82,6 @@ impl IMClient {
                 session_generation = generation,
                 "SDK state snapshot watcher stopped"
             );
-        });
-    }
-
-    /// 把更新状态转到这一代会话的事件总线上（`update://state`）。更新中心跨会话，总线不跨：
-    /// 会话开始时先宣告一次当前状态，之后逐条转发，会话结束时收手，不让总线活得比会话久。
-    pub(super) fn spawn_update_state_watcher(&self, generation: u64) {
-        let client = self.downgrade();
-        let session_end = self.session_end_watch(generation);
-        spawn_im_background(async move {
-            let Some(strong) = client.upgrade() else {
-                return;
-            };
-            let Some(update) = strong.update_runtime().await else {
-                return;
-            };
-            drop(strong);
-            let mut states = update.subscribe();
-            if !publish_update_state(&client, generation, update.status_now()).await {
-                return;
-            }
-            loop {
-                let status = tokio::select! {
-                    status = states.recv() => match status {
-                        Ok(status) => status,
-                        // 只关心最新值：落后了就补发现在的。
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            update.status_now()
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    },
-                    () = session_end.ended() => break,
-                };
-                if !publish_update_state(&client, generation, status).await {
-                    break;
-                }
-            }
         });
     }
 
@@ -552,27 +514,6 @@ impl IMClient {
     pub(super) async fn is_generation_current(&self, generation: u64) -> bool {
         self.load_session_generation_snapshot() == generation
     }
-}
-
-/// 发到这一代会话的引擎总线上。不留总线的克隆，客户端释放时才收得干净。会话不在了返回 `false`。
-async fn publish_update_state(
-    client: &WeakIMClient,
-    generation: u64,
-    status: UpdateStatus,
-) -> bool {
-    let Some(client) = client.upgrade() else {
-        return false;
-    };
-    if !client.is_generation_current(generation).await {
-        return false;
-    }
-    let event = SdkEvent::Connection(ConnectionEvent::UpdateState(Box::new(status)));
-    client
-        .with_engine_async(|engine| {
-            engine.bus().publish(event);
-        })
-        .await
-        .is_ok()
 }
 
 /// The server clock estimate of the session's engine; without an engine, an

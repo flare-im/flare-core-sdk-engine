@@ -33,11 +33,11 @@ pub use media_cache::{
 pub use media_progressive::{MediaProgressiveEvent, MediaProgressiveStage, MediaProgressiveState};
 pub use message::*;
 pub use pending_send::PendingSendVo;
-pub(crate) use repository::plugin_bundle_storage_repository::{
+pub use repository::plugin_bundle_storage_repository::{
     bundle_storage_error, bundle_storage_quota_exceeded, is_bundle_storage_quota_error,
 };
-pub(crate) use repository::plugin_command_repository::{command_error, valid_key};
-pub(crate) use repository::plugin_consent_repository::{consent_error, valid_consent_key};
+pub use repository::plugin_command_repository::{command_error, valid_key};
+pub use repository::plugin_consent_repository::{consent_error, valid_consent_key};
 pub use repository::*;
 pub use sync::*;
 pub use sync_cursor::SyncCursorVo;

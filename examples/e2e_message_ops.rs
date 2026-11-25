@@ -32,7 +32,12 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         tenant_id: Some("0".to_string()),
     })?;
     let apis = client
-        .login("message_ops", Some(&token), LoginDbKind::Sqlite, |_, _| {})
+        .login(
+            "message_ops",
+            Some(&token),
+            flare_im_core_sdk_sqlite_im::sqlite(),
+            |_, _| {},
+        )
         .await?;
 
     let conversation = apis

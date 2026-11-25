@@ -195,7 +195,7 @@ async fn connected_client(ws_url: &str, data_root: &Path, ack_max_retries: u32) 
         .await
         .expect("init SDK config");
     client
-        .prepare(USER_ID, LoginDbKind::IndexedDb(in_memory_im_provider()))
+        .prepare(USER_ID, LoginDbKind::Provided(in_memory_im_provider()))
         .await
         .expect("prepare test session");
     client

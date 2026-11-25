@@ -115,7 +115,7 @@ async fn memory_retention_lifecycle_hides_content_and_rejects_old_phases() {
     retention_lifecycle(&super::memory_im::MemoryMessageStore::new()).await;
 }
 
-#[cfg(feature = "lifecycle-sqlite")]
+#[cfg(all(feature = "lifecycle-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn sqlite_retention_and_application_partitions_survive_reopening() {
     use crate::domain::PendingSendVo;
@@ -490,7 +490,7 @@ async fn memory_terminal_snapshots_and_content_copies() {
     terminal_snapshots_and_content_copies(&super::memory_im::in_memory_im_provider()).await;
 }
 
-#[cfg(feature = "lifecycle-sqlite")]
+#[cfg(all(feature = "lifecycle-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn sqlite_terminal_snapshots_and_content_copies_survive_reopening() {
     use crate::shared::util::sqlite_store::open_sqlite_store_for_user;
@@ -515,7 +515,7 @@ async fn sqlite_terminal_snapshots_and_content_copies_survive_reopening() {
             .encoded_content
             .is_empty()
     );
-    let path = crate::shared::util::paths::resolve_user_db_path(&root, "core", "a", "u");
+    let path = crate::sqlite_test_adapter::provider::resolve_user_db_path(&root, "core", "a", "u");
     let pool = sqlx::SqlitePool::connect(
         &crate::shared::util::sqlite_store::sqlite_database_url_from_path(&path),
     )
@@ -816,7 +816,7 @@ async fn memory_snapshot_operations_and_id_namespaces() {
     canonical_ids_do_not_mutate_a_client_id_alias(stores.messages.as_ref()).await;
 }
 
-#[cfg(feature = "lifecycle-sqlite")]
+#[cfg(all(feature = "lifecycle-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn sqlite_snapshot_operations_and_id_namespaces_survive_reopening() {
     use crate::shared::util::sqlite_store::open_sqlite_store_for_user;
@@ -952,7 +952,7 @@ async fn memory_batch_terminal_and_pending_identity() {
     batch_terminal_and_pending_identity(&super::memory_im::MemoryMessageStore::new()).await;
 }
 
-#[cfg(feature = "lifecycle-sqlite")]
+#[cfg(all(feature = "lifecycle-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn sqlite_batch_terminal_and_pending_identity_survive_restart() {
     use crate::shared::util::sqlite_store::open_sqlite_store_for_user;
@@ -1031,7 +1031,7 @@ async fn memory_authoritative_edit_snapshots() {
     authoritative_edit_snapshots(&super::memory_im::MemoryMessageStore::new()).await;
 }
 
-#[cfg(feature = "lifecycle-sqlite")]
+#[cfg(all(feature = "lifecycle-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn sqlite_authoritative_edit_snapshots_survive_restart() {
     use crate::shared::util::sqlite_store::open_sqlite_store_for_user;
@@ -1076,7 +1076,7 @@ async fn memory_reaction_requires_the_message_conversation() {
     reaction_requires_the_message_conversation(&super::memory_im::MemoryMessageStore::new()).await;
 }
 
-#[cfg(feature = "lifecycle-sqlite")]
+#[cfg(all(feature = "lifecycle-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn sqlite_reaction_requires_the_message_conversation() {
     let root = std::env::temp_dir().join(format!("flare-reaction-scope-{}", uuid::Uuid::new_v4()));

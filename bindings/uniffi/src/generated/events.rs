@@ -5,7 +5,6 @@
 pub const EVENT_CODE_TABLE: &[(&str, i32)] = &[
     ("connection.status", 1010),
     ("connection.sync_state_changed", 1005),
-    ("update.state", 1013),
     ("message.received", 2001),
     ("message.received_batch", 2002),
     ("message.send_ack", 2003),

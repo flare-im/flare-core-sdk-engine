@@ -1,6 +1,6 @@
 //! Device-local state shared by Core HTTP and the session transport.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use flare_access_contract::network::NetPrint;
 
@@ -23,15 +23,12 @@ struct Network {
     unavailable: bool,
 }
 
-type UpgradeObserver = Arc<dyn Fn(Option<u64>) + Send + Sync>;
-
 #[derive(Default)]
 pub(crate) struct ConnectionRuntime {
     pub endpoints: Option<EndpointStore>,
     pub heartbeat_learning: HeartbeatLearning,
     network: Mutex<Network>,
     protocol_mode: Mutex<ProtocolMode>,
-    upgrade_observer: Mutex<Option<UpgradeObserver>>,
 }
 
 impl ConnectionRuntime {
@@ -101,16 +98,6 @@ impl ConnectionRuntime {
         *lock(&self.protocol_mode)
     }
 
-    pub fn observe_upgrade_required(&self, observer: UpgradeObserver) {
-        *lock(&self.upgrade_observer) = Some(observer);
-    }
-
-    pub fn note_upgrade_required(&self, min_build: Option<u64>) {
-        let observer = lock(&self.upgrade_observer).clone();
-        if let Some(observer) = observer {
-            observer(min_build);
-        }
-    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

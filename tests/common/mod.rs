@@ -557,6 +557,7 @@ fn make_stores() -> StoreProvider {
         conversation_participants: None,
         cursors: Arc::new(MemoryCursorStore::new()),
         timeline_coverage: Arc::new(flare_im_core_sdk::storage::MemoryTimelineCoverageStore::new()),
+        outgoing: None,
         pending_send_reader: None,
         pending_send_writer: None,
         upload_manifest_store: None,

@@ -46,7 +46,7 @@ pub use im_client::{IMClient, NetworkChangeEvent, RuntimeHealthSnapshot, ServerC
 pub use lifecycle::{
     LoginDbKind, SdkConfigOverlay, default_sdk_data_root, dev_data_dir_relative_to_cwd,
     merge_sdk_config, parse_data_url_to_path, resolve_connect_token, resolve_sdk_data_root,
-    resolve_user_db_path, sanitize_user_id_for_dir,
+    sanitize_user_id_for_dir,
 };
 pub use token_broker::HostTokenBroker;
 

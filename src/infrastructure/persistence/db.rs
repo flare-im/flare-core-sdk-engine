@@ -18,6 +18,8 @@ pub struct StoreProvider {
     pub cursors: Arc<dyn SyncCursorStore>,
     /// 时间线已证实连续区间：有没有更早的消息、往旧翻页何时回填，只由它回答。
     pub timeline_coverage: Arc<dyn TimelineCoverageStore>,
+    /// Account-scoped atomic commits for a provider with a reliable outbox.
+    pub outgoing: Option<Arc<dyn crate::domain::OutgoingSendStore>>,
     pub pending_send_reader: Option<Arc<dyn PendingSendReader>>,
     pub pending_send_writer: Option<Arc<dyn PendingSendWriter>>,
     pub upload_manifest_store: Option<Arc<dyn UploadManifestStore>>,
@@ -29,6 +31,16 @@ pub struct StoreProvider {
 }
 
 impl StoreProvider {
+    pub fn require_reliable_outbox(&self) -> crate::Result<()> {
+        if self.pending_sends().is_none() || self.outgoing.is_none() {
+            return Err(crate::FlareError::localized(
+                crate::ErrorCode::ConfigurationError,
+                "account backend requires an atomic outgoing store and both outbox ports",
+            ));
+        }
+        Ok(())
+    }
+
     /// 返回已配置的待发读端，用于可靠队列（与 pending_send_writer 配对使用）
     pub fn pending_sends(
         &self,
@@ -99,6 +111,7 @@ impl Clone for StoreProvider {
             conversation_participants: self.conversation_participants.clone(),
             cursors: self.cursors.clone(),
             timeline_coverage: self.timeline_coverage.clone(),
+            outgoing: self.outgoing.clone(),
             pending_send_reader: self.pending_send_reader.clone(),
             pending_send_writer: self.pending_send_writer.clone(),
             upload_manifest_store: self.upload_manifest_store.clone(),

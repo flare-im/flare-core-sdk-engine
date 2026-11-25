@@ -159,6 +159,18 @@ mod tests {
         assert_eq!(confirmed, vec![("c1".to_owned(), 6), ("c2".to_owned(), 2)]);
     }
 
+    #[tokio::test]
+    async fn queued_push_waits_for_the_persistence_worker_before_confirming() {
+        let (dispatcher, _reach, acks) = wired("android");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        assert!(dispatcher.persist_tx.set(tx).is_ok());
+        dispatcher.dispatch(push(&[("c1", 1)])).await.unwrap();
+        let job = rx.try_recv().expect("pending persistence");
+        assert!(acks.pending_confirmations().is_empty());
+        dispatcher.persist_and_confirm(job).await;
+        assert_eq!(acks.pending_confirmations(), vec![("c1".to_owned(), 1)]);
+    }
+
     /// 谁确认谁负责提示：手机进了后台、没有后台展示方时，到达的消息照常处理但不确认；接上展示方
     /// 之后才确认。
     #[tokio::test]

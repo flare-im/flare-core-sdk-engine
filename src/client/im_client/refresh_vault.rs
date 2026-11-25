@@ -27,8 +27,6 @@ pub(crate) struct RefreshTokenVault {
 }
 
 impl RefreshTokenVault {
-    // 只有加密本地库登录（`lifecycle-sqlite`）才有宿主安全存储可放刷新令牌。
-    #[cfg_attr(not(feature = "lifecycle-sqlite"), allow(dead_code))]
     pub fn new(store: Arc<dyn SecureKeyStore>, namespace: &str, tenant_id: &str) -> Self {
         Self {
             store,

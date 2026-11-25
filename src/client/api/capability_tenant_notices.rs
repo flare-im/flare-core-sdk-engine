@@ -6,10 +6,7 @@
 //!
 //! The plugin catalog (`flare.plugin.catalog`) is the SDK's own topic: its
 //! notice invalidates the catalog at once and announces
-//! `PluginEvent::CatalogChanged` to hosts. So is the access manifest
-//! (`flare.access`, version = serial): its notice starts a refresh of the
-//! manifest. So is the release manifest (`flare.release`): its notice starts a
-//! conditional fetch. Any other topic belongs to an extension and is announced as
+//! `PluginEvent::CatalogChanged` to hosts. Any other topic belongs to an extension and is announced as
 //! `SdkEvent::Extension` from [`TENANT_NOTICE_SOURCE`], named by the topic, with
 //! `{"version": "<decimal>", "tenantWide": bool}`. Core never interprets a topic.
 
@@ -23,7 +20,7 @@ use rand::Rng;
 use super::CapabilityApi;
 use crate::kernel::TenantNoticePort;
 use crate::kernel::event::{
-    EventBus, ExtensionEvent, PLUGIN_CATALOG_TOPIC, PluginEvent, RELEASE_MANIFEST_TOPIC, SdkEvent,
+    EventBus, ExtensionEvent, PLUGIN_CATALOG_TOPIC, PluginEvent, SdkEvent,
     TENANT_NOTICE_SOURCE,
 };
 use crate::shared::util::{delay, now_millis, spawn_background};
@@ -33,8 +30,6 @@ pub(super) const MIN_SPREAD_MS: u64 = 3_000;
 pub(super) const MAX_SPREAD_MS: u64 = 60_000;
 /// Topics tracked at once; a tenant has a handful.
 const MAX_TOPICS: usize = 64;
-
-type ReleaseNoticeHandler = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Pending {
@@ -106,7 +101,6 @@ fn random_jitter_ms(spread_ms: u64) -> u64 {
 pub(crate) struct TenantNotices {
     capability: CapabilityApi,
 
-    on_release: Option<ReleaseNoticeHandler>,
     bus: EventBus,
     windows: Arc<Mutex<HashMap<String, NoticeWindow>>>,
     jitter_ms: fn(u64) -> u64,
@@ -116,22 +110,19 @@ impl TenantNotices {
     pub(crate) fn new(
         capability: CapabilityApi,
 
-        on_release: Option<ReleaseNoticeHandler>,
         bus: EventBus,
     ) -> Self {
-        Self::with_jitter(capability, on_release, bus, random_jitter_ms)
+        Self::with_jitter(capability, bus, random_jitter_ms)
     }
 
     fn with_jitter(
         capability: CapabilityApi,
 
-        on_release: Option<ReleaseNoticeHandler>,
         bus: EventBus,
         jitter_ms: fn(u64) -> u64,
     ) -> Self {
         Self {
             capability,
-            on_release,
             bus,
             windows: Arc::new(Mutex::new(HashMap::new())),
             jitter_ms,
@@ -150,12 +141,6 @@ impl TenantNotices {
         else {
             return;
         };
-        if topic == RELEASE_MANIFEST_TOPIC {
-            if let Some(on_release) = &self.on_release {
-                on_release();
-            }
-            return;
-        }
         if topic == PLUGIN_CATALOG_TOPIC {
             // Re-announce the recent plugin cards against the fresh catalog, then tell hosts
             // to read their plugin entries again.
@@ -255,7 +240,7 @@ mod tests {
     #[test]
     fn spreads_are_clamped_and_jitter_stays_inside() {
         let notice = |spread_ms| TenantNotice {
-            topic: "social.features".into(),
+            topic: "flare.release".into(),
             version: 1,
             spread_ms,
             tenant_wide: false,
@@ -353,7 +338,7 @@ mod tests {
                 }
             },
         );
-        let notices = TenantNotices::with_jitter(api.clone(), None, bus.clone(), |_| 1_500);
+        let notices = TenantNotices::with_jitter(api.clone(), bus.clone(), |_| 1_500);
         let generation = api.catalog_flight.generation();
 
         notices.notice(notice(PLUGIN_CATALOG_TOPIC, 7));
@@ -374,30 +359,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_release_notice_calls_the_host_once_after_the_jitter() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let received = Arc::new(AtomicUsize::new(0));
-        let on_release = {
-            let received = received.clone();
-            Arc::new(move || {
-                received.fetch_add(1, Ordering::Relaxed);
-            })
-        };
-        let notices =
-            TenantNotices::with_jitter(capability_api(), Some(on_release), EventBus::new(), |_| {
-                1_500
-            });
-        notices.notice(notice(RELEASE_MANIFEST_TOPIC, 7));
-        notices.notice(notice(RELEASE_MANIFEST_TOPIC, 8));
-        tokio::time::sleep(Duration::from_millis(1_400)).await;
-        assert_eq!(received.load(Ordering::Relaxed), 0);
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(received.load(Ordering::Relaxed), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_extension_topic_is_announced_as_an_extension_event_named_by_it() {
+    async fn a_host_release_topic_is_forwarded_as_an_opaque_extension_event() {
         let api = capability_api();
         let bus = EventBus::new();
         let announced = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
@@ -405,7 +367,7 @@ mod tests {
         let _subscription = bus.on_event_type(
             SdkEventType::Extension(ExtensionEventType::named(
                 TENANT_NOTICE_SOURCE,
-                "social.features",
+                "flare.release",
             )),
             move |event| {
                 if let SdkEvent::Extension(extension) = event.as_ref() {
@@ -415,13 +377,13 @@ mod tests {
                 }
             },
         );
-        let notices = TenantNotices::with_jitter(api.clone(), None, bus.clone(), |_| 0);
+        let notices = TenantNotices::with_jitter(api.clone(), bus.clone(), |_| 0);
         let generation = api.catalog_flight.generation();
         notices.notice(TenantNotice {
             tenant_wide: true,
-            ..notice("social.features", 12)
+            ..notice("flare.release", 12)
         });
-        notices.notice(notice("social.features", 0));
+        notices.notice(notice("flare.release", 0));
         assert_eq!(
             api.catalog_flight.generation(),
             generation,

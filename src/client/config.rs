@@ -119,7 +119,7 @@ pub struct SdkAppConfig {
     /// 桌面目标（如 `darwin-aarch64`）：发布清单按它挑桌面制品。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-    /// 界面语言（BCP-47，如 `zh-Hant-TW`）：更新说明按它选，回退链见 `flare_access_contract::update::locale`。
+    /// 界面语言（BCP-47，如 `zh-Hant-TW`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
 }

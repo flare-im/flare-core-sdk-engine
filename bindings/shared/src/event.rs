@@ -110,11 +110,6 @@ pub fn sdk_event_payload(ev: &SdkEvent) -> Option<(&'static str, Value)> {
             "connection.sync_state_changed",
             json!({ "state": format!("{state:?}") }),
         ),
-        SdkEvent::Connection(ConnectionEvent::UpdateState(status)) => (
-            "update.state",
-            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
-        ),
-
         SdkEvent::Message(MessageEvent::Received { message }) => {
             ("message.received", message_json(message.as_ref()))
         }
@@ -630,38 +625,6 @@ mod tests {
         assert_eq!(
             sdk_event_web_payload(&event).expect("web payload")["channel"],
             "im://message_read_summaries_changed"
-        );
-    }
-
-    #[test]
-    fn update_state_is_forwarded_on_its_own_channel() {
-        use flare_im_core_sdk::update::{CurrentApp, UpdatePrompt, UpdateState, UpdateStatus};
-
-        let event = SdkEvent::Connection(ConnectionEvent::UpdateState(Box::new(UpdateStatus {
-            state: UpdateState::Idle,
-            current: CurrentApp {
-                version: None,
-                build: None,
-                channel: "stable".into(),
-                distribution: None,
-            },
-            release: None,
-            progress: None,
-            prompt: UpdatePrompt::None,
-            block_ui: false,
-            read_only: false,
-            last_checked_at: None,
-            error: None,
-            block_reason: None,
-        })));
-        let (id, payload) = sdk_event_payload(&event).expect("update event");
-        assert_eq!(id, "update.state");
-        assert_eq!(payload["state"], "idle");
-        assert_eq!(payload["current"]["channel"], "stable");
-        assert_eq!(sdk_event_code(&event), 1013);
-        assert_eq!(
-            sdk_event_web_payload(&event).expect("web payload")["channel"],
-            "update://state"
         );
     }
 

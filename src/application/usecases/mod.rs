@@ -1,4 +1,5 @@
 mod conversation;
+pub(crate) mod inbound;
 mod message;
 mod sync;
 pub(crate) mod sync_request;

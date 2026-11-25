@@ -7,8 +7,8 @@ pub mod id;
 pub mod json;
 pub mod media_duration;
 pub mod paths;
-#[cfg(feature = "lifecycle-sqlite")]
-pub mod sqlite_store;
+#[cfg(all(test, feature = "lifecycle-sqlite", not(target_arch = "wasm32")))]
+pub(crate) use crate::sqlite_test_adapter::provider as sqlite_store;
 pub mod time;
 pub mod token;
 pub(crate) use token::now_unix_secs;
@@ -34,9 +34,9 @@ pub use date::{
 };
 pub use paths::{
     default_sdk_data_root, dev_data_dir_relative_to_cwd, local_storage_scope,
-    parse_data_url_to_path, resolve_sdk_data_root, resolve_user_db_path, sanitize_user_id_for_dir,
+    parse_data_url_to_path, resolve_sdk_data_root, sanitize_user_id_for_dir,
 };
-#[cfg(feature = "lifecycle-sqlite")]
+#[cfg(all(test, feature = "lifecycle-sqlite", not(target_arch = "wasm32")))]
 pub use sqlite_store::{
     open_sqlite_store_for_user, open_sqlite_store_for_user_with_secure_key_store,
     open_sqlite_store_for_user_with_security, open_sqlite_store_provider,

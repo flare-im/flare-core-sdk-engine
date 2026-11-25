@@ -1,0 +1,17 @@
+{
+  "tenantId": "phase12-tenant",
+  "senderId": "phase12-sender",
+  "conversationId": "group-phase12-parity",
+  "messages": [
+    {
+      "clientMsgId": "phase12-client-z",
+      "at": 1780000000100,
+      "text": "第一封离线消息"
+    },
+    {
+      "clientMsgId": "phase12-client-a",
+      "at": 1780000000200,
+      "text": "Reopen · 第二封"
+    }
+  ]
+}

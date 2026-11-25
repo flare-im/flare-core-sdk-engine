@@ -59,7 +59,7 @@ pub fn bundle_storage_fits(used: usize, replaced: usize, cost: usize) -> bool {
     used.saturating_sub(replaced).saturating_add(cost) <= MAX_BRIDGE_STORAGE_BYTES
 }
 
-pub(crate) fn bundle_storage_error(reason: &str) -> FlareError {
+pub fn bundle_storage_error(reason: &str) -> FlareError {
     FlareError::localized(
         ErrorCode::InvalidParameter,
         format!("sdk.plugin_bundle_storage.{reason}"),
@@ -68,14 +68,14 @@ pub(crate) fn bundle_storage_error(reason: &str) -> FlareError {
 
 /// The namespace would grow past [`MAX_BRIDGE_STORAGE_BYTES`]: the bridge
 /// answers `quota_exceeded`.
-pub(crate) fn bundle_storage_quota_exceeded() -> FlareError {
+pub fn bundle_storage_quota_exceeded() -> FlareError {
     FlareError::localized(
         ErrorCode::ResourceExhausted,
         "sdk.plugin_bundle_storage.quota_exceeded",
     )
 }
 
-pub(crate) fn is_bundle_storage_quota_error(error: &FlareError) -> bool {
+pub fn is_bundle_storage_quota_error(error: &FlareError) -> bool {
     error.code() == Some(ErrorCode::ResourceExhausted)
 }
 

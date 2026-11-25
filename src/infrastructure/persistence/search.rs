@@ -28,7 +28,7 @@ fn push_audio_info_search_text(out: &mut String, info: &AudioInfoElem) {
     push_search_part(out, &info.mime_type);
 }
 
-pub(crate) fn elem_search_text(elem: &Elem) -> Option<String> {
+pub fn elem_search_text(elem: &Elem) -> Option<String> {
     let mut out = String::new();
     match elem {
         Elem::Text(text) => {
@@ -181,14 +181,14 @@ pub(crate) fn elem_search_text(elem: &Elem) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
-pub(crate) fn search_text_for_content_bytes(bytes: &[u8]) -> Option<String> {
+pub fn search_text_for_content_bytes(bytes: &[u8]) -> Option<String> {
     decode_content_bytes(bytes)
         .ok()
         .and_then(|decoded| decoded_content_to_elem(&decoded))
         .and_then(|elem| elem_search_text(&elem))
 }
 
-pub(crate) fn message_type_values_for_search(kinds: &[MessageSearchKind]) -> Vec<i32> {
+pub fn message_type_values_for_search(kinds: &[MessageSearchKind]) -> Vec<i32> {
     let mut values = Vec::new();
     for kind in kinds {
         match kind {

@@ -81,7 +81,7 @@ async fn login_client(
         .login(
             user,
             Some(&token),
-            LoginDbKind::IndexedDb(in_memory_im_provider()),
+            LoginDbKind::Provided(in_memory_im_provider()),
             |_, _| {},
         )
         .await?;

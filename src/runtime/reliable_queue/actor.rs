@@ -135,7 +135,7 @@ enum QueueCommand {
     InFlight { resp: oneshot::Sender<usize> },
     /// Answered once every command sent before it has been handled: the actor handles commands
     /// one at a time, in the order they were sent. Lets tests wait for the queue, not the clock.
-    #[cfg(all(test, feature = "storage-sqlite"))]
+    #[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
     Handled(oneshot::Sender<()>),
 }
 
@@ -148,11 +148,11 @@ pub struct ReliableSendQueue {
 }
 
 pub struct ReliableSendQueueConfig {
+    pub outgoing: Arc<dyn crate::domain::OutgoingSendStore>,
     pub pending_reader: Arc<dyn PendingSendReader>,
     pub pending_writer: Arc<dyn PendingSendWriter>,
     pub sender: Arc<PacketSender>,
     pub message_store: Arc<dyn MessageStore>,
-    pub conversation_store: Arc<dyn ConversationStore>,
     pub current_user_id: CurrentUserIdStore,
     pub bus: EventBus,
     pub timeout_secs: Option<u64>,
@@ -164,12 +164,12 @@ pub struct ReliableSendQueueConfig {
 }
 
 struct QueueState {
+    outgoing: Arc<dyn crate::domain::OutgoingSendStore>,
     pending_reader: Arc<dyn PendingSendReader>,
     pending_writer: Arc<dyn PendingSendWriter>,
     command_tx: mpsc::Sender<QueueCommand>,
     sender: Arc<PacketSender>,
     message_store: Arc<dyn MessageStore>,
-    conversation_store: Arc<dyn ConversationStore>,
     current_user_id: CurrentUserIdStore,
     bus: EventBus,
     timeout_duration: Duration,
@@ -185,6 +185,8 @@ struct QueueState {
     /// 被服务端暂时性拒绝、正在退避等待重发的消息：client_msg_id -> 排定重发时的重试次数。
     /// 退避期间不占发送窗口，也不会被 `try_send_next` 提前捡起。
     retry_backoff: HashMap<String, u32>,
+    /// Server or local terminal outcomes awaiting storage. Exclude these IDs from network retries.
+    pending_commits: HashMap<String, (IMMessage, Vec<SdkEvent>)>,
     metrics: MetricsRecorder,
     link_probe: Option<Arc<dyn LinkProbe>>,
     stall_probe_gate: SendStallProbeGate,
@@ -299,11 +301,11 @@ impl ReliableSendQueue {
 
     fn spawn(config: ReliableSendQueueConfig, link_probe: Option<Arc<dyn LinkProbe>>) -> Self {
         let ReliableSendQueueConfig {
+            outgoing,
             pending_reader,
             pending_writer,
             sender,
             message_store,
-            conversation_store,
             current_user_id,
             bus,
             timeout_secs,
@@ -334,12 +336,12 @@ impl ReliableSendQueue {
         let adaptive_window = AdaptiveInFlightWindow::new(max_in_flight);
 
         let mut state = QueueState {
+            outgoing,
             pending_reader,
             pending_writer,
             command_tx: tx.clone(),
             sender,
             message_store,
-            conversation_store,
             current_user_id,
             bus,
             timeout_duration,
@@ -350,6 +352,7 @@ impl ReliableSendQueue {
             awaiting_durable: HashMap::new(),
             retry_count: HashMap::new(),
             retry_backoff: HashMap::new(),
+            pending_commits: HashMap::new(),
             metrics,
             link_probe,
             stall_probe_gate: SendStallProbeGate::default(),
@@ -370,6 +373,7 @@ impl ReliableSendQueue {
         let worker = spawn_background_task(async move {
             // 先于任何命令：入队时钟从已持久化的待发续上（重启后新消息仍排在旧消息之后）。
             seed_enqueue_clock(&mut state).await;
+            let mut tick = Box::pin(delay(Duration::from_secs(1)));
             loop {
                 let stall_wait = send_stall_probe_wait(&state);
                 tokio::select! {
@@ -379,7 +383,8 @@ impl ReliableSendQueue {
                             warn!(%e, "reliable queue command error");
                         }
                     }
-                    _ = delay(Duration::from_secs(1)) => {
+                    _ = &mut tick => {
+                        tick = Box::pin(delay(Duration::from_secs(1)));
                         if let Err(e) = check_timeout(&mut state).await {
                             warn!(%e, "reliable queue timeout check error");
                         }
@@ -510,6 +515,9 @@ impl ReliableSendQueue {
 
 #[async_trait::async_trait]
 impl ReliableSendQueuePort for ReliableSendQueue {
+    fn projects_outgoing_conversation(&self) -> bool {
+        true
+    }
     async fn enqueue(&self, message: IMMessage) -> Result<()> {
         ReliableSendQueue::enqueue(self, message).await
     }
@@ -556,36 +564,10 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
                 message: msg,
                 enqueued_at_ms,
             };
-            let (message_store, pending_writer) =
-                (st.message_store.clone(), st.pending_writer.clone());
-            if let Err(e) = message_store
-                .save_batch(std::slice::from_ref(&optimistic))
-                .await
-            {
-                let _ = resp.send(Err(e));
+            let result = st.outgoing.enqueue_send(&optimistic, &entry).await;
+            if let Err(error) = result {
+                let _ = resp.send(Err(error));
                 return Ok(());
-            }
-            if let Err(e) = pending_writer.push(entry).await {
-                let _ = resp.send(Err(e));
-                return Ok(());
-            }
-            // 写入后立刻用**队列自己的 reader** 数一遍：若这里是 0，
-            // 说明 reader 与 writer 不是同一份数据（实例分裂），
-            // 而不是排除/限流逻辑的问题。
-            {
-                let visible = st
-                    .pending_reader
-                    .list_oldest_excluding(&[], 100)
-                    .await
-                    .map(|v| v.len())
-                    .unwrap_or(usize::MAX);
-                debug!(
-                    visible_to_reader = visible,
-                    "reliable queue pending visible right after push"
-                );
-            }
-            if let Err(e) = update_conversation_last_message(st, &optimistic).await {
-                warn!(%e, conversation_id = %optimistic.conversation_id, "update optimistic conversation projection failed");
             }
             st.bus
                 .publish(SdkEvent::Message(MessageEvent::ReceivedBatch {
@@ -597,6 +579,30 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
         QueueCommand::AckReceived(ack) => {
             st.metrics.counter("reliable_queue.ack_received_total", 1);
             let ack = *ack;
+            let active_conversation = st
+                .in_flight
+                .get(&ack.client_msg_id)
+                .map(|v| &v.entry.conversation_id)
+                .or_else(|| {
+                    st.awaiting_durable
+                        .get(&ack.client_msg_id)
+                        .map(|v| &v.entry.conversation_id)
+                })
+                .or_else(|| {
+                    st.pending_commits
+                        .get(&ack.client_msg_id)
+                        .map(|(m, _)| &m.conversation_id)
+                });
+            if active_conversation.is_some_and(|cid| !ack_matches_conversation(&ack, cid)) {
+                return Ok(());
+            }
+            if let Some((message, _)) = st.pending_commits.get(&ack.client_msg_id) {
+                if !message.local_state.failed
+                    || MessageDeliveryService::durable_accepted_from_ack(&ack).is_none()
+                {
+                    return Ok(());
+                }
+            }
             if let Some(in_flight) = st.in_flight.remove(&ack.client_msg_id) {
                 match apply_ack_and_publish(st, &in_flight.entry, ack).await {
                     AckApplyResult::Terminal | AckApplyResult::RetryScheduled => {}
@@ -634,6 +640,9 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
                     }
                 }
             } else if let Some(entry) = st.pending_reader.get(&ack.client_msg_id).await? {
+                if !ack_matches_conversation(&ack, &entry.conversation_id) {
+                    return Ok(());
+                }
                 // Still queued but not in flight: waiting out a retry backoff, or for a free send
                 // slot. Settling it takes no slot, so it happens now rather than when the entry
                 // would next be picked to send; until then the message would show as sending
@@ -665,12 +674,13 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
             } else if MessageDeliveryService::accepted_from_ack(&ack).is_some()
                 || MessageDeliveryService::error_message_from_ack(&ack).is_some()
             {
-                if let Err(error) = apply_orphan_durable_ack(st, &ack).await {
-                    warn!(
-                        %error,
-                        client_msg_id = %ack.client_msg_id,
-                        "apply orphan durable ack failed"
-                    );
+                match apply_orphan_durable_ack(st, &ack).await {
+                    Ok(false) => return Ok(()),
+                    Ok(true) => {}
+                    Err(error) => {
+                        warn!(%error, client_msg_id = %ack.client_msg_id, "apply orphan durable ack failed");
+                        return Ok(());
+                    }
                 }
                 st.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
                     ack: Box::new(ack),
@@ -718,7 +728,7 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
         QueueCommand::InFlight { resp } => {
             let _ = resp.send(st.in_flight.len());
         }
-        #[cfg(all(test, feature = "storage-sqlite"))]
+        #[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
         QueueCommand::Handled(done) => {
             let _ = done.send(());
         }
@@ -776,17 +786,13 @@ async fn mark_send_failed_and_publish(
     entry: &PendingSendVo,
     reason: &str,
 ) -> Result<()> {
-    let _ = st.pending_writer.pop(&entry.client_msg_id).await?;
-    st.retry_count.remove(&entry.client_msg_id);
-
-    let failed_msg = MessageDeliveryService::mark_failed(&entry.message);
-    st.message_store.save_batch(&[failed_msg]).await?;
-    st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
+    let message = MessageDeliveryService::mark_failed(&entry.message);
+    let event = SdkEvent::Message(MessageEvent::SendFailed {
         client_msg_id: entry.client_msg_id.clone(),
         reason: reason.to_string(),
         error: crate::domain::SendFailure::local_reason(reason),
-    }));
-    Ok(())
+    });
+    persist_terminal(st, message, vec![event]).await
 }
 
 fn dispatch_send_attempt(st: &mut QueueState, entry: PendingSendVo, retries: u32) {
@@ -947,17 +953,7 @@ async fn handle_send_attempt_finished(
         }
         RetryDecision::Fail { reason } => {
             st.metrics.counter("reliable_queue.send_failed_total", 1);
-            let _ = st.pending_writer.pop(&entry.client_msg_id).await;
-            st.retry_count.remove(&entry.client_msg_id);
-            let failed_msg = MessageDeliveryService::mark_failed(&entry.message);
-            if let Err(save_err) = st.message_store.save_batch(&[failed_msg]).await {
-                warn!(%save_err, "persist failed message state failed");
-            }
-            st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
-                client_msg_id: entry.client_msg_id,
-                reason: reason.to_string(),
-                error: crate::domain::SendFailure::local_reason(reason),
-            }));
+            mark_send_failed_and_publish(st, &entry, reason).await?;
             try_send_next(st).await?;
         }
     }
@@ -969,6 +965,12 @@ async fn reset_pending_on_login(st: &mut QueueState) -> Result<Vec<String>> {
     // 清空的条目不能再被写出。
     bump_dispatch_generation(st);
     // 退避中的条目仍在 pending 里，下面按 pending 一并判失败；这里只撤掉它们的重发排期。
+    retry_pending_commits(st).await;
+    if !st.pending_commits.is_empty() {
+        return Err(crate::shared::error::FlareError::system(
+            "outgoing terminal commit is pending",
+        ));
+    }
     st.retry_backoff.clear();
 
     let in_flight_entries = st
@@ -1065,7 +1067,7 @@ async fn expire_stale_pending(st: &mut QueueState, max_age_ms: u64) -> Result<Ve
     let cutoff = id::now_millis().saturating_sub(max_age_ms);
     let mut expired = Vec::new();
     for entry in st.pending_reader.list().await? {
-        if entry.enqueued_at_ms >= cutoff {
+        if entry.enqueued_at_ms >= cutoff || st.pending_commits.contains_key(&entry.client_msg_id) {
             continue;
         }
         st.in_flight.remove(&entry.client_msg_id);
@@ -1159,6 +1161,7 @@ async fn recover_pending_for_current_user(st: &mut QueueState) -> Result<Vec<Str
 }
 
 async fn check_timeout(st: &mut QueueState) -> Result<()> {
+    retry_pending_commits(st).await;
     if st.paused_since_ms.is_some() {
         // 暂停期间不判超时、不派发；只收敛本地已有终态的条目（例如经同步已落库的消息）。
         reconcile_in_flight_terminal_states(st).await?;
@@ -1194,17 +1197,7 @@ async fn check_timeout(st: &mut QueueState) -> Result<()> {
                         &[MetricLabel::new("reason", "timeout")],
                         1,
                     );
-                    let _ = st.pending_writer.pop(&entry.client_msg_id).await;
-                    st.retry_count.remove(&entry.client_msg_id);
-                    let failed_msg = MessageDeliveryService::mark_failed(&entry.message);
-                    if let Err(e) = st.message_store.save_batch(&[failed_msg]).await {
-                        warn!(%e, "persist failed message state failed");
-                    }
-                    st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
-                        client_msg_id: entry.client_msg_id,
-                        reason: reason.to_string(),
-                        error: crate::domain::SendFailure::local_reason(reason),
-                    }));
+                    mark_send_failed_and_publish(st, &entry, reason).await?;
                 }
                 RetryDecision::Retry { next_retry_count } => {
                     st.metrics.counter_with_labels(
@@ -1346,17 +1339,7 @@ async fn check_awaiting_durable_timeout(st: &mut QueueState) -> Result<()> {
                     &[MetricLabel::new("reason", "durable_ack_timeout")],
                     1,
                 );
-                let _ = st.pending_writer.pop(&entry.client_msg_id).await;
-                st.retry_count.remove(&entry.client_msg_id);
-                let failed_msg = MessageDeliveryService::mark_failed(&entry.message);
-                if let Err(e) = st.message_store.save_batch(&[failed_msg]).await {
-                    warn!(%e, "persist durable-timeout failed message state failed");
-                }
-                st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
-                    client_msg_id: entry.client_msg_id,
-                    reason: reason.to_string(),
-                    error: crate::domain::SendFailure::local_reason(reason),
-                }));
+                mark_send_failed_and_publish(st, &entry, reason).await?;
             }
         }
     }
@@ -1395,7 +1378,9 @@ async fn reconcile_in_flight_terminal_states(st: &mut QueueState) -> Result<bool
             continue;
         };
         let entry = in_flight.entry;
-        let local_snapshot = snapshot_by_id.get(&entry.client_msg_id);
+        let local_snapshot = snapshot_by_id
+            .get(&entry.client_msg_id)
+            .filter(|snapshot| snapshot.conversation_id == entry.conversation_id);
 
         match MessageDeliveryService::reconcile_in_flight(local_snapshot, &entry.client_msg_id) {
             InFlightReconcileDecision::KeepWaiting => {
@@ -1460,7 +1445,9 @@ async fn reconcile_awaiting_durable_terminal_states(st: &mut QueueState) -> Resu
             continue;
         };
         let entry = awaiting.entry;
-        let local_snapshot = snapshot_by_id.get(&entry.client_msg_id);
+        let local_snapshot = snapshot_by_id
+            .get(&entry.client_msg_id)
+            .filter(|snapshot| snapshot.conversation_id == entry.conversation_id);
 
         match MessageDeliveryService::reconcile_in_flight(local_snapshot, &entry.client_msg_id) {
             InFlightReconcileDecision::KeepWaiting => {
@@ -1506,7 +1493,7 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
     }
     loop {
         let current_limit = st.adaptive_window.current();
-        let available = current_limit.saturating_sub(st.in_flight.len());
+        let available = current_limit.saturating_sub(st.in_flight.len() + st.pending_commits.len());
         if available == 0 {
             debug!(
                 window = current_limit,
@@ -1519,6 +1506,7 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
         let mut excluded = st.in_flight.keys().cloned().collect::<Vec<_>>();
         excluded.extend(st.awaiting_durable.keys().cloned());
         excluded.extend(st.retry_backoff.keys().cloned());
+        excluded.extend(st.pending_commits.keys().cloned());
         let entries = st
             .pending_reader
             .list_oldest_excluding(&excluded, available)
@@ -1587,17 +1575,7 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
                         connected_user_id = %connected_user_id,
                         "reliable queue: drop cross-account pending entry"
                     );
-                    let _ = st.pending_writer.pop(&entry.client_msg_id).await;
-                    st.retry_count.remove(&entry.client_msg_id);
-                    let failed_msg = MessageDeliveryService::mark_failed(&entry.message);
-                    if let Err(e) = st.message_store.save_batch(&[failed_msg]).await {
-                        warn!(%e, "persist cross-account failed message state failed");
-                    }
-                    st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
-                        client_msg_id: entry.client_msg_id.clone(),
-                        reason: reason.to_string(),
-                        error: crate::domain::SendFailure::local_reason(reason),
-                    }));
+                    mark_send_failed_and_publish(st, &entry, reason).await?;
                     made_progress = true;
                     continue;
                 }
@@ -1606,23 +1584,13 @@ async fn try_send_next(st: &mut QueueState) -> Result<()> {
                         client_msg_id = %entry.client_msg_id,
                         "reliable queue: drop stale pending entry"
                     );
-                    let _ = st.pending_writer.pop(&entry.client_msg_id).await;
+                    st.pending_writer.pop(&entry.client_msg_id).await?;
                     st.retry_count.remove(&entry.client_msg_id);
                     made_progress = true;
                     continue;
                 }
                 PendingDispatchDecision::FailMaxRetries { reason } => {
-                    let _ = st.pending_writer.pop(&entry.client_msg_id).await;
-                    st.retry_count.remove(&entry.client_msg_id);
-                    let failed_msg = MessageDeliveryService::mark_failed(&entry.message);
-                    if let Err(e) = st.message_store.save_batch(&[failed_msg]).await {
-                        warn!(%e, "persist failed message state failed");
-                    }
-                    st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
-                        client_msg_id: entry.client_msg_id.clone(),
-                        reason: reason.to_string(),
-                        error: crate::domain::SendFailure::local_reason(reason),
-                    }));
+                    mark_send_failed_and_publish(st, &entry, reason).await?;
                     made_progress = true;
                     continue;
                 }
@@ -1648,39 +1616,35 @@ async fn do_send_one(sender: &PacketSender, entry: &PendingSendVo) -> Result<()>
     sender.send_message(&proto, Duration::from_secs(15)).await
 }
 
-fn conversation_projection_ts(message: &IMMessage) -> u64 {
-    if message.conversation_seq > 0 {
-        if message.created_at > 0 {
-            return message.created_at;
+async fn persist_terminal(
+    st: &mut QueueState,
+    message: IMMessage,
+    events: Vec<SdkEvent>,
+) -> Result<()> {
+    let client_id = message.client_msg_id.clone();
+    match st.outgoing.complete_send(&message).await {
+        Ok(applied) => {
+            st.pending_commits.remove(&client_id);
+            st.retry_count.remove(&client_id);
+            if applied {
+                for event in events {
+                    st.bus.publish(event);
+                }
+            }
+            Ok(())
         }
-        if message.client_created_at > 0 {
-            return message.client_created_at;
+        Err(error) => {
+            warn!(%error, %client_id, "terminal send commit deferred");
+            st.pending_commits.insert(client_id, (message, events));
+            Err(error)
         }
     }
-    message.timeline_sort_ts()
 }
 
-async fn update_conversation_last_message(st: &QueueState, message: &IMMessage) -> Result<()> {
-    let conversation_id = message.conversation_id.trim();
-    let last_message_id = if message.server_id.trim().is_empty() {
-        message.client_msg_id.trim()
-    } else {
-        message.server_id.trim()
-    };
-    if conversation_id.is_empty() || last_message_id.is_empty() {
-        return Ok(());
+async fn retry_pending_commits(st: &mut QueueState) {
+    for (_, (message, events)) in std::mem::take(&mut st.pending_commits) {
+        let _ = persist_terminal(st, message, events).await;
     }
-    let preview = message.text_for_storage();
-    st.conversation_store
-        .update_last_message(
-            conversation_id,
-            last_message_id,
-            message.sender_id(),
-            conversation_projection_ts(message),
-            preview.as_deref(),
-            message.conversation_seq,
-        )
-        .await
 }
 
 /// Send-to-ack latency above this is logged at warn so a slow send stands out in client logs
@@ -1701,24 +1665,20 @@ async fn apply_ack_and_publish(
     ack: SendAck,
 ) -> AckApplyResult {
     if MessageDeliveryService::durable_accepted_from_ack(&ack).is_some() {
-        let _ = st.pending_writer.pop(&ack.client_msg_id).await;
-        st.retry_count.remove(&ack.client_msg_id);
         let latency_ms = id::now_millis().saturating_sub(entry.enqueued_at_ms);
         st.metrics
             .histogram("reliable_queue.send_ack_latency_ms", latency_ms as f64);
         log_send_latency(&ack.client_msg_id, latency_ms, "durable");
         note_send_success(st);
         let msg = MessageDeliveryService::mark_sent_from_ack(&entry.message, &ack);
-        let cid = ack.client_msg_id.clone();
-        if let Err(e) = st.message_store.update_after_ack(&cid, &msg).await {
-            warn!(%e, "update_after_ack failed");
-        }
-        if let Err(e) = update_conversation_last_message(st, &msg).await {
-            warn!(%e, conversation_id = %msg.conversation_id, "update conversation projection after ack failed");
-        }
-        st.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
-            ack: Box::new(ack),
-        }));
+        let _ = persist_terminal(
+            st,
+            msg,
+            vec![SdkEvent::Message(MessageEvent::SendAck {
+                ack: Box::new(ack),
+            })],
+        )
+        .await;
         return AckApplyResult::Terminal;
     }
     if MessageDeliveryService::accepted_from_ack(&ack).is_some() {
@@ -1743,25 +1703,21 @@ async fn apply_ack_and_publish(
             return AckApplyResult::RetryScheduled;
         }
     }
-    let _ = st.pending_writer.pop(&ack.client_msg_id).await;
-    st.retry_count.remove(&ack.client_msg_id);
     let failed_msg = MessageDeliveryService::mark_failed(&entry.message);
-    if let Err(e) = st.message_store.save_batch(&[failed_msg]).await {
-        warn!(%e, "persist failed message state from ack failed");
-    }
     let reason = MessageDeliveryService::error_message_from_ack(&ack)
         .unwrap_or_else(|| "send ack missing accepted result".to_string());
     let error = MessageDeliveryService::send_failure_from_ack(&ack)
         .unwrap_or_else(|| crate::domain::SendFailure::local_reason(&reason));
     let client_msg_id = ack.client_msg_id.clone();
-    st.bus.publish(SdkEvent::Message(MessageEvent::SendAck {
-        ack: Box::new(ack),
-    }));
-    st.bus.publish(SdkEvent::Message(MessageEvent::SendFailed {
-        client_msg_id,
-        reason,
-        error,
-    }));
+    let events = vec![
+        SdkEvent::Message(MessageEvent::SendAck { ack: Box::new(ack) }),
+        SdkEvent::Message(MessageEvent::SendFailed {
+            client_msg_id,
+            reason,
+            error,
+        }),
+    ];
+    let _ = persist_terminal(st, failed_msg, events).await;
     AckApplyResult::Terminal
 }
 
@@ -1816,26 +1772,44 @@ fn schedule_retry_after_backoff(
     });
 }
 
-async fn apply_orphan_durable_ack(st: &mut QueueState, ack: &SendAck) -> Result<()> {
-    let Some(accepted) = MessageDeliveryService::durable_accepted_from_ack(ack) else {
-        return Ok(());
-    };
+fn ack_matches_conversation(ack: &SendAck, conversation: &str) -> bool {
+    ack.conversation_id == conversation
+        || (ack.conversation_id.is_empty()
+            && MessageDeliveryService::error_message_from_ack(ack).is_some())
+}
+
+// A false result suppresses publication of a receipt for another conversation.
+async fn apply_orphan_durable_ack(st: &mut QueueState, ack: &SendAck) -> Result<bool> {
     let client_msg_id = ack.client_msg_id.trim();
     if client_msg_id.is_empty() {
-        return Ok(());
+        return Ok(true);
     }
     let Some(local) = st.message_store.get_by_client_msg_id(client_msg_id).await? else {
-        return Ok(());
+        return Ok(true);
+    };
+    if !ack_matches_conversation(ack, &local.conversation_id) {
+        return Ok(false);
+    }
+    let Some(accepted) = MessageDeliveryService::durable_accepted_from_ack(ack) else {
+        return Ok(true);
     };
     if !orphan_durable_ack_should_update(&local, client_msg_id, accepted.conversation_seq) {
-        return Ok(());
+        return Ok(true);
     }
     let msg = MessageDeliveryService::mark_sent_from_ack(&local, ack);
-    st.message_store
-        .update_after_ack(client_msg_id, &msg)
-        .await?;
-    update_conversation_last_message(st, &msg).await?;
-    Ok(())
+    if let Err(error) = st.outgoing.complete_send(&msg).await {
+        st.pending_commits.insert(
+            client_msg_id.to_owned(),
+            (
+                msg,
+                vec![SdkEvent::Message(MessageEvent::SendAck {
+                    ack: Box::new(ack.clone()),
+                })],
+            ),
+        );
+        return Err(error);
+    }
+    Ok(true)
 }
 
 fn orphan_durable_ack_should_update(local: &IMMessage, client_msg_id: &str, ack_seq: u64) -> bool {
@@ -1846,7 +1820,7 @@ fn orphan_durable_ack_should_update(local: &IMMessage, client_msg_id: &str, ack_
     pending_like || local.conversation_seq == 0 || ack_seq > local.conversation_seq
 }
 
-#[cfg(all(test, feature = "storage-sqlite"))]
+#[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
 mod tests {
     use super::{QueueCommand, ReliableSendQueue, ReliableSendQueueConfig};
     use crate::domain::{
@@ -1900,7 +1874,7 @@ mod tests {
         ))
     }
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn enqueue_returns_after_optimistic_message_is_persisted() {
         let bus = EventBus::new();
@@ -1910,13 +1884,12 @@ mod tests {
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
         let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
-        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: message_store.clone(),
             pending_reader: pending_store.clone(),
             pending_writer: pending_store,
             sender: dummy_sender(),
             message_store: message_store.clone(),
-            conversation_store,
             current_user_id,
             bus: bus.clone(),
             timeout_secs: Some(60),
@@ -1955,7 +1928,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn ack_updates_conversation_last_message_projection_before_publish() {
         let bus = EventBus::new();
@@ -1965,7 +1938,7 @@ mod tests {
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
         let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
-        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
+        let conversation_store = Arc::new(SqliteConversationRepo::new(pool.clone()));
         conversation_store
             .save_one(&Conversation {
                 conversation_id: "conv-ack".to_string(),
@@ -1979,11 +1952,11 @@ mod tests {
             .await
             .unwrap();
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: message_store.clone(),
             pending_reader: pending_store.clone(),
             pending_writer: pending_store,
             sender: dummy_sender(),
-            message_store,
-            conversation_store: conversation_store.clone(),
+            message_store: message_store.clone(),
             current_user_id,
             bus: bus.clone(),
             timeout_secs: Some(60),
@@ -2004,6 +1977,8 @@ mod tests {
             optimistic_event,
             SdkEvent::Message(MessageEvent::ReceivedBatch { .. })
         ));
+        sqlx::query("CREATE TRIGGER defer_ack BEFORE DELETE ON pending_sends BEGIN SELECT RAISE(ABORT, 'disk busy'); END")
+            .execute(&pool).await.unwrap();
         queue
             .on_ack(SendAck {
                 client_msg_id: "client-ack".to_string(),
@@ -2020,7 +1995,23 @@ mod tests {
             .unwrap();
         handled(&queue).await;
 
-        let event = published(&mut receiver, "send ack");
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pending_sends")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(message_store.get("server-new").await.unwrap().is_none());
+        sqlx::query("DROP TRIGGER defer_ack")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(4), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert!(matches!(
             event,
             SdkEvent::Message(MessageEvent::SendAck { .. })
@@ -2037,7 +2028,7 @@ mod tests {
         assert_eq!(updated.unread_count, 0);
     }
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn broker_ack_keeps_pending_message_recoverable() {
         let bus = EventBus::new();
@@ -2047,13 +2038,12 @@ mod tests {
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
         let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
-        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: message_store.clone(),
             pending_reader: pending_store.clone(),
             pending_writer: pending_store.clone(),
             sender: dummy_sender(),
             message_store: message_store.clone(),
-            conversation_store,
             current_user_id,
             bus,
             timeout_secs: Some(60),
@@ -2110,7 +2100,7 @@ mod tests {
         assert_eq!(local.conversation_seq, 0);
     }
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn broker_ack_releases_window_without_clearing_pending() {
         let bus = EventBus::new();
@@ -2120,13 +2110,12 @@ mod tests {
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
         let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
-        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: message_store.clone(),
             pending_reader: pending_store.clone(),
             pending_writer: pending_store.clone(),
             sender: dummy_sender(),
             message_store,
-            conversation_store,
             current_user_id,
             bus,
             timeout_secs: Some(60),
@@ -2218,7 +2207,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn orphan_durable_ack_is_published() {
         let bus = EventBus::new();
@@ -2228,13 +2217,12 @@ mod tests {
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
         let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
-        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: message_store.clone(),
             pending_reader: pending_store.clone(),
             pending_writer: pending_store,
             sender: dummy_sender(),
             message_store,
-            conversation_store,
             current_user_id,
             bus,
             timeout_secs: Some(60),
@@ -2269,7 +2257,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn orphan_later_persisted_ack_advances_local_canonical_seq() {
         let bus = EventBus::new();
@@ -2279,7 +2267,7 @@ mod tests {
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
         let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
-        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
+
         let mut local = IMMessage::new(flare_proto::common::Message::default());
         local.server_id = "server-old".to_string();
         local.client_msg_id = "client-late-persisted".to_string();
@@ -2290,11 +2278,11 @@ mod tests {
         message_store.save_batch(&[local]).await.unwrap();
 
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: message_store.clone(),
             pending_reader: pending_store.clone(),
             pending_writer: pending_store,
             sender: dummy_sender(),
             message_store: message_store.clone(),
-            conversation_store,
             current_user_id,
             bus,
             timeout_secs: Some(60),
@@ -2335,7 +2323,7 @@ mod tests {
         assert_eq!(stored.conversation_seq, 42);
     }
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn pipelined_queue_accepts_out_of_order_durable_acks() {
         let bus = EventBus::new();
@@ -2346,13 +2334,12 @@ mod tests {
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
         let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
-        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: message_store.clone(),
             pending_reader: pending_store.clone(),
             pending_writer: pending_store.clone(),
             sender: dummy_sender(),
             message_store,
-            conversation_store,
             current_user_id,
             bus,
             timeout_secs: Some(60),
@@ -2440,7 +2427,7 @@ mod tests {
     /// flight. If the ack of an earlier attempt then arrives (the server persisted it after
     /// all), it settles the message at once: settling takes no send slot, and the message would
     /// otherwise show as sending until the backoff ran out and a slot was free.
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn an_ack_for_a_message_waiting_to_be_resent_settles_it_at_once() {
         let bus = EventBus::new();
@@ -2451,13 +2438,12 @@ mod tests {
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
         let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
-        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: message_store.clone(),
             pending_reader: pending_store.clone(),
             pending_writer: pending_store.clone(),
             sender: dummy_sender(),
             message_store: message_store.clone(),
-            conversation_store,
             current_user_id,
             bus,
             timeout_secs: Some(60),
@@ -2535,7 +2521,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn recover_pending_for_current_user_drops_cross_account_entries() {
         let bus = EventBus::new();
@@ -2545,7 +2531,7 @@ mod tests {
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
         let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
-        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
+
         let mut message = IMMessage::new(flare_proto::common::Message::default());
         message.server_id = "c1".to_string();
         message.client_msg_id = "c1".to_string();
@@ -2564,11 +2550,11 @@ mod tests {
             .await
             .unwrap();
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: message_store.clone(),
             pending_reader: pending_store.clone(),
             pending_writer: pending_store.clone(),
             sender: dummy_sender(),
             message_store,
-            conversation_store,
             current_user_id,
             bus: bus.clone(),
             timeout_secs: Some(60),
@@ -2593,7 +2579,7 @@ mod tests {
 
     /// A server rejection reaches the host with its typed reason: `SendFailed.error` carries
     /// `ErrorDetail.reason` as the machine reason, and the old `reason` text stays as it was.
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn a_rejected_send_reports_the_server_reason_as_the_machine_reason() {
         let bus = EventBus::new();
@@ -2603,13 +2589,12 @@ mod tests {
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
         let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
-        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: message_store.clone(),
             pending_reader: pending_store.clone(),
             pending_writer: pending_store.clone(),
             sender: dummy_sender(),
             message_store,
-            conversation_store,
             current_user_id,
             bus,
             timeout_secs: Some(60),
@@ -2665,7 +2650,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn recover_pending_for_current_user_publishes_orphan_failures() {
         let bus = EventBus::new();
@@ -2675,7 +2660,7 @@ mod tests {
         sqlite_init_schema(&pool).await.unwrap();
         let pending_store = Arc::new(SqlitePendingSendRepo::new(pool.clone()));
         let message_store = Arc::new(SqliteMessageRepo::new(pool.clone()));
-        let conversation_store = Arc::new(SqliteConversationRepo::new(pool));
+
         let mut message = IMMessage::new(flare_proto::common::Message::default());
         message.server_id = "orphan-1".to_string();
         message.client_msg_id = "orphan-1".to_string();
@@ -2685,11 +2670,11 @@ mod tests {
         message.local_state.is_local = true;
         message_store.save_batch(&[message]).await.unwrap();
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: message_store.clone(),
             pending_reader: pending_store.clone(),
             pending_writer: pending_store,
             sender: dummy_sender(),
             message_store,
-            conversation_store,
             current_user_id,
             bus: bus.clone(),
             timeout_secs: Some(60),
@@ -2745,11 +2730,11 @@ mod tests {
             .await
             .unwrap();
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: Arc::new(SqliteMessageRepo::new(pool.clone())),
             pending_reader: pending_store.clone(),
             pending_writer: pending_store.clone(),
             sender: dummy_sender(),
             message_store: Arc::new(SqliteMessageRepo::new(pool.clone())),
-            conversation_store: Arc::new(SqliteConversationRepo::new(pool)),
             current_user_id: Arc::new(RwLock::new("u1".to_string())),
             bus: EventBus::new(),
             timeout_secs: Some(60),
@@ -2852,6 +2837,7 @@ mod unsent_resend_tests {
         let (pending_reader, pending_writer) = stores.pending_sends().expect("pending sends");
         let metrics = MetricsRecorder::enabled(None);
         let queue = ReliableSendQueue::new(ReliableSendQueueConfig {
+            outgoing: stores.outgoing.clone().unwrap(),
             pending_reader,
             pending_writer,
             // 没有长连接客户端：每次发送尝试都立即以「未连接」失败
@@ -2860,7 +2846,6 @@ mod unsent_resend_tests {
                 Arc::new(ProtobufCodec) as Arc<dyn Codec>,
             )),
             message_store: stores.messages.clone(),
-            conversation_store: stores.conversations.clone(),
             current_user_id: Arc::new(RwLock::new("u1".to_string())),
             bus: EventBus::new(),
             timeout_secs: Some(60),
@@ -2935,6 +2920,7 @@ mod stall_probe_tests {
         let (pending_reader, pending_writer) = stores.pending_sends().expect("pending sends");
         let (command_tx, _command_rx) = mpsc::channel(8);
         QueueState {
+            outgoing: stores.outgoing.clone().unwrap(),
             pending_reader,
             pending_writer,
             command_tx,
@@ -2943,7 +2929,6 @@ mod stall_probe_tests {
                 Arc::new(ProtobufCodec) as Arc<dyn Codec>,
             )),
             message_store: stores.messages.clone(),
-            conversation_store: stores.conversations.clone(),
             current_user_id: Arc::new(RwLock::new("u1".to_string())),
             bus: EventBus::new(),
             timeout_duration: Duration::from_secs(10),
@@ -2954,6 +2939,7 @@ mod stall_probe_tests {
             awaiting_durable: HashMap::new(),
             retry_count: HashMap::new(),
             retry_backoff: HashMap::new(),
+            pending_commits: HashMap::new(),
             metrics: MetricsRecorder::disabled(),
             link_probe: Some(probe),
             stall_probe_gate: SendStallProbeGate::default(),

@@ -16,7 +16,7 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use flare_im_core_sdk::client::IMClient;
-use flare_im_core_sdk::client::lifecycle::LoginDbKind;
+
 use flare_im_core_sdk::model::StartupHomeSyncRequest;
 use flare_im_core_sdk::prelude::SdkConfigOverlay;
 
@@ -97,7 +97,7 @@ fn cold_start_once() {
     init.expect("init");
     let (prepare, prepare_sync, prepare_wall) = step(
         &runtime,
-        client.prepare("cold-start-user", LoginDbKind::Sqlite),
+        client.prepare("cold-start-user", flare_im_core_sdk_sqlite_im::sqlite()),
     );
     prepare.expect("prepare");
     let (home, home_sync, home_wall) = step(
@@ -127,4 +127,118 @@ fn cold_start_once() {
     );
     // 不登出：再次启动的轮次要沿用这份本地数据。
     drop(client);
+}
+
+fn storage_root() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var_os("FLARE_COLD_START_ROOT").expect("data root"))
+        .join("storage-baseline")
+}
+
+async fn open_storage_client(root: &std::path::Path) -> IMClient {
+    let client = IMClient::new();
+    client
+        .init(Some("development".into()), Some(overlay(root)))
+        .await
+        .unwrap();
+    client
+        .prepare("baseline-user", flare_im_core_sdk_sqlite_im::sqlite())
+        .await
+        .unwrap();
+    client
+}
+
+/// 同一 SQLite 用户库上测量 20 个 32 条文本消息的小批次，随后向断网队列连续投递 64 条。
+/// 只创建新的样本子目录，避免历史数据改变负载或覆盖调用方的数据。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "local SQLite baseline: set FLARE_COLD_START_ROOT to a fresh temporary directory"]
+async fn sqlite_batch_and_offline_queue() {
+    let root = storage_root();
+    std::fs::create_dir(&root).expect("fresh storage baseline directory");
+    let client = open_storage_client(&root).await;
+    let stores = client.stores_async().await.unwrap();
+    let builder = client.message_build().unwrap();
+    let template = builder
+        .create_text("group-baseline-history", "baseline text", false, &[])
+        .await
+        .unwrap();
+    let mut timings = Vec::new();
+    for batch in 0..20 {
+        let messages: Vec<_> = (1..=32)
+            .map(|offset| {
+                let seq = batch * 32 + offset;
+                let mut message = template.clone();
+                message.server_id = format!("server-{seq}");
+                message.client_msg_id = format!("client-{seq}");
+                message.conversation_seq = seq;
+                message.local_state = Default::default();
+                message
+            })
+            .collect();
+        let start = Instant::now();
+        stores.messages.save_batch(&messages).await.unwrap();
+        timings.push(start.elapsed().as_micros());
+    }
+    assert_eq!(
+        stores
+            .messages
+            .get_by_conversation("group-baseline-history", 0, 640)
+            .await
+            .unwrap()
+            .len(),
+        640
+    );
+    let api = client.message_async().await.unwrap();
+    let pending = stores.pending_send_reader.expect("SQLite outbox");
+    assert!(pending.list().await.unwrap().is_empty());
+    let mut sent = Vec::new();
+    for _ in 0..64 {
+        let draft = builder
+            .create_text("group-baseline-outbox", "queued offline", false, &[])
+            .await
+            .unwrap();
+        sent.push(draft.client_msg_id.clone());
+        api.send(draft).await.unwrap();
+    }
+    // 此次负载没有网络或 ACK，末次入队后的持久条数就是队列深度峰值。
+    let queued: Vec<_> = pending
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| row.client_msg_id)
+        .collect();
+    assert_eq!(queued, sent);
+    timings.sort_unstable();
+    let p95_index = (95 * timings.len()).div_ceil(100) - 1;
+    println!(
+        "SQLITE_BASELINE {}",
+        serde_json::json!({
+            "batchSize": 32,
+            "batchCount": timings.len(),
+            "batchP95Us": timings[p95_index],
+            "peakPending": queued.len(),
+            "pendingIds": queued,
+        })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "second process of the SQLite outbox baseline"]
+async fn read_reopened_outbox() {
+    let client = open_storage_client(&storage_root()).await;
+    let stores = client.stores_async().await.unwrap();
+    let reopened: Vec<_> = stores
+        .pending_send_reader
+        .expect("SQLite outbox")
+        .list()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.client_msg_id)
+        .collect();
+    assert_eq!(reopened.len(), 64);
+    println!(
+        "REOPENED_OUTBOX {}",
+        serde_json::to_string(&reopened).unwrap()
+    );
 }

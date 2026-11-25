@@ -1,23 +1,21 @@
+use crate::application::InboundSource;
 mod coverage;
 mod decoding;
 mod display;
 mod event_applier;
 mod models;
 
-use crate::application::projections::ConversationProjectionApplier;
 use crate::application::services::EventDeduper;
-use crate::application::services::IncomingMessageConverger;
+use crate::application::usecases::inbound::ApplyInbound;
 use decoding::decode_single_conversation_items;
 use event_applier::SyncEventApplier;
 use models::{AppliedConversationIncremental, AppliedSingleConversationPage, ReplayMode};
 
-use crate::application::notification::{
-    InboundDelivery, NotificationInboundPipeline, partition_notification_durability,
-};
+use crate::application::notification::{InboundDelivery, NotificationInboundPipeline};
 use crate::domain::timeline::{contiguous_page_range, cursor_advance_range, snapshot_rows_range};
 use crate::domain::{
     ConversationIdRewrite, ConversationIdentityService, SeqRange, SyncCursorVo,
-    filter_messages_after_clear, local_cleared_through_seq,
+    local_cleared_through_seq,
 };
 use crate::infrastructure::persistence::StoreProvider;
 use crate::kernel::ReliableSendQueuePort;
@@ -31,8 +29,7 @@ pub struct SyncApplyUseCase {
     bus: EventBus,
     event_applier: SyncEventApplier,
     notification_pipeline: NotificationInboundPipeline,
-    incoming_message_converger: IncomingMessageConverger,
-    conversation_projection_applier: ConversationProjectionApplier,
+    inbound: ApplyInbound,
 }
 
 impl SyncApplyUseCase {
@@ -43,21 +40,13 @@ impl SyncApplyUseCase {
         notification_pipeline: NotificationInboundPipeline,
     ) -> Self {
         let event_applier = SyncEventApplier::new(stores.clone(), bus.clone(), event_deduper);
-        let incoming_message_converger = IncomingMessageConverger::new(
-            stores.messages.clone(),
-            stores.conversations.clone(),
-            bus.clone(),
-            None,
-        );
-        let conversation_projection_applier =
-            ConversationProjectionApplier::new(stores.clone(), bus.clone());
+        let inbound = ApplyInbound::new(&stores, &bus, None);
         Self {
             stores,
             bus,
             event_applier,
             notification_pipeline,
-            incoming_message_converger,
-            conversation_projection_applier,
+            inbound,
         }
     }
 
@@ -65,8 +54,7 @@ impl SyncApplyUseCase {
         &self,
         reliable_queue: Option<std::sync::Arc<dyn ReliableSendQueuePort>>,
     ) {
-        self.incoming_message_converger
-            .set_reliable_queue(reliable_queue);
+        self.inbound.set_reliable_queue(reliable_queue);
     }
 
     async fn local_message_sync_start_seq(
@@ -127,7 +115,7 @@ impl SyncApplyUseCase {
                 .map(|(seq, _)| *seq),
         );
 
-        self.persist_converged_messages(user_id, conversation_id, decoded.messages, delivery)
+        self.persist_converged_messages(user_id, decoded.messages, delivery)
             .await?;
 
         let safe_max_seq = max_contiguous_seq(known_seq, &applied_item_seqs);
@@ -177,13 +165,8 @@ impl SyncApplyUseCase {
             snapshot_rows_range(row.messages.iter().map(|message| message.conversation_seq));
         // 按值消费：快照行的消息 move 进收敛管线（冷启 bundle 每页 50×30 条，免整页深拷贝）。
         let messages: Vec<IMMessage> = row.messages.into_iter().map(IMMessage::new).collect();
-        self.persist_converged_messages(
-            user_id,
-            &row.conversation_id,
-            messages,
-            InboundDelivery::HistoryReplay,
-        )
-        .await?;
+        self.persist_converged_messages(user_id, messages, InboundDelivery::HistoryReplay)
+            .await?;
         // 快照行携带服务端权威已读/未读，直接覆盖本地摘要（LWW：快照即最新状态）。
         self.stores
             .conversations
@@ -197,43 +180,23 @@ impl SyncApplyUseCase {
         Ok(row.last_conversation_seq)
     }
 
-    /// 消息收敛落库管线（页应用/快照行应用共用）：清空水位过滤 → 身份规范化+pending 合并 →
+    /// 消息收敛落库管线（页应用/快照行应用共用）：身份规范化、pending 合并与可见性过滤 →
     /// durable 落库 + 会话投影 → 视图/通知投递。`save_batch` 失败向上传播（游标因此不动，守 I1）。
     async fn persist_converged_messages(
         &self,
         user_id: &str,
-        conversation_id: &str,
         messages: Vec<IMMessage>,
         delivery: InboundDelivery,
     ) -> Result<()> {
-        let cleared_floor = self
-            .stores
-            .conversations
-            .get(conversation_id)
-            .await?
-            .map(|c| crate::domain::sync_visibility_floor(&c))
-            .unwrap_or(0);
-        let fresh_messages = filter_messages_after_clear(
-            self.incoming_message_converger
-                .converge_messages(user_id, messages)
-                .await?,
-            cleared_floor,
-        );
-        if fresh_messages.is_empty() {
-            return Ok(());
-        }
-        let (durable_messages, ephemeral_messages): (Vec<IMMessage>, Vec<IMMessage>) =
-            partition_notification_durability(fresh_messages);
-        if !durable_messages.is_empty() {
-            self.stores.messages.save_batch(&durable_messages).await?;
-            self.conversation_projection_applier
-                .apply_synced_messages(&durable_messages, user_id)
-                .await?;
-        }
-        let mut inbound = durable_messages;
-        inbound.extend(ephemeral_messages);
+        let batch = self
+            .inbound
+            .prepare(user_id, messages, InboundSource::SyncReplay)
+            .await?;
+        self.inbound
+            .persist(&batch.durable, user_id, InboundSource::SyncReplay)
+            .await?;
         self.notification_pipeline
-            .finish_batch_with_delivery(inbound, delivery)
+            .finish_batch_with_delivery(batch.into_notifications(), delivery)
             .await;
         Ok(())
     }

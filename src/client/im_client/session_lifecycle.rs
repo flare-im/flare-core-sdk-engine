@@ -57,9 +57,6 @@ impl IMClient {
             self.reconcile_push_in_background();
             // 后台期间通知扩展记下的到达回执读进来报上去。
             self.sync_push_receipts_in_background();
-            if let Some(update) = self.update_runtime().await {
-                update.foregrounded();
-            }
             let client = self.clone();
             let generation = self.load_session_generation_snapshot();
             spawn_im_background(async move {
@@ -67,8 +64,6 @@ impl IMClient {
                     let _ = client.sync_foreground_convergence_silent().await;
                 }
             });
-        } else if let Some(update) = self.update_runtime().await {
-            update.backgrounded();
         }
         Ok(())
     }
@@ -100,7 +95,7 @@ impl IMClient {
     #[tracing::instrument(skip(self, event), fields(available = event.available, interface = event.interface.as_deref().unwrap_or("unknown")))]
     pub async fn notify_network_change(&self, event: NetworkChangeEvent) -> Result<()> {
         // 记下完整输入：登录前的首报（平台之后对相同状态去重）要带进之后新建的运行时与链路。
-        let (changed, link, update) = {
+        let (changed, link) = {
             let mut current = self.inner.write().await;
             current.last_network = Some(event.clone());
             let changed = current.connection.as_ref().is_some_and(|access| {
@@ -111,8 +106,7 @@ impl IMClient {
                 )
             });
             let link = current.engine.as_ref().map(|engine| engine.link().clone());
-            let update = current.update.clone();
-            (changed, link, update)
+            (changed, link)
         };
         tracing::info!(
             interface = event.interface.as_deref().unwrap_or("unknown"),
@@ -127,9 +121,6 @@ impl IMClient {
         }
         if event.available {
             self.reconcile_push_in_background();
-        }
-        if let Some(update) = update {
-            update.network_changed(event.available, event.is_metered());
         }
         Ok(())
     }
@@ -366,10 +357,8 @@ impl IMClient {
                 g.refresh_token_vault.clone(),
                 // 宿主的插件界面资料：属于宿主，跨会话保留。
                 g.plugin_host.clone(),
-                g.update.clone(),
             )
         };
-        let vault = refresh_token_vault_for(&db, snap.1.as_ref());
         self.logout_for_login().await?;
         let data_root = match snap.2.clone() {
             Some(path) => path,
@@ -391,47 +380,16 @@ impl IMClient {
             Some(base) => crate::client::lifecycle::merge_sdk_config_onto(base, snap.1.as_ref()),
             None => merge_sdk_config(snap.1.as_ref()),
         };
-        #[cfg(feature = "lifecycle-sqlite")]
+        let tenant = config
+            .tenant_id
+            .as_deref()
+            .unwrap_or(crate::shared::util::DEFAULT_TENANT_ID);
+        let vault = refresh_token_vault_for(&db, tenant);
         let stores = match db {
-            #[cfg(feature = "lifecycle-sqlite")]
-            LoginDbKind::Sqlite => {
-                crate::shared::util::sqlite_store::open_sqlite_store_for_user(
-                    &data_root,
-                    "flare-im-core-sdk",
-                    config
-                        .tenant_id
-                        .as_deref()
-                        .unwrap_or(crate::shared::util::DEFAULT_TENANT_ID),
-                    user_id,
-                )
-                .await?
-            }
-            #[cfg(feature = "lifecycle-sqlite")]
-            LoginDbKind::EncryptedSqlite {
-                key_store,
-                key_namespace,
-                tenant_id,
-                key_name,
-            } => {
-                let namespace = key_namespace.as_deref().unwrap_or("flare-im-core-sdk");
-                let tenant_id = tenant_id
-                    .as_deref()
-                    .or(config.tenant_id.as_deref())
-                    .unwrap_or(crate::shared::util::DEFAULT_TENANT_ID);
-                crate::shared::util::sqlite_store::open_sqlite_store_for_user_with_secure_key_store(
-                    &data_root,
-                    user_id,
-                    namespace,
-                    tenant_id,
-                    key_name.as_deref(),
-                    key_store.as_ref(),
-                )
-                .await?
-            }
-            LoginDbKind::IndexedDb(stores) => stores,
+            LoginDbKind::Open(opener) => opener.open(&data_root, tenant, user_id).await?,
+            LoginDbKind::Provided(stores) => stores,
         };
-        #[cfg(not(feature = "lifecycle-sqlite"))]
-        let LoginDbKind::IndexedDb(stores) = db;
+        stores.require_reliable_outbox()?;
         let mut child_builder = IMClientBuilder::new().config(config).stores(stores);
         if let Some(ctx) = snap.3.clone() {
             child_builder = child_builder.http_request_context(ctx);
@@ -442,7 +400,6 @@ impl IMClient {
         }
         // 宿主此前报过的网络状态：新链路从它起步（离线时登录直接显示等网络）。
         child_builder = child_builder.plugin_host(snap.11.clone());
-        child_builder = child_builder.update_runtime(snap.12);
         let network_available = snap.9.as_ref().is_none_or(|network| network.available);
         child_builder = child_builder.initial_network_available(network_available);
         child_builder = snap.4.apply_to_builder(child_builder);
@@ -648,7 +605,6 @@ impl IMClient {
             context.ensure_identity(user_id, &tenant_id).await;
         }
         if install_watcher {
-            self.spawn_update_state_watcher(link_generation);
             self.spawn_state_snapshot_watcher(link_generation, bus);
             self.spawn_token_refresh_watcher(link_generation);
         }
@@ -707,28 +663,18 @@ impl IMClient {
 
 /// 以加密本地库登录时，刷新令牌与库密钥放进同一个宿主安全存储（同一组命名空间与租户，用途不同）。
 /// 其它登录方式宿主没有给安全存储，刷新令牌只在内存里。
-#[cfg_attr(not(feature = "lifecycle-sqlite"), allow(unused_variables))]
 fn refresh_token_vault_for(
     db: &LoginDbKind,
-    overlay: Option<&crate::client::lifecycle::SdkConfigOverlay>,
+    tenant: &str,
 ) -> Option<super::refresh_vault::RefreshTokenVault> {
-    match db {
-        #[cfg(feature = "lifecycle-sqlite")]
-        LoginDbKind::EncryptedSqlite {
-            key_store,
-            key_namespace,
-            tenant_id,
-            ..
-        } => Some(super::refresh_vault::RefreshTokenVault::new(
-            key_store.clone(),
-            key_namespace.as_deref().unwrap_or("flare-im-core-sdk"),
-            tenant_id
-                .as_deref()
-                .or_else(|| overlay.and_then(|cfg| cfg.tenant_id.as_deref()))
-                .unwrap_or(crate::shared::util::DEFAULT_TENANT_ID),
-        )),
-        _ => None,
-    }
+    let LoginDbKind::Open(opener) = db else {
+        return None;
+    };
+    opener
+        .credential_store(tenant)
+        .map(|(store, namespace, tenant)| {
+            super::refresh_vault::RefreshTokenVault::new(store, &namespace, &tenant)
+        })
 }
 
 /// 上一个会话的用户（原生端记在数据根下，冷启动也能判断「同一用户」）。

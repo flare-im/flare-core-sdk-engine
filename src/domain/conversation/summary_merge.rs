@@ -57,6 +57,16 @@ pub fn merge_incoming_conversation_summary(
     merged.max_seq = merged.max_seq.max(merged_read.max_seq);
 
     if let Some(local) = local {
+        merged.updated_at_ts = merged.updated_at_ts.max(local.updated_at_ts);
+        if merged.business_type.trim().is_empty() {
+            merged.business_type.clone_from(&local.business_type);
+        }
+        if incoming.member_preview.is_empty()
+            || incoming.participant_version < local.participant_version
+        {
+            merged.member_preview.clone_from(&local.member_preview);
+        }
+        merged.participant_version = local.participant_version.max(incoming.participant_version);
         if incoming.max_seq <= local.max_seq && incoming.last_read_seq <= local.last_read_seq {
             merged.mention_count = local.mention_count;
             merged.mention_me = local.mention_me;
@@ -124,9 +134,9 @@ fn merge_user_settings(local: &Conversation, merged: &mut Conversation) {
                 .entry(key.clone())
                 .or_insert_with(|| value.clone());
         }
-        merged
-            .ext
-            .insert(EXT_SETTINGS_DIRTY.to_string(), "0".to_string());
+        if let Some(dirty) = merged.ext.get_mut(EXT_SETTINGS_DIRTY) {
+            *dirty = "0".into();
+        }
     } else {
         merged.is_pinned = local.is_pinned;
         merged.is_muted = local.is_muted;
@@ -198,6 +208,40 @@ mod tests {
     };
     use crate::model::Conversation;
     use crate::model::conversation::ConversationType;
+
+    #[test]
+    fn partial_summary_preserves_classification_and_newer_membership() {
+        let local = Conversation {
+            business_type: "support".to_string(),
+            updated_at_ts: Some(42),
+            participant_version: 2,
+            member_preview: vec![crate::model::ConversationParticipant {
+                user_id: "current".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut remote = Conversation {
+            participant_version: 1,
+            member_preview: vec![crate::model::ConversationParticipant {
+                user_id: "old".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let merged = merge_incoming_conversation_summary(Some(&local), &remote);
+        assert_eq!(merged.business_type, "support");
+        assert_eq!(merged.updated_at_ts, Some(42));
+        assert_eq!(merged.participant_version, 2);
+        assert_eq!(merged.member_preview[0].user_id, "current");
+
+        remote.participant_version = 3;
+        remote.business_type = "chat".to_string();
+        let merged = merge_incoming_conversation_summary(Some(&local), &remote);
+        assert_eq!(merged.business_type, "chat");
+        assert_eq!(merged.participant_version, 3);
+        assert_eq!(merged.member_preview[0].user_id, "old");
+    }
 
     #[test]
     fn the_merged_name_column_holds_neither_a_remark_nor_an_id() {

@@ -18,7 +18,6 @@ final class DefaultFlareImClient implements FlareImClient {
   DefaultFlareImClient(this._bridge)
     : events = DefaultEventsApi(_bridge),
       connection = _DefaultConnectionApi(_bridge),
-      update = _DefaultUpdateApi(_bridge),
       lifecycle = _DefaultLifecycleApi(_bridge),
       messageBuilder = DefaultMessageBuilderApi(_bridge),
       conversations = _DefaultConversationsApi(_bridge),
@@ -42,7 +41,6 @@ final class DefaultFlareImClient implements FlareImClient {
   final ConnectionApi connection;
   @override
   @override
-  final UpdateApi update;
   @override
   final LifecycleApi lifecycle;
   @override
@@ -423,116 +421,6 @@ final class _DefaultConnectionApi implements ConnectionApi {
       networkChangeRequestToMap(request),
     );
   }
-}
-
-final class _DefaultUpdateApi implements UpdateApi {
-  const _DefaultUpdateApi(this._bridge);
-
-  final NativeBridge _bridge;
-
-  @override
-  Future<UpdateStatus> getState(UpdateGetStateRequest request) async =>
-      updateStatusFromJson(
-        await _bridge.invoke<Object?>(
-          NativeCallMap.updateGetState,
-          updateGetStateRequestToMap(request),
-        ),
-      );
-
-  @override
-  Future<UpdateStatus> check(UpdateCheckRequest request) async =>
-      updateStatusFromJson(
-        await _bridge.invoke<Object?>(
-          NativeCallMap.updateCheck,
-          updateCheckRequestToMap(request),
-        ),
-      );
-
-  @override
-  Future<UpdateStatus> download(UpdateDownloadRequest request) async =>
-      updateStatusFromJson(
-        await _bridge.invoke<Object?>(
-          NativeCallMap.updateDownload,
-          updateDownloadRequestToMap(request),
-        ),
-      );
-
-  @override
-  Future<UpdateInstallPlan> install() async => updateInstallPlanFromJson(
-    await _bridge.invoke<Object?>(NativeCallMap.updateInstall),
-  );
-
-  @override
-  Future<UpdateStatus> reportInstall(
-    UpdateReportInstallRequest request,
-  ) async => updateStatusFromJson(
-    await _bridge.invoke<Object?>(
-      NativeCallMap.updateReportInstall,
-      updateReportInstallRequestToMap(request),
-    ),
-  );
-
-  @override
-  Future<UpdateStatus> defer() async => updateStatusFromJson(
-    await _bridge.invoke<Object?>(NativeCallMap.updateDefer),
-  );
-
-  @override
-  Future<UpdateStatus> skip(UpdateSkipRequest request) async =>
-      updateStatusFromJson(
-        await _bridge.invoke<Object?>(
-          NativeCallMap.updateSkip,
-          updateSkipRequestToMap(request),
-        ),
-      );
-
-  @override
-  Future<UpdateStatus> markPrompted(UpdateMarkPromptedRequest request) async =>
-      updateStatusFromJson(
-        await _bridge.invoke<Object?>(
-          NativeCallMap.updateMarkPrompted,
-          updateMarkPromptedRequestToMap(request),
-        ),
-      );
-
-  @override
-  Future<UpdateStatus> setLocale(UpdateSetLocaleRequest request) async =>
-      updateStatusFromJson(
-        await _bridge.invoke<Object?>(
-          NativeCallMap.updateSetLocale,
-          updateSetLocaleRequestToMap(request),
-        ),
-      );
-
-  @override
-  Future<PluginUpgradeStatus> pluginUpgradeStatus(
-    UpdatePluginUpgradeStatusRequest request,
-  ) async =>
-      pluginUpgradeStatusFromJson(
-        await _bridge.invoke<Object?>(
-          NativeCallMap.updatePluginUpgradeStatus,
-          updatePluginUpgradeStatusRequestToMap(request),
-        ),
-      );
-
-  @override
-  Future<UpdateStatus> openFlow(UpdateOpenFlowRequest request) async =>
-      updateStatusFromJson(
-        await _bridge.invoke<Object?>(
-          NativeCallMap.updateOpenFlow,
-          updateOpenFlowRequestToMap(request),
-        ),
-      );
-
-  @override
-  Future<UpdateResources> getResources(
-    UpdateGetResourcesRequest request,
-  ) async => updateResourcesFromJson(
-    await _bridge.invoke<Object?>(
-      NativeCallMap.updateGetResources,
-      updateGetResourcesRequestToMap(request),
-    ),
-  );
 }
 
 final class _DefaultNotificationApi implements NotificationApi {

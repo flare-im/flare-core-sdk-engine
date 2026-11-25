@@ -9,7 +9,6 @@ pub use crate::domain::{
     PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,
 };
 pub use crate::domain::{PluginConsent, PluginConsentScope, PluginConsentStore};
-pub use crate::runtime::update::UpdateService;
 
 pub use crate::application::{
     InboundDelivery, InboundNotificationView, LocalConversationClearResult,
@@ -17,6 +16,7 @@ pub use crate::application::{
     NotificationHandler, ParticipantDisplayProjectionApplier,
 };
 pub use crate::client::connect_platform;
+pub use crate::client::merge_sdk_config;
 pub use crate::client::token_broker::HostTokenBroker;
 pub use crate::client::token_provider::ConnectTokenRefresher;
 pub use crate::domain::UserProfile;

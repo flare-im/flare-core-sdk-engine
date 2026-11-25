@@ -48,9 +48,6 @@ pub use serde_json;
 /// Reading JSON text the way the browser bundle keeps small ([`shared::util::json`]).
 pub use shared::util::json;
 
-/// Wire types used by an optional application update provider.
-pub use flare_access_contract::update;
-
 pub mod event {
     pub use crate::domain::SendFailure;
     pub use crate::kernel::event::*;
@@ -75,13 +72,32 @@ pub mod plugin {
 /// Product/business extensions should prefer `spi::ExtensionStore`; this
 /// module is for SDK storage adapters such as SQLite or IndexedDB.
 pub mod storage {
+    pub use crate::client::lifecycle::AccountStoreOpener;
+    pub use crate::domain::{
+        ConversationParticipantStore, DEFAULT_MEDIA_CACHE_MAX_BYTES, DirectUploadTransportKindVo,
+        MAX_TERMINAL_ERROR_CODES, MediaUploadManifestVo, MediaUploadPartVo, MessageDeliveryService,
+        RetentionEventKind, UploadManifestState, UploadManifestStore, UploadSourceKind,
+        advance_message_event, apply_retention_event, bundle_storage_error,
+        bundle_storage_quota_exceeded, business_name, command_error, consent_error,
+        encode_plugin_message_state, enforce_retention_visibility, is_bundle_storage_quota_error,
+        merge_incoming_conversation_summary, merge_message_event_state, message_attribute_seq,
+        message_visible_after_clear, retention_hides_content, valid_consent_key, valid_key,
+        validate_plugin_shared_state, write_message_mark, write_plugin_message_state,
+        write_plugin_shared_state,
+    };
+    pub use crate::domain::{UserProfile, local_cleared_through_seq};
+    pub use crate::infrastructure::persistence::search::{
+        elem_search_text, message_type_values_for_search, search_text_for_content_bytes,
+    };
+    pub use crate::shared::util::{now_millis, spawn_background};
+
     pub use crate::domain::{
         ConversationReader, ConversationStore, ConversationWriter, EditApplyResult,
         MediaCacheAdmin, MediaCacheEntryVo, MediaCacheStatsVo, MediaCacheStore, MessageReader,
-        MessageStore, MessageWriter, OperationApplyResult, PendingSendReader, PendingSendVo,
-        PendingSendWriter, SeqRange, SyncCursorReader, SyncCursorVo, SyncCursorWriter,
-        TimelineCoverage, TimelineCoverageStore, UserFileDownloadStore, UserReader, UserWriter,
-        set_local_cleared_through_seq,
+        MessageStore, MessageWriter, OperationApplyResult, OutgoingSendStore, PendingSendReader,
+        PendingSendVo, PendingSendWriter, SeqRange, SyncCursorReader, SyncCursorVo,
+        SyncCursorWriter, TimelineCoverage, TimelineCoverageStore, UserFileDownloadStore,
+        UserReader, UserWriter, set_local_cleared_through_seq,
     };
     pub use crate::domain::{MemberKey, ParticipantDisplaySnapshot, stored_name_is_an_id};
     /// Web bundle storage (`storage.*` of the bridge), for a store adapter
@@ -94,16 +110,18 @@ pub mod storage {
         PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,
     };
     pub use crate::domain::{PluginConsent, PluginConsentScope, PluginConsentStore};
-    pub use crate::domain::{copy_message_projection, message_projection_matches};
+    pub use crate::domain::{
+        copy_message_projection, message_projection_matches, projected_business_type,
+    };
     pub use crate::infrastructure::persistence::memory_im::{
-        MemoryConversationStore, MemoryMessageStore,
+        MemoryConversationStore, MemoryMessageStore, MemoryOutgoingStore,
     };
     pub use crate::infrastructure::persistence::message_snapshot::{
         StoredMessage, StoredPendingSend,
     };
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
     pub use crate::infrastructure::persistence::sqlite::SqlitePluginCommandRepo;
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
     pub use crate::infrastructure::persistence::sqlite::SqlitePluginConsentRepo;
     pub use crate::infrastructure::persistence::{
         CursorBackedTimelineCoverageStore, MemoryPendingSendStore, MemoryPluginConsentStore,
@@ -179,7 +197,7 @@ pub mod prelude {
         ExtensionContext, ExtensionLifecycle, ExtensionLifecycleContext, ExtensionMigration,
         ExtensionRegistry, ExtensionRuntime, ExtensionStore, ProfileProvider, SdkExtension,
     };
-    #[cfg(feature = "storage-sqlite")]
+    #[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
     pub use crate::infrastructure::persistence::sqlite_init_schema;
     pub use crate::infrastructure::persistence::{
         StoreProvider, in_memory_empty_im_provider, in_memory_im_provider,
@@ -229,10 +247,10 @@ pub mod prelude {
         SdkPluginOperationManifest, SdkPluginPermissionManifest, SdkPluginUiKitManifest,
     };
     pub use crate::shared::error::{ErrorCode, FlareError, Result};
-    #[cfg(feature = "lifecycle-sqlite")]
+    #[cfg(all(test, feature = "lifecycle-sqlite", not(target_arch = "wasm32")))]
     pub use crate::shared::util::sqlite_store::ensure_core_sqlite_schema_registered;
-    pub use crate::shared::util::{generate_core_token, local_storage_scope, resolve_user_db_path};
-    #[cfg(feature = "lifecycle-sqlite")]
+    pub use crate::shared::util::{generate_core_token, local_storage_scope};
+    #[cfg(all(test, feature = "lifecycle-sqlite", not(target_arch = "wasm32")))]
     pub use crate::shared::util::{
         open_sqlite_store_for_user_with_secure_key_store,
         sqlite_security_config_from_secure_key_store,
@@ -242,3 +260,11 @@ pub mod prelude {
         MetricsSnapshot,
     };
 }
+
+// SQL-backed tests of private Engine behavior share the adapter implementation.
+// Rust unit tests build a distinct copy of the Engine's model and repository types.
+#[cfg(test)]
+extern crate self as flare_im_core_sdk;
+#[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
+#[path = "../storage/sqlite-im/src/lib.rs"]
+mod sqlite_test_adapter;

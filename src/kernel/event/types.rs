@@ -25,8 +25,6 @@ pub enum ConnectionEvent {
     Status(super::link_status::ConnectionStatus),
     /// 同步状态变更（Idle / Syncing / CatchingUp / Error）
     SyncStateChanged { state: SyncState },
-    /// 更新中心状态变化（`update://state`）。
-    UpdateState(Box<flare_access_contract::update::UpdateStatus>),
 }
 
 /// 消息域事件：收到新消息、发送成功/失败、撤回、正在输入、批量新消息
@@ -264,9 +262,6 @@ pub const TENANT_NOTICE_SOURCE: &str = "flare.tenant_notice";
 /// The topic of the tenant's plugin catalog, which the SDK handles itself
 /// (announced as `PluginEvent::CatalogChanged`).
 pub const PLUGIN_CATALOG_TOPIC: &str = "flare.plugin.catalog";
-/// 租户通知里接入清单的 topic：`version` 是最新清单的 serial。
-/// 租户通知里发布清单的 topic：只作触发，`version` 不与具体平台渠道的 serial 对应。
-pub const RELEASE_MANIFEST_TOPIC: &str = "flare.release";
 
 /// 扩展域事件：业务自定义推送
 #[derive(Clone, Debug)]

@@ -21,7 +21,7 @@ async fn backends(case: &str) -> Vec<(&'static str, StoreProvider, Option<std::p
             "message-identity-{case}-sqlite-{}",
             std::process::id()
         ));
-        let runtime = NativeRuntimeAssembler::configured()
+        let runtime = flare_im_core_sdk_sqlite_im::SqliteRuntimeAssembler::default()
             .assemble(RuntimeConfig {
                 platform: PlatformKind::Native,
                 sdk: SdkConfig::default(),
@@ -64,7 +64,7 @@ async fn public_message_reads_prefer_canonical_ids_and_reject_ambiguous_aliases(
             .await
             .unwrap();
         client
-            .prepare("me", LoginDbKind::IndexedDb(store))
+            .prepare("me", LoginDbKind::Provided(store))
             .await
             .unwrap();
         let stores = client.stores_async().await.unwrap();

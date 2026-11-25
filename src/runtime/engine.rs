@@ -133,27 +133,29 @@ impl SdkEngine {
         } = config;
         let _ = message_deduper;
         let sender = transport.sender().clone();
-        let reliable_queue = stores.pending_sends().map(|(reader, writer)| {
-            // 发出后迟迟没回执时验活当前连接；句柄与传输共享客户端槽位，换了连接探的是新连接。
-            Arc::new(ReliableSendQueue::with_link_probe(
-                ReliableSendQueueConfig {
-                    pending_reader: reader,
-                    pending_writer: writer,
-                    sender: sender.clone(),
-                    message_store: stores.messages.clone(),
-                    conversation_store: stores.conversations.clone(),
-                    current_user_id: current_user_id.clone(),
-                    bus: bus.clone(),
-                    timeout_secs: ack_timeout_secs,
-                    max_retries: ack_max_retries,
-                    max_in_flight: ack_max_in_flight,
-                    metrics: metrics.clone(),
-                    // 链路上线之前不派发：没有连接时发出去只会白白耗掉重试次数。
-                    start_paused: true,
-                },
-                Arc::new(transport.link_probe()),
-            ))
-        });
+        let reliable_queue = stores.pending_sends().zip(stores.outgoing.clone()).map(
+            |((reader, writer), outgoing)| {
+                // 发出后迟迟没回执时验活当前连接；句柄与传输共享客户端槽位，换了连接探的是新连接。
+                Arc::new(ReliableSendQueue::with_link_probe(
+                    ReliableSendQueueConfig {
+                        outgoing,
+                        pending_reader: reader,
+                        pending_writer: writer,
+                        sender: sender.clone(),
+                        message_store: stores.messages.clone(),
+                        current_user_id: current_user_id.clone(),
+                        bus: bus.clone(),
+                        timeout_secs: ack_timeout_secs,
+                        max_retries: ack_max_retries,
+                        max_in_flight: ack_max_in_flight,
+                        metrics: metrics.clone(),
+                        // 链路上线之前不派发：没有连接时发出去只会白白耗掉重试次数。
+                        start_paused: true,
+                    },
+                    Arc::new(transport.link_probe()),
+                ))
+            },
+        );
         let sync_manager = Arc::new(SyncManager::new());
         let tenant_notices = Arc::new(OnceLock::new());
         let server_clock = ServerClock::new();

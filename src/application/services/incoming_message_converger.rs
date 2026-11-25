@@ -1,3 +1,4 @@
+use crate::application::InboundSource;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
@@ -46,7 +47,11 @@ impl IncomingMessageConverger {
         &self,
         current_user_id: &str,
         messages: Vec<IMMessage>,
+        source: InboundSource,
     ) -> Result<Vec<IMMessage>> {
+        if messages.is_empty() {
+            return Ok(messages);
+        }
         let (mut messages, rewrites) = canonicalize_incoming_messages(messages, current_user_id);
         for rewrite in rewrites {
             self.apply_identity_rewrite(rewrite).await?;
@@ -57,18 +62,44 @@ impl IncomingMessageConverger {
         }
         let local_by_client = self.local_by_client_msg_id(&messages).await?;
         let local_by_server = self.local_by_server_id(&messages).await?;
+        let ids: HashSet<_> = messages
+            .iter()
+            .map(|m| m.conversation_id.as_str())
+            .collect();
+        let ids = ids.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let conversations: HashMap<_, _> = self
+            .conversation_store
+            .get_stored_many(&ids)
+            .await?
+            .into_iter()
+            .map(|c| (c.conversation_id.clone(), c))
+            .collect();
         let mut out = Vec::with_capacity(messages.len());
         for message in messages {
             let local_by_client = trimmed_lookup(&local_by_client, &message.client_msg_id);
             let local_by_server = trimmed_lookup(&local_by_server, &message.server_id);
+            let conversation = conversations.get(&message.conversation_id);
+            let floor = conversation
+                .map(crate::domain::sync_visibility_floor)
+                .unwrap_or_default();
+            let visible = crate::domain::message_visible_after_clear(&message, floor);
             match MessageDeliveryService::decide_incoming_message_convergence(
                 current_user_id,
                 &message,
                 local_by_client,
                 local_by_server,
             ) {
-                IncomingMessageConvergenceDecision::EmitReceived => out.push(message),
+                IncomingMessageConvergenceDecision::EmitReceived => {
+                    if visible {
+                        out.push(message);
+                    }
+                }
                 IncomingMessageConvergenceDecision::MergePendingAndAck => {
+                    // Live fanout can precede the archive commit. Keep the pending row
+                    // and outbox until a gateway receipt or storage-backed sync confirms it.
+                    if source == InboundSource::RealtimePush {
+                        continue;
+                    }
                     let ack = MessageDeliveryService::synthetic_ack_from_incoming(&message);
                     let reliable_queue = self
                         .reliable_queue
@@ -92,13 +123,9 @@ impl IncomingMessageConverger {
                 }
                 IncomingMessageConvergenceDecision::DropDuplicate => {
                     let mut message = message;
-                    let projected = match self
-                        .conversation_store
-                        .get(&message.conversation_id)
-                        .await?
-                    {
+                    let projected = match conversation {
                         Some(conversation) => {
-                            crate::domain::message_projection_coverage(&conversation)?
+                            crate::domain::message_projection_coverage(conversation)?
                                 .range_containing(message.conversation_seq)
                                 .is_some()
                         }
@@ -124,7 +151,7 @@ impl IncomingMessageConverger {
                             ));
                         }
                     }
-                    if !projected {
+                    if visible && !projected {
                         out.push(message);
                     }
                 }
@@ -308,7 +335,7 @@ mod tests {
             None,
         );
         let output = converger
-            .converge_messages("me", vec![purged, original])
+            .converge_messages("me", vec![purged, original], InboundSource::SyncReplay)
             .await
             .unwrap();
         assert_eq!(output.len(), 1);
@@ -341,7 +368,7 @@ mod tests {
         );
         let incoming = single_message("new-server", peer, peer, 2);
         let fresh = converger
-            .converge_messages(current_user, vec![incoming])
+            .converge_messages(current_user, vec![incoming], InboundSource::SyncReplay)
             .await
             .unwrap();
 
@@ -384,7 +411,7 @@ mod tests {
             IncomingMessageConverger::new(messages.clone(), conversations, EventBus::new(), None);
 
         let fresh = converger
-            .converge_messages(current_user, vec![incoming])
+            .converge_messages(current_user, vec![incoming], InboundSource::SyncReplay)
             .await
             .unwrap();
 
@@ -436,7 +463,7 @@ mod tests {
         });
         assert!(
             converger
-                .converge_messages("me", vec![snapshot.clone()])
+                .converge_messages("me", vec![snapshot.clone()], InboundSource::SyncReplay)
                 .await
                 .unwrap()
                 .is_empty()
@@ -458,7 +485,7 @@ mod tests {
         ));
         assert!(
             converger
-                .converge_messages("me", vec![local])
+                .converge_messages("me", vec![local], InboundSource::SyncReplay)
                 .await
                 .unwrap()
                 .is_empty()

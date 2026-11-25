@@ -5,8 +5,8 @@
 use std::ffi::{c_char, c_void};
 use std::sync::Arc;
 
+use flare_im_core_sdk::prelude::IMClient;
 use flare_im_core_sdk::prelude::SdkConfigOverlay;
-use flare_im_core_sdk::prelude::{IMClient, LoginDbKind};
 
 use crate::abi;
 use crate::executor::{CallbackContext, execute_async, execute_async_unit, return_error};
@@ -217,7 +217,7 @@ pub extern "C" fn flare_sdk_login(
                 .login(
                     &user_id,
                     Some(token.as_str()),
-                    LoginDbKind::Sqlite,
+                    flare_im_core_sdk_sqlite_im::sqlite(),
                     |_, _| {},
                 )
                 .await?;
@@ -274,7 +274,9 @@ pub extern "C" fn flare_sdk_prepare(
                 inst.client.init(None, Some(config)).await?;
                 inst.im_session.clear().await;
             }
-            inst.client.prepare(&user_id, LoginDbKind::Sqlite).await
+            inst.client
+                .prepare(&user_id, flare_im_core_sdk_sqlite_im::sqlite())
+                .await
         });
 
         0

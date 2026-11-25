@@ -804,6 +804,7 @@ fn sdk_crates_do_not_enable_tokio_full() {
     let files = [
         manifest.join("Cargo.toml"),
         manifest.join("storage/sqlite/Cargo.toml"),
+        manifest.join("storage/sqlite-im/Cargo.toml"),
         manifest.join("bindings/shared/Cargo.toml"),
         manifest.join("bindings/wasm/Cargo.toml"),
         manifest.join("bindings/c/Cargo.toml"),
@@ -1130,4 +1131,48 @@ fn im_session_watchers_do_not_self_retain_client_or_event_bus() {
         source.contains("let client = self.downgrade()"),
         "session watchers should use IMClient::downgrade before spawning long-lived workers"
     );
+}
+
+#[test]
+fn engine_normal_dependency_closure_is_database_independent() {
+    let tree = std::process::Command::new(env!("CARGO"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "tree",
+            "--locked",
+            "-p",
+            "flare-im-core-sdk",
+            "--all-features",
+            "--target",
+            "all",
+            "-e",
+            "normal",
+            "--prefix",
+            "none",
+            "--format",
+            "{p}",
+        ])
+        .output()
+        .expect("cargo tree");
+    assert!(
+        tree.status.success(),
+        "{}",
+        String::from_utf8_lossy(&tree.stderr)
+    );
+    let output = String::from_utf8(tree.stdout).unwrap();
+    let packages: BTreeSet<_> = output
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    assert!(packages.contains("flare-im-core-sdk"));
+    for concrete in [
+        "sqlx",
+        "sqlx-sqlite",
+        "libsqlite3-sys",
+        "flare-im-core-sdk-storage-sqlite",
+        "flare-im-core-sdk-sqlite-im",
+        "flare-im-core-sdk-storage-indexeddb",
+    ] {
+        assert!(!packages.contains(concrete), "Engine depends on {concrete}");
+    }
 }

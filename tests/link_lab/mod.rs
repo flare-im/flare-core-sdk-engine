@@ -562,7 +562,7 @@ pub async fn lab_client(
         .await
         .expect("init SDK config");
     client
-        .prepare(USER_ID, LoginDbKind::IndexedDb(in_memory_im_provider()))
+        .prepare(USER_ID, LoginDbKind::Provided(in_memory_im_provider()))
         .await
         .expect("prepare test session");
     client

@@ -32,7 +32,7 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .login(
             "full_event_observer",
             Some(&token),
-            LoginDbKind::Sqlite,
+            flare_im_core_sdk_sqlite_im::sqlite(),
             |_, _| {},
         )
         .await?;

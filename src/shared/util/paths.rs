@@ -108,41 +108,16 @@ pub fn local_storage_scope(namespace: &str, tenant_id: &str, user_id: &str) -> S
     format!("v2-{}", hex::encode(digest.finalize()))
 }
 
-/// Unscoped legacy databases stay untouched: their tenant cannot be inferred safely.
-pub fn resolve_user_db_path(
-    base: &std::path::Path,
-    namespace: &str,
-    tenant_id: &str,
-    user_id: &str,
-) -> PathBuf {
-    base.join("scopes")
-        .join(local_storage_scope(namespace, tenant_id, user_id))
-        .join("flare_im_sdk.db")
-}
-
-/// 与 SQLite 数据库文件**同目录**下的 `media_cache`（默认缓存根，与库文件并列）。
-pub fn resolve_media_cache_dir_next_to_db(db_file: &std::path::Path) -> PathBuf {
-    let parent = db_file
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    parent.join("media_cache")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn local_storage_partition_separates_namespace_tenant_and_user() {
-        let base = std::path::Path::new("/data");
-        let a = resolve_user_db_path(base, "core", "app-a", "same-user");
-        assert_ne!(a, resolve_user_db_path(base, "core", "app-b", "same-user"));
-        assert_ne!(
-            a,
-            resolve_user_db_path(base, "social", "app-a", "same-user")
-        );
-        assert_ne!(a, resolve_user_db_path(base, "core", "app-a", "other-user"));
+        let a = local_storage_scope("core", "app-a", "same-user");
+        assert_ne!(a, local_storage_scope("core", "app-b", "same-user"));
+        assert_ne!(a, local_storage_scope("social", "app-a", "same-user"));
+        assert_ne!(a, local_storage_scope("core", "app-a", "other-user"));
         assert_ne!(
             local_storage_scope("a:b", "c", "u"),
             local_storage_scope("a", "b:c", "u")
@@ -151,10 +126,7 @@ mod tests {
             local_storage_scope("core", "a/b", "u"),
             local_storage_scope("core", "a_b", "u")
         );
-        assert_eq!(
-            a,
-            resolve_user_db_path(base, " core ", "app-a", " same-user ")
-        );
+        assert_eq!(a, local_storage_scope(" core ", "app-a", " same-user "));
         assert_eq!(
             local_storage_scope("core", "default", "u"),
             local_storage_scope("core", "0", "u")

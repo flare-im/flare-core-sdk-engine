@@ -5,7 +5,7 @@
     "Rust core SdkEvent is the source of truth.",
     "C ABI event_json uses camelCase SDK JSON fields and always includes type and event.",
     "C ABI numeric event_type callback parameter is stable and must be used for fast native dispatch.",
-    "Tauri emits im://* names with camelCase SDK JSON payloads; the single connection event is connection://status and access events are access://switched / access://changed.",
+    "Tauri emits im://* names with camelCase SDK JSON payloads; the public connection status is connection://status.",
     "Connection state has exactly one event (connection.status): kicked / token expiry are its actionRequired phase, not separate events.",
     "Notification events are separate from chat message events.",
     "Extension payload bytes are opaque and interpreted by the owning extension."
@@ -51,14 +51,6 @@
       "cCodeName": "FLARE_EVENT_CONNECTION_SYNC_STATE_CHANGED",
       "cJson": { "type": "connection", "event": "sync_state_changed", "fields": ["state"] },
       "tauri": "im://sync_state_changed"
-    },
-    {
-      "id": "update.state",
-      "core": "SdkEvent::Connection(ConnectionEvent::UpdateState)",
-      "cCode": 1013,
-      "cCodeName": "FLARE_EVENT_UPDATE_STATE",
-      "cJson": { "type": "update", "event": "state", "fields": ["state", "current", "release", "progress", "prompt", "blockUi", "readOnly", "lastCheckedAt", "error"] },
-      "tauri": "update://state"
     },
     {
       "id": "message.received",

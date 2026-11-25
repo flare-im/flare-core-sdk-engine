@@ -28,7 +28,6 @@ pub enum BindingErrorCode {
 pub enum BindingEventId {
     ConnectionStatus,
     ConnectionSyncStateChanged,
-    UpdateState,
     MessageReceived,
     MessageReceivedBatch,
     MessageSendAck,

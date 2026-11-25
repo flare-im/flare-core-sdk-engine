@@ -67,9 +67,6 @@ mod plugin_bundle;
 mod plugin_bundle_tests;
 #[path = "capability_tenant_notices.rs"]
 mod tenant_notices;
-#[path = "capability_upgrade.rs"]
-mod upgrade;
-pub use upgrade::PluginUpgradeStatus;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_ui_tests.rs"]
 mod ui_tests;

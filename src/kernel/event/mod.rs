@@ -53,7 +53,7 @@ pub use selector::{
 };
 pub use types::{
     ConnectionEvent, ConversationEvent, ExtensionEvent, MessageEvent, NotificationEvent,
-    PLUGIN_CATALOG_TOPIC, PluginEvent, PluginRealtime, RELEASE_MANIFEST_TOPIC, ReadinessStage,
+    PLUGIN_CATALOG_TOPIC, PluginEvent, PluginRealtime, ReadinessStage,
     SdkEvent, SyncNotify, SyncPhase, TENANT_NOTICE_SOURCE,
 };
 

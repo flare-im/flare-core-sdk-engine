@@ -64,49 +64,39 @@ impl Dispatcher {
                     .iter()
                     .map(|m| (m.conversation_id.as_str(), m.conversation_seq));
                 let delivery_due = self.delivery_due(arrived);
-                let mut messages: Vec<IMMessage> = all.into_iter().map(IMMessage::new).collect();
+                let messages: Vec<IMMessage> = all.into_iter().map(IMMessage::new).collect();
                 let current_user_id = self.current_user_id.read().await.clone();
-                if let Some(converger) = &self.incoming_message_converger {
-                    messages = converger
-                        .converge_messages(&current_user_id, messages)
-                        .await
-                        .map_err(|e| {
-                            flare_core::common::error::FlareError::system(e.to_string())
-                        })?;
-                }
-                if !messages.is_empty() {
-                    let (durable_messages, ephemeral_messages): (Vec<IMMessage>, Vec<IMMessage>) =
-                        partition_notification_durability(messages);
+                let batch = self
+                    .prepare_inbound(&current_user_id, messages)
+                    .await
+                    .map_err(|e| flare_core::common::error::FlareError::system(e.to_string()))?;
+                let durable_for_persist = batch.durable.clone();
+                let inbound = batch.into_notifications();
+                if !inbound.is_empty() {
                     // A2/BX-02：先投递到可观察视图（下一帧上屏），再持久化，使「收到→上屏」延迟脱离磁盘 I/O。
                     // 持久化失败时同步游标不前进，既有 seq-gap 补拉（repair_message_seq_after_persist）会重取，
                     // 无需额外对账路径。仅克隆 durable 子集供持久化借用；durable+ephemeral move 进 finish_batch。
-                    let durable_for_persist = durable_messages.clone();
-                    let mut inbound = durable_messages;
-                    inbound.extend(ephemeral_messages);
-                    if !inbound.is_empty() {
-                        self.notification_pipeline
-                            .finish_batch(inbound, &current_user_id)
-                            .await;
-                    }
+                    self.notification_pipeline
+                        .finish_batch(inbound, &current_user_id)
+                        .await;
                     // win#2：装载了 worker 则投递到有界串行后台 worker（满则在 send().await 背压，
                     // 只压上行读取——视图已先行投递）；未装载（测试 harness）则内联持久化，保持同步语义。
+                    let job = PersistJob {
+                        messages: durable_for_persist,
+                        user_id: current_user_id,
+                        delivery_due,
+                    };
                     if let Some(tx) = self.persist_tx.get() {
-                        let job = PersistJob {
-                            messages: durable_for_persist,
-                            user_id: current_user_id.clone(),
-                        };
                         if let Err(err) = tx.send(job).await {
-                            // worker 已退出（连接关闭）→ 回退内联，不丢持久化
-                            let PersistJob { messages, user_id } = err.0;
-                            self.persist_durable_batch(&messages, &user_id).await;
+                            self.persist_and_confirm(err.0).await;
                         }
                     } else {
-                        self.persist_durable_batch(&durable_for_persist, &current_user_id)
-                            .await;
+                        self.persist_and_confirm(job).await;
                     }
+                } else {
+                    // Convergence already proved the messages were projected.
+                    self.confirm_delivered(delivery_due);
                 }
-                // 汇聚后一条不剩的（早已处理过的重复帧）也确认：免得服务端等不到又转一次推送。
-                self.confirm_delivered(delivery_due);
             }
             DownlinkPayload::Event(ev) => {
                 self.metrics.counter_with_labels(
@@ -177,6 +167,12 @@ impl Dispatcher {
                     &[MetricLabel::new("type", "send_ack")],
                     1,
                 );
+                if ack.conversation_id.trim().is_empty()
+                    && crate::domain::MessageDeliveryService::accepted_from_ack(&ack).is_some()
+                {
+                    warn!(client_msg_id = %ack.client_msg_id, "discarding unscoped send acceptance");
+                    return Ok(());
+                }
                 let mut ack = ack;
                 if ack.conversation_id.trim().is_empty()
                     && let Some(ref stores) = self.stores
@@ -343,7 +339,7 @@ impl Dispatcher {
     /// 处理成功后发出 `delivery_due`（这一帧到达时定下的送达确认）；失败不发。
     async fn dispatch_inbound_message_event_batch(
         &self,
-        mut messages: Vec<IMMessage>,
+        messages: Vec<IMMessage>,
         reservations: Vec<EventReservation>,
         current_user_id: &str,
         delivery_due: Vec<(String, u64)>,
@@ -370,30 +366,23 @@ impl Dispatcher {
                 );
             }
         }
-        if let Some(converger) = &self.incoming_message_converger {
-            match converger.converge_messages(current_user_id, messages).await {
-                Ok(converged) => messages = converged,
-                Err(error) => {
-                    warn!(error = %error, "event envelope message batch converge failed");
-                    return;
-                }
+        let batch = match self.prepare_inbound(current_user_id, messages).await {
+            Ok(batch) => batch,
+            Err(error) => {
+                warn!(%error, "event envelope message batch converge failed");
+                return;
             }
-        }
-        if messages.is_empty() {
-            // 汇聚后一条不剩：都是早已处理过的消息，照样确认。
-            for reservation in reservations {
-                reservation.complete();
-            }
-            self.confirm_delivered(delivery_due);
-            return;
-        }
+        };
         // 复用统一持久化管线（save_batch → 会话投影 → seq 补偿）；失败回滚去重键，
         // 事件下次重放（幂等）。
-        if self.stores.is_some() && !self.persist_durable_batch(&messages, current_user_id).await {
+        if !self
+            .persist_durable_batch(&batch.durable, current_user_id)
+            .await
+        {
             return;
         }
         self.notification_pipeline
-            .finish_batch(messages, current_user_id)
+            .finish_batch(batch.into_notifications(), current_user_id)
             .await;
         for reservation in reservations {
             reservation.complete();
@@ -438,32 +427,21 @@ impl Dispatcher {
         }
         if !messages.is_empty() {
             let current_user_id = self.current_user_id.read().await.clone();
-            if let Some(converger) = &self.incoming_message_converger {
-                match converger
-                    .converge_messages(&current_user_id, messages)
-                    .await
-                {
-                    Ok(converged) => messages = converged,
-                    Err(error) => {
-                        warn!(error = %error, "single event message converge failed");
-                        return false;
-                    }
-                }
-            }
-            if let Some(ref stores) = self.stores {
-                if let Err(e) = stores.messages.save_batch(&messages).await {
-                    warn!(error = %e, "single event message save_batch failed");
-                    return false;
-                } else if let Some(applier) = &self.conversation_projection_applier
-                    && let Err(e) = applier.apply_messages(&messages, &current_user_id).await
-                {
-                    warn!(error = %e, "single event conversation projection failed");
+            let batch = match self.prepare_inbound(&current_user_id, messages).await {
+                Ok(batch) => batch,
+                Err(error) => {
+                    warn!(%error, "single event message converge failed");
                     return false;
                 }
-                self.repair_message_seq_after_persist(&messages).await;
+            };
+            if !self
+                .persist_durable_batch(&batch.durable, &current_user_id)
+                .await
+            {
+                return false;
             }
             self.notification_pipeline
-                .finish_batch(messages, &current_user_id)
+                .finish_batch(batch.into_notifications(), &current_user_id)
                 .await;
         }
         let conversation_id = Self::event_conversation_id(ev);

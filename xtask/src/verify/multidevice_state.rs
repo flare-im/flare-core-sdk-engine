@@ -499,7 +499,7 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     );
     require_contains_all(
         &mut errors,
-        &sdk_root.join("src/infrastructure/persistence/sqlite/conversation_repo.rs"),
+        &sdk_root.join("storage/sqlite-im/src/repos/conversation_repo.rs"),
         "sqlite conversation state persistence",
         &[
             "async fn update_unread",

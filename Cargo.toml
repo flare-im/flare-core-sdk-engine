@@ -4,6 +4,7 @@ members = [
     ".",
     "xtask",
     "storage/sqlite",
+    "storage/sqlite-im",
     "storage/indexeddb",
     "bindings/shared",
     "bindings/c",
@@ -80,10 +81,10 @@ opt-level = "z"
 # 默认仅启用 IM 基础能力；通话/RTC 通过 DATA capability 接入。
 default = []
 integration-tests = []
-# SQLite 持久化实现（Message/Conversation/PendingSend/UserProfile 仓储）
-storage-sqlite = ["dep:sqlx"]
-# 跨平台 SQLite 登录编排（依赖 storage/sqlite 连接池与 schema 注册）
-lifecycle-sqlite = ["storage-sqlite", "dep:flare-im-core-sdk-storage-sqlite"]
+# Select the SQLite-backed regression fixtures for Engine unit tests.
+storage-sqlite = []
+# Also exercise the native lifecycle fixtures. Production adapters are selected by the host.
+lifecycle-sqlite = ["storage-sqlite"]
 # Native QUIC transport support. Browser/WASM remains WebSocket-only.
 quic = ["flare-core/quic"]
 # RichDoc v2 HTML 片段归一化；默认关闭以避免移动端无条件编译 HTML parser 重依赖。
@@ -126,9 +127,7 @@ hex = "0.4"
 futures = "0.3"
 uuid = { version = "1", features = ["v4", "js"] }
 
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono"], optional = true }
 base64 = { version = "0.22" }
-flare-im-core-sdk-storage-sqlite = { version = "1.1.0", path = "storage/sqlite", optional = true }
 # RichDoc v2：Markdown 归一化 + 检索串规范化（全目标可用）
 pulldown-cmark = "0.12"
 
@@ -196,6 +195,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 async-trait = "0.1"
 once_cell = "1"
 criterion = "0.5"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+sqlx = { workspace = true }
+flare-im-core-sdk-storage-sqlite = { version = "1.1.0", path = "storage/sqlite" }
+flare-im-core-sdk-sqlite-im = { version = "1.0.0", path = "storage/sqlite-im" }
 
 [[bench]]
 name = "perf_baseline"

@@ -48,7 +48,6 @@ mod refresh_vault;
 mod session_lifecycle;
 mod session_watchers;
 mod sync_api;
-mod update_api;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -67,13 +66,6 @@ pub struct NetworkChangeEvent {
     /// 只在本地与 `interface` 一起哈希成网络指纹，健康记录按它分开；不上报，不要传 SSID。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint_hint: Option<String>,
-}
-
-impl NetworkChangeEvent {
-    /// 按流量计费，或系统认为这条路贵（蜂窝、个人热点）。
-    pub(crate) fn is_metered(&self) -> bool {
-        self.metered.unwrap_or(false) || self.expensive.unwrap_or(false)
-    }
 }
 
 /// 服务端时钟的估计（[`IMClient::server_clock`]）。
@@ -122,8 +114,6 @@ pub(crate) struct IMClientInner {
     pub configured_config: Option<crate::client::config::SdkConfig>,
     /// 接入运行时（目录、健康簿、选路）。跨会话共用：属于设备与网络，不属于某次登录。
     pub connection: Option<Arc<crate::runtime::link::ConnectionRuntime>>,
-    /// 更新中心属于 SDK 实例，登录时交给新会话转发通知。
-    pub update: Option<Arc<crate::runtime::update::UpdateRuntime>>,
     /// 宿主最后一次报的网络状态（`notify_network_change` 的完整输入）。平台常在登录之前首报、之后对
     /// 相同状态去重不再重报：之后新建的接入运行时与链路状态机都从它起步。没报过为 `None`（视为可用）。
     pub last_network: Option<NetworkChangeEvent>,
@@ -575,7 +565,6 @@ impl IMClient {
         // 后台心跳按网络学到的间隔存在数据根下，换了进程也接着用。
         #[cfg(not(target_arch = "wasm32"))]
         connection.heartbeat_learning.persist_under(&data_root);
-        g.update = None;
         g.connection = Some(connection);
         g.data_root = Some(data_root);
         g.sdk_config = sdk_config;

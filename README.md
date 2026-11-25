@@ -63,6 +63,10 @@ ABI / IPC / language boundary.
 | `flare-im-core-sdk` | Client IM behavior, offline local state, projection, the outbound queue, event routing, extension-capability entry points |
 | bindings | Boundary adapters for C/Tauri/Wasm — they never re-implement core semantics |
 
+### Target engine boundary
+
+![Target architecture with Message, Conversation, Media and Extension inside the engine, and business plugins, the Social SDK and application hosts outside it](docs/assets/engine-boundary-target.png)
+
 ## Current production modules
 
 `src/lib.rs` re-exports only the current public contract. SDK behavior is placed
@@ -76,11 +80,13 @@ is no longer the production contract.
 | `application/` | Use-case orchestration, message/sync/presence/capability adapters, projection updates |
 | `domain/` | Business invariants — messages, conversations, sync cursors, pending sends |
 | `core/` | Event bus, dispatcher, reliable queue, sync orchestrator |
-| `infrastructure/` | protobuf codec, packet sender, socket/http transport, memory/sqlite persistence |
+| `infrastructure/` | protobuf codec, packet sender, socket/http transport, in-memory stores |
 | `platform/` | Media, transport, and host-capability ports |
 | `extension/` | Capability registry, plugin UI and pages, middleware |
 
 ## Installation
+
+The installation and quick start below target the published 1.2 API. For a source checkout of this branch, use the account opener from the [SQLite IM adapter](storage/README.md).
 
 ```toml
 [dependencies]

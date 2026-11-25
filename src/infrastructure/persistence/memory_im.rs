@@ -97,6 +97,45 @@ impl MemoryMessageStore {
         enforce_retention_visibility(message);
     }
 
+    fn merged_outgoing(
+        data: &MemoryMessageRows,
+        client_msg_id: &str,
+        message: &IMMessage,
+    ) -> IMMessage {
+        let mut message = message.clone();
+        let ack_client_msg_id = client_msg_id.trim();
+        if message.client_msg_id.trim().is_empty() && !ack_client_msg_id.is_empty() {
+            message.client_msg_id = ack_client_msg_id.to_string();
+        }
+        // 整行替换乐观写入行；本地插件卡片状态随行带过去。
+        if let Some(stored) = data
+            .get(&message.server_id)
+            .filter(|stored| !message.server_id.is_empty() && stored.server_id == message.server_id)
+        {
+            merge_message_event_state(&mut message, stored);
+        }
+        let stored_client_id = message.client_msg_id.clone();
+        let other_id = (stored_client_id != ack_client_msg_id).then_some(stored_client_id.as_str());
+        let candidates = data
+            .client_rows(ack_client_msg_id)
+            .chain(other_id.into_iter().flat_map(|id| data.client_rows(id)));
+        for (stored_key, stored) in candidates {
+            if !message.server_id.is_empty()
+                && stored_key == message.server_id
+                && stored.server_id == message.server_id
+            {
+                continue;
+            }
+            if stored.sender_id == message.sender_id
+                && stored.conversation_id == message.conversation_id
+            {
+                merge_message_event_state(&mut message, stored);
+            }
+        }
+        enforce_retention_visibility(&mut message);
+        message
+    }
+
     fn storage_key(message: &IMMessage) -> String {
         if !message.server_id.is_empty() {
             message.server_id.clone()
@@ -505,37 +544,9 @@ impl MessageWriter for MemoryMessageStore {
 
     async fn update_after_ack(&self, client_msg_id: &str, message: &IMMessage) -> Result<()> {
         let mut data = self.data.write().await;
-        let mut message = message.clone();
-        let ack_client_msg_id = client_msg_id.trim();
-        if message.client_msg_id.trim().is_empty() && !ack_client_msg_id.is_empty() {
-            message.client_msg_id = ack_client_msg_id.to_string();
-        }
+        let message = Self::merged_outgoing(&data, client_msg_id, message);
         let key = Self::storage_key(&message);
-        // 整行替换乐观写入行；本地插件卡片状态随行带过去。
-        if let Some(stored) = data
-            .get(&message.server_id)
-            .filter(|stored| !message.server_id.is_empty() && stored.server_id == message.server_id)
-        {
-            merge_message_event_state(&mut message, stored);
-        }
-        let stored_client_id = message.client_msg_id.clone();
-        let other_id = (stored_client_id != ack_client_msg_id).then_some(stored_client_id.as_str());
-        let candidates = data
-            .client_rows(ack_client_msg_id)
-            .chain(other_id.into_iter().flat_map(|id| data.client_rows(id)));
-        for (stored_key, stored) in candidates {
-            if !message.server_id.is_empty()
-                && stored_key == message.server_id
-                && stored.server_id == message.server_id
-            {
-                continue;
-            }
-            if stored.sender_id == message.sender_id
-                && stored.conversation_id == message.conversation_id
-            {
-                merge_message_event_state(&mut message, stored);
-            }
-        }
+        let ack_client_msg_id = client_msg_id.trim();
         Self::remove_conflicting_client_msg_rows(
             &mut data,
             ack_client_msg_id,
@@ -941,6 +952,30 @@ pub struct MemoryConversationStore {
 }
 
 impl MemoryConversationStore {
+    /// Publish only the preview fields committed with message rows. Applying a remote
+    /// summary merge here would also acknowledge settings and adjust unread receipts.
+    pub async fn install_staged_previews(&self, committed: Vec<Conversation>) {
+        let mut data = self.data.write().await;
+        for staged in committed {
+            match data.entry(staged.conversation_id.clone()) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(staged);
+                }
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let current = entry.get_mut();
+                    current.max_seq = staged.max_seq;
+                    current.last_message_id = staged.last_message_id;
+                    current.last_sender_id = staged.last_sender_id;
+                    current.last_message_at = staged.last_message_at;
+                    current.last_message_preview = staged.last_message_preview;
+                    current.last_message = staged.last_message;
+                    current.updated_at = staged.updated_at;
+                    current.updated_at_ts = staged.updated_at_ts;
+                }
+            }
+        }
+    }
+
     /// Restore trusted local receipts along with the persisted conversation state.
     pub async fn restore_local_snapshot(&self, conversations: &[Conversation]) -> Result<()> {
         self.save_batch(conversations).await?;
@@ -1378,21 +1413,163 @@ impl ConversationWriter for MemoryConversationStore {
 }
 
 /// 完整内存 IM 仓储（Web production runtime 默认路径）。
+/// Shared commit path for the volatile provider and write-through browser storage.
+pub struct MemoryOutgoingStore {
+    messages: Arc<MemoryMessageStore>,
+    pending: Arc<MemoryPendingSendStore>,
+}
+
+impl MemoryOutgoingStore {
+    pub fn new(messages: Arc<MemoryMessageStore>, pending: Arc<MemoryPendingSendStore>) -> Self {
+        Self { messages, pending }
+    }
+
+    /// Publish the new cache rows only after the backing transaction has completed.
+    pub async fn commit_with<F, Fut>(
+        &self,
+        message: &IMMessage,
+        entry: Option<&crate::domain::PendingSendVo>,
+        persist: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(IMMessage, Conversation) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        if let Some(entry) = entry {
+            entry.validate_message(message)?;
+        }
+        let mut rows = self.messages.data.write().await;
+        let mut conversations = self.messages.conversations.data.write().await;
+        let mut materialized = self
+            .messages
+            .conversations
+            .materialized_max_seq
+            .write()
+            .await;
+        let mut pending = self.pending.data.write().await;
+        let confirmed = rows
+            .client_rows(&message.client_msg_id)
+            .map(|(_, row)| row)
+            .find(|row| {
+                row.conversation_id == message.conversation_id
+                    && row.sender_id == message.sender_id
+                    && !row.local_state.is_local
+                    && row.conversation_seq > 0
+            });
+        if entry.is_some() && confirmed.is_some() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "message already confirmed",
+            ));
+        }
+        let newer = confirmed.filter(|row| {
+            message.local_state.failed || row.conversation_seq > message.conversation_seq
+        });
+        let applied = newer.is_none();
+        let msg = newer.cloned().unwrap_or_else(|| {
+            MemoryMessageStore::merged_outgoing(&rows, &message.client_msg_id, message)
+        });
+        let key = MemoryMessageStore::storage_key(&msg);
+        let mut conversation = conversations
+            .get(&msg.conversation_id)
+            .cloned()
+            .or_else(|| crate::domain::ConversationIdentityService::outgoing_conversation(&msg))
+            .unwrap_or_else(|| Conversation::from_conversation_id(msg.conversation_id.clone()));
+        let seq = msg.conversation_seq;
+        let ts = if seq > 0 && msg.created_at > 0 {
+            msg.created_at
+        } else if seq > 0 && msg.client_created_at > 0 {
+            msg.client_created_at
+        } else {
+            msg.timeline_sort_ts()
+        };
+        if seq > conversation.max_seq
+            || ((seq == 0 || seq == conversation.max_seq)
+                && ts >= conversation.last_message_at.unwrap_or_default())
+            || conversation.last_message_id.as_deref() == Some(&msg.client_msg_id)
+        {
+            conversation.last_message_id = Some(key.clone());
+            conversation.last_message_at = Some(ts);
+            conversation.last_sender_id = Some(msg.sender_id.clone());
+            conversation.last_message_preview = msg.text_for_storage();
+            clear_retained_conversation_preview(&mut conversation, &msg);
+        }
+        if conversation.business_type.is_empty() {
+            conversation.business_type = crate::domain::projected_business_type(&msg).into();
+        }
+        if !conversations.contains_key(&msg.conversation_id) {
+            conversation.created_at = ts;
+        }
+        conversation.updated_at = conversation.updated_at.max(ts);
+        conversation.updated_at_ts = Some(conversation.updated_at_ts.unwrap_or_default().max(ts));
+        conversation.max_seq = conversation.max_seq.max(seq);
+        persist(msg.clone(), conversation.clone()).await?;
+        MemoryMessageStore::remove_conflicting_client_msg_rows(
+            &mut rows,
+            &msg.client_msg_id,
+            &key,
+            &msg.conversation_id,
+            &msg.sender_id,
+        );
+        rows.insert(key, msg);
+        conversations.insert(message.conversation_id.clone(), conversation);
+        if seq > 0 {
+            let current = materialized
+                .entry(message.conversation_id.clone())
+                .or_default();
+            *current = (*current).max(seq);
+        }
+        match entry {
+            Some(entry) => pending.insert(entry.clone()),
+            None => {
+                pending.remove(&message.client_msg_id);
+            }
+        }
+        Ok(applied)
+    }
+}
+
+#[async_trait]
+impl crate::domain::OutgoingSendStore for MemoryOutgoingStore {
+    fn survives_restart(&self) -> bool {
+        false
+    }
+
+    async fn enqueue_send(
+        &self,
+        message: &IMMessage,
+        entry: &crate::domain::PendingSendVo,
+    ) -> Result<()> {
+        self.commit_with(message, Some(entry), |_, _| async { Ok(()) })
+            .await
+            .map(|_| ())
+    }
+    async fn complete_send(&self, message: &IMMessage) -> Result<bool> {
+        self.commit_with(message, None, |_, _| async { Ok(()) })
+            .await
+    }
+}
+
 pub fn in_memory_im_provider() -> StoreProvider {
     let pending = Arc::new(MemoryPendingSendStore::new());
     let user_profiles = Arc::new(MemoryUserProfileStore::new());
     let conversations = Arc::new(MemoryConversationStore::new());
+    let messages = Arc::new(MemoryMessageStore::with_conversations(
+        conversations.clone(),
+    ));
     StoreProvider {
         plugin_commands: None,
         plugin_consents: None,
         plugin_bundle_storage: None,
-        messages: Arc::new(MemoryMessageStore::with_conversations(
-            conversations.clone(),
-        )),
+        messages: messages.clone(),
         conversations,
         conversation_participants: None,
         cursors: Arc::new(MemorySyncCursorStore::new()),
         timeline_coverage: Arc::new(super::MemoryTimelineCoverageStore::new()),
+        outgoing: Some(Arc::new(MemoryOutgoingStore::new(
+            messages,
+            pending.clone(),
+        ))),
         pending_send_reader: Some(pending.clone()),
         pending_send_writer: Some(pending),
         upload_manifest_store: None,
@@ -1424,6 +1601,57 @@ mod tests {
         message.local_state.sending = true;
         message.local_state.is_local = true;
         message
+    }
+
+    #[tokio::test]
+    async fn outgoing_commit_only_publishes_after_external_storage_succeeds() {
+        use crate::domain::{OutgoingSendStore, PendingSendReader, PendingSendVo};
+        let messages = std::sync::Arc::new(MemoryMessageStore::new());
+        let pending = std::sync::Arc::new(super::MemoryPendingSendStore::new());
+        let store = super::MemoryOutgoingStore::new(messages.clone(), pending.clone());
+        let local = local_message("client", "client");
+        let entry = PendingSendVo {
+            client_msg_id: local.client_msg_id.clone(),
+            conversation_id: local.conversation_id.clone(),
+            message: local.clone(),
+            enqueued_at_ms: 1,
+        };
+        let fail = |_, _| async { Err(crate::FlareError::system("write failed")) };
+        assert!(store.commit_with(&local, Some(&entry), fail).await.is_err());
+        assert!(messages.get("client").await.unwrap().is_none());
+        assert!(
+            messages
+                .conversations
+                .get(&local.conversation_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(pending.list().await.unwrap().is_empty());
+        store.enqueue_send(&local, &entry).await.unwrap();
+        let mut ack = local.clone();
+        ack.server_id = "server".into();
+        ack.conversation_seq = 7;
+        ack.local_state = Default::default();
+        assert!(store.commit_with(&ack, None, fail).await.is_err());
+        assert!(messages.get("client").await.unwrap().is_some());
+        assert!(messages.get("server").await.unwrap().is_none());
+        assert_eq!(pending.list().await.unwrap().len(), 1);
+        store.complete_send(&ack).await.unwrap();
+        store.complete_send(&ack).await.unwrap();
+        assert!(pending.list().await.unwrap().is_empty());
+        assert!(messages.get("client").await.unwrap().is_none());
+        assert_eq!(
+            messages
+                .conversations
+                .get(&local.conversation_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .last_message_id
+                .as_deref(),
+            Some("server")
+        );
     }
 
     #[tokio::test]

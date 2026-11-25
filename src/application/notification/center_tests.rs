@@ -432,7 +432,7 @@ fn settings_never_go_back_to_an_older_version() {
     assert_eq!(h.center.adopt_settings(older.clone(), true), older);
 }
 
-#[cfg(feature = "lifecycle-sqlite")]
+#[cfg(all(feature = "lifecycle-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn notification_settings_survive_offline_restart_and_stay_with_the_account() {
     use crate::shared::util::sqlite_store::{

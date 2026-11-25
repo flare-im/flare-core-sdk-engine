@@ -341,7 +341,7 @@ async fn online_at(case: &str, user: &str, device: &str, ws: String) -> IMClient
         .login(
             user,
             None,
-            LoginDbKind::IndexedDb(in_memory_im_provider()),
+            LoginDbKind::Provided(in_memory_im_provider()),
             |_, _| {},
         )
         .await

@@ -2815,7 +2815,6 @@ impl HttpClient {
                         .get("httpStatus")
                         .and_then(|status| status.parse::<u16>().ok())
                         .unwrap_or(0);
-                    resolved.observe_status(status);
                     classify_status(
                         status,
                         params.get("retryAfter").map(String::as_str),
@@ -3006,7 +3005,6 @@ impl HttpClient {
                 }
                 Ok(Ok(resp)) => {
                     let status = resp.status().as_u16();
-                    resolved.observe_status(status);
                     let retry_after = resp
                         .headers()
                         .get(reqwest::header::RETRY_AFTER)
@@ -3127,20 +3125,17 @@ impl HttpClient {
             RequestTarget::Url(url) => Ok(ResolvedRequest {
                 url: url.clone(),
                 revision: None,
-                router: None,
             }),
             RequestTarget::Path(path) => match &self.router {
                 None => Ok(ResolvedRequest {
                     url: join_url(&self.base_url, path),
                     revision: None,
-                    router: None,
                 }),
                 Some(router) => {
                     let route = router.route(excluded, pinned)?;
                     Ok(ResolvedRequest {
                         url: join_url(&route.base, path),
                         revision: Some(route.revision),
-                        router: Some(router.clone()),
                     })
                 }
             },
@@ -3173,18 +3168,6 @@ impl RequestTarget {
 struct ResolvedRequest {
     url: String,
     revision: Option<u32>,
-    router: Option<super::router::HttpRouter>,
-}
-
-impl ResolvedRequest {
-    /// 服务端给了响应：版本被门禁拦下时告诉更新中心。
-    fn observe_status(&self, status: u16) {
-        if status == super::router::UPGRADE_REQUIRED_STATUS
-            && let Some(router) = &self.router
-        {
-            router.upgrade_required();
-        }
-    }
 }
 
 fn join_url(base: &str, path: &str) -> String {

@@ -43,3 +43,9 @@ pub use sync_task::{
     ConversationSettingsSyncTask, ConversationsSyncTask, KeyEventsSyncTask, MessagesSyncTask,
     ReadStatesSyncTask,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InboundSource {
+    RealtimePush,
+    SyncReplay,
+}

@@ -72,7 +72,7 @@ async fn uninit_clears_init_configuration() {
 }
 
 #[tokio::test]
-async fn fixed_endpoints_initialize_without_an_update_runtime() {
+async fn fixed_endpoints_initialize_direct_connection() {
     let client = IMClient::new();
     let data_root =
         std::env::temp_dir().join(format!("flare-im-fixed-test-{}", std::process::id()));
@@ -97,18 +97,9 @@ async fn fixed_endpoints_initialize_without_an_update_runtime() {
     let status = client.connection_status().await;
     assert_eq!(status.endpoint_revision, Some(1));
     assert!(!status.development_mode);
-    assert!(client.update_runtime().await.is_none());
 
     client.uninit().await.expect("uninit sdk");
     let _ = tokio::fs::remove_dir_all(data_root).await;
-}
-
-#[tokio::test]
-async fn update_calls_report_that_no_provider_is_available() {
-    let client = IMClient::new();
-    let error = client.update_state(false).await.unwrap_err();
-    assert_eq!(error.code(), Some(ErrorCode::OperationNotSupported));
-    assert_eq!(error.reason(), "update.providerUnavailable");
 }
 
 #[tokio::test]
@@ -159,7 +150,7 @@ async fn prepare_preserves_network_recovery_reported_during_session_replacement(
     client
         .prepare(
             "alice",
-            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+            LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
         )
         .await
         .expect("prepare first local session");
@@ -172,7 +163,10 @@ async fn prepare_preserves_network_recovery_reported_during_session_replacement(
         let client = client.clone();
         tokio::spawn(async move {
             client
-                .prepare("bob", LoginDbKind::IndexedDb(in_memory_empty_im_provider()))
+                .prepare(
+                    "bob",
+                    LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
+                )
                 .await
         })
     };
@@ -543,7 +537,7 @@ async fn prepared_session_searches_offline_and_invalidates_old_user() {
     client
         .prepare(
             "alice",
-            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+            LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
         )
         .await
         .unwrap();
@@ -562,7 +556,10 @@ async fn prepared_session_searches_offline_and_invalidates_old_user() {
     client.clear_session_snapshot();
     assert!(client.connected_apis().await.is_ok());
     client
-        .prepare("bob", LoginDbKind::IndexedDb(in_memory_empty_im_provider()))
+        .prepare(
+            "bob",
+            LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
+        )
         .await
         .unwrap();
     assert!(client.session_generation_snapshot() > alice_generation);
@@ -687,7 +684,7 @@ async fn the_host_refresher_survives_the_login_rebuild() {
     client
         .prepare(
             "alice",
-            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+            LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
         )
         .await
         .unwrap();
@@ -754,7 +751,7 @@ async fn the_build_time_endpoints_and_runtime_survive_the_login_rebuild() {
     client
         .prepare(
             "alice",
-            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+            LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
         )
         .await
         .unwrap();
@@ -830,12 +827,12 @@ async fn the_same_user_keeps_the_outbox_across_prepare() {
         .await
         .unwrap();
     client
-        .prepare("alice", LoginDbKind::IndexedDb(stores.clone()))
+        .prepare("alice", LoginDbKind::Provided(stores.clone()))
         .await
         .unwrap();
     client.logout().await.unwrap();
     client
-        .prepare("alice", LoginDbKind::IndexedDb(stores.clone()))
+        .prepare("alice", LoginDbKind::Provided(stores.clone()))
         .await
         .unwrap();
     let left: Vec<String> = reader
@@ -853,7 +850,7 @@ async fn the_same_user_keeps_the_outbox_across_prepare() {
 
     client.logout().await.unwrap();
     client
-        .prepare("bob", LoginDbKind::IndexedDb(stores))
+        .prepare("bob", LoginDbKind::Provided(stores))
         .await
         .unwrap();
     assert!(reader.list().await.unwrap().is_empty(), "换了用户：清空");
@@ -1021,7 +1018,7 @@ async fn a_prepared_session_handles_remote_messages_for_its_own_account() {
     client
         .prepare(
             "alice",
-            LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+            LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
         )
         .await
         .unwrap();
@@ -1112,7 +1109,7 @@ async fn logout_deletes_the_stored_refresh_token() {
     assert!(inner.refresh_token_vault.is_none());
 }
 
-#[cfg(feature = "lifecycle-sqlite")]
+#[cfg(all(feature = "lifecycle-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn encrypted_prepare_uses_the_merged_tenant_for_keys_and_data() {
     use crate::storage::{SecureKeyDescriptor, SecureKeyStore, VolatileSecureKeyStore};
@@ -1140,7 +1137,7 @@ async fn encrypted_prepare_uses_the_merged_tenant_for_keys_and_data() {
         if let Err(error) = client
             .prepare(
                 "same-user",
-                crate::client::lifecycle::LoginDbKind::encrypted_sqlite(keys.clone()),
+                crate::sqlite_test_adapter::encrypted_sqlite(keys.clone(), Default::default()),
             )
             .await
         {
@@ -1157,7 +1154,7 @@ async fn encrypted_prepare_uses_the_merged_tenant_for_keys_and_data() {
             .is_some()
         );
         assert!(
-            crate::shared::util::paths::resolve_user_db_path(
+            crate::sqlite_test_adapter::provider::resolve_user_db_path(
                 &root,
                 "flare-im-core-sdk",
                 tenant,
@@ -1180,7 +1177,7 @@ async fn encrypted_prepare_uses_the_merged_tenant_for_keys_and_data() {
         .is_none()
     );
     assert!(
-        !crate::shared::util::paths::resolve_user_db_path(
+        !crate::sqlite_test_adapter::provider::resolve_user_db_path(
             &root,
             "flare-im-core-sdk",
             "0",

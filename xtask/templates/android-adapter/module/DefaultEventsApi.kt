@@ -114,9 +114,6 @@ class DefaultEventsApi(
 
 
 
-    override fun onUpdateState(listener: EventCallback<UpdateStatus>): EventSubscription =
-        registerTyped(UpdateStatus::class.java, listener)
-
     override fun onMessageReceived(listener: EventCallback<MessageReceivedEvent>): EventSubscription =
         registerTyped(MessageReceivedEvent::class.java, listener)
 
@@ -267,7 +264,6 @@ class DefaultEventsApi(
                 LifecycleEventName.DISPOSED -> listener.onDisposed(event)
             }
             is ConnectionStatus -> listener.onConnectionStatusChanged(event)
-            is UpdateStatus -> listener.onUpdateState(event)
             is MessageReceivedEvent -> listener.onMessageReceived(event)
             is MessageReceivedBatchEvent -> listener.onMessageReceivedBatch(event)
             is MessageSendAckEvent -> listener.onMessageSendAck(event)

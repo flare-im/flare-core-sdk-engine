@@ -319,7 +319,7 @@ async fn a_bundle_detail_query_uses_the_host_card_and_ignores_the_frame_claim() 
     let _ = std::fs::remove_dir_all(root);
 }
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn a_detail_command_is_logged_with_the_host_card_and_replayed_only_there() {
     use crate::infrastructure::persistence::sqlite::{SqlitePluginCommandRepo, init_schema};
@@ -757,7 +757,7 @@ impl crate::domain::UserReader for Profiles {
     }
 }
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn people_resolve_never_gives_the_private_remark_or_a_stranger() {
     let (f, root) = reading_fixture().await;
@@ -827,7 +827,7 @@ async fn people_resolve_never_gives_the_private_remark_or_a_stranger() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-#[cfg(feature = "storage-sqlite")]
+#[cfg(all(feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn a_bundle_confirms_only_an_order_its_own_command_returned() {
     use crate::infrastructure::persistence::sqlite::{SqlitePluginCommandRepo, init_schema};

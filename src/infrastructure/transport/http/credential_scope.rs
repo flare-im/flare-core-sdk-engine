@@ -347,7 +347,7 @@ mod tests {
         use crate::infrastructure::transport::http::HttpRequestContext;
         use crate::prelude::{
             CoreEndpoints, IMClient, LoginDbKind, NetworkChangeEvent, SdkConfig, SdkConfigOverlay,
-            in_memory_empty_im_provider,
+            in_memory_im_provider,
         };
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         struct Renewal;
@@ -419,7 +419,7 @@ mod tests {
             let im = IMClient::builder()
                 .environment(Some("development".into()))
                 .config(config)
-                .stores(in_memory_empty_im_provider())
+                .stores(in_memory_im_provider())
                 .http_request_context(context.clone())
                 .build()
                 .unwrap();
@@ -447,7 +447,7 @@ mod tests {
                 .login(
                     "alice",
                     Some("old-connect-fixture"),
-                    LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+                    LoginDbKind::Provided(in_memory_im_provider()),
                     |_, _| {},
                 )
                 .await;
@@ -519,7 +519,7 @@ mod tests {
                 .login(
                     next_user,
                     Some("next-connect-fixture"),
-                    LoginDbKind::IndexedDb(in_memory_empty_im_provider()),
+                    LoginDbKind::Provided(in_memory_im_provider()),
                     |_, _| {},
                 )
                 .await;

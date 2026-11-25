@@ -86,9 +86,9 @@ where
 ///
 /// ```ignore
 /// use flare_im_core_sdk_storage_sqlite::register_schema_init_with;
-/// use flare_im_core_sdk::prelude::sqlite_init_schema;
+/// use flare_im_core_sdk_sqlite_im::repos::init_schema;
 ///
-/// register_schema_init_with("core", |pool| sqlite_init_schema(pool));
+/// register_schema_init_with("core", |pool| init_schema(pool));
 /// ```
 pub fn register_schema_init_with<N, F, Fut, E>(name: N, f: F)
 where

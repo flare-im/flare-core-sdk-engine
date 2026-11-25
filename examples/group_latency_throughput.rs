@@ -442,9 +442,9 @@ async fn login_client(
     })?;
     // 压测可选内存库（FLARE_GROUP_E2E_INMEM=1）：消除每客户端 SQLite 落盘 I/O，隔离服务端吞吐。
     let db_kind = if env_bool("FLARE_GROUP_E2E_INMEM", false) {
-        LoginDbKind::IndexedDb(in_memory_im_provider())
+        LoginDbKind::Provided(in_memory_im_provider())
     } else {
-        LoginDbKind::Sqlite
+        flare_im_core_sdk_sqlite_im::sqlite()
     };
     let apis = client
         .login(user_id, Some(&token), db_kind, |_, _| {})
