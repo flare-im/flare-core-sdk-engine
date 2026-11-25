@@ -104,8 +104,6 @@ pub fn retry_decision(safety: MethodSafety, failure: HttpFailure) -> HttpRetry {
     }
 }
 
-/// 服务端要求升级：这个版本被门禁拦下，更新中心进入强制更新与只读。
-
 /// 按状态码与响应判断是否属于需要特殊处理的失败；其余状态码原样报给调用方。
 pub fn classify_status(
     status: u16,
@@ -263,7 +261,6 @@ impl HttpRouter {
             base: base.clone(),
         })
     }
-
 }
 
 #[cfg(test)]

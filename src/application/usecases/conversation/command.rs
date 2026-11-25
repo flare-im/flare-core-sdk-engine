@@ -16,6 +16,7 @@ use crate::shared::error::{ErrorCode, FlareError, Result};
 
 pub struct ConversationCommandUseCase {
     store: Arc<dyn ConversationStore>,
+    messages: Option<Arc<dyn crate::domain::MessageStore>>,
     cursors: Option<Arc<dyn SyncCursorStore>>,
     timeline_coverage: Option<Arc<dyn TimelineCoverageStore>>,
     current_user_id: CurrentUserIdStore,
@@ -34,6 +35,7 @@ impl ConversationCommandUseCase {
     ) -> Self {
         Self {
             store,
+            messages: None,
             cursors,
             timeline_coverage: None,
             current_user_id,
@@ -44,6 +46,69 @@ impl ConversationCommandUseCase {
                 .map(|sync| Arc::clone(sync) as Arc<dyn SessionSyncRunner>),
             settings_sync,
         }
+    }
+
+    pub fn with_message_store(mut self, messages: Arc<dyn crate::domain::MessageStore>) -> Self {
+        self.messages = Some(messages);
+        self
+    }
+
+    /// Only subtract peer messages known to be in the newly read prefix. The
+    /// unread total can include history that this device has never downloaded.
+    pub(crate) async fn unread_after_read(
+        messages: Option<&dyn crate::domain::MessageStore>,
+        current: &Conversation,
+        through: u64,
+        max_seq: u64,
+        user: &str,
+    ) -> Result<u32> {
+        if through >= max_seq {
+            return Ok(0);
+        }
+        let upper = u32::try_from(max_seq - through).unwrap_or(u32::MAX);
+        let mut unread = current.unread_count;
+        if let Some(messages) = messages {
+            let receipt = crate::domain::message_projection_receipt(current)?;
+            let summary_through = if current
+                .ext
+                .contains_key(crate::domain::EXT_MESSAGE_PROJECTION)
+            {
+                receipt.summary_seq
+            } else {
+                current.max_seq
+            };
+            let projected = crate::domain::TimelineCoverage::from_ranges(receipt.ranges);
+            let mut cursor = current.last_read_seq;
+            while cursor < through && unread > 0 {
+                let page = messages
+                    .get_by_conversation_after(&current.conversation_id, cursor, 128)
+                    .await?;
+                let Some(last) = page.last() else {
+                    break;
+                };
+                let end = last.conversation_seq;
+                if end <= cursor {
+                    break;
+                }
+                let count = page
+                    .iter()
+                    .filter(|m| {
+                        m.conversation_seq > cursor
+                            && m.conversation_seq <= through
+                            && (m.conversation_seq <= summary_through
+                                || projected.range_containing(m.conversation_seq).is_some())
+                            && !m.is_recalled
+                            && m.sender_id() != user
+                    })
+                    .count();
+                unread = unread.saturating_sub(count as u32);
+                cursor = end;
+                if page.len() < 128 {
+                    break;
+                }
+            }
+        }
+        Ok(unread.min(upper))
     }
 
     /// 清空本地记录时把 `[1, 清空水位]` 写进已证实区间。
@@ -271,43 +336,56 @@ impl ConversationCommandUseCase {
                 "read_seq must be greater than 0",
             ));
         }
-        let Some(current) = self.store.get(conversation_id).await? else {
-            return Ok(0);
-        };
-        let local_max_seq = self
-            .store
-            .get_local_max_seq(conversation_id)
-            .await
-            .unwrap_or(current.max_seq);
-        let decision = self
-            .read_service
-            .plan_mark_read(&current, local_max_seq, read_seq);
-
-        if decision.next_read_seq > 0
-            && let Some(sync) = &self.read_ack_sync
-        {
-            sync.send_read_ack(conversation_id, decision.next_read_seq)
-                .await?;
-        }
-
-        self.store
-            .update_unread(
-                conversation_id,
-                decision.unread_count,
+        // The read watermark and its retry intent share the conversation commit.
+        // A concurrent inbound projection or another read must be replanned.
+        let user = self.current_user_id().await?;
+        let decision = loop {
+            let Some(current) = self.store.get(conversation_id).await? else {
+                return Ok(0);
+            };
+            let local_max_seq = self.store.get_local_max_seq(conversation_id).await?;
+            let mut decision = self
+                .read_service
+                .plan_mark_read(&current, local_max_seq, read_seq);
+            if decision.next_read_seq <= current.last_read_seq {
+                return Ok(current.unread_count);
+            }
+            decision.unread_count = Self::unread_after_read(
+                self.messages.as_deref(),
+                &current,
                 decision.next_read_seq,
+                current.max_seq.max(local_max_seq),
+                &user,
             )
             .await?;
-
-        let current_user_id = self.current_user_id.read().await.trim().to_string();
-        if decision.should_recompute_local_unread && !current_user_id.is_empty() {
-            let _ = self
-                .store
-                .recompute_unread_for_user(conversation_id, &current_user_id)
-                .await;
-            if let Some(updated) = self.store.get(conversation_id).await? {
-                return Ok(updated.unread_count);
+            let mut next = current.clone();
+            next.last_read_seq = decision.next_read_seq;
+            next.max_seq = next.max_seq.max(decision.next_read_seq);
+            next.unread_count = decision.unread_count;
+            if next.unread_count == 0 {
+                next.mention_count = 0;
+                next.mention_me = false;
             }
+            let desired = crate::domain::pending_read_seq(&current)
+                .unwrap_or(0)
+                .max(decision.next_read_seq);
+            crate::domain::set_read_intent(&mut next, Some(desired));
+            if self
+                .store
+                .commit_message_projection(&current, &next)
+                .await?
+            {
+                break decision;
+            }
+        };
+        if let Some(sync) = &self.read_ack_sync
+            && let Err(error) = sync
+                .send_read_ack(conversation_id, decision.next_read_seq)
+                .await
+        {
+            tracing::debug!(conversation_id, %error, "read intent retained for synchronization");
         }
+
         Ok(decision.unread_count)
     }
 
@@ -541,6 +619,7 @@ mod tests {
     ) -> ConversationCommandUseCase {
         ConversationCommandUseCase {
             store,
+            messages: None,
             cursors: None,
             timeline_coverage: None,
             current_user_id: Arc::new(RwLock::new("hugo".to_string())),
@@ -563,7 +642,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mark_read_does_not_clear_local_unread_when_read_ack_fails() {
+    async fn offline_mark_read_commits_the_watermark_and_retry_intent() {
         let store = Arc::new(MemoryConversationStore::new());
         save_unread_conversation(&store).await;
         let use_case = command_use_case(
@@ -573,12 +652,11 @@ mod tests {
             }),
         );
 
-        let err = use_case.mark_read("conv-read", 8).await.unwrap_err();
-
-        assert_eq!(err.code(), Some(ErrorCode::NetworkConnectionLost));
+        assert_eq!(use_case.mark_read("conv-read", 8).await.unwrap(), 0);
         let stored = store.get("conv-read").await.unwrap().unwrap();
-        assert_eq!(stored.unread_count, 5);
-        assert_eq!(stored.last_read_seq, 3);
+        assert_eq!(stored.unread_count, 0);
+        assert_eq!(stored.last_read_seq, 8);
+        assert_eq!(crate::domain::pending_read_seq(&stored), Some(8));
     }
 
     #[tokio::test]

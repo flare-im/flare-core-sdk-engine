@@ -558,6 +558,12 @@ fn emit_typescript_adapter_method_body(method: &Value, spec: &Value, indent: &st
                 "{indent}return await invokeConversationTimelineSnapshot(this.bridge, {call});"
             )]
         }
+        "MessageByKeyResponse" => vec![
+            format!("{indent}const raw = await invokeMap(this.bridge, {call});"),
+            format!(
+                "{indent}return raw.message == null ? {{}} : {{ message: messageFromJson(raw.message) }};"
+            ),
+        ],
         "ViewOpenResponse" => vec![
             format!("{indent}const raw = await invokeMap(this.bridge, {call});"),
             format!("{indent}return viewOpenResponseFromJson(raw);"),

@@ -159,7 +159,11 @@ impl IMClient {
                 }
             }
         }
-        ConnectToken::Ready(token)
+        if self.inner.read().await.session_generation == generation {
+            ConnectToken::Ready(token)
+        } else {
+            ConnectToken::Unavailable
+        }
     }
 
     /// SDK 托管形态登录后的第一枚令牌：向网关签发，记下接入令牌与刷新令牌，并给共享 HTTP 带上它。
@@ -186,26 +190,12 @@ impl IMClient {
             has_refresh = issued.refresh_token.is_some(),
             "access token issued by gateway"
         );
-        let (context, tenant_id, vault) = {
-            let mut g = self.inner.write().await;
-            if g.session_generation != generation {
-                return ConnectToken::Unavailable;
-            }
-            g.connect_token = Some(issued.token.clone());
-            // 长效刷新令牌：接入令牌过期后凭它换新，支撑 7x24 免重登。
-            g.refresh_token = issued.refresh_token.clone();
-            (
-                g.http_request_context.clone(),
-                Self::resolve_tenant_id(&g),
-                g.refresh_token_vault.clone(),
-            )
-        };
-        if let (Some(vault), Some(refresh_token)) = (vault, issued.refresh_token.as_deref()) {
-            vault.save(user_id, refresh_token).await;
-        }
-        if let Some(context) = context {
-            context.set_auth_context(issued.token.clone(), None).await;
-            context.ensure_identity(user_id, &tenant_id).await;
+        if self
+            .install_issued_tokens(generation, &issued, true)
+            .await
+            .is_err()
+        {
+            return ConnectToken::Unavailable;
         }
         ConnectToken::Ready(issued.token)
     }
@@ -242,23 +232,16 @@ impl IMClient {
                     expires_at = issued.expires_at,
                     "connect token resumed from the stored refresh token"
                 );
-                let (context, tenant_id) = {
-                    let g = self.inner.read().await;
-                    (g.http_request_context.clone(), Self::resolve_tenant_id(&g))
-                };
-                if let Some(context) = context {
-                    context.set_auth_context(issued.token.clone(), None).await;
-                    context.ensure_identity(user_id, &tenant_id).await;
-                }
                 Some(ConnectToken::Ready(issued.token))
             }
             Err(err) if is_auth_failure(&err) => {
                 tracing::warn!(%err, "the stored refresh token was refused; issuing a new token");
-                vault.clear(user_id).await;
                 let mut g = self.inner.write().await;
-                if g.session_generation == generation {
-                    g.refresh_token = None;
+                if g.session_generation != generation {
+                    return Some(ConnectToken::Unavailable);
                 }
+                vault.clear(user_id).await;
+                g.refresh_token = None;
                 None
             }
             Err(err) => {
@@ -398,7 +381,7 @@ impl IMClient {
         generation: u64,
         provider: &GatewayTokenProvider,
     ) -> Result<crate::client::token_provider::IssuedAccessToken> {
-        let (bearer, tenant_id) = {
+        let bearer = {
             let g = self.inner.read().await;
             if g.session_generation != generation {
                 return Err(FlareError::localized(
@@ -407,38 +390,46 @@ impl IMClient {
                 ));
             }
             // 刷新令牌优先；没有再退回接入令牌（兼容旧网关/旧会话）。
-            let bearer = g
-                .refresh_token
+            g.refresh_token
                 .clone()
                 .or_else(|| g.connect_token.clone())
                 .ok_or_else(|| {
                     FlareError::localized(ErrorCode::NotConnected, "no token to refresh")
-                })?;
-            (bearer, Self::resolve_tenant_id(&g))
+                })?
         };
         let issued = provider.refresh(&bearer).await?;
-        let rotated = {
-            let mut g = self.inner.write().await;
-            if g.session_generation == generation {
-                g.connect_token = Some(issued.token.clone());
-                // 轮换后的新刷新令牌；网关没下发则保留原来的（别把已有的清成 None）。
-                if issued.refresh_token.is_some() {
-                    g.refresh_token = issued.refresh_token.clone();
-                }
-                g.refresh_token_vault.clone().zip(g.current_user_id.clone())
-            } else {
-                None
-            }
-        };
-        // 刷新令牌是一次性的：轮换后的那一枚立即写回安全存储，否则下次冷启动拿着已作废的去换。
-        if let (Some((vault, user_id)), Some(refresh_token)) =
-            (rotated, issued.refresh_token.as_deref())
-        {
-            vault.save(&user_id, refresh_token).await;
-        }
-        // 同步 HTTP 侧 bearer（媒体等）。
-        let _ = self.sync_core_http_context(Some(&tenant_id)).await;
+        self.install_issued_tokens(generation, &issued, false)
+            .await?;
         Ok(issued)
+    }
+
+    /// Publish a gateway response to the exact login that requested it. The
+    /// gateway RPC has finished before taking this lock. The vault and HTTP
+    /// context writes must finish before the next login can reuse either.
+    async fn install_issued_tokens(
+        &self,
+        generation: u64,
+        issued: &crate::client::token_provider::IssuedAccessToken,
+        initial: bool,
+    ) -> Result<()> {
+        let mut g = self.inner.write().await;
+        if g.session_generation != generation {
+            return Err(Self::not_connected());
+        }
+        let user = g.current_user_id.clone().ok_or_else(Self::not_connected)?;
+        let tenant = Self::resolve_tenant_id(&g);
+        if initial || issued.refresh_token.is_some() {
+            g.refresh_token = issued.refresh_token.clone();
+        }
+        if let (Some(vault), Some(token)) = (&g.refresh_token_vault, &issued.refresh_token) {
+            vault.save(&user, token).await;
+        }
+        if let Some(context) = &g.http_request_context {
+            context.set_auth_context(issued.token.clone(), None).await;
+            context.ensure_identity(&user, &tenant).await;
+        }
+        g.connect_token = Some(issued.token.clone());
+        Ok(())
     }
 
     /// SDK 托管 token：到期前 `refresh_lead_secs` 秒换新并 `update_access_token`。

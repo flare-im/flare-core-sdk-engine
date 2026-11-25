@@ -218,6 +218,25 @@ fn is_rejection(error: &FlareError) -> bool {
     matches!(error, FlareError::Localized { reason, .. } if reason == PLUGIN_REJECTED_KEY)
 }
 
+/// One scoped credential exchange. Proof, ticket and the authorized provider
+/// stay inside the exchange. A driver may repeat only an explicit refusal.
+pub enum ConfirmationStep {
+    Refused,
+    Finished(Value),
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+pub trait ConfirmationExchange: Send {
+    async fn attempt(&mut self, last: bool) -> Result<ConfirmationStep>;
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+pub trait ConfirmationDriver: Send + Sync {
+    async fn confirm(&self, exchange: &mut dyn ConfirmationExchange) -> Result<Value>;
+}
+
 /// The end of a payment confirmation ([`PluginCapabilityHost::payment_settled`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -477,6 +496,7 @@ impl PluginCapabilityHost for EventCapabilityHost {
 /// embedder's own host when one is installed.
 #[derive(Default)]
 pub(crate) struct CapabilityHostSlot {
+    pub confirmation_driver: std::sync::OnceLock<Arc<dyn ConfirmationDriver>>,
     pub requests: Arc<CapabilityHostRequests>,
     custom: RwLock<Option<Arc<dyn PluginCapabilityHost>>>,
     /// Page action continuations waiting for their payment confirmation.
@@ -1323,26 +1343,61 @@ impl CapabilityApi {
             plugin_id: plugin.plugin_id.clone(),
             order_id: call.order.order_id.clone(),
         };
-        let outcome = self.confirm_payment_attempts(host, plugin, call).await;
+        let mut exchange = HostConfirmation {
+            api: self,
+            host,
+            plugin,
+            call,
+            refused: None,
+            remaining: MAX_PAYMENT_ATTEMPTS,
+            finished: false,
+        };
+        let outcome =
+            if let Some(driver) = self.plugin_host.capability_host.confirmation_driver.get() {
+                driver.confirm(&mut exchange).await
+            } else {
+                // Compatibility for hosts not yet migrated to commercial composition.
+                loop {
+                    match exchange.attempt(false).await {
+                        Ok(ConfirmationStep::Refused) => continue,
+                        Ok(ConfirmationStep::Finished(outcome)) => break Ok(outcome),
+                        Err(error) => break Err(error),
+                    }
+                }
+            };
         // Whatever came of it, a panel kept busy after its last answer closes.
         host.payment_settled(settled).await;
         outcome
     }
+}
 
-    async fn confirm_payment_attempts(
-        &self,
-        host: &dyn PluginCapabilityHost,
-        plugin: &ClientPlugin,
-        call: PaymentCall<'_>,
-    ) -> Result<Value> {
-        let PaymentCall {
-            order,
-            page,
-            provider,
-            request,
-            user,
-            bundle,
-        } = call;
+struct HostConfirmation<'a> {
+    api: &'a CapabilityApi,
+    host: &'a dyn PluginCapabilityHost,
+    plugin: &'a ClientPlugin,
+    call: PaymentCall<'a>,
+    refused: Option<PaymentConfirmationError>,
+    remaining: u32,
+    finished: bool,
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl ConfirmationExchange for HostConfirmation<'_> {
+    async fn attempt(&mut self, last: bool) -> Result<ConfirmationStep> {
+        if self.finished || self.remaining == 0 {
+            return Err(unavailable());
+        }
+        self.finished = true;
+        self.remaining -= 1;
+        let last = last || self.remaining == 0;
+        let plugin = self.plugin;
+        let order = &self.call.order;
+        let page = &self.call.page;
+        let provider = self.call.provider;
+        let request = self.call.request;
+        let user = self.call.user;
+        let bundle = self.call.bundle;
         // The page that asked for the payment words its refusals.
         let asking = page.as_deref().and_then(|page| {
             plugin.extensions.contributions.iter().find(|c| {
@@ -1355,22 +1410,24 @@ impl CapabilityApi {
             None => outcome,
         };
         let conversation = request.conversation_id.as_deref();
-        let tenant = Some(self.default_tenant_id.as_str());
-        let mut refused = None;
-        let mut attempt = 0;
-        let ticket = loop {
-            attempt += 1;
-            let answer = host
+        let tenant = Some(self.api.default_tenant_id.as_str());
+        let ticket = {
+            let answer = self
+                .host
                 .confirm_payment(PaymentConfirmationPrompt {
                     plugin_id: plugin.plugin_id.clone(),
                     order: order.clone(),
-                    error: refused.take(),
+                    error: self.refused.take(),
                 })
                 .await;
             let proof = match answer {
                 CapabilityHostAnswer::Done(proof) => proof,
-                CapabilityHostAnswer::Cancelled => return Ok(json!({"kind": "cancelled"})),
-                CapabilityHostAnswer::Unavailable => return Ok(json!({"kind": "unavailable"})),
+                CapabilityHostAnswer::Cancelled => {
+                    return Ok(ConfirmationStep::Finished(json!({"kind": "cancelled"})));
+                }
+                CapabilityHostAnswer::Unavailable => {
+                    return Ok(ConfirmationStep::Finished(json!({"kind": "unavailable"})));
+                }
             };
             if serde_json::to_vec(&proof)
                 .map_or(true, |bytes| bytes.len() > MAX_PAYMENT_PROOF_BYTES)
@@ -1378,14 +1435,15 @@ impl CapabilityApi {
                 return Err(invalid());
             }
             // The viewer may have taken longer than the order lives.
-            if !order.is_open(self.server_clock.now_ms()) {
+            if !order.is_open(self.api.server_clock.now_ms()) {
                 return Err(order_expired());
             }
             // The credential reaches the provider only (`PaymentTicketRequest`).
             // The provider's refusal of it (a wrong password) goes back to the
             // host's panel for another try; the last one ends the confirmation.
-            let last = attempt >= MAX_PAYMENT_ATTEMPTS;
+
             match self
+                .api
                 .dispatch_with(
                     &provider.operation,
                     json!({
@@ -1400,37 +1458,44 @@ impl CapabilityApi {
                 )
                 .await
             {
-                Ok(response) if response.success => {
-                    break response
-                        .data
-                        .get("ticket")
-                        .and_then(Value::as_str)
-                        .filter(|ticket| flare_plugin_protocol::ui::PaymentTicket::is_valid(ticket))
-                        .map(str::to_owned)
-                        .ok_or_else(unavailable)?;
-                }
+                Ok(response) if response.success => response
+                    .data
+                    .get("ticket")
+                    .and_then(Value::as_str)
+                    .filter(|ticket| flare_plugin_protocol::ui::PaymentTicket::is_valid(ticket))
+                    .map(str::to_owned)
+                    .ok_or_else(unavailable)?,
                 Ok(response) if last => {
-                    return Ok(worded(json!({"kind": "operation", "response": response})));
+                    return Ok(ConfirmationStep::Finished(worded(
+                        json!({"kind": "operation", "response": response}),
+                    )));
                 }
                 Ok(response) => {
-                    refused = Some(PaymentConfirmationError::rejected(
+                    self.refused = Some(PaymentConfirmationError::rejected(
                         response.data.get("errorCode").and_then(Value::as_str),
                         words,
                     ));
+                    self.finished = false;
+                    return Ok(ConfirmationStep::Refused);
                 }
                 Err(error) if !last && is_rejection(&error) => {
-                    refused = Some(PaymentConfirmationError::rejected(
+                    self.refused = Some(PaymentConfirmationError::rejected(
                         plugin_rejection_code(&error),
                         words,
                     ));
+                    self.finished = false;
+                    return Ok(ConfirmationStep::Refused);
                 }
                 Err(error) => {
-                    self.after_plugin_error(&error, &provider.plugin_id).await;
+                    self.api
+                        .after_plugin_error(&error, &provider.plugin_id)
+                        .await;
                     return Err(error);
                 }
             }
         };
         let response = match self
+            .api
             .dispatch_with(
                 &order.operation,
                 json!({"orderId": order.order_id, "ticket": ticket}),
@@ -1443,31 +1508,33 @@ impl CapabilityApi {
         {
             Ok(response) => response,
             Err(error) => {
-                self.after_plugin_error(&error, &plugin.plugin_id).await;
+                self.api.after_plugin_error(&error, &plugin.plugin_id).await;
                 return Err(error);
             }
         };
         if response.success {
             let key = HeldPaymentKey::new(
-                &self.default_tenant_id,
+                &self.api.default_tenant_id,
                 user,
                 &plugin.plugin_id,
                 &order.order_id,
             );
-            self.plugin_host.capability_host.orders.paid(&key);
+            self.api.plugin_host.capability_host.orders.paid(&key);
             if !bundle
                 && let Some((origin, continuation)) = self
+                    .api
                     .plugin_host
                     .capability_host
                     .payments
-                    .take(&key, self.server_clock.now_ms())
+                    .take(&key, self.api.server_clock.now_ms())
             {
                 // The viewer may have spent longer in the sheet than the
                 // catalog read before it lives (Core grants it a minute): the
                 // paid order's continuation reads a current one, or a payment
                 // goes through and its follow-up is refused as unavailable.
-                let (_, current) = self.fetch_plugin_ui_catalog().await?;
+                let (_, current) = self.api.fetch_plugin_ui_catalog().await?;
                 return self
+                    .api
                     .continue_page_action(
                         &current,
                         &origin,
@@ -1475,14 +1542,13 @@ impl CapabilityApi {
                         response,
                         Some(continuation),
                     )
-                    .await;
+                    .await
+                    .map(ConfirmationStep::Finished);
             }
         }
-        Ok(worded(self.operation_outcome(
-            Some(user),
-            &plugin.plugin_id,
-            None,
-            &response,
+        Ok(ConfirmationStep::Finished(worded(
+            self.api
+                .operation_outcome(Some(user), &plugin.plugin_id, None, &response),
         )))
     }
 }

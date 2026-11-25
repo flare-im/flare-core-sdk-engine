@@ -13,7 +13,7 @@ async fn prepare_then_bootstrap_startup_home_serves_local_before_connect() {
     client
         .prepare(
             "hot-start-user",
-            LoginDbKind::Provided(in_memory_im_provider()),
+            LoginDbKind::provided(in_memory_im_provider()),
         )
         .await
         .expect("prepare must succeed without network");
@@ -77,7 +77,7 @@ async fn prepare_rejects_an_incomplete_account_backend_before_exposing_apis() {
         .unwrap();
     for backend in [
         LoginDbKind::Open(Arc::new(MissingWriter)),
-        LoginDbKind::Provided(in_memory_empty_im_provider()),
+        LoginDbKind::provided(in_memory_empty_im_provider()),
     ] {
         let error = client.prepare("audit-user", backend).await.unwrap_err();
         assert_eq!(
@@ -87,7 +87,7 @@ async fn prepare_rejects_an_incomplete_account_backend_before_exposing_apis() {
         assert!(client.conversation_async().await.is_err());
     }
     client
-        .prepare("audit-user", LoginDbKind::Provided(in_memory_im_provider()))
+        .prepare("audit-user", LoginDbKind::provided(in_memory_im_provider()))
         .await
         .unwrap();
     assert!(client.conversation_async().await.is_ok());

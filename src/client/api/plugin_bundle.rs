@@ -991,7 +991,7 @@ impl CapabilityApi {
                 });
                 match (status, error.code()) {
                     (Some(401 | 403), _) => BridgeError::new(BridgeErrorCode::PermissionDenied),
-                    (Some(502 | 503 | 504), _) | (_, Some(ErrorCode::NetworkUnreachable)) => {
+                    (Some(502..=504), _) | (_, Some(ErrorCode::NetworkUnreachable)) => {
                         BridgeError::new(BridgeErrorCode::Unavailable)
                     }
                     _ => bundle::broker::bridge_error_of(&error),

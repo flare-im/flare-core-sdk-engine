@@ -43,7 +43,7 @@ async fn host_endpoints_connect_and_replace_without_rebuilding_the_session() {
         .unwrap();
     assert_eq!(client.connection_status().await.endpoint_revision, Some(1));
     client
-        .prepare(USER_ID, LoginDbKind::Provided(in_memory_im_provider()))
+        .prepare(USER_ID, LoginDbKind::provided(in_memory_im_provider()))
         .await
         .unwrap();
     let (observed, _subscriptions) = Observed::record(&client);

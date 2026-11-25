@@ -46,6 +46,27 @@ impl MessageReader for SqliteMessageRepo {
         Ok(out)
     }
 
+    async fn get_by_message_key(
+        &self,
+        key: &flare_im_core_sdk::model::MessageKey,
+    ) -> Result<Option<IMMessage>> {
+        let query = format!(
+            "SELECT {} FROM messages WHERE conversation_id=? AND sender_id=? AND client_msg_id=? LIMIT 2",
+            MESSAGE_SELECT_COLS
+        );
+        let rows = sqlx::query(&query)
+            .bind(&key.conversation_id)
+            .bind(&key.sender_id)
+            .bind(&key.client_msg_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| FlareError::localized(ErrorCode::DatabaseError, e.to_string()))?;
+        match rows.as_slice() {
+            [row] => self.row_to_immessage(row).map(Some),
+            _ => Ok(None),
+        }
+    }
+
     async fn get_by_client_msg_id(&self, client_msg_id: &str) -> Result<Option<IMMessage>> {
         Ok(self
             .get_by_client_msg_ids(&[client_msg_id.to_owned()])

@@ -22,13 +22,18 @@ assert.ok(Number.isSafeInteger(rounds) && rounds >= 1);
 
 function sqlStats() {
   return queryServer('', `WITH stats AS (
-      SELECT calls, total_exec_time, query LIKE 'SELECT m.server_id, m.seq FROM message_idempotency_ledger l%' AS receipt
+      SELECT calls, total_exec_time, query LIKE 'SELECT m.server_id, m.seq FROM message_idempotency_ledger l%' AS receipt,
+        query LIKE 'SELECT conversation_id, server_id, conversation_seq, durability%FROM message_idempotency_ledger%' AS historical,
+        query LIKE 'UPDATE message_write_ledger%archive_persisted_at = COALESCE(archive_persisted_at,%'
+          AND query NOT LIKE '%failed_at = CASE%' AS archive_update
       FROM pg_stat_statements WHERE dbid=(SELECT oid FROM pg_database WHERE datname=current_database())
         AND (query LIKE 'SELECT m.server_id, m.seq FROM message_idempotency_ledger l%'
-          OR query LIKE 'SELECT conversation_id, server_id, conversation_seq, durability%FROM message_idempotency_ledger%'))
+          OR query LIKE 'SELECT conversation_id, server_id, conversation_seq, durability%FROM message_idempotency_ledger%'
+          OR query LIKE 'UPDATE message_write_ledger%'))
     SELECT json_build_object('calls', coalesce(sum(calls) FILTER (WHERE receipt),0),
       'execMs', coalesce(sum(total_exec_time) FILTER (WHERE receipt),0),
-      'historicalCalls', coalesce(sum(calls) FILTER (WHERE NOT receipt),0)) FROM stats`);
+      'historicalCalls', coalesce(sum(calls) FILTER (WHERE historical),0),
+      'archiveUpdates', coalesce(sum(calls) FILTER (WHERE archive_update),0)) FROM stats`);
 }
 
 function delta(after, before) {
@@ -79,6 +84,7 @@ function report(windows) {
     wirePersistedP99Ms: durable.length ? +percentile(durable, .99).toFixed(2) : null,
     verifyP95Ms: +percentile(stageMs, .95).toFixed(3),
     verifyP99Ms: +percentile(stageMs, .99).toFixed(3), sqlCalls: calls, historicalCalls: windows.reduce((sum,w) => sum+w.historicalCalls,0), sqlPerMessage: +(calls/n).toFixed(3),
+    archiveUpdates: windows.reduce((sum,w) => sum+w.archiveUpdates,0),
     sqlExecMs: +windows.reduce((sum,w) => sum+w.execMs,0).toFixed(2), outcomes,
     provisional: windows.reduce((sum,w) => sum+w.provisional,0)};
 }
@@ -158,7 +164,8 @@ async function measure(sides, round, concurrency) {
     }
   }
   const stages = offsets ? await readStages(offsets, rows, endDb.calls - startDb.calls, endDb.historicalCalls - startDb.historicalCalls) : [];
-  return {elapsed, stages, historicalCalls: endDb.historicalCalls-startDb.historicalCalls, calls: endDb.calls-startDb.calls, execMs: endDb.execMs-startDb.execMs, outcomes,
+  return {elapsed, stages, archiveUpdates: endDb.archiveUpdates - startDb.archiveUpdates,
+    historicalCalls: endDb.historicalCalls-startDb.historicalCalls, calls: endDb.calls-startDb.calls, execMs: endDb.execMs-startDb.execMs, outcomes,
     stageMs, sdkMs: rows.map(r => r.sdkMs), firstAckMs: rows.map(r => r.firstAckMs),
     durableWireMs: rows.map(r => r.durableWireMs).filter(ms => ms !== null), attempts,
     provisional: rows.reduce((sum,r) => sum+r.provisional,0)};

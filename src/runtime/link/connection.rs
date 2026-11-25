@@ -97,7 +97,6 @@ impl ConnectionRuntime {
     pub fn protocol_mode(&self) -> ProtocolMode {
         *lock(&self.protocol_mode)
     }
-
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

@@ -3,6 +3,20 @@ use crate::model::Conversation;
 
 pub struct ConversationReadService;
 
+const READ_INTENT: &str = "_local.pendingReadSeq";
+
+pub(crate) fn pending_read_seq(row: &Conversation) -> Option<u64> {
+    row.ext.get(READ_INTENT)?.parse().ok().filter(|n| *n > 0)
+}
+
+pub(crate) fn set_read_intent(row: &mut Conversation, seq: Option<u64>) {
+    if let Some(seq) = seq {
+        row.ext.insert(READ_INTENT.into(), seq.to_string());
+    } else {
+        row.ext.remove(READ_INTENT);
+    }
+}
+
 impl ConversationReadService {
     pub fn plan_mark_read(
         &self,
@@ -11,7 +25,9 @@ impl ConversationReadService {
         requested_read_seq: u64,
     ) -> ConversationReadDecision {
         // 会话摘要 max_seq 可能滞后于本地消息表；已读位点应对齐两者中的较大值。
-        let effective_max_seq = local_max_seq.max(current.max_seq);
+        let effective_max_seq = local_max_seq
+            .max(current.max_seq)
+            .max(current.last_read_seq);
         let target_read_seq = requested_read_seq.min(effective_max_seq);
         let next_read_seq = target_read_seq
             .max(current.last_read_seq)
@@ -24,7 +40,6 @@ impl ConversationReadService {
         ConversationReadDecision {
             unread_count,
             next_read_seq,
-            should_recompute_local_unread: true,
         }
     }
 }
@@ -48,7 +63,6 @@ mod tests {
 
         assert_eq!(decision.next_read_seq, 10);
         assert_eq!(decision.unread_count, 5);
-        assert!(decision.should_recompute_local_unread);
     }
 
     #[test]
@@ -65,6 +79,5 @@ mod tests {
 
         assert_eq!(decision.next_read_seq, 80);
         assert_eq!(decision.unread_count, 0);
-        assert!(decision.should_recompute_local_unread);
     }
 }

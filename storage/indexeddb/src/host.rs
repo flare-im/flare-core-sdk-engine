@@ -24,6 +24,7 @@ thread_local! {
 struct StorageHost {
     load_snapshot: Function,
     read_messages: Option<Function>,
+    commit_projection: Option<Function>,
     commit_outgoing: Function,
     save_message: Function,
     save_messages: Option<Function>,
@@ -168,6 +169,7 @@ impl StorageHost {
         Ok(Self {
             load_snapshot: host_method(host, "loadSnapshot")?,
             read_messages: optional_host_method(host, "readMessages"),
+            commit_projection: optional_host_method(host, "commitProjection"),
             commit_outgoing: host_method(host, "commitOutgoing")?,
             save_message: host_method(host, "saveMessage")?,
             save_messages: optional_host_method(host, "saveMessages"),
@@ -358,6 +360,42 @@ pub(crate) async fn persist_messages(
         persist_message(user_id, message).await?;
     }
     Ok(None)
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ProjectionResult {
+    pub committed: bool,
+    pub conversation: Option<Conversation>,
+}
+
+pub(crate) async fn commit_projection(
+    user_id: &str,
+    expected: &Conversation,
+    conversation: &Conversation,
+) -> Result<Option<ProjectionResult>> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Request<'a> {
+        user_id: &'a str,
+        expected: &'a Conversation,
+        conversation: &'a Conversation,
+    }
+    let host = STORAGE_HOST.with(|slot| slot.borrow().clone());
+    let Some(method) = host.as_ref().and_then(|h| h.commit_projection.as_ref()) else {
+        return Ok(None);
+    };
+    let request = to_host_value(
+        &Request {
+            user_id,
+            expected,
+            conversation,
+        },
+        "compare conversation projection",
+    )?;
+    let response = call_host_string(method, &request).await?;
+    serde_json::from_str(&response)
+        .map(Some)
+        .map_err(|e| FlareError::system(format!("invalid projection reply: {e}")))
 }
 
 pub async fn persist_conversation(user_id: &str, conversation: &Conversation) -> Result<()> {

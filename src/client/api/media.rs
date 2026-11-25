@@ -1,8 +1,11 @@
 //! 媒体 Facade — 委托 [`crate::platform::ports::media::MediaServicePort`]（上传与下载）。
 
+use futures::future::{AbortHandle, Abortable};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::sync::RwLock;
 
 use super::session_guard::SessionGuard;
@@ -33,13 +36,144 @@ use crate::shared::error::Result;
 #[derive(Clone)]
 pub struct MediaApi {
     handler: Arc<dyn MediaServicePort>,
+    transfers: Arc<Mutex<HashMap<String, AbortHandle>>>,
     session_guard: SessionGuard,
 }
 
+struct ActiveUpload<'a> {
+    transfers: &'a Mutex<HashMap<String, AbortHandle>>,
+    id: String,
+}
+
+impl Drop for ActiveUpload<'_> {
+    fn drop(&mut self) {
+        self.transfers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.id);
+    }
+}
+
 impl MediaApi {
+    pub async fn upload_recovery(
+        &self,
+        source_kind: &str,
+    ) -> Result<crate::model::media::MediaUploadRecovery> {
+        self.session_guard.ensure_active().await?;
+        let source = match source_kind {
+            "path" => MediaSourceKind::Path,
+            "blob" => MediaSourceKind::Blob,
+            "bytes" => MediaSourceKind::Bytes,
+            "uri" => MediaSourceKind::Uri,
+            "asset" => MediaSourceKind::Asset,
+            other => MediaSourceKind::Custom(other.into()),
+        };
+        Ok(self.handler.upload_recovery(&source))
+    }
+
+    pub async fn resolve_attachment(
+        &self,
+        request: crate::model::media::ResolveAttachmentRequest,
+    ) -> Result<MediaAccessUrl> {
+        let media = &request.media;
+        // The port and the wire carry seq as int64.
+        let seq = i64::try_from(media.message_seq).map_err(|_| {
+            crate::FlareError::localized(
+                crate::ErrorCode::InvalidParameter,
+                "message seq out of range",
+            )
+        })?;
+        let message = MessageMediaReference::new(media.conversation_id.clone(), seq)?;
+        self.get_file_url_with_reference(
+            &media.file_id,
+            request.expires_in.unwrap_or(3600),
+            Some(&message),
+        )
+        .await
+    }
+
+    /// The same handle may be reused after the previous attempt returns.
+    pub async fn cancel_upload(&self, transfer_id: &str) -> Result<bool> {
+        self.session_guard.ensure_active().await?;
+        let transfers = self.transfers.lock().unwrap_or_else(|p| p.into_inner());
+        Ok(transfers.get(transfer_id).is_some_and(|handle| {
+            handle.abort();
+            true
+        }))
+    }
+
+    /// One cancel for any transfer: an upload's `UploadOptions.transfer_id`, or a saved
+    /// download's `download_key`. A cancelled download removes its temporary file and
+    /// never publishes a partial file. Returns whether a running transfer was found.
+    pub async fn cancel_transfer(&self, transfer_id: &str) -> Result<bool> {
+        if self.cancel_upload(transfer_id).await? {
+            return Ok(true);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let download = self.cancel_user_file_download(transfer_id);
+        #[cfg(target_arch = "wasm32")]
+        let download = false; // browsers save through the host, not a core transfer
+        Ok(download)
+    }
+
+    async fn upload(
+        &self,
+        media: ProcessedMedia,
+        options: Option<UploadOptions>,
+        on_progress: Option<UploadProgressCallback>,
+    ) -> Result<UploadedMedia> {
+        let progress: Option<UploadProgressSink> = self
+            .session_guard
+            .guard_callback(on_progress)
+            .map(|callback| Box::new(move |progress| callback(progress)) as _);
+        let id = options.as_ref().and_then(|o| o.transfer_id.clone());
+        let upload = self.handler.upload(media, options, progress);
+        self.run_session_bound(async {
+            let Some(id) = id else {
+                return upload.await;
+            };
+            if id.trim() != id || id.is_empty() || id.len() > 128 {
+                return Err(crate::FlareError::localized(
+                    crate::ErrorCode::InvalidParameter,
+                    "invalid transfer id",
+                ));
+            }
+            let (handle, cancel) = AbortHandle::new_pair();
+            {
+                use std::collections::hash_map::Entry;
+                let mut transfers = self.transfers.lock().unwrap_or_else(|p| p.into_inner());
+                match transfers.entry(id.clone()) {
+                    Entry::Vacant(slot) => {
+                        slot.insert(handle);
+                    }
+                    Entry::Occupied(_) => {
+                        return Err(crate::FlareError::localized(
+                            crate::ErrorCode::InvalidParameter,
+                            "upload already active",
+                        ));
+                    }
+                }
+            }
+            let _active = ActiveUpload {
+                transfers: &self.transfers,
+                id,
+            };
+            Abortable::new(upload, cancel).await.map_err(|_| {
+                crate::FlareError::localized(crate::ErrorCode::OperationFailed, "upload cancelled")
+            })?
+        })
+        .await
+    }
+
+    pub(crate) fn for_session(mut self, watch: crate::client::im_client::SessionEndWatch) -> Self {
+        self.session_guard.bind(watch);
+        self
+    }
+
     pub fn from_handler(handler: Arc<dyn MediaServicePort>) -> Self {
         Self {
             handler,
+            transfers: Default::default(),
             session_guard: SessionGuard::disabled("media"),
         }
     }
@@ -50,6 +184,7 @@ impl MediaApi {
     ) -> Self {
         Self {
             handler,
+            transfers: Default::default(),
             session_guard: SessionGuard::new(current_user_id, "media"),
         }
     }
@@ -72,6 +207,7 @@ impl MediaApi {
         ));
         Self {
             handler,
+            transfers: Default::default(),
             session_guard: SessionGuard::new(current_user_id, "media"),
         }
     }
@@ -128,11 +264,7 @@ impl MediaApi {
             metadata,
             payload: None,
         };
-        let progress: Option<UploadProgressSink> =
-            on_progress.map(|callback| Box::new(move |progress| callback(progress)) as _);
-        let handler = self.handler.clone();
-        self.run_session_bound(async move { handler.upload(media, options, progress).await })
-            .await
+        self.upload(media, options, on_progress).await
     }
 
     pub async fn upload_bytes(
@@ -171,11 +303,7 @@ impl MediaApi {
             metadata,
             payload: Some(bytes),
         };
-        let progress: Option<UploadProgressSink> =
-            on_progress.map(|callback| Box::new(move |progress| callback(progress)) as _);
-        let handler = self.handler.clone();
-        self.run_session_bound(async move { handler.upload(media, options, progress).await })
-            .await
+        self.upload(media, options, on_progress).await
     }
 
     pub async fn upload_image_from_path_with_progress(
@@ -263,7 +391,7 @@ impl MediaApi {
     /// 取消进行中的「下载到用户下载目录」任务。
     #[cfg(not(target_arch = "wasm32"))]
     pub fn cancel_user_file_download(&self, download_key: &str) -> bool {
-        self.handler.cancel_user_file_download(download_key)
+        !self.session_guard.retired() && self.handler.cancel_user_file_download(download_key)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -303,8 +431,9 @@ impl MediaApi {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn download_file_to_user_downloads_folder(
         &self,
-        request: UserFileDownloadRequest,
+        mut request: UserFileDownloadRequest,
     ) -> Result<String> {
+        request.on_progress = self.session_guard.guard_callback(request.on_progress);
         let handler = self.handler.clone();
         self.run_session_bound(async move {
             handler
@@ -318,8 +447,9 @@ impl MediaApi {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn download_to_user_directory(
         &self,
-        request: UserFileDownloadRequest,
+        mut request: UserFileDownloadRequest,
     ) -> Result<UserFileDownloadResultVo> {
+        request.on_progress = self.session_guard.guard_callback(request.on_progress);
         let handler = self.handler.clone();
         self.run_session_bound(async move { handler.download_to_user_directory(request).await })
             .await
@@ -488,6 +618,38 @@ mod tests {
                 }),
             })
         }
+    }
+
+    #[tokio::test]
+    async fn cancel_targets_only_the_admitted_upload() {
+        let started = Arc::new(Notify::new());
+        let api = MediaApi::from_handler(Arc::new(BlockingUploadService {
+            started: started.clone(),
+            release: Arc::new(Notify::new()),
+        }));
+        let options = UploadOptions {
+            transfer_id: Some("file-1".into()),
+            ..Default::default()
+        };
+        let inflight = api.upload_bytes(
+            vec![1],
+            "a",
+            "application/octet-stream",
+            Some(options.clone()),
+        );
+        let cancel = async {
+            started.notified().await;
+            assert!(!api.cancel_upload("file-2").await.unwrap());
+            assert!(
+                api.upload_bytes(vec![2], "b", "application/octet-stream", Some(options))
+                    .await
+                    .is_err()
+            );
+            assert!(api.cancel_upload("file-1").await.unwrap());
+        };
+        let (result, ()) = tokio::join!(inflight, cancel);
+        assert!(result.is_err());
+        assert!(!api.cancel_upload("file-1").await.unwrap());
     }
 
     #[tokio::test]

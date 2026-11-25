@@ -752,7 +752,11 @@ impl ConversationWriter for SqliteConversationRepo {
         expected: &Conversation,
         projected: &Conversation,
     ) -> Result<bool> {
-        let mut tx = self.pool.begin().await.map_err(sqlx_err)?;
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(sqlx_err)?;
         let sql = Self::select_with_latest_visible_message("WHERE c.conversation_id = ?");
         let row = sqlx::query(&sql)
             .bind(&expected.conversation_id)

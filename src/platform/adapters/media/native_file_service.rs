@@ -1240,6 +1240,18 @@ impl MediaUploaderPort for MediaService {
 
 #[async_trait]
 impl MediaServicePort for MediaService {
+    fn upload_recovery(
+        &self,
+        source: &crate::platform::ports::media::MediaSourceKind,
+    ) -> crate::model::media::MediaUploadRecovery {
+        let resume = matches!(source, crate::platform::ports::media::MediaSourceKind::Path)
+            && self.upload_manifest_store.is_some();
+        crate::model::media::MediaUploadRecovery {
+            same_session: resume,
+            after_restart: resume,
+            requires_source_reselection: false,
+        }
+    }
     async fn upload(
         &self,
         media: ProcessedMedia,

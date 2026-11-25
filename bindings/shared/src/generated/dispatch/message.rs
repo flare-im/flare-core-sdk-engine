@@ -13,6 +13,8 @@ use flare_im_core_sdk::serde_json::{self, Value};
 
 pub const MESSAGE_DISPATCH_OPERATIONS: &[&str] = &[
     "get",
+    "get_by_key",
+    "await_confirmation",
     "get_raw",
     "search",
     "search_by_query",
@@ -56,6 +58,19 @@ pub async fn dispatch_message(
         "get" => {
             let message_id_s = json_string(&params, "messageId")?;
             json(api.get(&message_id_s).await?)
+        }
+        "get_by_key" => {
+            let bound_value: flare_im_core_sdk::model::MessageKey =
+                from_value(params.clone(), "flare_im_core_sdk::model::MessageKey")?;
+            let message = api.get_by_key(bound_value).await?;
+            json(serde_json::json!({ "message": message }))
+        }
+        "await_confirmation" => {
+            let bound_value: flare_im_core_sdk::model::ConfirmationRequest = from_value(
+                params.clone(),
+                "flare_im_core_sdk::model::ConfirmationRequest",
+            )?;
+            json(api.await_confirmation(bound_value).await?)
         }
         "get_raw" => {
             let message_id_s = json_string(&params, "messageId")?;
@@ -253,6 +268,17 @@ pub async fn dispatch_message_json(
     params_json: &str,
 ) -> Result<BindingResponse> {
     match operation {
+        "get_by_key" => {
+            let bound_value: flare_im_core_sdk::model::MessageKey =
+                from_json_str(params_json, "flare_im_core_sdk::model::MessageKey")?;
+            let message = api.get_by_key(bound_value).await?;
+            json(serde_json::json!({ "message": message }))
+        }
+        "await_confirmation" => {
+            let bound_value: flare_im_core_sdk::model::ConfirmationRequest =
+                from_json_str(params_json, "flare_im_core_sdk::model::ConfirmationRequest")?;
+            json(api.await_confirmation(bound_value).await?)
+        }
         "search" => {
             let bound_value: MessageSearchQuery = from_json_str(params_json, "MessageSearchQuery")?;
             let messages = api.search_by_query(bound_value).await?;

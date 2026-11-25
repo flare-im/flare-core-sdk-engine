@@ -1,4 +1,5 @@
 //! SQLite implementation of the account-scoped IM stores.
+pub mod extension_records;
 pub mod provider;
 pub mod repos;
 mod runtime;

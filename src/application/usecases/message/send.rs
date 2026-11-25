@@ -77,6 +77,78 @@ impl MessageSendUseCase {
         self.dispatch_prepared_message(message).await
     }
 
+    /// Waits until the server confirms a message that `send` queued, or the send fails
+    /// terminally. Times out with `OperationTimeout`; the message stays queued and keeps
+    /// retrying either way.
+    pub async fn await_confirmation(
+        &self,
+        key: &crate::model::MessageKey,
+        timeout: std::time::Duration,
+    ) -> Result<crate::model::SendConfirmation> {
+        use crate::kernel::event::{SdkEventKind, SyncNotify};
+        use crate::model::SendConfirmation;
+        // Subscribe before the first read so a confirmation landing in between is seen.
+        let mut events = self.bus.subscribe_kind(SdkEventKind::Message);
+        let wait = async {
+            if let Some(done) = self.confirmation_state(key).await? {
+                return Ok(done);
+            }
+            loop {
+                let event = events.recv().await.map_err(|_| {
+                    FlareError::localized(ErrorCode::NotConnected, "sdk.message.session_changed")
+                })?;
+                match event {
+                    SdkEvent::Message(MessageEvent::SendFailed {
+                        client_msg_id,
+                        reason,
+                        ..
+                    }) if client_msg_id == key.client_msg_id => {
+                        return Ok(SendConfirmation::Failed { reason });
+                    }
+                    SdkEvent::Message(MessageEvent::SendAck { ack })
+                        if ack.client_msg_id == key.client_msg_id => {}
+                    // Missed events after a lag: the committed row is still authoritative.
+                    SdkEvent::Sync(SyncNotify::ResyncNeeded { .. }) => {}
+                    _ => continue,
+                }
+                if let Some(done) = self.confirmation_state(key).await? {
+                    return Ok(done);
+                }
+            }
+        };
+        crate::shared::util::time::timeout(timeout, wait)
+            .await
+            .map_err(|_| {
+                FlareError::localized(ErrorCode::OperationTimeout, "sdk.message.confirm_timeout")
+            })?
+    }
+
+    async fn confirmation_state(
+        &self,
+        key: &crate::model::MessageKey,
+    ) -> Result<Option<crate::model::SendConfirmation>> {
+        use crate::model::SendConfirmation;
+        let Some(message) = self.store.get_by_message_key(key).await? else {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "sdk.message.not_found",
+            ));
+        };
+        let state = &message.local_state;
+        Ok(if state.failed {
+            Some(SendConfirmation::Failed {
+                reason: "send failed".to_owned(),
+            })
+        } else if !state.sending && !message.server_id.is_empty() {
+            Some(SendConfirmation::Persisted {
+                server_id: message.server_id,
+                conversation_seq: message.conversation_seq,
+            })
+        } else {
+            None
+        })
+    }
+
     async fn prepare_outbound_identity(
         &self,
         message: IMMessage,
@@ -2180,7 +2252,6 @@ mod tests {
             .enqueued()
             .await
             .try_into()
-            .ok()
             .expect("exactly one queued send");
         let sent: IMMessage = sent;
         assert_eq!(sent.client_msg_id, client_msg_id);

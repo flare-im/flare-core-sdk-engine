@@ -85,7 +85,11 @@ impl EventBus {
             same_arc,
         );
         if let Some(status) = last {
+            let lifetime = self.lifetime.clone();
             replay_after_dispatch_window(move || {
+                if lifetime.retired() {
+                    return;
+                }
                 if !invoked.load(Ordering::Acquire) {
                     f(status);
                 }
@@ -117,7 +121,11 @@ impl EventBus {
             same_arc,
         );
         if let Some(state) = last {
+            let lifetime = self.lifetime.clone();
             replay_after_dispatch_window(move || {
+                if lifetime.retired() {
+                    return;
+                }
                 if !invoked.load(Ordering::Acquire) {
                     f(state);
                 }
@@ -486,7 +494,11 @@ impl EventBus {
             same_arc,
         );
         if let Some(phase) = last {
+            let lifetime = self.lifetime.clone();
             replay_after_dispatch_window(move || {
+                if lifetime.retired() {
+                    return;
+                }
                 if !invoked.load(Ordering::Acquire) {
                     f(phase);
                 }

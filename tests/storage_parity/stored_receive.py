@@ -25,6 +25,7 @@ def snapshot(data_root, user, cid):
             "SELECT client_msg_id, conversation_id FROM pending_sends ORDER BY enqueued_at_ms, rowid"
         ).fetchall()
     return dict(messages=messages, lastId=last_id, lastSender=sender, lastAt=at, preview=preview, unread=unread, readSeq=last_read, maxSeq=max_seq,
+                pendingRead=json.loads(ext or "{}").get("_local.pendingReadSeq"),
                 receipt=json.loads(json.loads(ext or "{}").get("_local.messageProjectionRanges", "null")),
                 cursor=dict(seq=cursor[0], syncedAt=cursor[1]) if cursor else None, outbox=outbox)
 

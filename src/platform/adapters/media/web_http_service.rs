@@ -908,6 +908,17 @@ impl MediaUploaderPort for MediaService {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl MediaServicePort for MediaService {
+    fn upload_recovery(
+        &self,
+        source: &crate::platform::ports::media::MediaSourceKind,
+    ) -> crate::model::media::MediaUploadRecovery {
+        let blob = matches!(source, MediaSourceKind::Blob);
+        crate::model::media::MediaUploadRecovery {
+            same_session: blob,
+            after_restart: false,
+            requires_source_reselection: blob,
+        }
+    }
     async fn upload(
         &self,
         media: ProcessedMedia,

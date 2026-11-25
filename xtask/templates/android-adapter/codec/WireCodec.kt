@@ -46,38 +46,6 @@ fun setAppStateRequestToMap(request: SetAppStateRequest): Map<String, Any?> = bu
     put("appState", appStateWireValue(request.appState))
 }
 
-fun updateCheckRequestToMap(request: UpdateCheckRequest): Map<String, Any?> = buildMap {
-    put("manual", request.manual)
-}
-
-fun updateGetStateRequestToMap(request: UpdateGetStateRequest): Map<String, Any?> = buildMap {
-    request.foreground?.let { put("foreground", it) }
-}
-
-fun updateSetLocaleRequestToMap(request: UpdateSetLocaleRequest): Map<String, Any?> = buildMap {
-    put("locale", request.locale)
-}
-
-fun updateGetResourcesRequestToMap(request: UpdateGetResourcesRequest): Map<String, Any?> = emptyMap()
-
-fun updateDownloadRequestToMap(request: UpdateDownloadRequest): Map<String, Any?> = buildMap {
-    put("allowMetered", request.allowMetered)
-}
-
-fun updateReportInstallRequestToMap(request: UpdateReportInstallRequest): Map<String, Any?> = buildMap {
-    put("outcome", request.outcome)
-    request.code?.let { put("code", it) }
-}
-
-fun updateSkipRequestToMap(request: UpdateSkipRequest): Map<String, Any?> = buildMap {
-    put("build", request.build)
-}
-
-fun updateMarkPromptedRequestToMap(request: UpdateMarkPromptedRequest): Map<String, Any?> = buildMap {
-    put("form", request.form)
-    request.build?.let { put("build", it) }
-}
-
 fun setHeartbeatNatTimeoutRequestToMap(request: SetHeartbeatNatTimeoutRequest): Map<String, Any?> = buildMap {
     request.natTimeoutSecs?.let { put("natTimeoutSecs", it) }
 }
@@ -892,7 +860,6 @@ fun syncEventToMap(request: SyncEvent): Map<String, Any?> = buildMap {
     request.progress?.let { put("progress", it) }
     request.error?.let { put("error", sdkErrorPayloadToMap(it)) }
 }
-
 
 
 fun sendMessageRequestToMap(request: SendMessageRequest): Map<String, Any?> =
@@ -1959,23 +1926,7 @@ fun closeViewResponseFromJson(value: Any?): CloseViewResponse {
 }
 
 
-
 // Plugin host profile, plugin upgrades and host capabilities.
-
-fun updatePluginUpgradeStatusRequestToMap(request: UpdatePluginUpgradeStatusRequest): Map<String, Any?> = buildMap {
-    request.minBuild?.let { put("minBuild", it) }
-}
-
-fun updateOpenFlowRequestToMap(request: UpdateOpenFlowRequest): Map<String, Any?> = emptyMap()
-
-fun pluginUpgradeStatusFromJson(value: Any?): PluginUpgradeStatus {
-    val json = mapValue(value)
-    val context = "PluginUpgradeStatus"
-    return PluginUpgradeStatus(
-        available = requiredBooleanField(json, "available", context),
-        build = optionalWireUnsigned(json, "build", context),
-    )
-}
 
 fun pluginHostProfileToMap(request: PluginHostProfile): Map<String, Any?> = buildMap {
     put("platform", request.platform)
@@ -1988,6 +1939,39 @@ fun pluginCapabilityCompletionToMap(request: PluginCapabilityCompletion): Map<St
     put("requestId", request.requestId)
     request.result?.let { put("result", it) }
 }
+
+
+fun messageKeyToMap(request: MessageKey): Map<String, Any?> = mapOf(
+    "conversationId" to request.conversationId,
+    "senderId" to request.senderId,
+    "clientMsgId" to request.clientMsgId,
+)
+
+fun mediaUploadRecoveryRequestToMap(request: MediaUploadRecoveryRequest): Map<String, Any?> = mapOf(
+    "sourceKind" to request.sourceKind,
+)
+
+fun mediaTransferRequestToMap(request: MediaTransferRequest): Map<String, Any?> = mapOf(
+    "transferId" to request.transferId,
+)
+
+fun mediaUploadRecoveryFromJson(value: Any?): MediaUploadRecovery {
+    val json = mapValue(value)
+    return MediaUploadRecovery(
+        sameSession = requiredBooleanField(json, "sameSession", "MediaUploadRecovery"),
+        afterRestart = requiredBooleanField(json, "afterRestart", "MediaUploadRecovery"),
+        requiresSourceReselection = requiredBooleanField(json, "requiresSourceReselection", "MediaUploadRecovery"),
+    )
+}
+
+fun mediaTransferCancellationFromJson(value: Any?): MediaTransferCancellation {
+    val json = mapValue(value)
+    return MediaTransferCancellation(
+        cancelled = requiredBooleanField(json, "cancelled", "MediaTransferCancellation"),
+    )
+}
+
+fun messageByKeyResponseFromJson(value: Any?) = MessageByKeyResponse(message = mapValue(value)["message"]?.let { messageFromJson(it) })
 
 // RUST-OWNED WIRE BOUNDARY: BEGIN
 /** The FFI wire contract is canonical camelCase SDK JSON. */

@@ -29,8 +29,8 @@ use crate::extension::encryption::{
 };
 use crate::extension::middleware::{EventInterceptor, MessageInterceptor, MiddlewareChain};
 use crate::extension::{
-    ContentCodec, ConversationProjectionSource, ExtensionLifecycle, ExtensionMigration,
-    ExtensionRegistry, ExtensionRuntime, ProfileProvider, SdkExtension,
+    ContentCodec, ConversationProjectionSource, ExtensionDescriptor, ExtensionLifecycle,
+    ExtensionMigration, ExtensionRegistry, ExtensionRuntime, ProfileProvider, SdkExtension,
 };
 use crate::infrastructure::persistence::StoreProvider;
 use crate::infrastructure::protocol::{Codec, ProtobufCodec};
@@ -49,6 +49,7 @@ use crate::spi::metrics::{MetricsRecorder, MetricsSink};
 
 #[derive(Clone, Default)]
 pub(crate) struct IMClientExtensionComponents {
+    extension_descriptors: Vec<ExtensionDescriptor>,
     sync_tasks: Vec<Arc<dyn SyncTask>>,
     sync_domains: Vec<Arc<dyn SyncDomain>>,
     message_interceptors: Vec<Arc<dyn MessageInterceptor>>,
@@ -64,6 +65,9 @@ pub(crate) struct IMClientExtensionComponents {
 
 impl IMClientExtensionComponents {
     pub(crate) fn apply_to_builder(&self, mut builder: IMClientBuilder) -> IMClientBuilder {
+        builder
+            .extension_descriptors
+            .extend(self.extension_descriptors.iter().cloned());
         builder.sync_tasks.extend(self.sync_tasks.iter().cloned());
         builder
             .sync_domains
@@ -146,6 +150,7 @@ pub struct IMClientBuilder {
     runtime: Option<RuntimeComponents>,
     http_request_context: Option<Arc<HttpRequestContext>>,
     codec: Option<Arc<dyn Codec>>,
+    extension_descriptors: Vec<ExtensionDescriptor>,
     sync_tasks: Vec<Arc<dyn SyncTask>>,
     sync_domains: Vec<Arc<dyn SyncDomain>>,
     message_interceptors: Vec<Arc<dyn MessageInterceptor>>,
@@ -178,6 +183,7 @@ impl IMClientBuilder {
             runtime: None,
             http_request_context: None,
             codec: None,
+            extension_descriptors: Vec::new(),
             sync_tasks: Vec::new(),
             sync_domains: Vec::new(),
             message_interceptors: Vec::new(),
@@ -328,11 +334,6 @@ impl IMClientBuilder {
         self
     }
 
-    pub fn add_extension_lifecycle_arc(mut self, lifecycle: Arc<dyn ExtensionLifecycle>) -> Self {
-        self.extension_lifecycles.push(lifecycle);
-        self
-    }
-
     pub fn add_profile_provider_arc(mut self, provider: Arc<dyn ProfileProvider>) -> Self {
         self.profile_providers.push(provider);
         self
@@ -366,11 +367,6 @@ impl IMClientBuilder {
         self
     }
 
-    pub fn add_extension_migration_arc(mut self, migration: Arc<dyn ExtensionMigration>) -> Self {
-        self.extension_migrations.push(migration);
-        self
-    }
-
     /// Inject a host metrics exporter. The exporter is used only when
     /// `SdkConfig.enable_metrics` is true; diagnostics still keep an in-memory
     /// snapshot for platform SDKs.
@@ -384,8 +380,46 @@ impl IMClientBuilder {
     /// 扩展只能注册任务、拦截器和能力插件；核心 IM API 不因业务扩展而变化。
     pub fn add_extension(mut self, extension: impl SdkExtension + 'static) -> Self {
         let mut registry = ExtensionRegistry::default();
-        match extension.install(&mut registry) {
-            Ok(()) => {
+        let installation = ExtensionDescriptor::from_extension(&extension).and_then(|descriptor| {
+            use crate::shared::util::is_under_namespace;
+            let overlaps =
+                |a: &str, b: &str| a == b || is_under_namespace(a, b) || is_under_namespace(b, a);
+            if self
+                .extension_descriptors
+                .iter()
+                .any(|installed| overlaps(&installed.namespace, &descriptor.namespace))
+            {
+                return Err(FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    format!("overlapping extension namespace: {}", descriptor.namespace),
+                ));
+            }
+            extension.install(&mut registry)?;
+            // An extension may only register contributions under its own namespace.
+            let owned = |name: &str| {
+                name == descriptor.namespace || is_under_namespace(name, &descriptor.namespace)
+            };
+            let foreign = registry
+                .content_codecs
+                .iter()
+                .map(|c| c.namespace())
+                .chain(registry.migrations.iter().map(|m| m.namespace()))
+                .chain(registry.lifecycles.iter().map(|l| l.namespace()))
+                .find(|name| !owned(name));
+            if let Some(name) = foreign {
+                return Err(FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    format!(
+                        "extension {} registered outside its namespace: {name}",
+                        descriptor.namespace
+                    ),
+                ));
+            }
+            Ok(descriptor)
+        });
+        match installation {
+            Ok(descriptor) => {
+                self.extension_descriptors.push(descriptor);
                 self.sync_tasks.extend(registry.sync_tasks);
                 self.message_interceptors
                     .extend(registry.message_interceptors);
@@ -420,7 +454,30 @@ impl IMClientBuilder {
         if let Some(err) = self.builder_errors.first().cloned() {
             return Err(err);
         }
+        let mut codecs = std::collections::HashSet::new();
+        for codec in &self.content_codecs {
+            if codec.content_type().trim().is_empty()
+                || !codecs.insert((codec.namespace(), codec.content_type()))
+            {
+                return Err(FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    "duplicate or empty extension codec",
+                ));
+            }
+        }
+        let mut migrations = std::collections::HashSet::new();
+        for migration in &self.extension_migrations {
+            if migration.version() == 0
+                || !migrations.insert((migration.namespace(), migration.version()))
+            {
+                return Err(FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    "duplicate or zero extension migration version",
+                ));
+            }
+        }
         let extension_components = IMClientExtensionComponents {
+            extension_descriptors: self.extension_descriptors.clone(),
             sync_tasks: self.sync_tasks.clone(),
             sync_domains: self.sync_domains.clone(),
             message_interceptors: self.message_interceptors.clone(),
@@ -494,13 +551,16 @@ impl IMClientBuilder {
         );
         let event_deduper = EventDeduper::new(Some(resources.event_dedupe_capacity));
         let message_deduper = MessageDeduper::new(Some(resources.message_dedupe_capacity));
-        let extension_runtime = Arc::new(ExtensionRuntime::new(
-            self.extension_lifecycles,
-            self.profile_providers,
-            self.conversation_projection_sources,
-            self.content_codecs,
-            self.extension_migrations,
-        ));
+        let extension_runtime = Arc::new(
+            ExtensionRuntime::new(
+                self.extension_lifecycles,
+                self.profile_providers,
+                self.conversation_projection_sources,
+                self.content_codecs,
+                self.extension_migrations,
+            )
+            .with_descriptors(self.extension_descriptors),
+        );
         if !extension_runtime.is_empty() {
             tracing::debug!(
                 target = "flare_sdk.extension",
@@ -776,6 +836,7 @@ impl IMClientBuilder {
                 Some(sync_handler.clone()),
                 Some(store_ref.cursors.clone()),
             )
+            .with_message_store(store_ref.messages.clone())
             .with_timeline_coverage(store_ref.timeline_coverage.clone()),
         );
         let conversation_view_assembler = Arc::new(
@@ -865,6 +926,18 @@ mod tests {
 
     struct ReplayLifecycle;
 
+    /// Lifecycles belong to a declared extension, which gives them their grant.
+    struct ReplayExtension;
+    impl crate::spi::SdkExtension for ReplayExtension {
+        fn namespace(&self) -> &str {
+            "test.lifecycle"
+        }
+        fn install(&self, registry: &mut crate::spi::ExtensionRegistry) -> Result<()> {
+            registry.add_lifecycle(Arc::new(ReplayLifecycle));
+            Ok(())
+        }
+    }
+
     #[async_trait::async_trait]
     impl ExtensionLifecycle for ReplayLifecycle {
         fn namespace(&self) -> &str {
@@ -881,7 +954,7 @@ mod tests {
         let parent = IMClientBuilder::new()
             .stores(in_memory_empty_im_provider())
             .add_sync_task_arc(Arc::new(ReplayTask))
-            .add_extension_lifecycle_arc(Arc::new(ReplayLifecycle))
+            .add_extension(ReplayExtension)
             .build()
             .unwrap();
         let components = parent

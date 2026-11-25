@@ -534,6 +534,11 @@ final class _DefaultConversationsApi implements ConversationsApi {
   }
 
   @override
+  Future<Map<String, Object?>> getConversationMember(Map<String, Object?> request) {
+    return _bridge.invoke<Map<String, Object?>>(NativeCallMap.conversationMember, request);
+  }
+
+  @override
   Future<Conversation> getConversation(Map<String, Object?> request) async {
     final raw = await _bridge.invoke<Map<String, Object?>>(
       NativeCallMap.conversationGet,
@@ -905,8 +910,18 @@ final class _DefaultMessagesApi implements MessagesApi {
   }
 
   @override
+  Future<MessageByKeyResponse> getMessageByKey(MessageKey request) async {
+    return messageByKeyResponseFromJson(await _dispatchMap(NativeCallMap.messageGetByKey, messageKeyToMap(request)));
+  }
+
+  @override
   Future<Map<String, Object?>> getRawMessage(Map<String, Object?> request) {
     return _dispatchMap(NativeCallMap.messageGetRaw, request);
+  }
+
+  @override
+  Future<Map<String, Object?>> awaitMessageConfirmation(Map<String, Object?> request) {
+    return _dispatchMap(NativeCallMap.messageAwaitConfirmation, request);
   }
 
   @override
@@ -1067,6 +1082,21 @@ final class _DefaultMediaApi implements MediaApi {
   final NativeBridge _bridge;
 
   @override
+  Future<MediaUploadRecovery> uploadRecovery(MediaUploadRecoveryRequest request) async {
+    return mediaUploadRecoveryFromJson(await _bridge.invoke<Map<String, Object?>>(NativeCallMap.mediaUploadRecovery, mediaUploadRecoveryRequestToMap(request)));
+  }
+
+  @override
+  Future<MediaTransferCancellation> cancelUpload(MediaTransferRequest request) async {
+    return mediaTransferCancellationFromJson(await _bridge.invoke<Map<String, Object?>>(NativeCallMap.mediaCancelUpload, mediaTransferRequestToMap(request)));
+  }
+
+  @override
+  Future<MediaTransferCancellation> cancelTransfer(MediaTransferRequest request) async {
+    return mediaTransferCancellationFromJson(await _bridge.invoke<Map<String, Object?>>(NativeCallMap.mediaCancelTransfer, mediaTransferRequestToMap(request)));
+  }
+
+  @override
   Future<Map<String, Object?>> uploadFile(Map<String, Object?> request) {
     return _bridge.invoke<Map<String, Object?>>(
       NativeCallMap.mediaUploadFile,
@@ -1104,6 +1134,11 @@ final class _DefaultMediaApi implements MediaApi {
       NativeCallMap.mediaDeleteFile,
       request,
     );
+  }
+
+  @override
+  Future<Map<String, Object?>> resolveAttachment(Map<String, Object?> request) {
+    return _bridge.invoke<Map<String, Object?>>(NativeCallMap.mediaResolveAttachment, request);
   }
 
   @override

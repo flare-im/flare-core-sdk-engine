@@ -149,7 +149,11 @@ impl MessageListener for SocketHandler {
                                 "received SendAck (PayloadCommand Ack), dispatching to bus"
                             );
                             let payload = DownlinkPayload::SendAck(send_ack.clone());
-                            if let Err(error) = self.dispatcher.dispatch(payload).await {
+                            if let Err(error) = self
+                                .dispatcher
+                                .dispatch_from_link(payload, self.signals.epoch().lease(self.epoch))
+                                .await
+                            {
                                 warn!(
                                     frame_id = %frame.message_id,
                                     client_msg_id = %send_ack.client_msg_id,
@@ -193,7 +197,11 @@ impl MessageListener for SocketHandler {
                             payload_type = pt,
                             "received push/data/event frame, dispatching to bus"
                         );
-                        if let Err(error) = self.dispatcher.dispatch(downlink).await {
+                        if let Err(error) = self
+                            .dispatcher
+                            .dispatch_from_link(downlink, self.signals.epoch().lease(self.epoch))
+                            .await
+                        {
                             warn!(
                                 frame_id = %frame.message_id,
                                 payload_type = pt,

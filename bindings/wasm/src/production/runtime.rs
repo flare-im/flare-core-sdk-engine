@@ -19,7 +19,7 @@ use super::session::WasmSdkState;
 use super::token_refresh::{WasmTokenRefresher, clear_refresh_callback, set_refresh_callback};
 use crate::tokio_runtime;
 use flare_im_core_sdk_storage_indexeddb::{
-    build_web_store_provider, clear_storage_host, set_storage_host, storage_host_configured,
+    IndexedDbAccountStore, clear_storage_host, set_storage_host, storage_host_configured,
 };
 
 fn js_error(code: &str, operation: &str, error: impl ToString) -> JsValue {
@@ -213,19 +213,11 @@ async fn invoke_impl(
             event_bridge.clear();
             let event_bridge_for_login = event_bridge.clone();
             let runtime_id = state.runtime_id;
-            let (_, config) = client.config_snapshot().await;
-            let tenant_id = config
-                .as_ref()
-                .and_then(|c| c.tenant_id.as_deref())
-                .unwrap_or("0");
-            let store_provider = build_web_store_provider("flare-im-core-sdk", tenant_id, &user_id)
-                .await
-                .map_err(|e| map_sdk_err(operation, e))?;
             let login_result = client
                 .login(
                     &user_id,
                     token,
-                    LoginDbKind::Provided(store_provider),
+                    LoginDbKind::Open(Arc::new(IndexedDbAccountStore)),
                     move |bus, _| {
                         let rx = bus.subscribe_shared_raw();
                         spawn_event_bridge(rx, event_bridge_for_login.clone(), runtime_id);
@@ -254,16 +246,8 @@ async fn invoke_impl(
             let client = state.client();
             let event_bridge = state.event_bridge();
             event_bridge.clear();
-            let (_, config) = client.config_snapshot().await;
-            let tenant_id = config
-                .as_ref()
-                .and_then(|c| c.tenant_id.as_deref())
-                .unwrap_or("0");
-            let store_provider = build_web_store_provider("flare-im-core-sdk", tenant_id, &user_id)
-                .await
-                .map_err(|e| map_sdk_err(operation, e))?;
             client
-                .prepare(&user_id, LoginDbKind::Provided(store_provider))
+                .prepare(&user_id, LoginDbKind::Open(Arc::new(IndexedDbAccountStore)))
                 .await
                 .map_err(|e| map_sdk_err(operation, e))?;
             // 预热后立即订阅事件总线 → 转发 JS（等价 login 闭包在 connect 前所做）。

@@ -47,6 +47,7 @@ const MAX_FETCHES_PER_PAGE: usize = 3;
 
 #[derive(Clone)]
 pub struct ViewApi {
+    session_guard: super::session_guard::SessionGuard,
     inner: Arc<ViewApiInner>,
 }
 
@@ -221,6 +222,11 @@ impl PageRead {
 }
 
 impl ViewApi {
+    pub(crate) fn for_session(mut self, watch: crate::client::im_client::SessionEndWatch) -> Self {
+        self.session_guard.bind(watch);
+        self
+    }
+
     pub fn new(
         conversation_api: ConversationApi,
         session_sync: Option<Arc<dyn SessionSyncRunner>>,
@@ -228,6 +234,7 @@ impl ViewApi {
         attention: AttentionRegistry,
     ) -> Self {
         let api = Self {
+            session_guard: super::session_guard::SessionGuard::disabled("view"),
             inner: Arc::new(ViewApiInner {
                 conversation_api,
                 session_sync,
@@ -249,6 +256,15 @@ impl ViewApi {
     /// 打开时间线视图。不带 `anchor` 时是最新窗口；带 `anchor` 时围绕目标消息打开
     /// （目标之前、之后各取半页），快照的 `anchorKey` 是目标行的行键。
     pub async fn open_timeline(
+        &self,
+        request: OpenTimelineViewRequest,
+    ) -> Result<ViewOpenResponse> {
+        self.session_guard
+            .run(self.open_timeline_inner(request))
+            .await
+    }
+
+    async fn open_timeline_inner(
         &self,
         request: OpenTimelineViewRequest,
     ) -> Result<ViewOpenResponse> {
@@ -415,10 +431,14 @@ impl ViewApi {
         }
         let conversation_id = conversation_id.to_string();
         let inner = Arc::downgrade(&self.inner);
+        let session_guard = self.session_guard.clone();
         spawn_background(async move {
             if repair_first && let Some(inner) = inner.upgrade() {
                 // Local outbox rows already paint. Fill the missing history off the open path.
-                let api = Self { inner };
+                let api = Self {
+                    inner,
+                    session_guard: session_guard.clone(),
+                };
                 api.repair_empty_foreground_windows(&conversation_id).await;
             }
             if let Err(error) = session_sync.request_message_sync(&conversation_id).await {
@@ -434,6 +454,7 @@ impl ViewApi {
                 // closes that opening race without relying on another message arriving.
                 let api = Self {
                     inner: inner.clone(),
+                    session_guard,
                 };
                 if !repair_first {
                     api.repair_empty_foreground_windows(&conversation_id).await;
@@ -683,6 +704,15 @@ impl ViewApi {
         &self,
         request: LoadOlderTimelineViewRequest,
     ) -> Result<TimelineViewPageResponse> {
+        self.session_guard
+            .run(self.load_older_timeline_inner(request))
+            .await
+    }
+
+    async fn load_older_timeline_inner(
+        &self,
+        request: LoadOlderTimelineViewRequest,
+    ) -> Result<TimelineViewPageResponse> {
         let view_id = required_view_id(&request.view_id)?;
         let page_limit = normalized_message_limit(request.message_limit) as usize;
         // view 已关闭（用户切走会话 / silent_refresh 替换了 view）是无害竞态：
@@ -902,6 +932,15 @@ impl ViewApi {
         &self,
         request: LoadNewerTimelineViewRequest,
     ) -> Result<TimelineViewPageResponse> {
+        self.session_guard
+            .run(self.load_newer_timeline_inner(request))
+            .await
+    }
+
+    async fn load_newer_timeline_inner(
+        &self,
+        request: LoadNewerTimelineViewRequest,
+    ) -> Result<TimelineViewPageResponse> {
         let view_id = required_view_id(&request.view_id)?;
         let page_limit = normalized_message_limit(request.message_limit) as usize;
         let Some((conversation_id, newest_seq, attached, revision, page_size)) = self
@@ -1058,6 +1097,15 @@ impl ViewApi {
         &self,
         request: TimelineViewRequest,
     ) -> Result<TimelineViewPageResponse> {
+        self.session_guard
+            .run(self.jump_to_latest_timeline_inner(request))
+            .await
+    }
+
+    async fn jump_to_latest_timeline_inner(
+        &self,
+        request: TimelineViewRequest,
+    ) -> Result<TimelineViewPageResponse> {
         let view_id = required_view_id(&request.view_id)?;
         let Some((conversation_id, page_size)) = self
             .with_timeline(&view_id, |view| {
@@ -1100,6 +1148,15 @@ impl ViewApi {
         &self,
         request: TimelineViewRequest,
     ) -> Result<ViewOpenResponse> {
+        self.session_guard
+            .run(self.timeline_snapshot_inner(request))
+            .await
+    }
+
+    async fn timeline_snapshot_inner(
+        &self,
+        request: TimelineViewRequest,
+    ) -> Result<ViewOpenResponse> {
         let view_id = required_view_id(&request.view_id)?;
         self.with_timeline(&view_id, |view| ViewOpenResponse {
             view_id: view_id.clone(),
@@ -1111,6 +1168,15 @@ impl ViewApi {
     }
 
     pub async fn open_conversation_list(
+        &self,
+        request: OpenConversationListViewRequest,
+    ) -> Result<ViewOpenResponse> {
+        self.session_guard
+            .run(self.open_conversation_list_inner(request))
+            .await
+    }
+
+    async fn open_conversation_list_inner(
         &self,
         request: OpenConversationListViewRequest,
     ) -> Result<ViewOpenResponse> {
@@ -1136,6 +1202,10 @@ impl ViewApi {
     }
 
     pub async fn close(&self, request: CloseViewRequest) -> Result<CloseViewResponse> {
+        self.session_guard.run(self.close_inner(request)).await
+    }
+
+    async fn close_inner(&self, request: CloseViewRequest) -> Result<CloseViewResponse> {
         let view_id = request.view_id.trim();
         if view_id.is_empty() {
             return Ok(CloseViewResponse { closed: false });
@@ -1239,8 +1309,18 @@ impl ViewApi {
                 let Some(inner) = inner.upgrade() else {
                     break;
                 };
-                let api = ViewApi { inner };
-                api.refresh_open_views(plan).await;
+                let api = ViewApi {
+                    inner,
+                    session_guard: super::session_guard::SessionGuard::disabled("view worker"),
+                };
+                if bus
+                    .lifetime()
+                    .until_retired(api.refresh_open_views(plan))
+                    .await
+                    .is_none()
+                {
+                    break;
+                }
                 if closed {
                     break;
                 }

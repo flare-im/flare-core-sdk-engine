@@ -187,54 +187,6 @@ func networkChangeRequestToMap(_ request: NetworkChangeRequest) -> [String: AnyS
     if let fingerprintHint = request.fingerprintHint { map["fingerprintHint"] = wrapSendable(fingerprintHint) }
     return map
 }
-func updateCheckRequestToMap(_ request: UpdateCheckRequest) -> [String: AnySendable] {
-    [
-        "manual": wrapSendable(request.manual),
-    ]
-}
-func updateGetStateRequestToMap(_ request: UpdateGetStateRequest) -> [String: AnySendable] {
-    var map: [String: AnySendable] = [:]
-    if let foreground = request.foreground {
-        map["foreground"] = wrapSendable(foreground)
-    }
-    return map
-}
-func updateSetLocaleRequestToMap(_ request: UpdateSetLocaleRequest) -> [String: AnySendable] {
-    [
-        "locale": wrapSendable(request.locale),
-    ]
-}
-func updateGetResourcesRequestToMap(_ request: UpdateGetResourcesRequest) -> [String: AnySendable] {
-    [:]
-}
-func updateDownloadRequestToMap(_ request: UpdateDownloadRequest) -> [String: AnySendable] {
-    [
-        "allowMetered": wrapSendable(request.allowMetered),
-    ]
-}
-func updateReportInstallRequestToMap(_ request: UpdateReportInstallRequest) -> [String: AnySendable] {
-    var map: [String: AnySendable] = [
-        "outcome": wrapSendable(request.outcome),
-    ]
-    if let code = request.code {
-        map["code"] = wrapSendable(code)
-    }
-    return map
-}
-func updateSkipRequestToMap(_ request: UpdateSkipRequest) -> [String: AnySendable] {
-    [
-        "build": wrapSendable(request.build),
-    ]
-}
-func updateMarkPromptedRequestToMap(_ request: UpdateMarkPromptedRequest) -> [String: AnySendable] {
-    var map: [String: AnySendable] = [
-        "form": wrapSendable(request.form),
-    ]
-    if let build = request.build {
-        map["build"] = wrapSendable(build)
-    }
-    return map
-}
 func updateConversationDraftRequestToMap(_ request: UpdateConversationDraftRequest) -> [String: AnySendable] {
     [
         "conversationId": wrapSendable(request.conversationId),
@@ -2218,27 +2170,6 @@ public func conversationFromJson(_ json: [String: Any]) throws -> Conversation {
 
 // MARK: - Plugin host profile, plugin upgrades and host capabilities
 
-func updatePluginUpgradeStatusRequestToMap(_ request: UpdatePluginUpgradeStatusRequest) -> [String: AnySendable] {
-    var map: [String: AnySendable] = [:]
-    if let minBuild = request.minBuild {
-        map["minBuild"] = wrapSendable(minBuild)
-    }
-    return map
-}
-
-func updateOpenFlowRequestToMap(_ request: UpdateOpenFlowRequest) -> [String: AnySendable] {
-    [:]
-}
-
-func pluginUpgradeStatusFromJson(_ value: [String: AnySendable]) throws -> PluginUpgradeStatus {
-    let json = plainMap(value)
-    let context = "PluginUpgradeStatus"
-    return PluginUpgradeStatus(
-        available: try requiredBoolField(json, "available", context),
-        build: try optionalUInt64Field(json, "build", context)
-    )
-}
-
 func pluginHostProfileToMap(_ request: PluginHostProfile) -> [String: AnySendable] {
     var map: [String: AnySendable] = [
         "platform": wrapSendable(request.platform),
@@ -2259,4 +2190,37 @@ func pluginCapabilityCompletionToMap(_ request: PluginCapabilityCompletion) -> [
         map["result"] = wrapSendable(result)
     }
     return map
+}
+
+func messageKeyToMap(_ request: MessageKey) -> [String: AnySendable] {
+    ["conversationId": wrapSendable(request.conversationId), "senderId": wrapSendable(request.senderId), "clientMsgId": wrapSendable(request.clientMsgId)]
+}
+
+func mediaUploadRecoveryRequestToMap(_ request: MediaUploadRecoveryRequest) -> [String: AnySendable] {
+    ["sourceKind": wrapSendable(request.sourceKind)]
+}
+
+func mediaTransferRequestToMap(_ request: MediaTransferRequest) -> [String: AnySendable] {
+    ["transferId": wrapSendable(request.transferId)]
+}
+
+func mediaUploadRecoveryFromJson(_ value: [String: AnySendable]) throws -> MediaUploadRecovery {
+    let json = plainMap(value)
+    return MediaUploadRecovery(
+        sameSession: try requiredBoolField(json, "sameSession", "MediaUploadRecovery"),
+        afterRestart: try requiredBoolField(json, "afterRestart", "MediaUploadRecovery"),
+        requiresSourceReselection: try requiredBoolField(json, "requiresSourceReselection", "MediaUploadRecovery")
+    )
+}
+
+func mediaTransferCancellationFromJson(_ value: [String: AnySendable]) throws -> MediaTransferCancellation {
+    let json = plainMap(value)
+    return MediaTransferCancellation(
+        cancelled: try requiredBoolField(json, "cancelled", "MediaTransferCancellation")
+    )
+}
+
+func messageByKeyResponseFromJson(_ value: [String: AnySendable]) throws -> MessageByKeyResponse {
+    guard let raw = plainMap(value)["message"], !(raw is NSNull) else { return MessageByKeyResponse(message: nil) }
+    return MessageByKeyResponse(message: try messageFromJson(raw))
 }

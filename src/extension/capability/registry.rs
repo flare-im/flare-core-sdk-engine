@@ -11,60 +11,77 @@ use crate::extension::capability::{SdkCapabilityPlugin, SdkPluginManifest};
 use crate::kernel::CurrentUserIdStore;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
-#[derive(Debug, Clone)]
-struct PluginRuntimeState {
+struct RegisteredPlugin {
+    plugin: Arc<dyn SdkCapabilityPlugin>,
     manifest: SdkPluginManifest,
-    enabled: bool,
+    revoked: tokio::sync::watch::Sender<bool>,
 }
 
+#[derive(Default)]
+struct Catalog {
+    plugins: HashMap<String, RegisteredPlugin>,
+    namespaces: HashMap<String, String>,
+}
+
+impl Catalog {
+    fn owner(&self, capability: &str) -> Option<&str> {
+        self.namespaces
+            .iter()
+            .find(|(ns, _)| {
+                capability == ns.as_str() || crate::shared::util::is_under_namespace(capability, ns)
+            })
+            .map(|(_, id)| id.as_str())
+    }
+}
+
+#[derive(Clone)]
 pub struct SdkCapabilityRegistry {
     session_guard: SessionGuard,
-    plugins: RwLock<HashMap<String, Arc<dyn SdkCapabilityPlugin>>>,
-    namespace_index: RwLock<HashMap<String, String>>,
-    plugin_states: RwLock<HashMap<String, PluginRuntimeState>>,
+    catalog: Arc<RwLock<Catalog>>,
 }
 
 impl SdkCapabilityRegistry {
     pub fn new() -> Self {
         Self {
             session_guard: SessionGuard::disabled("capability registry"),
-            plugins: RwLock::new(HashMap::new()),
-            namespace_index: RwLock::new(HashMap::new()),
-            plugin_states: RwLock::new(HashMap::new()),
+            catalog: Default::default(),
         }
     }
-
     pub(crate) fn new_session_bound(current_user_id: CurrentUserIdStore) -> Self {
         Self {
             session_guard: SessionGuard::new(current_user_id, "capability registry"),
-            plugins: RwLock::new(HashMap::new()),
-            namespace_index: RwLock::new(HashMap::new()),
-            plugin_states: RwLock::new(HashMap::new()),
+            ..Self::new()
         }
+    }
+    pub(crate) fn for_session(mut self, watch: crate::client::im_client::SessionEndWatch) -> Self {
+        self.session_guard.bind(watch);
+        self
+    }
+    fn writable(&self) -> Result<std::sync::RwLockWriteGuard<'_, Catalog>> {
+        let catalog = self.catalog.write().map_err(|_| registry_lock_failed())?;
+        if self.session_guard.retired() {
+            return Err(self.session_guard.session_changed_error());
+        }
+        Ok(catalog)
     }
 
     pub fn register(&self, plugin: Arc<dyn SdkCapabilityPlugin>) -> Result<()> {
-        let plugin_id = plugin.plugin_id().to_string();
+        let plugin_id = plugin.plugin_id().to_owned();
         let namespaces = plugin_namespaces(plugin.as_ref());
         let manifest = plugin.manifest();
         manifest.validate(&plugin_id, &namespaces)?;
-
-        let mut plugins = self.plugins.write().map_err(|_| registry_lock_failed())?;
-        if plugins.contains_key(&plugin_id) {
+        let mut catalog = self.writable()?;
+        if catalog.plugins.contains_key(&plugin_id) {
             return Err(FlareError::localized(
                 ErrorCode::OperationNotSupported,
                 format!("sdk.capability.plugin_already_registered:{plugin_id}"),
             ));
         }
-        let mut index = self
-            .namespace_index
-            .write()
-            .map_err(|_| registry_lock_failed())?;
         for ns in &namespaces {
-            if index.keys().any(|existing| {
-                existing == ns
-                    || crate::shared::util::is_under_namespace(existing, ns)
-                    || crate::shared::util::is_under_namespace(ns, existing)
+            if catalog.namespaces.keys().any(|key| {
+                key == ns
+                    || crate::shared::util::is_under_namespace(key, ns)
+                    || crate::shared::util::is_under_namespace(ns, key)
             }) {
                 return Err(FlareError::localized(
                     ErrorCode::OperationNotSupported,
@@ -72,100 +89,78 @@ impl SdkCapabilityRegistry {
                 ));
             }
         }
-        let mut states = self
-            .plugin_states
-            .write()
-            .map_err(|_| registry_lock_failed())?;
-
-        for ns in &namespaces {
-            index.insert(ns.clone(), plugin_id.clone());
+        for ns in namespaces {
+            catalog.namespaces.insert(ns, plugin_id.clone());
         }
-        plugins.insert(plugin_id.clone(), plugin);
-        states.insert(
+        catalog.plugins.insert(
             plugin_id,
-            PluginRuntimeState {
+            RegisteredPlugin {
+                plugin,
                 manifest,
-                enabled: true,
+                revoked: tokio::sync::watch::channel(false).0,
             },
         );
         Ok(())
     }
-
     pub fn unregister(&self, plugin_id: &str) -> Result<()> {
-        let mut plugins = self.plugins.write().map_err(|_| registry_lock_failed())?;
-        if plugins.remove(plugin_id).is_none() {
-            return Ok(());
-        }
-        let mut index = self
-            .namespace_index
-            .write()
-            .map_err(|_| registry_lock_failed())?;
-        index.retain(|_, v| v != plugin_id);
-        if let Ok(mut states) = self.plugin_states.write() {
-            states.remove(plugin_id);
+        let mut catalog = self.writable()?;
+        if let Some(entry) = catalog.plugins.remove(plugin_id) {
+            entry.revoked.send_replace(true);
+            catalog.namespaces.retain(|_, owner| owner != plugin_id);
         }
         Ok(())
     }
-
     pub fn enable(&self, plugin_id: &str) -> Result<()> {
         self.set_enabled(plugin_id, true)
     }
-
     pub fn disable(&self, plugin_id: &str) -> Result<()> {
         self.set_enabled(plugin_id, false)
     }
-
     pub fn is_enabled(&self, plugin_id: &str) -> bool {
-        self.plugin_states
+        self.catalog
             .read()
             .ok()
-            .and_then(|states| states.get(plugin_id).map(|state| state.enabled))
+            .and_then(|c| c.plugins.get(plugin_id).map(|e| !*e.revoked.borrow()))
             .unwrap_or(false)
     }
-
     pub fn manifest(&self, plugin_id: &str) -> Option<SdkPluginManifest> {
-        self.plugin_states
+        self.catalog
             .read()
-            .ok()
-            .and_then(|states| states.get(plugin_id).map(|state| state.manifest.clone()))
+            .ok()?
+            .plugins
+            .get(plugin_id)
+            .map(|entry| entry.manifest.clone())
     }
-
     pub fn list_manifests(&self) -> Vec<SdkPluginManifest> {
-        self.plugin_states
+        self.catalog
             .read()
-            .map(|states| {
-                states
+            .map(|catalog| {
+                catalog
+                    .plugins
                     .values()
-                    .map(|state| state.manifest.clone())
+                    .map(|e| e.manifest.clone())
                     .collect()
             })
             .unwrap_or_default()
     }
-
     pub fn get_plugin(&self, plugin_id: &str) -> Option<Arc<dyn SdkCapabilityPlugin>> {
-        self.plugins
+        self.catalog
             .read()
-            .ok()
-            .and_then(|plugins| plugins.get(plugin_id).cloned())
+            .ok()?
+            .plugins
+            .get(plugin_id)
+            .map(|entry| entry.plugin.clone())
     }
-
     pub fn resolve_by_capability(
         &self,
         capability_id: &str,
     ) -> Option<Arc<dyn SdkCapabilityPlugin>> {
-        let plugin_id = self.namespace_index.read().ok().and_then(|index| {
-            index
-                .iter()
-                .find(|(ns, _)| {
-                    capability_id == ns.as_str()
-                        || crate::shared::util::is_under_namespace(capability_id, ns)
-                })
-                .map(|(_, id)| id.clone())
-        })?;
-        self.get_plugin(plugin_id.as_str())
+        let catalog = self.catalog.read().ok()?;
+        catalog
+            .plugins
+            .get(catalog.owner(capability_id)?)
+            .map(|entry| entry.plugin.clone())
     }
-
-    /// 按完整命名空间解析插件并 `invoke`（推荐宿主调用扩展能力的主入口）。
     pub async fn invoke(
         &self,
         capability_id: &str,
@@ -173,68 +168,84 @@ impl SdkCapabilityRegistry {
         conversation_id: Option<&str>,
         tenant_id: Option<&str>,
     ) -> Result<CapabilityDispatchResult> {
-        self.session_guard.ensure_active().await?;
-        let Some(plugin) = self.resolve_by_capability(capability_id) else {
-            return Err(FlareError::localized(
-                ErrorCode::OperationNotSupported,
-                format!("sdk.capability.no_plugin_for:{capability_id}"),
-            ));
-        };
-        self.ensure_plugin_can_invoke(plugin.plugin_id(), capability_id)?;
-        plugin
-            .invoke(capability_id, payload, conversation_id, tenant_id)
+        self.session_guard
+            .run(async {
+                let (plugin, mut revoked) = {
+                    let catalog = self.catalog.read().map_err(|_| registry_lock_failed())?;
+                    let owner = catalog.owner(capability_id).ok_or_else(|| {
+                        FlareError::localized(
+                            ErrorCode::OperationNotSupported,
+                            format!("sdk.capability.no_plugin_for:{capability_id}"),
+                        )
+                    })?;
+                    let entry = catalog
+                        .plugins
+                        .get(owner)
+                        .ok_or_else(registry_lock_failed)?;
+                    if *entry.revoked.borrow() {
+                        return Err(disabled(owner));
+                    }
+                    if !entry.manifest.owns_capability(capability_id) {
+                        return Err(FlareError::localized(
+                            ErrorCode::OperationNotSupported,
+                            format!("sdk.capability.operation_not_declared:{capability_id}"),
+                        ));
+                    }
+                    (entry.plugin.clone(), entry.revoked.subscribe())
+                };
+                use futures::FutureExt;
+                let work = std::panic::AssertUnwindSafe(plugin.invoke(
+                    capability_id,
+                    payload,
+                    conversation_id,
+                    tenant_id,
+                ))
+                .catch_unwind();
+                let outcome = tokio::select! {
+                    biased;
+                    _ = revoked.wait_for(|v| *v) => None,
+                    result = work => Some(result),
+                };
+                match outcome {
+                    Some(result) if !*revoked.borrow() => result.map_err(|_| {
+                        FlareError::localized(
+                            ErrorCode::InternalError,
+                            "capability plugin panicked",
+                        )
+                    })?,
+                    _ => Err(disabled(plugin.plugin_id())),
+                }
+            })
             .await
     }
-
     pub fn list_plugin_ids(&self) -> Vec<String> {
-        self.plugins
+        self.catalog
             .read()
-            .map(|plugins| plugins.keys().cloned().collect())
+            .map(|c| c.plugins.keys().cloned().collect())
             .unwrap_or_default()
     }
-
     fn set_enabled(&self, plugin_id: &str, enabled: bool) -> Result<()> {
-        let mut states = self
-            .plugin_states
-            .write()
-            .map_err(|_| registry_lock_failed())?;
-        let Some(state) = states.get_mut(plugin_id) else {
-            return Err(FlareError::localized(
+        let mut catalog = self.writable()?;
+        let entry = catalog.plugins.get_mut(plugin_id).ok_or_else(|| {
+            FlareError::localized(
                 ErrorCode::OperationNotSupported,
                 format!("sdk.capability.plugin_not_registered:{plugin_id}"),
-            ));
-        };
-        state.enabled = enabled;
+            )
+        })?;
+        if enabled && *entry.revoked.borrow() {
+            entry.revoked = tokio::sync::watch::channel(false).0;
+        } else if !enabled {
+            entry.revoked.send_replace(true);
+        }
         Ok(())
     }
+}
 
-    fn ensure_plugin_can_invoke(&self, plugin_id: &str, capability_id: &str) -> Result<()> {
-        let state = self
-            .plugin_states
-            .read()
-            .map_err(|_| registry_lock_failed())?
-            .get(plugin_id)
-            .cloned()
-            .ok_or_else(|| {
-                FlareError::localized(
-                    ErrorCode::OperationNotSupported,
-                    format!("sdk.capability.plugin_not_registered:{plugin_id}"),
-                )
-            })?;
-        if !state.enabled {
-            return Err(FlareError::localized(
-                ErrorCode::OperationNotSupported,
-                format!("sdk.capability.plugin_disabled:{plugin_id}"),
-            ));
-        }
-        if !state.manifest.owns_capability(capability_id) {
-            return Err(FlareError::localized(
-                ErrorCode::OperationNotSupported,
-                format!("sdk.capability.operation_not_declared:{capability_id}"),
-            ));
-        }
-        Ok(())
-    }
+fn disabled(plugin_id: &str) -> FlareError {
+    FlareError::localized(
+        ErrorCode::OperationNotSupported,
+        format!("sdk.capability.plugin_disabled:{plugin_id}"),
+    )
 }
 
 impl Default for SdkCapabilityRegistry {

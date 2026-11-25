@@ -155,34 +155,6 @@ Map<String, Object?> completeConnectTokenRefreshRequestToMap(
   };
 }
 
-Map<String, Object?> updateCheckRequestToMap(UpdateCheckRequest request) {
-  return {'manual': request.manual};
-}
-
-Map<String, Object?> updateGetStateRequestToMap(
-  UpdateGetStateRequest request,
-) {
-  return {
-    if (request.foreground != null) 'foreground': request.foreground,
-  };
-}
-
-Map<String, Object?> updateSetLocaleRequestToMap(
-  UpdateSetLocaleRequest request,
-) {
-  return {'locale': request.locale};
-}
-
-Map<String, Object?> updatePluginUpgradeStatusRequestToMap(
-  UpdatePluginUpgradeStatusRequest request,
-) {
-  return {if (request.minBuild != null) 'minBuild': request.minBuild};
-}
-
-Map<String, Object?> updateOpenFlowRequestToMap(UpdateOpenFlowRequest request) {
-  return {};
-}
-
 Map<String, Object?> pluginHostProfileToMap(PluginHostProfile request) {
   return {
     'platform': request.platform,
@@ -193,55 +165,12 @@ Map<String, Object?> pluginHostProfileToMap(PluginHostProfile request) {
   };
 }
 
-PluginUpgradeStatus pluginUpgradeStatusFromJson(Object? value) {
-  const context = 'PluginUpgradeStatus';
-  final json = mapValue(value);
-  return PluginUpgradeStatus(
-    available: _requiredBoolField(json, 'available', context),
-    build: _optionalUnsignedField(json, 'build', context),
-  );
-}
-
 Map<String, Object?> pluginCapabilityCompletionToMap(
   PluginCapabilityCompletion request,
 ) {
   return {
     'requestId': request.requestId,
     if (request.result != null) 'result': request.result,
-  };
-}
-
-Map<String, Object?> updateGetResourcesRequestToMap(
-  UpdateGetResourcesRequest request,
-) {
-  return {};
-}
-
-Map<String, Object?> updateDownloadRequestToMap(
-  UpdateDownloadRequest request,
-) {
-  return {'allowMetered': request.allowMetered};
-}
-
-Map<String, Object?> updateReportInstallRequestToMap(
-  UpdateReportInstallRequest request,
-) {
-  return {
-    'outcome': request.outcome,
-    if (request.code != null) 'code': request.code,
-  };
-}
-
-Map<String, Object?> updateSkipRequestToMap(UpdateSkipRequest request) {
-  return {'build': request.build};
-}
-
-Map<String, Object?> updateMarkPromptedRequestToMap(
-  UpdateMarkPromptedRequest request,
-) {
-  return {
-    'form': request.form,
-    if (request.build != null) 'build': request.build,
   };
 }
 
@@ -490,17 +419,6 @@ int? _optionalSignedField(
 ) {
   if (json[key] == null) return null;
   return _requiredSignedField(json, key, context);
-}
-
-double? _optionalDoubleField(
-  Map<String, Object?> json,
-  String key,
-  String context,
-) {
-  final value = json[key];
-  if (value == null) return null;
-  if (value is num && value.isFinite) return value.toDouble();
-  throw ArgumentError.value(json, context, '$context.$key must be a number');
 }
 
 ServerClockResponse serverClockResponseFromJson(Object? value) {
@@ -1698,6 +1616,34 @@ Map<String, List<int>> bytesMap(Object? value) {
         : const <int>[];
     return MapEntry(key.toString(), bytes);
   });
+}
+
+
+Map<String, Object?> messageKeyToMap(MessageKey request) => {'conversationId': request.conversationId, 'senderId': request.senderId, 'clientMsgId': request.clientMsgId};
+
+Map<String, Object?> mediaUploadRecoveryRequestToMap(MediaUploadRecoveryRequest request) => {'sourceKind': request.sourceKind};
+
+Map<String, Object?> mediaTransferRequestToMap(MediaTransferRequest request) => {'transferId': request.transferId};
+
+MediaUploadRecovery mediaUploadRecoveryFromJson(Object? value) {
+  final json = mapValue(value);
+  return MediaUploadRecovery(
+    sameSession: _requiredBoolField(json, 'sameSession', 'MediaUploadRecovery'),
+    afterRestart: _requiredBoolField(json, 'afterRestart', 'MediaUploadRecovery'),
+    requiresSourceReselection: _requiredBoolField(json, 'requiresSourceReselection', 'MediaUploadRecovery'),
+  );
+}
+
+MediaTransferCancellation mediaTransferCancellationFromJson(Object? value) {
+  final json = mapValue(value);
+  return MediaTransferCancellation(
+    cancelled: _requiredBoolField(json, 'cancelled', 'MediaTransferCancellation'),
+  );
+}
+
+MessageByKeyResponse messageByKeyResponseFromJson(Object? value) {
+  final message = mapValue(value)['message'];
+  return MessageByKeyResponse(message: message == null ? null : messageFromJson(message));
 }
 
 // RUST-OWNED WIRE BOUNDARY: BEGIN

@@ -550,9 +550,7 @@ impl SyncProtocolAdapter {
 
     /// 已读位点批量上报（登录前强推与后台 read_states 任务共用；**恒 delta**，I4）：
     /// 只上报"本地已读位点 > 上次已上报位点"的会话，O(会话数)→O(前进数)。
-    /// 位点在 `send?` 成功后才记录（失败下轮重推）；live 读路径不记录位点，周期任务必然重推。
-    /// 残余丢失窗口=ack 写入濒死 socket 且服务端未收：影响仅为他端未读徽标暂滞，下次阅读自愈——
-    /// 换来重连/热启不再每次全量 O(N) ack 风暴（历史教训：ACK 116s）。
+    /// 普通位点按已发送水位去重。显式离线已读一直重发，直到权威读位确认。
     pub async fn push_local_read_states(
         &self,
         conversations: &[crate::model::Conversation],
@@ -573,7 +571,9 @@ impl SyncProtocolAdapter {
         let mut ack_count = 0usize;
         let mut skipped = 0usize;
         for (conversation, ack_key) in conversations.iter().zip(&ack_keys) {
-            let Some(read_seq) = ReadPosition::from_conversation(conversation).ack_read_seq()
+            let pending = crate::domain::pending_read_seq(conversation);
+            let Some(read_seq) =
+                pending.or_else(|| ReadPosition::from_conversation(conversation).ack_read_seq())
             else {
                 continue;
             };
@@ -583,7 +583,7 @@ impl SyncProtocolAdapter {
                 .map(|last| read_seq > last)
                 // 未知/解析失败视为前进 → 上报（保守）。
                 .unwrap_or(true);
-            if !advanced {
+            if pending.is_none() && !advanced {
                 skipped = skipped.saturating_add(1);
                 continue;
             }

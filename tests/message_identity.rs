@@ -64,7 +64,7 @@ async fn public_message_reads_prefer_canonical_ids_and_reject_ambiguous_aliases(
             .await
             .unwrap();
         client
-            .prepare("me", LoginDbKind::Provided(store))
+            .prepare("me", LoginDbKind::provided(store))
             .await
             .unwrap();
         let stores = client.stores_async().await.unwrap();

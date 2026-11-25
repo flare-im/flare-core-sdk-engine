@@ -596,12 +596,11 @@ async fn handle_command(st: &mut QueueState, cmd: QueueCommand) -> Result<()> {
             if active_conversation.is_some_and(|cid| !ack_matches_conversation(&ack, cid)) {
                 return Ok(());
             }
-            if let Some((message, _)) = st.pending_commits.get(&ack.client_msg_id) {
-                if !message.local_state.failed
-                    || MessageDeliveryService::durable_accepted_from_ack(&ack).is_none()
-                {
-                    return Ok(());
-                }
+            if let Some((message, _)) = st.pending_commits.get(&ack.client_msg_id)
+                && (!message.local_state.failed
+                    || MessageDeliveryService::durable_accepted_from_ack(&ack).is_none())
+            {
+                return Ok(());
             }
             if let Some(in_flight) = st.in_flight.remove(&ack.client_msg_id) {
                 match apply_ack_and_publish(st, &in_flight.entry, ack).await {
@@ -1627,6 +1626,9 @@ async fn persist_terminal(
             st.pending_commits.remove(&client_id);
             st.retry_count.remove(&client_id);
             if applied {
+                if !message.server_id.is_empty() {
+                    st.bus.notify_committed(std::slice::from_ref(&message));
+                }
                 for event in events {
                     st.bus.publish(event);
                 }
@@ -1809,6 +1811,7 @@ async fn apply_orphan_durable_ack(st: &mut QueueState, ack: &SendAck) -> Result<
         );
         return Err(error);
     }
+    st.bus.notify_committed(std::slice::from_ref(&msg));
     Ok(true)
 }
 

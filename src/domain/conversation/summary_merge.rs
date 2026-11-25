@@ -46,6 +46,8 @@ pub fn merge_incoming_conversation_summary(
     incoming: &Conversation,
 ) -> Conversation {
     let mut merged = incoming.clone();
+    // Only a local read command creates intent. Server summaries cannot inject it.
+    super::set_read_intent(&mut merged, local.and_then(super::pending_read_seq));
     let merged_read = ReadPosition::merge_with_incoming_summary(
         local
             .map(ReadPosition::from_conversation)
@@ -208,6 +210,44 @@ mod tests {
     };
     use crate::model::Conversation;
     use crate::model::conversation::ConversationType;
+
+    #[test]
+    fn stale_summary_preserves_offline_intent_and_wire_summary_excludes_it() {
+        let mut local = Conversation {
+            max_seq: 4,
+            last_read_seq: 2,
+            unread_count: 1,
+            ..Default::default()
+        };
+        crate::domain::set_read_intent(&mut local, Some(2));
+        let mut remote = Conversation {
+            max_seq: 3,
+            last_read_seq: 1,
+            unread_count: 2,
+            ..Default::default()
+        };
+        crate::domain::set_read_intent(&mut remote, Some(99));
+        let restored = merge_incoming_conversation_summary(Some(&local), &remote);
+        assert_eq!(
+            (
+                restored.last_read_seq,
+                restored.unread_count,
+                crate::domain::pending_read_seq(&restored)
+            ),
+            (2, 1, Some(2))
+        );
+        assert!(
+            restored
+                .to_proto_summary()
+                .attributes
+                .keys()
+                .all(|name| !name.starts_with("_local."))
+        );
+        assert_eq!(
+            crate::domain::pending_read_seq(&merge_incoming_conversation_summary(None, &remote)),
+            None
+        );
+    }
 
     #[test]
     fn partial_summary_preserves_classification_and_newer_membership() {

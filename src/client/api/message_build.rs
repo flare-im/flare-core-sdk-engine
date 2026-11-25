@@ -94,8 +94,9 @@ impl ForwardableCards for super::CapabilityApi {
 }
 
 /// 多类型消息的构建入口（不负责发送）。
+#[derive(Clone)]
 pub struct MessageBuildApi {
-    current_user_id: CurrentUserIdStore,
+    session_guard: super::session_guard::SessionGuard,
     conversations: Arc<dyn ConversationStore>,
     /// 身份缓存：转发记录给源消息的发送者补名字。
     profiles: Arc<dyn UserReader>,
@@ -104,13 +105,21 @@ pub struct MessageBuildApi {
 }
 
 impl MessageBuildApi {
+    pub(crate) fn for_session(mut self, watch: crate::client::im_client::SessionEndWatch) -> Self {
+        self.session_guard.bind(watch);
+        self
+    }
+
     pub fn new(
         current_user_id: CurrentUserIdStore,
         conversations: Arc<dyn ConversationStore>,
         profiles: Arc<dyn UserReader>,
     ) -> Self {
         Self {
-            current_user_id,
+            session_guard: super::session_guard::SessionGuard::new(
+                current_user_id,
+                "message builder",
+            ),
             conversations,
             profiles,
             plugin_cards: None,
@@ -198,25 +207,30 @@ impl MessageBuildApi {
     }
 
     async fn current_sender_id(&self) -> Result<String> {
-        let current_user_id = self.current_user_id.read().await.clone();
-        if current_user_id.is_empty() {
-            return Err(FlareError::localized(ErrorCode::NotConnected, "未连接"));
-        }
-        Ok(current_user_id)
+        self.session_guard
+            .capture_user()
+            .await?
+            .ok_or_else(|| FlareError::localized(ErrorCode::NotConnected, "未连接"))
     }
 
     /// 用本地会话行的 `channel_id`、`conversation_type` 覆盖消息对应字段（SDK 类型映射为 proto）。
     async fn apply_conversation_routing(
         &self,
         conversation_id: &str,
-        mut msg: IMMessage,
+        msg: IMMessage,
     ) -> Result<IMMessage> {
+        self.session_guard
+            .run(self.route_message(conversation_id, msg))
+            .await
+    }
+
+    async fn route_message(&self, conversation_id: &str, mut msg: IMMessage) -> Result<IMMessage> {
         let Some(mut conv) = self.conversations.get(conversation_id).await? else {
-            if conversation_id::is_single_chat_conversation(conversation_id) {
-                return Err(FlareError::localized(
-                    ErrorCode::InvalidParameter,
-                    "单聊会话未在本地落库，请先调用 conversation.get_one(对端 user_id, Single)",
-                ));
+            // A recipient already authorized on the server can address this CID
+            // before its local summary arrives. The server resolves membership.
+            if let Ok(kind) = conversation_id::validate_conversation_id(conversation_id) {
+                msg.conversation_type = kind as i32;
+                msg.channel_id.clear();
             }
             return Ok(msg);
         };
@@ -262,15 +276,6 @@ impl MessageBuildApi {
                     .entry("group_member_ids".to_string())
                     .or_insert(member_ids);
             }
-        }
-
-        if conversation_id::is_single_chat_conversation(conversation_id)
-            && msg.channel_id.is_empty()
-        {
-            return Err(FlareError::localized(
-                ErrorCode::InvalidParameter,
-                "单聊缺少对方 user_id（channel_id）。请先调用 conversation.get_one(对端, Single) 以补全会话行",
-            ));
         }
 
         Ok(msg)

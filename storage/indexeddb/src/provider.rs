@@ -35,6 +35,25 @@ where
     wasm_bindgen_futures::spawn_local(future);
 }
 
+// A JS transaction may outlive its Rust awaiter. A new account snapshot
+// must wait for submitted writes, including those from a retired login.
+fn account_writes(scope: &str) -> Arc<tokio::sync::Semaphore> {
+    thread_local! {
+        static WRITES: std::cell::RefCell<HashMap<String, std::sync::Weak<tokio::sync::Semaphore>>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    WRITES.with(|slots| {
+        let mut slots = slots.borrow_mut();
+        slots.retain(|_, slot| slot.strong_count() > 0);
+        if let Some(active) = slots.get(scope).and_then(std::sync::Weak::upgrade) {
+            return active;
+        }
+        let active = Arc::new(tokio::sync::Semaphore::new(1));
+        slots.insert(scope.to_owned(), Arc::downgrade(&active));
+        active
+    })
+}
+
 async fn reserve_write(
     writes: &Arc<tokio::sync::Semaphore>,
 ) -> Result<Arc<tokio::sync::OwnedSemaphorePermit>> {
@@ -519,6 +538,7 @@ async fn hydrate_all_conversation_latest_from_messages(
     Ok(())
 }
 
+#[cfg(test)]
 impl PersistingSyncCursorStore {
     fn new(user_id: String, inner: Arc<MemorySyncCursorStore>) -> Self {
         Self {
@@ -593,6 +613,15 @@ impl MessageReader for PersistingMessageStore {
             return self.inner.get(message_id).await;
         }
         self.inner.get(message_id).await
+    }
+
+    async fn get_by_message_key(
+        &self,
+        key: &flare_im_core_sdk::model::MessageKey,
+    ) -> Result<Option<IMMessage>> {
+        let _write = self.reserve_write().await?;
+        self.restore_id(&key.client_msg_id).await?;
+        self.inner.get_by_message_key(key).await
     }
 
     async fn get_by_client_msg_id(&self, client_msg_id: &str) -> Result<Option<IMMessage>> {
@@ -1263,6 +1292,17 @@ impl ConversationWriter for PersistingConversationStore {
                 }
                 let mut next = current;
                 flare_im_core_sdk::storage::copy_message_projection(&mut next, &projected);
+                if let Some(reply) =
+                    super::host::commit_projection(&user_id, &expected, &next).await?
+                {
+                    inner
+                        .install_persisted_conversation(
+                            &expected.conversation_id,
+                            reply.conversation,
+                        )
+                        .await?;
+                    return Ok(reply.committed);
+                }
                 persist_conversation(&user_id, &next).await?;
                 inner.commit_message_projection(&expected, &projected).await
             },
@@ -1644,7 +1684,8 @@ pub async fn build_web_store_provider(
         conversations.clone(),
     ));
     // Message bodies and conversation previews must finish writing in the same order.
-    let writes = Arc::new(tokio::sync::Semaphore::new(1));
+    let writes = account_writes(user_id);
+    let opening = reserve_write(&writes).await?;
     let cursors = Arc::new(MemorySyncCursorStore::new());
     let pending_inner = Arc::new(MemoryPendingSendStore::new());
 
@@ -1684,7 +1725,7 @@ pub async fn build_web_store_provider(
             }
             for conversation_id in id_named {
                 if let Some(conversation) = conversations.get(&conversation_id).await? {
-                    persist_conversation_now(user_id, conversation, None).await?;
+                    persist_conversation_now(user_id, conversation, Some(opening.clone())).await?;
                 }
             }
         }
@@ -1696,12 +1737,24 @@ pub async fn build_web_store_provider(
         }
     }
     if !loads_messages_on_demand() {
-        repair_single_chat_message_aliases(user_id, &messages, &conversations, &writes, None)
-            .await?;
-        hydrate_all_conversation_latest_from_messages(user_id, &messages, &conversations, None)
-            .await?;
+        repair_single_chat_message_aliases(
+            user_id,
+            &messages,
+            &conversations,
+            &writes,
+            Some(opening.clone()),
+        )
+        .await?;
+        hydrate_all_conversation_latest_from_messages(
+            user_id,
+            &messages,
+            &conversations,
+            Some(opening.clone()),
+        )
+        .await?;
     }
 
+    drop(opening);
     let user_id = user_id.to_string();
     let outgoing = Arc::new(PersistingOutgoingStore {
         user_id: user_id.clone(),
@@ -1718,7 +1771,11 @@ pub async fn build_web_store_provider(
         writes: writes.clone(),
     });
     let user_profiles = Arc::new(MemoryUserProfileStore::new());
-    let cursors = Arc::new(PersistingSyncCursorStore::new(user_id.clone(), cursors));
+    let cursors = Arc::new(PersistingSyncCursorStore {
+        user_id: user_id.clone(),
+        inner: cursors,
+        writes: writes.clone(),
+    });
     // 区间存进同步游标键值：经宿主 saveCursor 持久化，随 loadSnapshot 的游标一起载回。
     let timeline_coverage: Arc<dyn TimelineCoverageStore> =
         Arc::new(CursorBackedTimelineCoverageStore::new(cursors.clone()));

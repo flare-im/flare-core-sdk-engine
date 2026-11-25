@@ -28,12 +28,22 @@ with sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True) as db:
   return JSON.parse(execFileSync('python3', ['-c', query, dataRoot]));
 }
 
+// One reply line per request: the result JSON, or {"__error": details} from the driver.
+export function sdkError(details) {
+  return Object.assign(Error(details.message ?? details.code), {sdk: details});
+}
+function lineReply(line) {
+  const value = JSON.parse(line);
+  if (value && typeof value === 'object' && '__error' in value) throw sdkError(value.__error);
+  return value;
+}
+
 export async function withBindings(libraryArg, pkgArg, run) {
   if (!libraryArg || !pkgArg) throw Error('Expected the C shared library and release wasm-pack pkg directory');
   const library = path.resolve(libraryArg);
   const pkg = path.resolve(pkgArg);
   const root = await mkdtemp(path.join(tmpdir(), 'flare-parity-'));
-  const driver = path.join(root, 'native-driver');
+  const driver = process.env.ACK_NATIVE_DRIVER || path.join(root, 'native-driver');
   let server;
   const clients = new Set();
   const storageScopes = new Map();
@@ -60,21 +70,24 @@ export async function withBindings(libraryArg, pkgArg, run) {
         onAck?.(event.ack, performance.now());
       } else syncs.push(event);
     });
+    async function raw(op, body) {
+      child.stdin.write(op + '\t' + body + '\n');
+      const watchdog = setTimeout(() => child.kill(), 45000);
+      try {
+        const line = await lines.next();
+        if (line.done) throw Error('C driver exited during ' + op);
+        return line.value;
+      } finally { clearTimeout(watchdog); }
+    }
     return track({
-      dataUrl, acks, syncs, outbox: () => nativeOutbox(dataUrl),
+      dataUrl, acks, syncs, raw, outbox: () => nativeOutbox(dataUrl),
       storedReceive: (user, cid) => JSON.parse(execFileSync('python3',
         [path.join(dir, 'stored_receive.py'), dataUrl, user, cid])),
       async invoke(op, params) {
         let body = JSON.stringify(params);
         if (op === 'sdk.prepare') body = params.userId;
         if (op === 'sdk.connect') body = params.userId + '\t' + params.token;
-        child.stdin.write(op + '\t' + body + '\n');
-        const watchdog = setTimeout(() => child.kill(), 45000);
-        try {
-          const line = await lines.next();
-          if (line.done) throw Error('C driver exited during ' + op);
-          return JSON.parse(line.value);
-        } finally { clearTimeout(watchdog); }
+        return lineReply(await raw(op, body));
       },
       async crashDuringCommit(point, id, send, target = {}) {
         const observer = spawn('python3', [path.join(dir, 'crash_sqlite.py'), dataUrl, String(child.pid), id, point, JSON.stringify(target)],
@@ -137,6 +150,17 @@ export async function withBindings(libraryArg, pkgArg, run) {
           if (channel === 'im://send_ack') window.recordAck(payload.ack);
           if (channel === 'im://sync_readiness') window.recordSync(payload);
         });
+        // Raw JSON in, raw JSON out: u64 values beyond 2^53 reach the core unrounded,
+        // and the reply text shows exactly what the binding produced.
+        window.callSdkRaw = async (op, text) => {
+          const big = (_, value) => typeof value === 'bigint' ? value.toString() : value;
+          try {
+            return JSON.stringify(await runtime.invoke(op, text) ?? null, big);
+          } catch (error) {
+            const {code, reason, retryable, message} = error ?? {};
+            return JSON.stringify({__error: {code, reason, retryable, message}});
+          }
+        };
         window.callSdk = (op, req) => new Promise((resolve, reject) => {
           const timer = setTimeout(() => reject(Error('WASM timeout during ' + op)), 45000);
           runtime.invoke(op, JSON.stringify(req)).then(resolve, reject).finally(() => clearTimeout(timer));
@@ -166,6 +190,7 @@ export async function withBindings(libraryArg, pkgArg, run) {
               .map(m => [m.clientMsgId, m.serverId, m.conversationSeq]),
             lastId: c.lastMessageId, lastSender: c.lastSenderId, lastAt: c.lastMessageAt, preview: c.lastMessagePreview,
             unread: c.unreadCount, readSeq: c.lastReadSeq, maxSeq: c.maxSeq,
+            pendingRead: c.ext?.['_local.pendingReadSeq'] ?? null,
             receipt: JSON.parse(c.ext?.['_local.messageProjectionRanges'] ?? 'null'),
             cursor: cursor ? {seq: cursor[0], syncedAt: cursor[1]} : null,
             outbox: pending.map(row => row.entry).sort((a, b) => a.enqueued_at_ms - b.enqueued_at_ms)
@@ -176,6 +201,7 @@ export async function withBindings(libraryArg, pkgArg, run) {
           .sort((a,b) => a.enqueued_at_ms - b.enqueued_at_ms).map(row => [row.client_msg_id, row.conversation_id]);
       });
       return track({acks, syncs, outbox: () => page.evaluate(() => window.readOutbox()),
+        raw: (op, text) => page.evaluate(([op, text]) => window.callSdkRaw(op, text), [op, text]),
         storedReceive: (user, cid) => page.evaluate(args => window.readStoredReceive(...args),
           [storageScopes.get(name), user, cid]),
         invoke: (op, req) => page.evaluate(([op,req]) => window.callSdk(op, req), [op, req]),
@@ -227,10 +253,51 @@ export async function withBindings(libraryArg, pkgArg, run) {
         close: () => context.close()});
     } catch (e) { await context.close(); throw e; }
   }
+  // The Tauri command path without a window: bindings/tauri/examples/parity_driver.rs.
+  let tauriDriver = process.env.TAURI_PARITY_DRIVER;
+  async function tauri(name = 'tauri') {
+    if (!tauriDriver) {
+      const engine = path.resolve(dir, '../..');
+      execFileSync('cargo', ['build', '--locked', '-p', 'flare-im-core-sdk-tauri', '--example', 'parity_driver'],
+        {cwd: engine, stdio: 'inherit', env: {...process.env, RUSTC_WRAPPER: ''}});
+      const {target_directory: target} = JSON.parse(execFileSync('cargo',
+        ['metadata', '--no-deps', '--format-version', '1'], {cwd: engine, maxBuffer: 64 << 20}));
+      tauriDriver = path.join(target, 'debug/examples/parity_driver');
+    }
+    const child = spawn(tauriDriver, [], {stdio: ['pipe', 'pipe', 'inherit']});
+    const exit = once(child, 'exit');
+    const lines = createInterface({input: child.stdout})[Symbol.asyncIterator]();
+    async function raw(op, body) {
+      child.stdin.write(op + '\t' + body + '\n');
+      const watchdog = setTimeout(() => child.kill(), 45000);
+      try {
+        const line = await lines.next();
+        if (line.done) throw Error('Tauri driver exited during ' + op);
+        return line.value;
+      } finally { clearTimeout(watchdog); }
+    }
+    return track({
+      dataUrl: path.join(root, name),
+      raw,
+      async invoke(op, params) {
+        return lineReply(await raw(op, op === 'sdk.prepare' ? params.userId : JSON.stringify(params)));
+      },
+      async close() {
+        child.stdin.end();
+        const timer = setTimeout(() => child.kill(), 5000);
+        try {
+          const [code] = await exit;
+          assert.equal(code, 0, 'Tauri driver exit');
+        } finally { clearTimeout(timer); }
+      },
+    });
+  }
   let runError;
   try {
-    execFileSync(process.env.CC || 'cc', [path.join(dir,'native.c'), '-I', path.join(sdk,'native/abi'),
-      library, '-pthread', '-Wl,-rpath,' + path.dirname(library), '-o', driver]);
+    if (!process.env.ACK_NATIVE_DRIVER) {
+      execFileSync(process.env.CC || 'cc', [path.join(dir,'native.c'), '-I', path.join(sdk,'native/abi'),
+        library, '-pthread', '-Wl,-rpath,' + path.dirname(library), '-o', driver]);
+    }
     const host = await build({entryPoints: [path.join(sdk,
       'packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.ts')], bundle:true, format:'esm', write:false});
     server = createServer(async (req,res) => {
@@ -245,7 +312,7 @@ export async function withBindings(libraryArg, pkgArg, run) {
     });
     server.listen(0, '127.0.0.1');
     await once(server,'listening');
-    return await run({native, web});
+    return await run({native, web, tauri});
   } catch (error) {
     runError = error;
     throw error;

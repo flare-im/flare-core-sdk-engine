@@ -57,6 +57,21 @@ impl MessageViewAssembler {
         Ok(Some(view))
     }
 
+    pub async fn get_by_key(&self, key: &crate::model::MessageKey) -> Result<Option<IMMessage>> {
+        let Some(mut message) = self.store.get_by_message_key(key).await? else {
+            return Ok(None);
+        };
+        if !message_visible_after_clear(
+            &message,
+            self.history_visibility_floor(&key.conversation_id).await?,
+        ) {
+            return Ok(None);
+        }
+        self.hydrate_reactions_for_messages(std::slice::from_mut(&mut message))
+            .await?;
+        Ok(Some(message))
+    }
+
     pub async fn get_raw(&self, message_id: &str) -> Result<Option<IMMessage>> {
         let mut msg = self.get_visible_message(message_id).await?;
         if let Some(view) = msg.as_mut() {

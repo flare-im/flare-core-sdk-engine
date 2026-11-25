@@ -80,6 +80,7 @@ const PERSIST_QUEUE_CAP: usize = 256;
 
 /// 后台串行持久化任务：一批 durable 消息 + 当时的用户 id。
 struct PersistJob {
+    link: Option<crate::runtime::link::epoch::ConnectionLease>,
     messages: Vec<IMMessage>,
     user_id: String,
     delivery_due: Vec<(String, u64)>,
@@ -280,11 +281,21 @@ impl Dispatcher {
     }
 
     async fn persist_and_confirm(&self, job: PersistJob) {
-        if self
-            .persist_durable_batch(&job.messages, &job.user_id)
-            .await
-        {
-            self.confirm_delivered(job.delivery_due);
+        let write = self.bus.lifetime().until_retired(async {
+            if self
+                .persist_durable_batch(&job.messages, &job.user_id)
+                .await
+            {
+                self.confirm_delivered(job.delivery_due);
+            }
+        });
+        match job.link {
+            Some(lease) => {
+                lease.while_current(write).await;
+            }
+            None => {
+                write.await;
+            }
         }
     }
 
@@ -310,7 +321,7 @@ impl Dispatcher {
                 let mut batch = job;
                 while batch.messages.len() < PERSIST_WORKER_BATCH_MAX_MESSAGES {
                     match rx.try_recv() {
-                        Ok(next) if next.user_id == batch.user_id => {
+                        Ok(next) if next.user_id == batch.user_id && next.link == batch.link => {
                             batch.messages.extend(next.messages);
                             batch.delivery_due.extend(next.delivery_due);
                         }

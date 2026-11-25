@@ -570,6 +570,16 @@ pub trait MessageReader: Send + Sync {
         Ok(out)
     }
     /// 按 client_msg_id 查询；多个消息共用别名时返回 None，不能任意选择目标。
+    async fn get_by_message_key(
+        &self,
+        key: &crate::model::MessageKey,
+    ) -> Result<Option<IMMessage>> {
+        Ok(self
+            .get_by_client_msg_id(&key.client_msg_id)
+            .await?
+            .filter(|m| m.conversation_id == key.conversation_id && m.sender_id == key.sender_id))
+    }
+
     async fn get_by_client_msg_id(&self, client_msg_id: &str) -> Result<Option<IMMessage>>;
     /// 批量按 client_msg_id 查询。默认逐条兜底；SQLite 实现覆盖为 `IN (...)` 单次查询，
     /// 降低可靠队列对账每 tick 的 O(n) DB 往返与连接池争用。

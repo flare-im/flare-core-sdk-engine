@@ -562,7 +562,7 @@ pub async fn lab_client(
         .await
         .expect("init SDK config");
     client
-        .prepare(USER_ID, LoginDbKind::Provided(in_memory_im_provider()))
+        .prepare(USER_ID, LoginDbKind::provided(in_memory_im_provider()))
         .await
         .expect("prepare test session");
     client
@@ -582,14 +582,11 @@ impl Observed {
         let sink = observed.clone();
         let connection = client
             .on_event_kind(SdkEventKind::Connection, move |event| {
-                match event.as_ref() {
-                    SdkEvent::Connection(ConnectionEvent::Status(status)) => {
-                        sink.statuses
-                            .lock()
-                            .unwrap()
-                            .push((Instant::now(), status.clone()));
-                    }
-                    _ => {}
+                if let SdkEvent::Connection(ConnectionEvent::Status(status)) = event.as_ref() {
+                    sink.statuses
+                        .lock()
+                        .unwrap()
+                        .push((Instant::now(), status.clone()));
                 }
             })
             .expect("subscribe connection events");

@@ -107,9 +107,7 @@ pub struct ReactionEntry {
     pub count: u32,
 }
 
-pub fn parse_reactions_from_attributes(
-    attributes: &HashMap<String, String>,
-) -> Vec<ReactionEntry> {
+pub fn parse_reactions_from_attributes(attributes: &HashMap<String, String>) -> Vec<ReactionEntry> {
     let raw = match attributes.get(REACTIONS_JSON_KEY) {
         Some(v) if !v.trim().is_empty() => v,
         _ => return Vec::new(),

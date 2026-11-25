@@ -81,7 +81,7 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     require_contains_all(
         &mut errors,
         &root.join(
-            "../flare-core-examples/apps/flare-core-flutter-app/test/multidevice_conformance_manifest_test.dart",
+            "packages/flare-core-flutter-sdk/test/multidevice_conformance_manifest_test.dart",
         ),
         "flutter multi-device conformance manifest test",
         &[
@@ -292,9 +292,14 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
         &[
             "DisconnectReason::Kicked {",
             "ends_session: true,",
-            "LinkLoss::SessionEnded(reason) => FailoverAction::Terminate(*reason)",
-            "FailoverAction::Terminate(ActionRequiredReason::Kicked)",
+            "ActionRequiredReason::Kicked",
         ],
+    );
+    require_contains_all(
+        &mut errors,
+        &sdk_root.join("src/runtime/link/supervisor.rs"),
+        "a session-ending loss terminates the link supervisor",
+        &["LinkLoss::SessionEnded(reason) => self.terminate(reason).await"],
     );
     require_contains_all(
         &mut errors,

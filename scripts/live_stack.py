@@ -129,8 +129,9 @@ OUTBOX_STREAM = "flare:im:push:offline:outbox"
 
 
 def social_enabled():
-    """Social runs when its user service and gateway are built (LIVE_STACK_SOCIAL=0 turns it off)."""
-    if os.environ.get("LIVE_STACK_SOCIAL", "auto") == "0":
+    """The Core lab runs without Social. LIVE_STACK_SOCIAL=auto adds it when its user service
+    and gateway are built."""
+    if os.environ.get("LIVE_STACK_SOCIAL", "0") == "0":
         return False
     return all((TARGET / SOCIAL_SERVICES[name][0]).exists() for name in SOCIAL_REQUIRED)
 

@@ -72,7 +72,7 @@ mod tests {
         }
         stores.messages.save_batch(&rows).await.unwrap();
         client
-            .prepare("u1", LoginDbKind::Provided(stores))
+            .prepare("u1", LoginDbKind::provided(stores))
             .await
             .unwrap();
         let api = client.message().unwrap();
@@ -113,14 +113,14 @@ mod tests {
             .await
             .unwrap();
         client
-            .prepare("alice", LoginDbKind::Provided(in_memory_im_provider()))
+            .prepare("alice", LoginDbKind::provided(in_memory_im_provider()))
             .await
             .unwrap();
         let alice = client.connected_apis().await.unwrap();
         let slot = SessionSlot::default();
         slot.install(&client, alice.clone()).await;
         client
-            .prepare("bob", LoginDbKind::Provided(in_memory_im_provider()))
+            .prepare("bob", LoginDbKind::provided(in_memory_im_provider()))
             .await
             .unwrap();
         // A delayed binding completion must not associate Alice's API with Bob's generation.

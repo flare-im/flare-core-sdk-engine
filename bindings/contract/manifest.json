@@ -198,6 +198,8 @@
     "All async C ABI functions return immediate submit status and invoke callback exactly once.",
     "Callbacks may run on arbitrary runtime threads; client SDKs own UI/main-thread dispatch.",
     "Rust-allocated strings and bytes must be released by the paired flare_*_free function.",
-    "Errors must keep stable code plus human message; platform SDKs map them to typed errors."
+    "Errors must keep stable code plus human message; platform SDKs map them to typed errors.",
+    "u64 fields travel as JSON numbers. At JavaScript hosts (WASM, Tauri webview) only values up to 2^53-1 are guaranteed; the core never assigns larger seq, revision or millisecond values, and identifiers that may exceed it travel as strings.",
+    "A call is not cancelled by dropping its callback. Work that outlives a call is cancelled through explicit operations (media.cancel_transfer, view.close) or bounded by its own timeout (message.await_confirmation)."
   ]
 }

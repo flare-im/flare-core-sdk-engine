@@ -45,8 +45,9 @@ pub(crate) mod host_profile;
 pub(crate) mod native;
 pub use native::{
     CapabilityConsentPrompt, CapabilityHostAnswer, CapabilityHostRequests, CapturedFile,
-    ConsentDecision, DocumentCapturePrompt, FilePickPrompt, LocationFix, LocationPrompt,
-    PaymentConfirmationError, PaymentConfirmationPrompt, PaymentSettled, PluginCapabilityHost,
+    ConfirmationDriver, ConfirmationExchange, ConfirmationStep, ConsentDecision,
+    DocumentCapturePrompt, FilePickPrompt, LocationFix, LocationPrompt, PaymentConfirmationError,
+    PaymentConfirmationPrompt, PaymentSettled, PluginCapabilityHost,
 };
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "capability_native_tests.rs"]
@@ -199,6 +200,11 @@ pub struct CapabilityApi {
 }
 
 impl CapabilityApi {
+    pub(crate) fn for_session(mut self, watch: crate::client::im_client::SessionEndWatch) -> Self {
+        self.session_guard.bind(watch);
+        self
+    }
+
     pub fn new(
         grpc_endpoint: impl Into<String>,
         current_user_id: Arc<RwLock<String>>,

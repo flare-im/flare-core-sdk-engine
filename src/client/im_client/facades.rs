@@ -52,7 +52,17 @@ impl IMClient {
     /// A host-owned BFF bearer has a separate purpose and must remain untouched.
     pub async fn sync_core_http_context(&self, tenant_id: Option<&str>) -> Result<()> {
         let g = self.inner.read().await;
-        if !self.inner_session_active(&g)
+        self.install_http_token(&g, tenant_id, g.connect_token.as_deref())
+            .await
+    }
+
+    async fn install_http_token(
+        &self,
+        g: &super::IMClientInner,
+        tenant_id: Option<&str>,
+        token: Option<&str>,
+    ) -> Result<()> {
+        if !self.inner_session_active(g)
             || !matches!(
                 self.state(),
                 SdkState::Connected | SdkState::Ready | SdkState::Reconnecting
@@ -65,14 +75,12 @@ impl IMClient {
             .clone()
             .filter(|u| !u.is_empty())
             .ok_or_else(Self::not_connected)?;
-        let token = g
-            .connect_token
-            .clone()
+        let token = token
             .filter(|t| !t.trim().is_empty())
             .ok_or_else(Self::not_connected)?;
         let tenant = tenant_id
             .map(str::to_string)
-            .unwrap_or_else(|| Self::resolve_tenant_id(&g));
+            .unwrap_or_else(|| Self::resolve_tenant_id(g));
         let tenant = crate::shared::util::normalize_tenant_id(tenant);
         let http = g.http_request_context.clone().ok_or_else(|| {
             FlareError::localized(
@@ -80,8 +88,7 @@ impl IMClient {
                 "http_request_context not configured",
             )
         })?;
-        drop(g);
-        http.set_auth_context(token, None).await;
+        http.set_auth_context(token.to_owned(), None).await;
         http.ensure_identity(&user_id, &tenant).await;
         Ok(())
     }
@@ -123,9 +130,9 @@ impl IMClient {
         }
         {
             let mut g = self.inner.write().await;
-            g.connect_token = Some(token.clone());
+            self.install_http_token(&g, tenant_id, Some(&token)).await?;
+            g.connect_token = Some(token);
         }
-        self.sync_core_http_context(tenant_id).await?;
         self.attach_push_session().await;
         Ok(())
     }

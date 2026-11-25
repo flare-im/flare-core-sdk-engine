@@ -295,6 +295,13 @@ pub trait MediaUploaderPort: Send + Sync {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait MediaServicePort: Send + Sync {
+    fn upload_recovery(
+        &self,
+        _source: &MediaSourceKind,
+    ) -> crate::model::media::MediaUploadRecovery {
+        Default::default()
+    }
+
     async fn upload(
         &self,
         media: ProcessedMedia,

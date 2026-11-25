@@ -139,6 +139,43 @@ pub struct UploadedMedia {
     pub cdn_url: Option<String>,
 }
 
+/// Resume guarantees for an upload when the caller supplies the same source again.
+#[derive(
+    Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaUploadRecovery {
+    /// Retrying with the same `transfer_id` in this process sends only missing parts.
+    pub same_session: bool,
+    /// The upload survives an app restart without the caller supplying the source again.
+    pub after_restart: bool,
+    /// After a restart the user must pick or re-authorize the file before resuming
+    /// (browser File handles and revoked document permissions).
+    pub requires_source_reselection: bool,
+}
+
+/// A stored attachment can be resolved with just its file ID and message coordinates.
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaRef {
+    pub file_id: String,
+    pub conversation_id: String,
+    /// The message's `conversation_seq`.
+    pub message_seq: u64,
+}
+
+/// Resolve an attachment to a short-lived access URL. `expires_in` defaults to one hour.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveAttachmentRequest {
+    #[serde(flatten)]
+    pub media: MediaRef,
+    #[serde(default)]
+    pub expires_in: Option<i32>,
+}
+
 /// Explicit publication intent. Only validated avatar images become public.
 #[derive(
     Debug,
@@ -178,6 +215,9 @@ impl std::str::FromStr for UploadPurpose {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct UploadOptions {
+    /// Optional host-assigned handle for cancelling an active upload on this login.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_id: Option<String>,
     pub chunk_size: usize,
     pub purpose: UploadPurpose,
 }
@@ -185,6 +225,7 @@ pub struct UploadOptions {
 impl Default for UploadOptions {
     fn default() -> Self {
         Self {
+            transfer_id: None,
             chunk_size: 256 * 1024,
             purpose: UploadPurpose::General,
         }

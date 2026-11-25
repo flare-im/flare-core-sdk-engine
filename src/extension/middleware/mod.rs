@@ -149,10 +149,15 @@ impl MiddlewareChain {
         ctx: &MessageMiddlewareContext,
     ) -> Result<()> {
         for interceptor in &self.message {
-            match AssertUnwindSafe(interceptor.before_send(message, ctx))
-                .catch_unwind()
+            let work = AssertUnwindSafe(interceptor.before_send(message, ctx)).catch_unwind();
+            match crate::shared::util::time::timeout(std::time::Duration::from_secs(3), work)
                 .await
-            {
+                .map_err(|_| {
+                    FlareError::localized(
+                        crate::ErrorCode::OperationTimeout,
+                        "message middleware timed out before send",
+                    )
+                })? {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => return Err(error),
                 Err(_) => {
@@ -172,12 +177,12 @@ impl MiddlewareChain {
         ctx: &MessageMiddlewareContext,
     ) {
         for interceptor in &self.message {
-            if AssertUnwindSafe(interceptor.after_send(message, ack, ctx))
-                .catch_unwind()
-                .await
-                .is_err()
-            {
-                warn!("message middleware panicked after send; continuing");
+            let work = AssertUnwindSafe(interceptor.after_send(message, ack, ctx)).catch_unwind();
+            if !matches!(
+                crate::shared::util::time::timeout(std::time::Duration::from_secs(3), work).await,
+                Ok(Ok(()))
+            ) {
+                warn!("message middleware observer panicked or timed out");
             }
         }
     }
@@ -189,12 +194,13 @@ impl MiddlewareChain {
         ctx: &MessageMiddlewareContext,
     ) {
         for interceptor in &self.message {
-            if AssertUnwindSafe(interceptor.on_send_error(message, error, ctx))
-                .catch_unwind()
-                .await
-                .is_err()
-            {
-                warn!("message middleware panicked while handling send error");
+            let work =
+                AssertUnwindSafe(interceptor.on_send_error(message, error, ctx)).catch_unwind();
+            if !matches!(
+                crate::shared::util::time::timeout(std::time::Duration::from_secs(3), work).await,
+                Ok(Ok(()))
+            ) {
+                warn!("message middleware observer panicked or timed out");
             }
         }
     }

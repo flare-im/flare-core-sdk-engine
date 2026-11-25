@@ -5,11 +5,43 @@
 //! 一类问题都是这个形状）。代数由链路状态机分配，监听器带着自己那条连接的代数，分发前比对。
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::watch;
 
 /// 当前连接代数（共享）。0 表示还没有建过连接。
-#[derive(Debug, Clone, Default)]
-pub struct ConnectionEpoch(Arc<AtomicU64>);
+#[derive(Debug, Clone)]
+pub struct ConnectionEpoch(Arc<watch::Sender<u64>>);
+
+impl Default for ConnectionEpoch {
+    fn default() -> Self {
+        Self(Arc::new(watch::channel(0).0))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ConnectionLease {
+    owner: ConnectionEpoch,
+    number: u64,
+}
+
+impl PartialEq for ConnectionLease {
+    fn eq(&self, other: &Self) -> bool {
+        self.number == other.number && Arc::ptr_eq(&self.owner.0, &other.owner.0)
+    }
+}
+
+impl ConnectionLease {
+    pub(crate) async fn while_current<T>(
+        &self,
+        work: impl std::future::Future<Output = T>,
+    ) -> Option<T> {
+        let mut rx = self.owner.0.subscribe();
+        tokio::select! {
+            biased;
+            _ = rx.wait_for(|current| *current != self.number || *current == 0) => None,
+            result = work => self.owner.is_current(self.number).then_some(result),
+        }
+    }
+}
 
 impl ConnectionEpoch {
     pub fn new() -> Self {
@@ -18,11 +50,23 @@ impl ConnectionEpoch {
 
     /// 作废当前连接、开始下一条：之后只有新代数的帧与回调算数。
     pub fn advance(&self) -> u64 {
-        self.0.fetch_add(1, Ordering::AcqRel) + 1
+        let mut next = 0;
+        self.0.send_modify(|current| {
+            next = current.wrapping_add(1).max(1);
+            *current = next;
+        });
+        next
     }
 
     pub fn current(&self) -> u64 {
-        self.0.load(Ordering::Acquire)
+        *self.0.borrow()
+    }
+
+    pub(crate) fn lease(&self, number: u64) -> ConnectionLease {
+        ConnectionLease {
+            owner: self.clone(),
+            number,
+        }
     }
 
     /// `epoch` 是否仍是当前连接。
@@ -34,6 +78,24 @@ impl ConnectionEpoch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn handover_revokes_a_blocked_old_frame() {
+        let epoch = ConnectionEpoch::new();
+        let lease = epoch.lease(epoch.advance());
+        let (started, wait) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            lease
+                .while_current(async {
+                    started.send(()).unwrap();
+                    std::future::pending::<()>().await
+                })
+                .await
+        });
+        wait.await.unwrap();
+        epoch.advance();
+        assert_eq!(task.await.unwrap(), None);
+    }
 
     #[test]
     fn only_the_latest_epoch_is_current() {

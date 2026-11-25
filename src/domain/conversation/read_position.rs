@@ -79,7 +79,7 @@ impl ReadPosition {
 
     #[must_use]
     pub fn unread_upper_bound(self) -> u32 {
-        self.max_seq.saturating_sub(self.last_read_seq) as u32
+        u32::try_from(self.max_seq.saturating_sub(self.last_read_seq)).unwrap_or(u32::MAX)
     }
 
     /// 未读与读位是否自洽（`last_read + unread ≈ max`）。
@@ -107,7 +107,7 @@ impl ReadPosition {
         // Unread counts can be sparse; only an explicit read position proves a read prefix.
         let merged_max = incoming.max_seq.max(local.max_seq);
         let last_read = incoming.last_read_seq.max(local.last_read_seq);
-        let upper = merged_max.saturating_sub(last_read) as u32;
+        let upper = u32::try_from(merged_max.saturating_sub(last_read)).unwrap_or(u32::MAX);
         let unread = if incoming.max_seq <= local.max_seq {
             local.unread_count.min(upper)
         } else {

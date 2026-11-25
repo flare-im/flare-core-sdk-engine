@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::extension::{ExtensionContext, ExtensionLifecycleContext, ExtensionRuntime};
+use crate::extension::{ExtensionContext, ExtensionRuntime, LifecycleScope};
 use crate::shared::error::Result;
 
 use super::IMClient;
@@ -9,7 +9,7 @@ impl IMClient {
     pub(super) async fn extension_lifecycle_snapshot(
         &self,
         current_user_id: Option<String>,
-    ) -> Option<(Arc<ExtensionRuntime>, ExtensionLifecycleContext)> {
+    ) -> Option<(Arc<ExtensionRuntime>, LifecycleScope)> {
         let g = self.inner.read().await;
         let runtime = g.extension_runtime.clone()?;
         if runtime.lifecycle_count() == 0 {
@@ -19,11 +19,27 @@ impl IMClient {
         let current_user_id = current_user_id.or_else(|| g.current_user_id.clone());
         Some((
             runtime,
-            ExtensionLifecycleContext::new(
-                ExtensionContext::from_core(engine.stores().clone(), engine.bus().clone()),
+            LifecycleScope {
+                stores: engine.stores().clone(),
+                bus: engine.bus().clone(),
                 current_user_id,
-            ),
+            },
         ))
+    }
+
+    pub(super) async fn run_extension_migrations_best_effort(&self) {
+        let snapshot = {
+            let g = self.inner.read().await;
+            match (g.extension_runtime.clone(), g.engine.as_ref()) {
+                (Some(runtime), Some(engine)) if runtime.migration_count() > 0 => {
+                    Some((runtime, engine.stores().clone(), engine.bus().clone()))
+                }
+                _ => None,
+            }
+        };
+        if let Some((runtime, stores, bus)) = snapshot {
+            runtime.run_migrations(&stores, &bus).await;
+        }
     }
 
     pub(super) async fn notify_extension_login_best_effort(&self, user_id: &str) {
@@ -57,7 +73,7 @@ impl IMClient {
     }
 
     pub(super) async fn notify_extension_disconnect_snapshot(
-        lifecycle: &Option<(Arc<ExtensionRuntime>, ExtensionLifecycleContext)>,
+        lifecycle: &Option<(Arc<ExtensionRuntime>, LifecycleScope)>,
     ) {
         if let Some((runtime, context)) = lifecycle
             && let Err(err) = runtime.notify_disconnect(context).await
@@ -72,7 +88,7 @@ impl IMClient {
     }
 
     pub(super) async fn notify_extension_logout_snapshot(
-        lifecycle: &Option<(Arc<ExtensionRuntime>, ExtensionLifecycleContext)>,
+        lifecycle: &Option<(Arc<ExtensionRuntime>, LifecycleScope)>,
     ) {
         if let Some((runtime, context)) = lifecycle
             && let Err(err) = runtime.notify_logout(context).await
@@ -86,6 +102,82 @@ impl IMClient {
         }
     }
 
+    /// A slow extension can recover from its checkpoint without stalling apply or ACK.
+    pub async fn subscribe_committed_inbound(
+        &self,
+        namespace: &str,
+    ) -> Result<crate::spi::CommitSubscription> {
+        let g = self.inner.read().await;
+        let engine = g
+            .engine
+            .as_ref()
+            .filter(|_| g.current_user_id.is_some())
+            .ok_or_else(Self::not_connected)?;
+        let grant = g
+            .extension_runtime
+            .as_ref()
+            .ok_or_else(Self::not_connected)?
+            .projection_grant(namespace)?;
+        Ok(crate::spi::CommitSubscription::new(
+            engine.bus().committed_receiver(),
+            self.session_end_watch(g.session_generation),
+            grant.revoked,
+        ))
+    }
+
+    /// The composition root hands only the resulting handle to an extension.
+    pub async fn open_extension_partition(
+        &self,
+        namespace: &str,
+        partition: String,
+        schema: crate::spi::RecordSchema,
+        access: crate::spi::RecordAccess,
+        backend: Arc<dyn crate::spi::RecordBackend>,
+    ) -> Result<crate::spi::ExtensionPartition> {
+        let g = self.inner.read().await;
+        let user = g.current_user_id.clone().ok_or_else(Self::not_connected)?;
+        let runtime = g
+            .extension_runtime
+            .as_ref()
+            .ok_or_else(Self::not_connected)?;
+        let grant = runtime.projection_grant(namespace)?;
+        let scope = crate::spi::RecordScope {
+            tenant: Self::resolve_tenant_id(&g),
+            user,
+            namespace: namespace.to_owned(),
+            partition,
+        };
+        let session = self.session_end_watch(g.session_generation);
+        drop(g);
+        crate::spi::ExtensionPartition::open(backend, scope, schema, session, access, grant).await
+    }
+
+    /// Uninstall an extension's records for the current account. Its grant is revoked
+    /// first and admitted writes drain, so no handle can write while rows are removed.
+    pub async fn purge_extension_records(
+        &self,
+        namespace: &str,
+        backend: Arc<dyn crate::spi::RecordBackend>,
+    ) -> Result<()> {
+        let (runtime, scope) = {
+            let g = self.inner.read().await;
+            let user = g.current_user_id.clone().ok_or_else(Self::not_connected)?;
+            let runtime = g
+                .extension_runtime
+                .clone()
+                .ok_or_else(Self::not_connected)?;
+            let scope = crate::spi::RecordScope {
+                tenant: Self::resolve_tenant_id(&g),
+                user,
+                namespace: namespace.to_owned(),
+                partition: String::new(),
+            };
+            (runtime, scope)
+        };
+        runtime.set_projection_enabled(namespace, false).await?;
+        backend.purge_namespace(&scope).await
+    }
+
     /// 获取扩展运行时快照。
     pub fn extension_runtime(&self) -> Result<Arc<ExtensionRuntime>> {
         self.read_inner()?
@@ -94,11 +186,23 @@ impl IMClient {
             .ok_or_else(Self::not_connected)
     }
 
-    /// 构造受控扩展上下文，供业务 SDK 投影资料、会话等核心模型。
-    pub async fn extension_context(&self) -> Result<ExtensionContext> {
-        self.with_engine_async(|engine| {
-            ExtensionContext::from_core(engine.stores().clone(), engine.bus().clone())
-        })
-        .await
+    /// 按扩展 namespace 授权的上下文：停用后写入被拒，停用会等已放行的写入完成。
+    pub async fn extension_context_for(&self, namespace: &str) -> Result<ExtensionContext> {
+        let g = self.inner.read().await;
+        let engine = g
+            .engine
+            .as_ref()
+            .filter(|_| g.current_user_id.is_some())
+            .ok_or_else(Self::not_connected)?;
+        let grant = g
+            .extension_runtime
+            .as_ref()
+            .ok_or_else(Self::not_connected)?
+            .projection_grant(namespace)?;
+        Ok(ExtensionContext::from_core_granted(
+            engine.stores().clone(),
+            engine.bus().clone(),
+            Some(grant),
+        ))
     }
 }

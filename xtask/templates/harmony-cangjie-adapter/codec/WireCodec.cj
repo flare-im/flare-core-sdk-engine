@@ -3713,6 +3713,47 @@ public func messageFromEnvelopeJson(raw: String): Message {
     }
 }
 
+
+
+public func messageKeyToJson(request: MessageKey): String {
+    let json = CjJsonObject()
+    jsonPutString(json, "conversationId", request.conversationId)
+    jsonPutString(json, "senderId", request.senderId)
+    jsonPutString(json, "clientMsgId", request.clientMsgId)
+    return json.toJsonString()
+}
+
+public func mediaUploadRecoveryRequestToJson(request: MediaUploadRecoveryRequest): String {
+    let json = CjJsonObject()
+    jsonPutString(json, "sourceKind", request.sourceKind)
+    return json.toJsonString()
+}
+
+public func mediaTransferRequestToJson(request: MediaTransferRequest): String {
+    let json = CjJsonObject()
+    jsonPutString(json, "transferId", request.transferId)
+    return json.toJsonString()
+}
+
+public func mediaUploadRecoveryFromJson(raw: String): MediaUploadRecovery {
+    let object = wireDecodeResponseObject(jsonObjectFromRaw(raw))
+    return MediaUploadRecovery(sameSession: jsonBoolField(object, "sameSession", false), afterRestart: jsonBoolField(object, "afterRestart", false), requiresSourceReselection: jsonBoolField(object, "requiresSourceReselection", false))
+}
+
+public func mediaTransferCancellationFromJson(raw: String): MediaTransferCancellation {
+    let object = wireDecodeResponseObject(jsonObjectFromRaw(raw))
+    return MediaTransferCancellation(cancelled: jsonBoolField(object, "cancelled", false))
+}
+
+public func messageByKeyResponseFromJson(raw: String): MessageByKeyResponse {
+    let object = wireDecodeResponseObject(jsonObjectFromRaw(raw))
+    let message: ?Message = match (jsonOptionalRawField(object, "message")) {
+        case Some(value) => if (value == "null") { None } else { Some(messageFromJson(value)) }
+        case None => None
+    }
+    return MessageByKeyResponse(message: message)
+}
+
 // RUST-OWNED WIRE BOUNDARY: BEGIN
 public func wireEncodeRequest(raw: String): String {
     return raw

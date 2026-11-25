@@ -1,5 +1,11 @@
 // GENERATED. Do not edit by hand.
 import {
+  MessageKey,
+  MessageByKeyResponse,
+  MediaUploadRecoveryRequest,
+  MediaTransferRequest,
+  MediaUploadRecovery,
+  MediaTransferCancellation,
   CompleteConnectTokenRefreshRequest,
   ConnectionPhase,
   ConnectionQuality,
@@ -1564,6 +1570,35 @@ export function closeViewResponseFromJson(value: Object | undefined): CloseViewR
   return {
     closed: field(json, 'closed') === true,
   };
+}
+
+
+
+export function messageKeyToMap(request: MessageKey): Record<string, Object> {
+  return {conversationId: request.conversationId, senderId: request.senderId, clientMsgId: request.clientMsgId};
+}
+
+export function mediaUploadRecoveryRequestToMap(request: MediaUploadRecoveryRequest): Record<string, Object> {
+  return {sourceKind: request.sourceKind};
+}
+
+export function mediaTransferRequestToMap(request: MediaTransferRequest): Record<string, Object> {
+  return {transferId: request.transferId};
+}
+
+export function mediaUploadRecoveryFromJson(value: Object | undefined): MediaUploadRecovery {
+  const json = recordValue(value);
+  return {sameSession: field(json, 'sameSession') === true, afterRestart: field(json, 'afterRestart') === true, requiresSourceReselection: field(json, 'requiresSourceReselection') === true};
+}
+
+export function mediaTransferCancellationFromJson(value: Object | undefined): MediaTransferCancellation {
+  const json = recordValue(value);
+  return {cancelled: field(json, 'cancelled') === true};
+}
+
+export function messageByKeyResponseFromJson(value: Object | undefined): MessageByKeyResponse {
+  const message = field(recordValue(value), 'message');
+  return message == null ? {} : {message: messageFromJson(message)};
 }
 
 // RUST-OWNED WIRE BOUNDARY: BEGIN

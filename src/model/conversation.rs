@@ -21,6 +21,15 @@ fn u64_to_proto_ms(ms: u64) -> i64 {
 
 // ---------- 会话类型（严格对齐 `flare.common.v1.ConversationType`，并与 flare_core CID 前缀一致）----------
 
+/// Routing properties shared by legacy wire types and future application scenarios.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConversationTopology {
+    Addressed,
+    Membership,
+    ScalableMembership,
+    SharedTimeline,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConversationTypePolicy {
     pub conversation_type: ConversationType,
@@ -261,12 +270,21 @@ impl ConversationType {
         *self == ConversationType::Group
     }
 
+    pub fn topology(self) -> ConversationTopology {
+        match self {
+            Self::Group => ConversationTopology::ScalableMembership,
+            Self::Channel | Self::Broadcast => ConversationTopology::SharedTimeline,
+            Self::Ai | Self::Customer | Self::System => ConversationTopology::Membership,
+            Self::Single | Self::Temp | Self::Unspecified => ConversationTopology::Addressed,
+        }
+    }
+
     pub fn uses_subscriber_model(self) -> bool {
-        self.policy().subscriber_model
+        self.topology() != ConversationTopology::Addressed
     }
 
     pub fn requires_member_lookup(self) -> bool {
-        self.policy().member_lookup_required
+        self.topology() != ConversationTopology::Addressed
     }
 
     pub fn fanout_mode(
@@ -287,11 +305,11 @@ impl ConversationType {
         members_count: u32,
         large_group_threshold: u32,
     ) -> ConversationFanoutMode {
-        match self {
-            ConversationType::Channel | ConversationType::Broadcast => {
-                ConversationFanoutMode::FanOutOnRead
-            }
-            ConversationType::Group if members_count >= large_group_threshold.max(1) => {
+        match self.topology() {
+            ConversationTopology::SharedTimeline => ConversationFanoutMode::FanOutOnRead,
+            ConversationTopology::ScalableMembership
+                if members_count >= large_group_threshold.max(1) =>
+            {
                 ConversationFanoutMode::FanOutOnRead
             }
             _ => ConversationFanoutMode::FanOutOnWrite,
@@ -644,6 +662,7 @@ impl Conversation {
     /// 转为 proto ConversationSummary（持久化/回写服务端用）
     pub fn to_proto_summary(&self) -> flare_proto::common::ConversationSummary {
         let mut attributes = self.ext.clone();
+        attributes.retain(|key, _| !key.starts_with("_local."));
         attributes.insert("peer_read_seq".to_string(), self.peer_read_seq.to_string());
         if !self.business_type.trim().is_empty() {
             attributes.insert("business_type".to_string(), self.business_type.clone());

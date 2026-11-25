@@ -186,7 +186,11 @@ fn callback_snapshot<T: Clone>(callbacks: &Arc<RwLock<Vec<T>>>) -> Vec<T> {
     callbacks.safe_read("event_bus").clone()
 }
 
-pub(super) fn dispatch_callbacks<T, F>(callbacks: &Arc<RwLock<Vec<T>>>, invoke: F) -> usize
+pub(super) fn dispatch_callbacks<T, F>(
+    lifetime: &super::SessionLifetime,
+    callbacks: &Arc<RwLock<Vec<T>>>,
+    invoke: F,
+) -> usize
 where
     T: Clone + Send + 'static,
     F: Fn(&T) + Send + 'static,
@@ -197,8 +201,12 @@ where
         return 0;
     }
 
+    let lifetime = lifetime.clone();
     spawn_callback(move || {
         for callback in callbacks {
+            if lifetime.retired() {
+                break;
+            }
             invoke(&callback);
         }
     });
@@ -206,6 +214,7 @@ where
 }
 
 pub(super) fn dispatch_callbacks_with<T, P, M, F>(
+    lifetime: &super::SessionLifetime,
     callbacks: &Arc<RwLock<Vec<T>>>,
     make_payload: M,
     invoke: F,
@@ -223,8 +232,12 @@ where
     }
 
     let payload = make_payload();
+    let lifetime = lifetime.clone();
     spawn_callback(move || {
         for callback in callbacks {
+            if lifetime.retired() {
+                break;
+            }
             invoke(&callback, &payload);
         }
     });
@@ -232,6 +245,7 @@ where
 }
 
 pub(super) fn dispatch_any_callbacks(
+    lifetime: &super::SessionLifetime,
     callbacks: &Arc<RwLock<Vec<FnAny>>>,
     event: SdkEvent,
 ) -> usize {
@@ -242,8 +256,12 @@ pub(super) fn dispatch_any_callbacks(
     }
 
     let event = Arc::new(event);
+    let lifetime = lifetime.clone();
     spawn_callback(move || {
         for callback in callbacks {
+            if lifetime.retired() {
+                break;
+            }
             callback(Arc::clone(&event));
         }
     });
@@ -251,6 +269,7 @@ pub(super) fn dispatch_any_callbacks(
 }
 
 pub(super) fn dispatch_route_callbacks(
+    lifetime: &super::SessionLifetime,
     routes: &Arc<RwLock<Vec<EventRoute>>>,
     event: &SdkEvent,
 ) -> usize {
@@ -268,8 +287,12 @@ pub(super) fn dispatch_route_callbacks(
     }
 
     let event = Arc::new(event.clone());
+    let lifetime = lifetime.clone();
     spawn_callback(move || {
         for callback in callbacks {
+            if lifetime.retired() {
+                break;
+            }
             callback(Arc::clone(&event));
         }
     });

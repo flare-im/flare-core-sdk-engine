@@ -65,7 +65,9 @@ ABI / IPC / language boundary.
 
 ### Target engine boundary
 
-![Target architecture with Message, Conversation, Media and Extension inside the engine, and business plugins, the Social SDK and application hosts outside it](docs/assets/engine-boundary-target.png)
+![Target engine boundary: callers enter through the stable API, the extension contract and the generated contract; the engine holds Message, Conversation, Media and Extension over a shared runtime; storage adapters and bindings sit behind ports](docs/assets/engine-boundary.png)
+
+The Social SDK, plugin hosts, the commerce runtime and applications stay outside the engine. They hold no repository, no global EventBus publishing right and no transport credential. The engine accepts commands locally, works offline and converges recoverably; the server remains the authority for membership, visibility and final ordering.
 
 ## Current production modules
 

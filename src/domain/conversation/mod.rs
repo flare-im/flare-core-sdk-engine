@@ -21,6 +21,7 @@ pub use message_projection::{
 };
 pub use models::ConversationReadDecision;
 pub use read::ConversationReadService;
+pub(crate) use read::{pending_read_seq, set_read_intent};
 pub use read_position::ReadPosition;
 pub use summary_merge::{
     merge_incoming_conversation_summary, preserve_local_remark, preserve_local_single_chat_channel,

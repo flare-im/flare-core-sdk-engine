@@ -245,7 +245,7 @@ async fn offline_reported_before_login_carries_into_the_new_link() {
         .login(
             USER_ID,
             Some("token"),
-            LoginDbKind::Provided(in_memory_im_provider()),
+            LoginDbKind::provided(in_memory_im_provider()),
             |_, _| {},
         )
         .await;
@@ -326,7 +326,7 @@ async fn sdk_managed_tokens_are_issued_by_the_link_once_the_network_is_back() {
         .login(
             USER_ID,
             None,
-            LoginDbKind::Provided(in_memory_im_provider()),
+            LoginDbKind::provided(in_memory_im_provider()),
             |_, _| {},
         )
         .await;

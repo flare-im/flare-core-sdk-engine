@@ -239,6 +239,25 @@ impl MessageReader for MemoryMessageStore {
         Ok(self.data.read().await.get(message_id).cloned())
     }
 
+    async fn get_by_message_key(
+        &self,
+        key: &crate::model::MessageKey,
+    ) -> Result<Option<IMMessage>> {
+        let data = self.data.read().await;
+        let mut matches = data
+            .client_rows(&key.client_msg_id)
+            .map(|(_, row)| row)
+            .filter(|row| {
+                row.conversation_id == key.conversation_id && row.sender_id == key.sender_id
+            });
+        let first = matches.next().cloned();
+        Ok(if matches.next().is_none() {
+            first
+        } else {
+            None
+        })
+    }
+
     async fn get_by_client_msg_id(&self, client_msg_id: &str) -> Result<Option<IMMessage>> {
         let data = self.data.read().await;
         let mut matches = data.client_rows(client_msg_id);
@@ -976,6 +995,29 @@ impl MemoryConversationStore {
         }
     }
 
+    /// Mirror the outcome of a host-side projection transaction, including a
+    /// conflicting write from another tab. The next CAS reads that durable row.
+    pub async fn install_persisted_conversation(
+        &self,
+        id: &str,
+        row: Option<Conversation>,
+    ) -> Result<()> {
+        let Some(row) = row else {
+            return self.delete(id).await;
+        };
+        if row.conversation_id != id {
+            return Err(FlareError::system(
+                "projection reply changed conversation identity",
+            ));
+        }
+        let seq = crate::domain::message_projection_receipt(&row)?.materialized_seq;
+        self.data.write().await.insert(id.to_owned(), row);
+        let mut materialized = self.materialized_max_seq.write().await;
+        let watermark = materialized.entry(id.to_owned()).or_default();
+        *watermark = (*watermark).max(seq);
+        Ok(())
+    }
+
     /// Restore trusted local receipts along with the persisted conversation state.
     pub async fn restore_local_snapshot(&self, conversations: &[Conversation]) -> Result<()> {
         self.save_batch(conversations).await?;
@@ -984,6 +1026,7 @@ impl MemoryConversationStore {
         for persisted in conversations {
             if let Some(current) = data.get_mut(&persisted.conversation_id) {
                 crate::domain::preserve_message_projection(Some(persisted), current);
+                crate::domain::set_read_intent(current, crate::domain::pending_read_seq(persisted));
                 if let Some(message) = current
                     .last_message_id
                     .as_ref()

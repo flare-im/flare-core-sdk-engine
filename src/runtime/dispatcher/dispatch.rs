@@ -46,6 +46,32 @@ impl Dispatcher {
         &self,
         payload: DownlinkPayload,
     ) -> flare_core::common::error::Result<()> {
+        self.bus
+            .lifetime()
+            .until_retired(self.dispatch_active(payload, None))
+            .await
+            .unwrap_or(Ok(()))
+    }
+
+    pub(crate) async fn dispatch_from_link(
+        &self,
+        payload: DownlinkPayload,
+        link: crate::runtime::link::epoch::ConnectionLease,
+    ) -> flare_core::common::error::Result<()> {
+        let work = self.dispatch_active(payload, Some(link.clone()));
+        self.bus
+            .lifetime()
+            .until_retired(link.while_current(work))
+            .await
+            .flatten()
+            .unwrap_or(Ok(()))
+    }
+
+    async fn dispatch_active(
+        &self,
+        payload: DownlinkPayload,
+        link: Option<crate::runtime::link::epoch::ConnectionLease>,
+    ) -> flare_core::common::error::Result<()> {
         match payload {
             DownlinkPayload::MessagePush(push) => {
                 self.metrics.counter_with_labels(
@@ -82,6 +108,7 @@ impl Dispatcher {
                     // win#2：装载了 worker 则投递到有界串行后台 worker（满则在 send().await 背压，
                     // 只压上行读取——视图已先行投递）；未装载（测试 harness）则内联持久化，保持同步语义。
                     let job = PersistJob {
+                        link,
                         messages: durable_for_persist,
                         user_id: current_user_id,
                         delivery_due,
@@ -634,6 +661,22 @@ impl Dispatcher {
                 EventPayload::Read(read) => {
                     if let Some(ref stores) = self.stores {
                         let current_user_id = self.current_user_id.read().await.clone();
+                        if !current_user_id.is_empty()
+                            && read.user_id == current_user_id
+                            && read.read_seq > 0
+                            && let Err(error) =
+                                crate::application::usecases::SyncApplyUseCase::apply_remote_read(
+                                    stores,
+                                    &current_user_id,
+                                    conversation_id,
+                                    read.read_seq,
+                                    None,
+                                )
+                                .await
+                        {
+                            warn!(%error, "failed to confirm own read watermark");
+                            return false;
+                        }
                         // 对方已读回执：将「自己发送且 seq<=read_seq」的消息落库为已读，
                         // 避免仅靠前端内存态导致会话切换/重启后双对号丢失。
                         if !current_user_id.is_empty()

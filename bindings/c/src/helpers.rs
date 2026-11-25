@@ -76,7 +76,12 @@ pub fn parse_upload_options(options_json: *const c_char) -> Result<Option<Upload
     if chunk_size == 0 {
         return Err(FLARE_ERR_INVALID_PARAM);
     }
+    let transfer_id = match value.get("transferId") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(value.as_str().ok_or(FLARE_ERR_INVALID_PARAM)?.to_owned()),
+    };
     Ok(Some(UploadOptions {
+        transfer_id,
         chunk_size,
         purpose,
     }))

@@ -320,7 +320,17 @@ pub fn optional_upload_options(value: &Value, key: &str) -> Result<Option<Upload
     if chunk_size == 0 {
         return Err(binding_invalid_parameter("invalid upload chunkSize"));
     }
+    let transfer_id = match raw.get("transferId") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or_else(|| binding_invalid_parameter("invalid transferId"))?
+                .to_owned(),
+        ),
+    };
     Ok(Some(UploadOptions {
+        transfer_id,
         chunk_size,
         purpose,
     }))

@@ -23,10 +23,11 @@ pub(crate) use capability::TenantNotices;
 pub(crate) use capability::host_profile::{AppIdentity, PluginHostSlot};
 pub use capability::{
     CapabilityApi, CapabilityConsentPrompt, CapabilityDescriptorDto, CapabilityDispatchResult,
-    CapabilityHostAnswer, CapabilityHostRequests, CapturedFile, ConsentDecision,
-    DocumentCapturePrompt, FilePickPrompt, LocationFix, LocationPrompt, PaymentConfirmationError,
-    PaymentConfirmationPrompt, PaymentSettled, PluginCapabilityHost, PluginFileUploadPage,
-    PluginFileUploadRequest, manifest_major,
+    CapabilityHostAnswer, CapabilityHostRequests, CapturedFile, ConfirmationDriver,
+    ConfirmationExchange, ConfirmationStep, ConsentDecision, DocumentCapturePrompt, FilePickPrompt,
+    LocationFix, LocationPrompt, PaymentConfirmationError, PaymentConfirmationPrompt,
+    PaymentSettled, PluginCapabilityHost, PluginFileUploadPage, PluginFileUploadRequest,
+    manifest_major,
 };
 pub use conversation::ConversationApi;
 pub use media::{

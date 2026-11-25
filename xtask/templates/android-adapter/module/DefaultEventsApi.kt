@@ -345,7 +345,6 @@ private fun nativeEventFromCode(eventType: Int, payload: Map<String, Any?>): Any
     when (eventType) {
         EventCode.CONNECTION_STATUS -> connectionStatusFromJson(payload)
         EventCode.CONNECTION_SYNC_STATE_CHANGED -> connectionSyncStateEventFromJson(payload)
-        EventCode.UPDATE_STATE -> updateStatusFromJson(payload)
         EventCode.MESSAGE_SEND_ACK -> MessageSendAckEvent(
             ack = sendAckFromJson(requiredEventMap(payload["ack"], "ack")),
         )

@@ -141,16 +141,27 @@ async fn prepare_preserves_network_recovery_reported_during_session_replacement(
         }
     }
 
+    struct PauseExtension(Arc<PauseLogout>);
+    impl crate::spi::SdkExtension for PauseExtension {
+        fn namespace(&self) -> &str {
+            "test.pause_logout"
+        }
+        fn install(&self, registry: &mut crate::spi::ExtensionRegistry) -> Result<()> {
+            registry.add_lifecycle(self.0.clone());
+            Ok(())
+        }
+    }
+
     let pause = Arc::new(PauseLogout::default());
     let client = crate::client::IMClientBuilder::new()
         .stores(in_memory_empty_im_provider())
-        .add_extension_lifecycle_arc(pause.clone())
+        .add_extension(PauseExtension(pause.clone()))
         .build()
         .expect("build SDK");
     client
         .prepare(
             "alice",
-            LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
+            LoginDbKind::provided(crate::storage::in_memory_im_provider()),
         )
         .await
         .expect("prepare first local session");
@@ -165,7 +176,7 @@ async fn prepare_preserves_network_recovery_reported_during_session_replacement(
             client
                 .prepare(
                     "bob",
-                    LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
+                    LoginDbKind::provided(crate::storage::in_memory_im_provider()),
                 )
                 .await
         })
@@ -273,7 +284,9 @@ async fn session_active_sync_is_independent_of_transport_state() {
 
     let apis = {
         let inner = client.inner.read().await;
-        IMClient::connected_apis_from_inner(&inner).expect("connected apis")
+        client
+            .connected_apis_from_inner(&inner)
+            .expect("connected apis")
     };
     client.store_connected_apis_snapshot(apis);
     assert!(client.session_active_sync());
@@ -293,7 +306,9 @@ async fn api_getters_use_session_snapshot_when_inner_lock_is_busy() {
         .expect("build client");
     let apis = {
         let inner = client.inner.read().await;
-        IMClient::connected_apis_from_inner(&inner).expect("connected apis")
+        client
+            .connected_apis_from_inner(&inner)
+            .expect("connected apis")
     };
     client.store_connected_apis_snapshot(apis);
     client.store_state_snapshot(SdkState::Ready);
@@ -537,7 +552,7 @@ async fn prepared_session_searches_offline_and_invalidates_old_user() {
     client
         .prepare(
             "alice",
-            LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
+            LoginDbKind::provided(crate::storage::in_memory_im_provider()),
         )
         .await
         .unwrap();
@@ -558,7 +573,7 @@ async fn prepared_session_searches_offline_and_invalidates_old_user() {
     client
         .prepare(
             "bob",
-            LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
+            LoginDbKind::provided(crate::storage::in_memory_im_provider()),
         )
         .await
         .unwrap();
@@ -684,7 +699,7 @@ async fn the_host_refresher_survives_the_login_rebuild() {
     client
         .prepare(
             "alice",
-            LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
+            LoginDbKind::provided(crate::storage::in_memory_im_provider()),
         )
         .await
         .unwrap();
@@ -751,7 +766,7 @@ async fn the_build_time_endpoints_and_runtime_survive_the_login_rebuild() {
     client
         .prepare(
             "alice",
-            LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
+            LoginDbKind::provided(crate::storage::in_memory_im_provider()),
         )
         .await
         .unwrap();
@@ -827,12 +842,12 @@ async fn the_same_user_keeps_the_outbox_across_prepare() {
         .await
         .unwrap();
     client
-        .prepare("alice", LoginDbKind::Provided(stores.clone()))
+        .prepare("alice", LoginDbKind::provided(stores.clone()))
         .await
         .unwrap();
     client.logout().await.unwrap();
     client
-        .prepare("alice", LoginDbKind::Provided(stores.clone()))
+        .prepare("alice", LoginDbKind::provided(stores.clone()))
         .await
         .unwrap();
     let left: Vec<String> = reader
@@ -850,7 +865,7 @@ async fn the_same_user_keeps_the_outbox_across_prepare() {
 
     client.logout().await.unwrap();
     client
-        .prepare("bob", LoginDbKind::Provided(stores))
+        .prepare("bob", LoginDbKind::provided(stores))
         .await
         .unwrap();
     assert!(reader.list().await.unwrap().is_empty(), "换了用户：清空");
@@ -1018,7 +1033,7 @@ async fn a_prepared_session_handles_remote_messages_for_its_own_account() {
     client
         .prepare(
             "alice",
-            LoginDbKind::Provided(crate::storage::in_memory_im_provider()),
+            LoginDbKind::provided(crate::storage::in_memory_im_provider()),
         )
         .await
         .unwrap();
@@ -1187,5 +1202,107 @@ async fn encrypted_prepare_uses_the_merged_tenant_for_keys_and_data() {
         .unwrap()
         .exists()
     );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+struct ControlledAccountOpen {
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+#[async_trait::async_trait]
+impl crate::storage::AccountStoreOpener for ControlledAccountOpen {
+    async fn open(
+        &self,
+        _: &std::path::Path,
+        _: &str,
+        _: &str,
+    ) -> crate::Result<crate::storage::StoreProvider> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(crate::storage::in_memory_im_provider())
+    }
+}
+
+#[tokio::test]
+async fn superseded_open_for_same_account_cannot_replace_the_current_store() {
+    use crate::client::LoginDbKind;
+    let client = IMClient::builder()
+        .config(crate::client::config::SdkConfig::with_endpoints(
+            fixture_endpoints(),
+        ))
+        .stores(in_memory_empty_im_provider())
+        .build()
+        .unwrap();
+    let gate = Arc::new(ControlledAccountOpen {
+        started: Default::default(),
+        release: Default::default(),
+    });
+    let slow = client.prepare("alice", LoginDbKind::Open(gate.clone()));
+    let replace = async {
+        gate.started.notified().await;
+        let provided = || LoginDbKind::provided(crate::storage::in_memory_im_provider());
+        client.prepare("alice", provided()).await.unwrap();
+        let old = client.conversation_async().await.unwrap();
+        let builder = client.message_build().unwrap();
+        let mut receiver = client.bus().await.unwrap().subscribe_shared_raw();
+        client.prepare("alice", provided()).await.unwrap();
+        gate.release.notify_one();
+        assert!(old.list().await.is_err());
+        assert!(
+            builder
+                .create_text("room", "old", false, &[])
+                .await
+                .is_err()
+        );
+        assert!(receiver.recv().await.is_err());
+        client.session_generation().await
+    };
+    let (superseded, current) = tokio::join!(slow, replace);
+    assert_eq!(
+        superseded.unwrap_err().code(),
+        Some(ErrorCode::NotConnected)
+    );
+    assert_eq!(client.session_generation().await, current);
+    assert!(
+        client
+            .conversation_async()
+            .await
+            .unwrap()
+            .list()
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn init_for_new_tenant_invalidates_pending_account_open() {
+    use crate::client::{LoginDbKind, SdkConfigOverlay};
+    let client = IMClient::builder()
+        .stores(in_memory_empty_im_provider())
+        .build()
+        .unwrap();
+    let root = std::env::temp_dir().join(format!("flare-tenant-open-{}", uuid::Uuid::new_v4()));
+    let config = |tenant: &str| SdkConfigOverlay {
+        tenant_id: Some(tenant.into()),
+        data_url: Some(format!("file://{}", root.display())),
+        ..Default::default()
+    };
+    client.init(None, Some(config("old-tenant"))).await.unwrap();
+    let gate = Arc::new(ControlledAccountOpen {
+        started: Default::default(),
+        release: Default::default(),
+    });
+    let opening = client.prepare("alice", LoginDbKind::Open(gate.clone()));
+    let reconfigure = async {
+        gate.started.notified().await;
+        client
+            .init(None, Some(config("current-tenant")))
+            .await
+            .unwrap();
+        gate.release.notify_one();
+    };
+    let (old, ()) = tokio::join!(opening, reconfigure);
+    assert_eq!(old.unwrap_err().code(), Some(ErrorCode::NotConnected));
+    assert!(!client.session_active_sync());
     std::fs::remove_dir_all(root).unwrap();
 }

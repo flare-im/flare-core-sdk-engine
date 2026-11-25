@@ -56,6 +56,12 @@ cd flare-im-core-sdk && cargo check
 | `flare-im-core-sdk` | 客户端 IM 行为、离线本地状态、投影、outbound queue、事件路由、扩展能力入口 |
 | bindings | C/Tauri/UniFFI/Wasm 的边界适配，不复制核心语义 |
 
+### 目标引擎边界
+
+![目标引擎边界：调用方经稳定 API、扩展契约与生成契约进入；Engine 在共享运行时之上持有 Message、Conversation、Media 与 Extension；存储适配与绑定依附端口](docs/assets/engine-boundary.zh-CN.png)
+
+Social SDK、插件宿主、商业 runtime 与应用都在 Engine 之外，不持有 repository、全量 EventBus 发布权或 transport 凭证。Engine 负责本地接受、离线处理和可恢复收敛，成员资格、可见性与最终顺序以服务端为准。
+
 ## 当前生产模块
 
 `src/lib.rs` 只 re-export 当前 public contract。SDK 行为按边界放在 `client`、`application`、`domain`、`core`、`infrastructure`、`platform` 和 `extension` 中；旧 prototype route facade 不再是生产合同。

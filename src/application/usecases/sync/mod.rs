@@ -167,17 +167,68 @@ impl SyncApplyUseCase {
         let messages: Vec<IMMessage> = row.messages.into_iter().map(IMMessage::new).collect();
         self.persist_converged_messages(user_id, messages, InboundDelivery::HistoryReplay)
             .await?;
-        // 快照行携带服务端权威已读/未读，直接覆盖本地摘要（LWW：快照即最新状态）。
-        self.stores
-            .conversations
-            .update_unread(
-                &row.conversation_id,
-                row.unread_count.max(0) as u32,
-                row.last_read_seq,
-            )
-            .await?;
+        Self::apply_remote_read(
+            &self.stores,
+            user_id,
+            &row.conversation_id,
+            row.last_read_seq,
+            Some((row.last_conversation_seq, row.unread_count.max(0) as u32)),
+        )
+        .await?;
         self.record_coverage(&row.conversation_id, proven).await;
         Ok(row.last_conversation_seq)
+    }
+
+    pub(crate) async fn apply_remote_read(
+        stores: &StoreProvider,
+        user_id: &str,
+        id: &str,
+        server_seq: u64,
+        snapshot_unread: Option<(u64, u32)>,
+    ) -> Result<()> {
+        let store = &stores.conversations;
+        while let Some(current) = store.get(id).await? {
+            let mut next = current.clone();
+            let confirmed = crate::domain::pending_read_seq(&current)
+                .is_some_and(|desired| desired <= server_seq);
+            if confirmed {
+                crate::domain::set_read_intent(&mut next, None);
+            }
+            if let Some((snapshot_max, unread)) = snapshot_unread
+                .filter(|(max, _)| *max >= current.max_seq && server_seq >= current.last_read_seq)
+            {
+                next.unread_count = unread;
+                next.last_read_seq = server_seq;
+                next.max_seq = snapshot_max.max(server_seq);
+                if unread == 0 {
+                    next.mention_count = 0;
+                    next.mention_me = false;
+                }
+            } else if server_seq > current.last_read_seq {
+                next.max_seq = current.max_seq.max(server_seq);
+                next.unread_count = super::ConversationCommandUseCase::unread_after_read(
+                    Some(stores.messages.as_ref()),
+                    &current,
+                    server_seq,
+                    next.max_seq,
+                    user_id,
+                )
+                .await?;
+                next.last_read_seq = server_seq;
+            } else if !confirmed {
+                break;
+            }
+            if next.unread_count == 0 {
+                next.mention_count = 0;
+                next.mention_me = false;
+            }
+            if crate::domain::message_projection_matches(&current, &next)
+                || store.commit_message_projection(&current, &next).await?
+            {
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// 消息收敛落库管线（页应用/快照行应用共用）：身份规范化、pending 合并与可见性过滤 →
@@ -301,45 +352,59 @@ impl SyncApplyUseCase {
                     before_save.get(&conversation.conversation_id),
                 );
             }
-            if let Err(error) = self.stores.conversations.save_batch(&conversations).await {
-                tracing::error!(%error, count = conversations.len(), "保存会话失败");
-            } else {
-                for conversation in &conversations {
-                    let previous_unread = before_save
-                        .get(&conversation.conversation_id)
-                        .map(|c| c.unread_count)
-                        .unwrap_or_default();
-                    if let Ok(Some(updated)) = self
-                        .stores
-                        .conversations
-                        .get(&conversation.conversation_id)
-                        .await
-                        && updated.unread_count != previous_unread
-                    {
-                        self.bus.publish(SdkEvent::Conversation(
-                            ConversationEvent::UnreadCountChanged {
-                                conversation_id: conversation.conversation_id.clone(),
-                                unread_count: updated.unread_count,
-                            },
-                        ));
-                    }
-                    if let Err(error) = self
-                        .stores
-                        .messages
-                        .reconcile_outgoing_read_by_peer_seq(
-                            &conversation.conversation_id,
-                            user_id,
-                            conversation.peer_read_seq,
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            conversation_id = %conversation.conversation_id,
-                            peer_read_seq = conversation.peer_read_seq,
-                            error = %error,
-                            "同步会话时修正对端已读位点失败"
-                        );
-                    }
+            self.stores.conversations.save_batch(&conversations).await?;
+            for conversation in &conversations {
+                if before_save
+                    .get(&conversation.conversation_id)
+                    .is_some_and(|previous| {
+                        conversation.last_read_seq > previous.last_read_seq
+                            || crate::domain::pending_read_seq(previous)
+                                .is_some_and(|desired| desired <= conversation.last_read_seq)
+                    })
+                {
+                    Self::apply_remote_read(
+                        &self.stores,
+                        user_id,
+                        &conversation.conversation_id,
+                        conversation.last_read_seq,
+                        Some((conversation.max_seq, conversation.unread_count)),
+                    )
+                    .await?;
+                }
+                let previous_unread = before_save
+                    .get(&conversation.conversation_id)
+                    .map(|c| c.unread_count)
+                    .unwrap_or_default();
+                if let Ok(Some(updated)) = self
+                    .stores
+                    .conversations
+                    .get(&conversation.conversation_id)
+                    .await
+                    && updated.unread_count != previous_unread
+                {
+                    self.bus.publish(SdkEvent::Conversation(
+                        ConversationEvent::UnreadCountChanged {
+                            conversation_id: conversation.conversation_id.clone(),
+                            unread_count: updated.unread_count,
+                        },
+                    ));
+                }
+                if let Err(error) = self
+                    .stores
+                    .messages
+                    .reconcile_outgoing_read_by_peer_seq(
+                        &conversation.conversation_id,
+                        user_id,
+                        conversation.peer_read_seq,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        conversation_id = %conversation.conversation_id,
+                        peer_read_seq = conversation.peer_read_seq,
+                        error = %error,
+                        "同步会话时修正对端已读位点失败"
+                    );
                 }
             }
         } else {

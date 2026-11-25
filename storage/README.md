@@ -89,6 +89,18 @@ node tests/storage_parity/run.mjs "$native_target/debug/libflare_im_core_sdk_ffi
 
 Linux 将动态库后缀换成 `.so`。驱动读取同一个 [发信样本](../tests/storage_parity/send.json)，在临时账号库和浏览器配置目录中各创建两条离线消息。两个独立 C 进程、两次独立的 Chromium 启动分别负责写入和读取。断言覆盖完整消息、完整会话，以及持久化 outbox 的客户端 ID、会话 ID 和顺序。
 
+### C / WASM / Tauri 绑定一致性
+
+沿用上面构建好的动态库与 WASM 包，离线运行：
+
+```sh
+node tests/storage_parity/bindings.mjs "$native_target/debug/libflare_im_core_sdk_ffi.dylib" "$FLARE_SDK_PRODUCT_DIST/wasm/pkg"
+```
+
+脚本首次运行时编译 [Tauri 无窗口驱动](../bindings/tauri/examples/parity_driver.rs)，它走 Tauri 命令相同的 `invoke_api_id_json` 路径；已编译时用 `TAURI_PARITY_DRIVER` 指定。三端各开一个临时账号，执行同一组命令并逐项比对：未 prepare、参数不全与未知操作的结构化错误（`code`、`reason`、`retryable`、`message`），以原始 JSON 传入的 2^53 − 1 `sortTs`（契约对 JS 宿主保证的 u64 上限） 与字节数组 `extensions` 存取后是否原样返回，本地发信前后时间线视图的 revision，`media.cancel_transfer` 找不到任务的结果，以及 `message.await_confirmation` 离线超时。WASM 与 Tauri 的结果必须与 C 完全相同。
+
+存储层的同一组契约样本在 `tests/external-consumer` 中运行：`cargo test --locked -p flare-core-external-consumer storage_contract`。内存与 SQLite 两个实现须给出相同的分页、按键查找、重放收敛与未读/读位结果；第三方后端把自己的 `StoreProvider` 加入同一用例即可对照。
+
 ### 真实网关 ACK、重连和补偿对测
 
 沿用上节生成的 C 动态库和 release WASM 包。需要本机的 `psql`、`redis-cli`（故障对测使用 Redis 7 的 `EVAL_RO`），以及已构建的 Core 网关、消息、同步服务和 [隔离栈脚本](../scripts/live_stack.py) 所列的依赖。在同一个 shell 执行以下命令。若已有本次测试专用的运行栈，沿用它的 `LIVE_SMOKE_DIR`、`LIVE_STACK_PREFIX` 和端口配置，从导入环境变量一行开始。
@@ -177,3 +189,20 @@ Runtime 的 `storage.encryption.key_namespace` 只选择密钥命名空间；数
 私有事件时钟只属于本地状态，wire 收发会剥离；自定义存储宿主应保留现有存储快照 JSON，不能用 `to_proto` 代替本地快照。
 
 消息保留终态不可被旧快照撤销。服务端 reaction 快照不携带本地事件序列时，保留已知版本的用户 / emoji 操作，其他用户的快照反应照常合并；后续更高版本事件可继续更新。标记为单个值，类型共用同一个事件时钟。
+
+## 排除宿主编译的空库对照
+
+先构建并固定两份 Writer、同一份 C 动态库及生产 WASM。原生压测驱动在计时前编译，`ACK_NATIVE_DRIVER` 指向用当前头文件和同一动态库构建的可执行文件。macOS 可用 `otool -L "$ACK_NATIVE_DRIVER"` 核对实际装载路径。以下命令沿用上一节的已启动专属栈、导出的连接变量和产物路径。
+
+```sh
+export ACK_NATIVE_DRIVER="$LIVE_SMOKE_DIR/native-driver"
+cc tests/storage_parity/native.c -I ../flare-core-sdk/native/abi \
+  "$native_target/debug/libflare_im_core_sdk_ffi.dylib" -pthread \
+  -Wl,-rpath,"$native_target/debug" -o "$ACK_NATIVE_DRIVER"
+ACK_BENCH_STAGES=1 ACK_BENCH_LEVELS=16,32 ACK_BENCH_MESSAGES=1024 ACK_BENCH_ROUNDS=2 \
+  TOKIO_WORKER_THREADS=2 python3 tests/storage_parity/quiet_host.py "$LIVE_SMOKE_DIR/host.json" \
+  node tests/storage_parity/ack_load.mjs "$native_target/debug/libflare_im_core_sdk_ffi.dylib" \
+  "$FLARE_SDK_PRODUCT_DIST/wasm/pkg"
+```
+
+每组从独立空数据卷启动，固定服务、样本、核验截止和资源配置。分别运行原 Writer 池 2、原 Writer 池 4，以及新 Writer 池 4。池 4 的前后版本可反向再测一对。脚本等到连续 10 秒编译安静后启动客户端，对整个子进程采样，并在结束时复核本工作区 sccache 的请求计数。退出码 75 表示整组作废，需换空库重跑。证据保存在 `host.json`，包括实际最大采样间隔。网关持久 ACK 的百分位仅包含在线收到的持久帧，`syncOnly`、`outcomes.timeout` 和 SDK 百分位另行保留。逐条超时重试在最后一组结束后用本节同一份库运行 `ack_timeout.mjs`。

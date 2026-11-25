@@ -12,6 +12,7 @@ use flare_im_core_sdk::serde_json::{self, Value};
 
 pub const MEDIA_DISPATCH_OPERATIONS: &[&str] = &[
     "get_url",
+    "resolve_attachment",
     "temp_download_url",
     "resolve_access",
     "cache_remote",
@@ -22,6 +23,9 @@ pub const MEDIA_DISPATCH_OPERATIONS: &[&str] = &[
     "upload_file",
     "upload_image",
     "upload_video",
+    "upload_recovery",
+    "cancel_upload",
+    "cancel_transfer",
     "upload_bytes",
     "delete_file",
     "user_download_get_subfolder",
@@ -108,6 +112,14 @@ pub async fn dispatch_media(
                     .await?,
             )
         }
+        "resolve_attachment" => {
+            let bound_value: flare_im_core_sdk::model::media::ResolveAttachmentRequest =
+                from_value(
+                    params.clone(),
+                    "flare_im_core_sdk::model::media::ResolveAttachmentRequest",
+                )?;
+            json(api.resolve_attachment(bound_value).await?)
+        }
         "temp_download_url" => {
             let file_id_s = json_string(&params, "fileId")?;
             let expires_in_v = optional_i32(&params, "expiresIn")?.unwrap_or(3600);
@@ -172,6 +184,20 @@ pub async fn dispatch_media(
                     .await?,
             )
         }
+        "upload_recovery" => {
+            let source_kind_s = json_string(&params, "sourceKind")?;
+            json(api.upload_recovery(&source_kind_s).await?)
+        }
+        "cancel_upload" => {
+            let transfer_id_s = json_string(&params, "transferId")?;
+            let cancelled = api.cancel_upload(&transfer_id_s).await?;
+            json(serde_json::json!({ "cancelled": cancelled }))
+        }
+        "cancel_transfer" => {
+            let transfer_id_s = json_string(&params, "transferId")?;
+            let cancelled = api.cancel_transfer(&transfer_id_s).await?;
+            json(serde_json::json!({ "cancelled": cancelled }))
+        }
         "upload_bytes" => {
             let bytes_v = json_bytes_vec(&params, "bytes")?;
             let file_name_s = json_string(&params, "fileName")?;
@@ -197,6 +223,18 @@ pub async fn dispatch_media_json(
     operation: &str,
     params_json: &str,
 ) -> Result<BindingResponse> {
-    let params = dispatch_params_from_json(params_json)?;
-    dispatch_media(api, operation, params).await
+    match operation {
+        "resolve_attachment" => {
+            let bound_value: flare_im_core_sdk::model::media::ResolveAttachmentRequest =
+                from_json_str(
+                    params_json,
+                    "flare_im_core_sdk::model::media::ResolveAttachmentRequest",
+                )?;
+            json(api.resolve_attachment(bound_value).await?)
+        }
+        _ => {
+            let params = dispatch_params_from_json(params_json)?;
+            dispatch_media(api, operation, params).await
+        }
+    }
 }

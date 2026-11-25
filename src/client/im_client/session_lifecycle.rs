@@ -157,19 +157,35 @@ impl IMClient {
     /// 该操作会断开连接、推进会话代际并清理 `message/conversation` API 句柄；
     /// 调用后需重新 `login` 或 `connect` 才可继续收发消息。
     pub async fn logout(&self) -> Result<()> {
-        self.clear_session_snapshot();
+        self.logout_session().await.1
+    }
+
+    async fn logout_session(&self) -> (u64, Result<()>) {
         let lifecycle = self.extension_lifecycle_snapshot(None).await;
-        let (engine, presence_api, presence_user_id, http_request_context, vault, capability_api) = {
+        let (
+            engine,
+            presence_api,
+            presence_user_id,
+            http_request_context,
+            capability_api,
+            generation,
+        ) = {
             let mut g = self.inner.write().await;
             let presence_api = g.presence_api.clone();
             let presence_user_id = g.current_user_id.clone();
             g.session_generation = g.session_generation.wrapping_add(1);
             self.store_session_generation_snapshot(g.session_generation);
+            self.clear_session_snapshot();
+            self.store_state_snapshot(SdkState::Disconnected);
             g.current_user_id = None;
             g.connect_token = None;
             // 登出即放弃这个账号的长效凭据：内存里的与宿主安全存储里的都不留。
             g.refresh_token = None;
-            let vault = g.refresh_token_vault.take();
+            if let (Some(vault), Some(user)) =
+                (g.refresh_token_vault.take(), presence_user_id.as_deref())
+            {
+                vault.clear(user).await;
+            }
             g.message_api = None;
             g.media_api = None;
             let capability_api = g.capability_api.take();
@@ -177,27 +193,26 @@ impl IMClient {
             g.capability_registry = None;
             g.message_build_api = None;
             g.conversation_api = None;
+            g.view_api = None;
             let engine = g.engine.take();
+            if let Some(engine) = &engine {
+                engine.bus().lifetime().retire();
+            }
             let http_request_context = g.http_request_context.clone();
             (
                 engine,
                 presence_api,
                 presence_user_id,
                 http_request_context,
-                vault,
                 capability_api,
+                g.session_generation,
             )
         };
         // Open web bundle pages end with the session; what bundles stored goes.
         if let Some(api) = capability_api.as_ref() {
             api.end_bundle_sessions(presence_user_id.as_deref()).await;
         }
-        self.clear_session_snapshot();
-        self.store_state_snapshot(SdkState::Disconnected);
         self.reconcile_push_in_background();
-        if let (Some(vault), Some(user_id)) = (vault.as_ref(), presence_user_id.as_deref()) {
-            vault.clear(user_id).await;
-        }
         if let Some(engine) = engine.as_ref() {
             engine.deactivate_local_session().await;
         }
@@ -218,12 +233,13 @@ impl IMClient {
             context.set_auth_context(String::new(), None).await;
             context.clear_gateway_context().await;
         }
-        if let Some(mut e) = engine {
-            e.disconnect().await?;
-        }
+        let result = match engine {
+            Some(mut engine) => engine.disconnect().await,
+            None => Ok(()),
+        };
         Self::notify_extension_disconnect_snapshot(&lifecycle).await;
         Self::notify_extension_logout_snapshot(&lifecycle).await;
-        Ok(())
+        (generation, result)
     }
 
     /// 反初始化 SDK 运行态。
@@ -232,31 +248,45 @@ impl IMClient {
     /// `uninit` 会在结束会话后清空环境、配置、数据根与宿主 HTTP 上下文，允许同一 client
     /// 以新的 `SdkConfigOverlay` 重新 [`Self::init`]。
     pub async fn uninit(&self) -> Result<()> {
-        let logout_result = self.logout().await;
+        let (generation, result) = self.logout_session().await;
         {
             let mut g = self.inner.write().await;
+            if g.session_generation != generation {
+                return Err(Self::not_connected());
+            }
             g.environment = None;
             g.sdk_config = None;
             g.data_root = None;
             g.http_request_context = None;
             g.notification_registry = None;
         }
-        logout_result
+        result
     }
 
     /// 登录前清理旧会话：presence / disconnect 带短超时，避免 Consul 或 gRPC 阻塞 `sdk_login`。
-    pub(super) async fn logout_for_login(&self) -> Result<()> {
+    async fn logout_for_login(&self, expected_generation: u64) -> Result<u64> {
         const PRESENCE_LOGOUT_TIMEOUT: Duration = Duration::from_secs(2);
         const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
-        self.clear_session_snapshot();
         let lifecycle = self.extension_lifecycle_snapshot(None).await;
-        let (engine, presence_api, presence_user_id, http_request_context, capability_api) = {
+        let (
+            engine,
+            presence_api,
+            presence_user_id,
+            http_request_context,
+            capability_api,
+            generation,
+        ) = {
             let mut g = self.inner.write().await;
+            if g.session_generation != expected_generation {
+                return Err(Self::not_connected());
+            }
             let presence_api = g.presence_api.clone();
             let presence_user_id = g.current_user_id.clone();
             g.session_generation = g.session_generation.wrapping_add(1);
             self.store_session_generation_snapshot(g.session_generation);
+            self.clear_session_snapshot();
+            self.store_state_snapshot(SdkState::Disconnected);
             g.current_user_id = None;
             g.connect_token = None;
             g.message_api = None;
@@ -266,7 +296,11 @@ impl IMClient {
             g.capability_registry = None;
             g.message_build_api = None;
             g.conversation_api = None;
+            g.view_api = None;
             let engine = g.engine.take();
+            if let Some(engine) = &engine {
+                engine.bus().lifetime().retire();
+            }
             let http_request_context = g.http_request_context.clone();
             (
                 engine,
@@ -274,14 +308,13 @@ impl IMClient {
                 presence_user_id,
                 http_request_context,
                 capability_api,
+                g.session_generation,
             )
         };
         // A new sign-in ends the open bundle pages; what bundles stored stays.
         if let Some(api) = capability_api.as_ref() {
             api.end_bundle_sessions(None).await;
         }
-        self.clear_session_snapshot();
-        self.store_state_snapshot(SdkState::Disconnected);
         self.reconcile_push_in_background();
         if let Some(engine) = engine.as_ref() {
             engine.deactivate_local_session().await;
@@ -319,7 +352,7 @@ impl IMClient {
         }
         Self::notify_extension_disconnect_snapshot(&lifecycle).await;
         Self::notify_extension_logout_snapshot(&lifecycle).await;
-        Ok(())
+        Ok(generation)
     }
 
     /// 登录入口：按用户初始化存储、建立连接并切换为新会话。
@@ -337,6 +370,16 @@ impl IMClient {
     /// 幂等：对任意 user 重复调用都会先清理旧会话、丢弃未连接引擎，再按新 user 重建本地栈。
     #[tracing::instrument(skip(self, db), fields(user_id = %user_id))]
     pub async fn prepare(&self, user_id: &str, db: LoginDbKind) -> Result<()> {
+        self.prepare_session(user_id, db).await.map(|_| ())
+    }
+
+    async fn prepare_session(&self, user_id: &str, db: LoginDbKind) -> Result<u64> {
+        if user_id.is_empty() || user_id.trim() != user_id {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "invalid account id",
+            ));
+        }
         let snap = {
             let g = self.inner.read().await;
             (
@@ -357,9 +400,10 @@ impl IMClient {
                 g.refresh_token_vault.clone(),
                 // 宿主的插件界面资料：属于宿主，跨会话保留。
                 g.plugin_host.clone(),
+                g.session_generation,
             )
         };
-        self.logout_for_login().await?;
+        let opening_generation = self.logout_for_login(snap.12).await?;
         let data_root = match snap.2.clone() {
             Some(path) => path,
             None => {
@@ -384,15 +428,24 @@ impl IMClient {
             .tenant_id
             .as_deref()
             .unwrap_or(crate::shared::util::DEFAULT_TENANT_ID);
+        let scoped_store = matches!(&db, LoginDbKind::Open(_));
         let vault = refresh_token_vault_for(&db, tenant);
         let stores = match db {
             LoginDbKind::Open(opener) => opener.open(&data_root, tenant, user_id).await?,
-            LoginDbKind::Provided(stores) => stores,
+            LoginDbKind::Provided(stores) => *stores,
         };
         stores.require_reliable_outbox()?;
         let mut child_builder = IMClientBuilder::new().config(config).stores(stores);
-        if let Some(ctx) = snap.3.clone() {
-            child_builder = child_builder.http_request_context(ctx);
+        if let Some(ctx) = &snap.3 {
+            let context = Arc::new(ctx.fork_auth_scope());
+            if let Some(refresher) = snap.6.clone() {
+                context
+                    .set_core_bearer_renewal(Some(Arc::new(
+                        crate::client::token_provider::ConnectTokenRenewal(refresher),
+                    )))
+                    .await;
+            }
+            child_builder = child_builder.http_request_context(context);
         }
         // 地址快照和传输配置由宿主客户端跨会话持有。
         if let Some(connection) = snap.5.clone() {
@@ -408,9 +461,6 @@ impl IMClient {
         inner.environment = snap.0;
         inner.sdk_config = snap.1;
         inner.data_root = Some(data_root);
-        if inner.http_request_context.is_none() {
-            inner.http_request_context = snap.3;
-        }
         // 宿主装的续期回调跨会话保留：它属于宿主，不属于某一次登录。
         inner.connect_token_refresher = snap.6;
         inner.refresh_token_vault = vault.clone();
@@ -428,21 +478,24 @@ impl IMClient {
         let same_user = previous_user
             .as_deref()
             .is_none_or(|previous| previous == user_id);
-        // 换了账号：上一个账号存着的刷新令牌不再留。冷启动时没有上一个会话的保管处，用这一次的
-        // （宿主的安全存储是同一个，按用户分项）。
-        if !same_user
-            && let Some(previous) = previous_user.as_deref()
-            && let Some(previous_vault) = snap.10.as_ref().or(vault.as_ref())
-        {
-            previous_vault.clear(previous).await;
-        }
         // 本地会话身份随 prepare 建立：bootstrap_startup_home / 视图等本地优先
         // 读路径在 connect 之前即可出图（热启动 T0）。
         if let Some(engine) = inner.engine.as_ref() {
             engine.adopt_local_session_identity(user_id).await;
         }
-        {
+        let prepared_generation = {
             let mut current = self.inner.write().await;
+            if current.session_generation != opening_generation {
+                return Err(Self::not_connected());
+            }
+            // 换了账号：上一个账号存着的刷新令牌不再留。冷启动时没有上一个会话的保管处，用这一次的
+            // （宿主的安全存储是同一个，按用户分项）。
+            if !same_user
+                && let Some(previous) = previous_user.as_deref()
+                && let Some(previous_vault) = snap.10.as_ref().or(vault.as_ref())
+            {
+                previous_vault.clear(previous).await;
+            }
             if let (Some(previous), Some(next)) = (&current.connection, &inner.connection) {
                 next.set_protocol_mode(previous.protocol_mode());
             }
@@ -473,19 +526,23 @@ impl IMClient {
             *current = inner;
             self.store_session_generation_snapshot(current.session_generation);
             self.store_state_snapshot(SdkState::Disconnected);
-            self.store_connected_apis_snapshot(Self::connected_apis_from_inner(&current)?);
+            self.store_connected_apis_snapshot(self.connected_apis_from_inner(&current)?);
             // 准备好就能接推送：被推送冷启动、还没连上的进程也能按本地已读与台账判断。
             self.attach_push_inbox(&current);
-        }
-        self.repair_local_conversation_identities_on_login(user_id)
-            .await?;
-        tokio::task::yield_now().await;
-        self.prepare_outbox(same_user).await?;
-        if let Some(root) = self.data_root().await {
-            write_last_session_user(&root, user_id).await;
-        }
-        self.notify_extension_login_best_effort(user_id).await;
-        Ok(())
+            current.session_generation
+        };
+        self.in_session_generation(prepared_generation, async {
+            self.repair_local_conversation_identities_on_login(user_id)
+                .await?;
+            self.prepare_outbox(scoped_store || same_user).await?;
+            if let Some(root) = self.data_root().await {
+                write_last_session_user(&root, user_id).await;
+            }
+            self.run_extension_migrations_best_effort().await;
+            self.notify_extension_login_best_effort(user_id).await;
+            Ok(prepared_generation)
+        })
+        .await
     }
 
     /// 一步登录：[`Self::prepare`] + [`Self::connect`] 的组合，供不做预热的调用方使用。
@@ -505,11 +562,18 @@ impl IMClient {
             + Send
             + 'static,
     {
-        self.prepare(user_id, db).await?;
-        let bus = self.bus().await?.clone();
-        let msg_store = self.stores_async().await?.messages.clone();
-        before_connect(bus, msg_store);
-        self.connect(user_id, explicit_token).await
+        let generation = self.prepare_session(user_id, db).await?;
+        let (bus, messages) = {
+            let g = self.inner.read().await;
+            if g.session_generation != generation {
+                return Err(Self::not_connected());
+            }
+            let engine = g.engine.as_ref().ok_or_else(Self::not_connected)?;
+            (engine.bus().clone(), engine.stores().messages.clone())
+        };
+        before_connect(bus, messages);
+        self.connect_internal(user_id, explicit_token, generation)
+            .await
     }
 
     /// 连接已 [`Self::prepare`] / builder 装配好的引擎并完成首次同步，返回连接态 API 快照。
@@ -522,18 +586,17 @@ impl IMClient {
         user_id: &str,
         explicit_token: Option<&str>,
     ) -> Result<ConnectedApis> {
-        self.connect_internal(user_id, explicit_token, true).await?;
-        self.connected_apis().await
+        self.connect_internal(user_id, explicit_token, self.session_generation_snapshot())
+            .await
     }
 
-    #[tracing::instrument(skip(self, explicit_token), fields(user_id = %user_id, install_watcher))]
+    #[tracing::instrument(skip(self, explicit_token), fields(user_id = %user_id))]
     pub(super) async fn connect_internal(
         &self,
         user_id: &str,
         explicit_token: Option<&str>,
-        install_watcher: bool,
-    ) -> Result<()> {
-        let generation = self.session_generation_snapshot();
+        generation: u64,
+    ) -> Result<ConnectedApis> {
         // token 三档来源：显式传入 > SDK 托管（向网关签发）> 环境变量（联调）。没有本地签发。
         // SDK 托管的签发不在这里做：交给链路在每次建连前取令牌时完成（`token_for_connect`）。
         // 离线冷启动时签发必然失败，在这里签就会让 connect 直接报错、链路根本不起来。
@@ -549,7 +612,11 @@ impl IMClient {
         // 都不再改变它（切换不是重登）。
         let (link_generation, bus, link, user_store, http_request_context, tenant_id) = {
             let mut g = self.inner.write().await;
-            if g.session_generation != generation {
+            if g.session_generation != generation
+                || g.current_user_id
+                    .as_deref()
+                    .is_some_and(|prepared| prepared != user_id)
+            {
                 return Err(Self::not_connected());
             }
             let Some(engine) = g.engine.as_ref() else {
@@ -580,7 +647,7 @@ impl IMClient {
             self.store_session_generation_snapshot(g.session_generation);
             let link_generation = g.session_generation;
             let tenant_id = Self::resolve_tenant_id(&g);
-            let apis = Self::connected_apis_from_inner(&g)?;
+            let apis = self.connected_apis_from_inner(&g)?;
             self.store_connected_apis_snapshot(apis);
             // 建连前就装上：链路确认的第一条消息要按这个用户与租户记进提示台账。
             self.attach_push_inbox(&g);
@@ -593,46 +660,47 @@ impl IMClient {
                 tenant_id,
             )
         };
-        if let Some(context) = http_request_context.as_ref() {
-            // Clear legacy injected Gateway data. Core HTTP selects only its
-            // Connect scope; Social owns a separate credential lifecycle.
-            context.clear_gateway_context().await;
-            // SDK 托管时令牌还没签发：先清空，签发后由令牌来源带上。
-            context
-                .set_auth_context(token.clone().unwrap_or_default(), None)
-                .await;
-            // Bind the Core principal; Social sync uses its own captured lease.
-            context.ensure_identity(user_id, &tenant_id).await;
+        {
+            // These are local writes. Keep their generation valid through publication.
+            let current = self.inner.read().await;
+            if current.session_generation != link_generation {
+                return Err(Self::not_connected());
+            }
+            if let Some(context) = http_request_context.as_ref() {
+                context.clear_gateway_context().await;
+                context
+                    .set_auth_context(token.clone().unwrap_or_default(), None)
+                    .await;
+                context.ensure_identity(user_id, &tenant_id).await;
+            }
+            *user_store.write().await = user_id.to_string();
+            self.store_state_snapshot(SdkState::Connecting);
         }
-        if install_watcher {
-            self.spawn_state_snapshot_watcher(link_generation, bus);
-            self.spawn_token_refresh_watcher(link_generation);
-        }
-        *user_store.write().await = user_id.to_string();
-        self.store_state_snapshot(SdkState::Connecting);
+        self.spawn_state_snapshot_watcher(link_generation, bus);
+        self.spawn_token_refresh_watcher(link_generation);
         let tokens = Arc::new(super::session_watchers::SessionTokens::new(
             self,
             link_generation,
         ));
-        link.app_state(foreground).await;
-        // 不持锁等待：建连最长要一个握手时限，期间登出、查询都不能被挡住。
-        link.start(user_id, tokens).await?;
-        if !self.is_generation_current(link_generation).await {
-            return Err(Self::not_connected());
-        }
-        self.notify_extension_connect_best_effort(user_id).await;
-        self.attach_push_session().await;
-        Ok(())
+        self.in_session_generation(link_generation, async {
+            link.app_state(foreground).await;
+            link.start(user_id, tokens).await?;
+            self.notify_extension_connect_best_effort(user_id).await;
+            self.attach_push_session().await;
+            self.connected_apis().await
+        })
+        .await
     }
 
     /// 主动断开连接并清理当前会话上下文（语义上等价于轻量登出）。
     pub async fn disconnect(&self) -> Result<()> {
-        self.clear_session_snapshot();
         let lifecycle = self.extension_lifecycle_snapshot(None).await;
         let (engine, http_request_context) = {
             let mut g = self.inner.write().await;
             g.session_generation = g.session_generation.wrapping_add(1);
             self.store_session_generation_snapshot(g.session_generation);
+            self.clear_session_snapshot();
+            self.store_state_snapshot(SdkState::Disconnected);
             g.current_user_id = None;
             g.connect_token = None;
             g.message_api = None;
@@ -642,12 +710,14 @@ impl IMClient {
             g.capability_registry = None;
             g.message_build_api = None;
             g.conversation_api = None;
+            g.view_api = None;
             let engine = g.engine.take();
+            if let Some(engine) = &engine {
+                engine.bus().lifetime().retire();
+            }
             let http_request_context = g.http_request_context.clone();
             (engine, http_request_context)
         };
-        self.clear_session_snapshot();
-        self.store_state_snapshot(SdkState::Disconnected);
         self.reconcile_push_in_background();
         if let Some(context) = http_request_context.as_ref() {
             context.set_auth_context(String::new(), None).await;

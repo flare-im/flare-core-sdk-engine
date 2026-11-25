@@ -107,8 +107,8 @@ const REQUIRED_PATHS: &[&str] = &[
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter/module/DefaultMessageBuilderApi.kt",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter/codec/NativeInvoke.kt",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter/codec/WireCodec.kt",
-    "packages/flare-core-android-lifecycle/build.gradle.kts",
-    "packages/flare-core-android-lifecycle/src/main/kotlin/com/flare/im/lifecycle/PlatformLifecycle.kt",
+    "packages/flare-core-android-sdk/platform-lifecycle/build.gradle.kts",
+    "packages/flare-core-android-sdk/platform-lifecycle/src/main/kotlin/com/flare/im/lifecycle/PlatformLifecycle.kt",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/lifecycle/ClientPlatformLifecycle.kt",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/bridge/JniNativeBridge.kt",
     "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/bridge/FlareSdkException.kt",
@@ -563,8 +563,8 @@ const PLATFORM_LIFECYCLE_REQUIREMENTS: &[PlatformLifecycleRequirement] = &[
         sources: "packages/flare-core-typescript-sdk/src",
     },
     PlatformLifecycleRequirement {
-        // Its own Gradle module (flare-core-android-lifecycle), reusable without the core binding.
-        file: "packages/flare-core-android-lifecycle/src/main/kotlin/com/flare/im/lifecycle/PlatformLifecycle.kt",
+        // Its own Gradle module (flare-core-android-sdk/platform-lifecycle), reusable without the core binding.
+        file: "packages/flare-core-android-sdk/platform-lifecycle/src/main/kotlin/com/flare/im/lifecycle/PlatformLifecycle.kt",
         tokens: &[
             "lifecycle.setAppState",
             "AppState.FOREGROUND",
@@ -699,7 +699,7 @@ fn scan_l2_adapter_boundaries(root: &Path, errors: &mut Vec<String>) -> Result<(
         "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/adapter",
         "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/bridge",
         "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/lifecycle",
-        "packages/flare-core-android-lifecycle/src/main/kotlin/com/flare/im/lifecycle",
+        "packages/flare-core-android-sdk/platform-lifecycle/src/main/kotlin/com/flare/im/lifecycle",
         "packages/flare-core-android-sdk/src/main/kotlin/com/flare/im/FlareCoreSdk.kt",
         "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Adapter",
         "packages/flare-core-apple-sdk/Sources/FlareCoreAppleSDK/Bridge",

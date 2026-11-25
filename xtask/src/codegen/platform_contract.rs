@@ -2193,6 +2193,27 @@ fn emit_cangjie_model_class(model: &Value, spec: &Value) -> String {
         format!("// {}", str_field(model, "description")),
         format!("public class {name} {{"),
     ];
+    let imports: std::collections::BTreeSet<_> = child_arr(model, "fields")
+        .iter()
+        .map(|field| str_field(field, "type"))
+        .filter(|ty| {
+            is_known_ts_model_type(ty, spec)
+                && cangjie_contract_type(ty, spec) == *ty
+                && model_package_suffix(ty) != model_package_suffix(name)
+        })
+        .map(|ty| {
+            format!(
+                "import flare_core_harmony_cangjie_sdk.model.{}.{ty}",
+                model_package_suffix(ty)
+            )
+        })
+        .collect();
+    if !imports.is_empty() {
+        lines.splice(
+            2..2,
+            imports.into_iter().chain(std::iter::once(String::new())),
+        );
+    }
     for field in child_arr(model, "fields") {
         let optional = if contract_field_required(field) {
             ""

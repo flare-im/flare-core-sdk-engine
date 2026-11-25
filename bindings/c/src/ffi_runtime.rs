@@ -11,6 +11,8 @@ lazy_static::lazy_static! {
             .worker_threads(ffi_worker_threads())
             .enable_all()
             .thread_name("flare-ffi")
+            // Deeply nested dispatch futures overflow tokio's 2 MiB default in debug builds.
+            .thread_stack_size(8 * 1024 * 1024)
             .build()
             .map_err(|error| format!("flare_im_core_sdk_ffi: failed to create Tokio runtime: {error}"));
 }

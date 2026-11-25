@@ -194,8 +194,9 @@ pub mod prelude {
     };
     pub use crate::extension::{
         ContentCodec, ConversationProjectionReport, ConversationProjectionSource, ExtensionContent,
-        ExtensionContext, ExtensionLifecycle, ExtensionLifecycleContext, ExtensionMigration,
-        ExtensionRegistry, ExtensionRuntime, ExtensionStore, ProfileProvider, SdkExtension,
+        ExtensionContext, ExtensionDescriptor, ExtensionLifecycle, ExtensionLifecycleContext,
+        ExtensionMigration, ExtensionRegistry, ExtensionRuntime, ExtensionStore, ProfileProvider,
+        SdkExtension,
     };
     #[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
     pub use crate::infrastructure::persistence::sqlite_init_schema;
@@ -267,4 +268,7 @@ pub mod prelude {
 extern crate self as flare_im_core_sdk;
 #[cfg(all(test, feature = "storage-sqlite", not(target_arch = "wasm32")))]
 #[path = "../storage/sqlite-im/src/lib.rs"]
+// A test copy: adapter entry points the Engine tests do not call are expected, and the
+// shared contract cases load here and in the Engine's own stores.
+#[allow(dead_code, clippy::duplicate_mod)]
 mod sqlite_test_adapter;

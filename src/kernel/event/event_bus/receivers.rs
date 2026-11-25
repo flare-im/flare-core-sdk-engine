@@ -58,6 +58,7 @@ impl RawSdkEvent {
 
 /// Bounded event receiver. Each subscription owns an independent queue.
 pub struct EventReceiver {
+    lifetime: super::SessionLifetime,
     rx: mpsc::Receiver<SdkEvent>,
     filter: EventFilter,
     lagged: Arc<AtomicBool>,
@@ -74,6 +75,7 @@ impl EventReceiver {
         dropped_events: Arc<AtomicU64>,
     ) -> Self {
         Self {
+            lifetime: super::SessionLifetime::default(),
             rx,
             filter,
             lagged,
@@ -81,18 +83,33 @@ impl EventReceiver {
         }
     }
 
+    pub(super) fn with_lifetime(mut self, lifetime: super::SessionLifetime) -> Self {
+        self.lifetime = lifetime;
+        self
+    }
+
     pub fn filter(&self) -> &EventFilter {
         &self.filter
     }
 
     pub async fn recv(&mut self) -> Result<SdkEvent, EventReceiveError> {
+        if self.lifetime.retired() {
+            return Err(EventReceiveError::Closed);
+        }
         if let Some(event) = self.take_resync_event() {
             return Ok(event);
         }
-        self.rx.recv().await.ok_or(EventReceiveError::Closed)
+        self.lifetime
+            .until_retired(self.rx.recv())
+            .await
+            .flatten()
+            .ok_or(EventReceiveError::Closed)
     }
 
     pub fn try_recv(&mut self) -> Result<SdkEvent, mpsc::error::TryRecvError> {
+        if self.lifetime.retired() {
+            return Err(mpsc::error::TryRecvError::Disconnected);
+        }
         if let Some(event) = self.take_resync_event() {
             return Ok(event);
         }
@@ -115,6 +132,7 @@ impl EventReceiver {
 /// Shared raw event receiver used by platform bridges that can reuse cached
 /// serialized payloads across multiple subscribers.
 pub struct SharedEventReceiver {
+    lifetime: super::SessionLifetime,
     rx: mpsc::Receiver<Arc<RawSdkEvent>>,
     filter: EventFilter,
     lagged: Arc<AtomicBool>,
@@ -129,6 +147,7 @@ impl SharedEventReceiver {
         dropped_events: Arc<AtomicU64>,
     ) -> Self {
         Self {
+            lifetime: super::SessionLifetime::default(),
             rx,
             filter,
             lagged,
@@ -136,18 +155,33 @@ impl SharedEventReceiver {
         }
     }
 
+    pub(super) fn with_lifetime(mut self, lifetime: super::SessionLifetime) -> Self {
+        self.lifetime = lifetime;
+        self
+    }
+
     pub fn filter(&self) -> &EventFilter {
         &self.filter
     }
 
     pub async fn recv(&mut self) -> Result<Arc<RawSdkEvent>, EventReceiveError> {
+        if self.lifetime.retired() {
+            return Err(EventReceiveError::Closed);
+        }
         if let Some(event) = self.take_resync_event() {
             return Ok(event);
         }
-        self.rx.recv().await.ok_or(EventReceiveError::Closed)
+        self.lifetime
+            .until_retired(self.rx.recv())
+            .await
+            .flatten()
+            .ok_or(EventReceiveError::Closed)
     }
 
     pub fn try_recv(&mut self) -> Result<Arc<RawSdkEvent>, mpsc::error::TryRecvError> {
+        if self.lifetime.retired() {
+            return Err(mpsc::error::TryRecvError::Disconnected);
+        }
         if let Some(event) = self.take_resync_event() {
             return Ok(event);
         }

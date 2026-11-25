@@ -20,6 +20,7 @@ pub const CONVERSATION_DISPATCH_OPERATIONS: &[&str] = &[
     "get",
     "get_one",
     "get_group_by_user_ids",
+    "member",
     "get_multiple",
     "list_paginated",
     "list_raw",
@@ -78,6 +79,12 @@ pub async fn dispatch_conversation(
                 api.get_group_by_user_ids(&user_ids_v, display_name_o.as_deref())
                     .await?,
             )
+        }
+        "member" => {
+            let bound_value: flare_im_core_sdk::model::MemberRef =
+                from_value(params.clone(), "flare_im_core_sdk::model::MemberRef")?;
+            let member = api.member(bound_value).await?;
+            json(serde_json::json!({ "member": member }))
         }
         "get_multiple" => {
             let conversation_ids_v = json_vec_string(&params, "conversationIds")?;
@@ -179,6 +186,12 @@ pub async fn dispatch_conversation_json(
                 from_json_str(params_json, "ConversationListQuery")?;
             let conversations = api.list_by_query(bound_value).await?;
             json(serde_json::json!({ "conversations": conversations }))
+        }
+        "member" => {
+            let bound_value: flare_im_core_sdk::model::MemberRef =
+                from_json_str(params_json, "flare_im_core_sdk::model::MemberRef")?;
+            let member = api.member(bound_value).await?;
+            json(serde_json::json!({ "member": member }))
         }
         "bootstrap_home" => {
             let bound_value: BootstrapHomeTimelineRequest =

@@ -3320,6 +3320,7 @@ async fn persist_worker_counts_duplicate_queued_messages_and_mentions_once() {
             .get()
             .unwrap()
             .try_send(super::PersistJob {
+                link: None,
                 messages: vec![message.clone()],
                 user_id: "u1".into(),
                 delivery_due: vec![],

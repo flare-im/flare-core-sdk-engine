@@ -167,7 +167,7 @@ mod tests {
             encrypted_sqlite(Arc::new(VolatileSecureKeyStore::new()), Default::default());
         assert!(!SqliteAccountStore::is_plain_sqlite(&encrypted));
         assert!(!SqliteAccountStore::is_plain_sqlite(
-            &LoginDbKind::Provided(in_memory_im_provider())
+            &LoginDbKind::provided(in_memory_im_provider())
         ));
     }
 

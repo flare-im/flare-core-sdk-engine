@@ -669,6 +669,18 @@
           "tauri": "sdk_message_dispatch_json"
         },
         {
+          "id": "message.get_by_key",
+          "core": "MessageApi::get_by_key",
+          "c": "flare_message_dispatch_json:get_by_key",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
+          "id": "message.await_confirmation",
+          "core": "MessageApi::await_confirmation",
+          "c": "flare_message_dispatch_json:await_confirmation",
+          "tauri": "sdk_message_dispatch_json"
+        },
+        {
           "id": "message.get_raw",
           "core": "MessageApi::get_raw",
           "c": "flare_message_dispatch_json:get_raw",
@@ -742,6 +754,12 @@
         {
           "id": "conversation.get_group_by_user_ids",
           "core": "ConversationApi::get_group_by_user_ids",
+          "c": "flare_sdk_invoke_json",
+          "tauri": "sdk_invoke_json"
+        },
+        {
+          "id": "conversation.member",
+          "core": "ConversationApi::member",
           "c": "flare_sdk_invoke_json",
           "tauri": "sdk_invoke_json"
         },
@@ -853,6 +871,24 @@
           "tauri": "sdk_media_upload_video"
         },
         {
+          "id": "media.upload_recovery",
+          "core": "MediaApi::upload_recovery",
+          "c": "flare_media_dispatch_json:upload_recovery",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.cancel_upload",
+          "core": "MediaApi::cancel_upload",
+          "c": "flare_media_dispatch_json:cancel_upload",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.cancel_transfer",
+          "core": "MediaApi::cancel_transfer",
+          "c": "flare_media_dispatch_json:cancel_transfer",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
           "id": "media.upload_bytes",
           "core": "MediaApi::upload_bytes",
           "c": "flare_media_upload_bytes",
@@ -868,6 +904,12 @@
           "id": "media.get_url",
           "core": "MediaApi::get_file_url_with_reference",
           "c": "flare_media_dispatch_json:get_url",
+          "tauri": "sdk_media_dispatch_json"
+        },
+        {
+          "id": "media.resolve_attachment",
+          "core": "MediaApi::resolve_attachment",
+          "c": "flare_media_dispatch_json:resolve_attachment",
           "tauri": "sdk_media_dispatch_json"
         },
         {

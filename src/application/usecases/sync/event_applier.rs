@@ -224,6 +224,16 @@ impl SyncEventApplier {
             return Ok(true);
         }
         if let Some(DomainEventPayload::Read(read)) = &event.payload {
+            if !user_id.is_empty() && read.user_id == user_id && read.read_seq > 0 {
+                super::SyncApplyUseCase::apply_remote_read(
+                    &self.stores,
+                    user_id,
+                    &event.conversation_id,
+                    read.read_seq,
+                    None,
+                )
+                .await?;
+            }
             if !user_id.is_empty()
                 && !read.user_id.is_empty()
                 && read.user_id != user_id

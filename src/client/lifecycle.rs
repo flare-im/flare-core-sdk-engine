@@ -172,7 +172,14 @@ pub trait AccountStoreOpener: std::any::Any + Send + Sync {
 
 pub enum LoginDbKind {
     Open(Arc<dyn AccountStoreOpener>),
-    Provided(crate::storage::StoreProvider),
+    Provided(Box<crate::storage::StoreProvider>),
+}
+
+impl LoginDbKind {
+    /// Use an already opened provider for this login.
+    pub fn provided(stores: crate::storage::StoreProvider) -> Self {
+        Self::Provided(Box::new(stores))
+    }
 }
 
 #[cfg(test)]

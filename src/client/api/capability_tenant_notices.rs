@@ -20,8 +20,7 @@ use rand::Rng;
 use super::CapabilityApi;
 use crate::kernel::TenantNoticePort;
 use crate::kernel::event::{
-    EventBus, ExtensionEvent, PLUGIN_CATALOG_TOPIC, PluginEvent, SdkEvent,
-    TENANT_NOTICE_SOURCE,
+    EventBus, ExtensionEvent, PLUGIN_CATALOG_TOPIC, PluginEvent, SdkEvent, TENANT_NOTICE_SOURCE,
 };
 use crate::shared::util::{delay, now_millis, spawn_background};
 
@@ -107,20 +106,11 @@ pub(crate) struct TenantNotices {
 }
 
 impl TenantNotices {
-    pub(crate) fn new(
-        capability: CapabilityApi,
-
-        bus: EventBus,
-    ) -> Self {
+    pub(crate) fn new(capability: CapabilityApi, bus: EventBus) -> Self {
         Self::with_jitter(capability, bus, random_jitter_ms)
     }
 
-    fn with_jitter(
-        capability: CapabilityApi,
-
-        bus: EventBus,
-        jitter_ms: fn(u64) -> u64,
-    ) -> Self {
+    fn with_jitter(capability: CapabilityApi, bus: EventBus, jitter_ms: fn(u64) -> u64) -> Self {
         Self {
             capability,
             bus,

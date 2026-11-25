@@ -23,6 +23,31 @@
           "result": "json"
         },
         {
+          "op": "get_by_key",
+          "method": "get_by_key",
+          "args": [
+            [
+              "@value",
+              "deserialize:flare_im_core_sdk::model::MessageKey"
+            ]
+          ],
+          "result": "json_object",
+          "fields": {
+            "message": "message"
+          }
+        },
+        {
+          "op": "await_confirmation",
+          "method": "await_confirmation",
+          "args": [
+            [
+              "@value",
+              "deserialize:flare_im_core_sdk::model::ConfirmationRequest"
+            ]
+          ],
+          "result": "json"
+        },
+        {
           "op": "get_raw",
           "method": "get_raw",
           "args": [
@@ -1082,6 +1107,20 @@
           "result": "json"
         },
         {
+          "op": "member",
+          "method": "member",
+          "args": [
+            [
+              "@value",
+              "deserialize:flare_im_core_sdk::model::MemberRef"
+            ]
+          ],
+          "result": "json_object",
+          "fields": {
+            "member": "member"
+          }
+        },
+        {
           "op": "get_multiple",
           "method": "get_multiple",
           "args": [
@@ -1323,6 +1362,17 @@
           "result": "json"
         },
         {
+          "op": "resolve_attachment",
+          "method": "resolve_attachment",
+          "args": [
+            [
+              "@value",
+              "deserialize:flare_im_core_sdk::model::media::ResolveAttachmentRequest"
+            ]
+          ],
+          "result": "json"
+        },
+        {
           "op": "temp_download_url",
           "method": "get_temp_url_for_file_download",
           "args": [
@@ -1464,6 +1514,45 @@
             ]
           ],
           "result": "json"
+        },
+        {
+          "op": "upload_recovery",
+          "method": "upload_recovery",
+          "args": [
+            [
+              "source_kind",
+              "str_ref"
+            ]
+          ],
+          "result": "json"
+        },
+        {
+          "op": "cancel_upload",
+          "method": "cancel_upload",
+          "args": [
+            [
+              "transfer_id",
+              "str_ref"
+            ]
+          ],
+          "result": "json_object",
+          "fields": {
+            "cancelled": "cancelled"
+          }
+        },
+        {
+          "op": "cancel_transfer",
+          "method": "cancel_transfer",
+          "args": [
+            [
+              "transfer_id",
+              "str_ref"
+            ]
+          ],
+          "result": "json_object",
+          "fields": {
+            "cancelled": "cancelled"
+          }
         },
         {
           "op": "upload_bytes",

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use tokio::sync::RwLock;
 
+use crate::client::im_client::SessionEndWatch;
 use crate::shared::error::{ErrorCode, FlareError, Result};
 
 const SESSION_CANCEL_POLL_MS: u64 = 100;
@@ -14,6 +15,7 @@ const SESSION_CANCEL_POLL_MS: u64 = 100;
 pub(crate) struct SessionGuard {
     current_user_id: Option<Arc<RwLock<String>>>,
     operation_label: &'static str,
+    generation: Option<SessionEndWatch>,
 }
 
 impl SessionGuard {
@@ -21,6 +23,7 @@ impl SessionGuard {
         Self {
             current_user_id: None,
             operation_label,
+            generation: None,
         }
     }
 
@@ -28,7 +31,35 @@ impl SessionGuard {
         Self {
             current_user_id: Some(current_user_id),
             operation_label,
+            generation: None,
         }
+    }
+
+    pub(crate) fn bind(&mut self, watch: SessionEndWatch) {
+        self.generation = Some(watch);
+    }
+
+    pub(crate) fn guard_callback<T: 'static>(
+        &self,
+        callback: Option<Arc<dyn Fn(T) + Send + Sync>>,
+    ) -> Option<Arc<dyn Fn(T) + Send + Sync>> {
+        let watch = self.generation.clone();
+        callback.map(|callback| {
+            Arc::new(move |value| {
+                if watch
+                    .as_ref()
+                    .is_none_or(|generation| !generation.is_ended())
+                {
+                    callback(value);
+                }
+            }) as _
+        })
+    }
+
+    pub(crate) fn retired(&self) -> bool {
+        self.generation
+            .as_ref()
+            .is_some_and(SessionEndWatch::is_ended)
     }
 
     pub(crate) async fn ensure_active(&self) -> Result<()> {
@@ -36,10 +67,20 @@ impl SessionGuard {
     }
 
     pub(crate) async fn capture_user(&self) -> Result<Option<String>> {
+        if self.retired() {
+            return Err(self.session_changed_error());
+        }
         let Some(current_user_id) = &self.current_user_id else {
             return Ok(None);
         };
         let user_id = current_user_id.read().await.trim().to_string();
+        if self
+            .generation
+            .as_ref()
+            .is_some_and(SessionEndWatch::is_ended)
+        {
+            return Err(self.session_changed_error());
+        }
         if user_id.is_empty() {
             return Err(FlareError::localized(ErrorCode::NotConnected, "未连接"));
         }
@@ -47,6 +88,9 @@ impl SessionGuard {
     }
 
     pub(crate) async fn ensure_unchanged(&self, expected_user_id: Option<&str>) -> Result<()> {
+        if self.retired() {
+            return Err(self.session_changed_error());
+        }
         let Some(expected_user_id) = expected_user_id else {
             return Ok(());
         };
@@ -54,7 +98,12 @@ impl SessionGuard {
             return Ok(());
         };
         let actual_user_id = current_user_id.read().await.trim().to_string();
-        if actual_user_id != expected_user_id {
+        if actual_user_id != expected_user_id
+            || self
+                .generation
+                .as_ref()
+                .is_some_and(SessionEndWatch::is_ended)
+        {
             return Err(self.session_changed_error());
         }
         Ok(())
@@ -71,6 +120,9 @@ impl SessionGuard {
     }
 
     pub(crate) async fn wait_until_session_changes(&self, expected_user_id: &str) {
+        if let Some(watch) = &self.generation {
+            return watch.ended().await;
+        }
         let Some(current_user_id) = &self.current_user_id else {
             std::future::pending::<()>().await;
             return;
@@ -95,16 +147,15 @@ impl SessionGuard {
     {
         let session_user_id = self.capture_user().await?;
         let operation = operation(session_user_id.clone());
-        let Some(expected_user_id) = session_user_id else {
+        if session_user_id.is_none() && self.generation.is_none() {
             return operation.await;
-        };
+        }
         tokio::select! {
+            biased;
+            _ = self.wait_until_session_changes(session_user_id.as_deref().unwrap_or_default()) => Err(self.session_changed_error()),
             result = operation => {
-                self.ensure_unchanged(Some(&expected_user_id)).await?;
+                self.ensure_unchanged(session_user_id.as_deref()).await?;
                 result
-            }
-            _ = self.wait_until_session_changes(&expected_user_id) => {
-                Err(self.session_changed_error())
             }
         }
     }

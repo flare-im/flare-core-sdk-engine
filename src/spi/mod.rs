@@ -50,9 +50,9 @@ pub use crate::extension::encryption::{
 pub use crate::extension::middleware::{EventInterceptor, MessageInterceptor};
 pub use crate::extension::{
     ContentCodec, ConversationProjectionReport, ConversationProjectionSource, ExtensionContent,
-    ExtensionContext, ExtensionLifecycle, ExtensionLifecycleContext, ExtensionMigration,
-    ExtensionRegistry, ExtensionRuntime, ExtensionStore, ProfileProvider, SdkExtension,
-    generate_group_conversation_id, generate_single_chat_conversation_id,
+    ExtensionContext, ExtensionDescriptor, ExtensionLifecycle, ExtensionLifecycleContext,
+    ExtensionMigration, ExtensionRegistry, ExtensionRuntime, ExtensionStore, ProfileProvider,
+    SdkExtension, generate_group_conversation_id, generate_single_chat_conversation_id,
     merge_or_create_conversation, repair_single_chat_channel,
 };
 pub use crate::infrastructure::transport::http::{IDEMPOTENCY_KEY_HEADER, new_idempotency_key};
@@ -76,3 +76,10 @@ pub use metrics::{
     HistogramSnapshot, InMemoryMetricsSink, MetricLabel, MetricsRecorder, MetricsSink,
     MetricsSnapshot,
 };
+
+pub use crate::extension::records::{
+    CheckpointUpdate, ExtensionPartition, ExtensionRecord, FieldType, PartitionState, RecordAccess,
+    RecordBackend, RecordSchema, RecordScope,
+};
+
+pub use crate::extension::committed::{CommitNotice, CommitSubscription, CommittedMessage};

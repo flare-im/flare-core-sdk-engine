@@ -27,10 +27,15 @@ pub struct ConversationApi {
     message_view_assembler: Arc<MessageViewAssembler>,
     timeline_coverage: Arc<dyn TimelineCoverageStore>,
     bus: EventBus,
-    current_user_id: CurrentUserIdStore,
+    session_guard: super::session_guard::SessionGuard,
 }
 
 impl ConversationApi {
+    pub(crate) fn for_session(mut self, watch: crate::client::im_client::SessionEndWatch) -> Self {
+        self.session_guard.bind(watch);
+        self
+    }
+
     pub fn new(
         command_use_case: Arc<ConversationCommandUseCase>,
         view_assembler: Arc<ConversationViewAssembler>,
@@ -45,19 +50,14 @@ impl ConversationApi {
             message_view_assembler,
             timeline_coverage,
             bus,
-            current_user_id,
+            session_guard: super::session_guard::SessionGuard::new(current_user_id, "conversation"),
         }
-    }
-
-    async fn ensure_session_active(&self) -> Result<()> {
-        if self.current_user_id.read().await.trim().is_empty() {
-            return Err(FlareError::localized(ErrorCode::NotConnected, "未连接"));
-        }
-        Ok(())
     }
 
     pub async fn current_user_id(&self) -> Result<String> {
-        self.command_use_case.current_user_id().await
+        self.session_guard
+            .run(self.command_use_case.current_user_id())
+            .await
     }
 
     /// 获取或创建单个会话：有则返回，无则创建并落库后返回，保证 list() 能立即看到新会话。
@@ -67,12 +67,15 @@ impl ConversationApi {
         source_id: &str,
         conversation_type: &ConversationType,
     ) -> Result<Conversation> {
-        self.ensure_session_active().await?;
-        let conversation = self
-            .command_use_case
-            .get_one(source_id, conversation_type, true)
-            .await?;
-        Ok(self.view_assembler.hydrate_conversation(conversation).await)
+        self.session_guard
+            .run(async {
+                let conversation = self
+                    .command_use_case
+                    .get_one(source_id, conversation_type, true)
+                    .await?;
+                Ok(self.view_assembler.hydrate_conversation(conversation).await)
+            })
+            .await
     }
 
     /// 通过用户 ID 列表获取或创建群聊。本机会话会保存成员 ID，发送群消息时用于服务端补齐参与者。
@@ -81,40 +84,68 @@ impl ConversationApi {
         user_ids: &[String],
         display_name: Option<&str>,
     ) -> Result<Conversation> {
-        self.ensure_session_active().await?;
-        let conversation = self
-            .command_use_case
-            .get_group_by_user_ids(user_ids, display_name)
-            .await?;
-        Ok(self.view_assembler.hydrate_conversation(conversation).await)
+        self.session_guard
+            .run(async {
+                let conversation = self
+                    .command_use_case
+                    .get_group_by_user_ids(user_ids, display_name)
+                    .await?;
+                Ok(self.view_assembler.hydrate_conversation(conversation).await)
+            })
+            .await
     }
 
     pub async fn list(&self) -> Result<Vec<Conversation>> {
-        self.ensure_session_active().await?;
-        self.view_assembler.list(false).await
+        self.session_guard
+            .run(async { self.view_assembler.list(false).await })
+            .await
     }
 
     /// 飞书式会话筛选：未读、@我、单聊/群聊、置顶、免打扰、归档、草稿、标记消息所在会话等。
     pub async fn list_by_query(&self, query: ConversationListQuery) -> Result<Vec<Conversation>> {
-        self.ensure_session_active().await?;
-        self.view_assembler.list_by_query(&query).await
+        self.session_guard
+            .run(async { self.view_assembler.list_by_query(&query).await })
+            .await
     }
 
     /// 含已归档会话的完整列表（飞书「已完成」视图等）
     pub async fn list_including_archived(&self) -> Result<Vec<Conversation>> {
-        self.ensure_session_active().await?;
-        self.view_assembler.list(true).await
+        self.session_guard
+            .run(async { self.view_assembler.list(true).await })
+            .await
     }
 
     pub async fn get(&self, conversation_id: &str) -> Result<Option<Conversation>> {
-        self.ensure_session_active().await?;
-        self.view_assembler.get(conversation_id).await
+        self.session_guard
+            .run(async { self.view_assembler.get(conversation_id).await })
+            .await
+    }
+
+    /// 会话里的一名成员：服务端同步的参与者事实，名称按读取会话时的投影给出；
+    /// 未装资料 provider 时名称为结构化的「无名」。不在会话中返回 None。
+    pub async fn member(
+        &self,
+        member: crate::model::MemberRef,
+    ) -> Result<Option<crate::model::ConversationParticipant>> {
+        if member.conversation_id.trim().is_empty() || member.user.user_id.trim().is_empty() {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "incomplete member reference",
+            ));
+        }
+        let conversation = self.get(&member.conversation_id).await?;
+        Ok(conversation.and_then(|c| {
+            c.participants
+                .into_iter()
+                .find(|p| p.user_id == member.user.user_id)
+        }))
     }
 
     /// 批量获取会话（按 id 列表，不存在的跳过）
     pub async fn get_multiple(&self, conversation_ids: &[String]) -> Result<Vec<Conversation>> {
-        self.ensure_session_active().await?;
-        self.view_assembler.get_multiple(conversation_ids).await
+        self.session_guard
+            .run(async { self.view_assembler.get_multiple(conversation_ids).await })
+            .await
     }
 
     /// 分页会话列表（cursor 为会话 id 表示从此之后开始，limit 为条数）
@@ -123,24 +154,31 @@ impl ConversationApi {
         cursor: Option<&str>,
         limit: Option<u32>,
     ) -> Result<Vec<Conversation>> {
-        self.ensure_session_active().await?;
-        self.view_assembler
-            .list_paginated(cursor, limit, false)
+        self.session_guard
+            .run(async {
+                self.view_assembler
+                    .list_paginated(cursor, limit, false)
+                    .await
+            })
             .await
     }
 
     pub async fn list_raw(&self) -> Result<Vec<Conversation>> {
-        self.ensure_session_active().await?;
-        self.view_assembler.list_raw().await
+        self.session_guard
+            .run(async { self.view_assembler.list_raw().await })
+            .await
     }
 
     /// 未读总数（Tab 角标）：全部会话按 [`crate::domain::total_unread`] 的口径求和——已归档不计，
     /// 免打扰只计「@我」。宿主的角标只读这个数，不再自己对会话列表求和。
     pub async fn total_unread(&self) -> Result<u64> {
-        self.ensure_session_active().await?;
-        Ok(crate::domain::total_unread(
-            &self.view_assembler.list_raw().await?,
-        ))
+        self.session_guard
+            .run(async {
+                Ok(crate::domain::total_unread(
+                    &self.view_assembler.list_raw().await?,
+                ))
+            })
+            .await
     }
 
     /// SDK 统一首页快照：会话查询会在仓储层修复本地消息投影，业务端无需自行回写 lastMessage。
@@ -150,25 +188,29 @@ impl ConversationApi {
         &self,
         request: BootstrapHomeTimelineRequest,
     ) -> Result<HomeTimelineSnapshot> {
-        self.ensure_session_active().await?;
-        let mut conversations = self
-            .view_assembler
-            .list_summaries_by_query(&crate::model::ConversationListQuery {
-                include_archived: false,
-                ..Default::default()
+        self.session_guard
+            .run(async {
+                let mut conversations = self
+                    .view_assembler
+                    .list_summaries_by_query(&crate::model::ConversationListQuery {
+                        include_archived: false,
+                        ..Default::default()
+                    })
+                    .await?;
+                let total_unread = crate::domain::total_unread(&conversations);
+                conversations
+                    .truncate(normalized_conversation_limit(request.conversation_limit) as usize);
+                let conversations = self
+                    .view_assembler
+                    .hydrate_conversations(conversations)
+                    .await;
+                Ok(HomeTimelineSnapshot {
+                    conversations,
+                    total_unread,
+                    sync_state: TimelineSyncState::LocalReady,
+                })
             })
-            .await?;
-        let total_unread = crate::domain::total_unread(&conversations);
-        conversations.truncate(normalized_conversation_limit(request.conversation_limit) as usize);
-        let conversations = self
-            .view_assembler
-            .hydrate_conversations(conversations)
-            .await;
-        Ok(HomeTimelineSnapshot {
-            conversations,
-            total_unread,
-            sync_state: TimelineSyncState::LocalReady,
-        })
+            .await
     }
 
     /// SDK 统一会话快照：读取最近消息窗口，并依赖 conversation.get 的投影修复返回一致会话摘要。
@@ -181,50 +223,55 @@ impl ConversationApi {
         &self,
         request: OpenConversationTimelineRequest,
     ) -> Result<ConversationTimelineSnapshot> {
-        self.ensure_session_active().await?;
-        let conversation_id = request.conversation_id.trim();
-        let limit = normalized_message_limit(request.message_limit) as usize;
-        if conversation_id.is_empty() {
-            return Ok(ConversationTimelineSnapshot {
-                conversation: None,
-                messages: Vec::new(),
-                has_more: false,
-            });
-        }
-        // 多读一行：判断窗口之下本地还有没有行。
-        let rows = self
-            .message_view_assembler
-            .list(conversation_id, 0, limit as u32 + 1)
-            .await?;
-        let conversation = self.view_assembler.get(conversation_id).await?;
-        let coverage = self
-            .coverage_with_floor(conversation_id, conversation.as_ref())
-            .await?;
-        let highest = coverage.highest_proven_seq();
-        let latest = coverage.latest_range();
-        let mut messages = Vec::with_capacity(limit.min(rows.len()));
-        let mut rows_below = false;
-        for row in rows {
-            if messages.len() == limit {
-                rows_below = true;
-                break;
-            }
-            let seq = row.conversation_seq;
-            let joins_latest =
-                seq == 0 || seq > highest || latest.is_some_and(|range| range.contains(seq));
-            if !joins_latest {
-                rows_below = true;
-                break;
-            }
-            messages.push(row);
-        }
-        messages.sort_by(IMMessage::compare_for_timeline_asc);
-        let has_more = window_has_older(&messages, rows_below, &coverage, conversation.as_ref());
-        Ok(ConversationTimelineSnapshot {
-            conversation,
-            messages,
-            has_more,
-        })
+        self.session_guard
+            .run(async {
+                let conversation_id = request.conversation_id.trim();
+                let limit = normalized_message_limit(request.message_limit) as usize;
+                if conversation_id.is_empty() {
+                    return Ok(ConversationTimelineSnapshot {
+                        conversation: None,
+                        messages: Vec::new(),
+                        has_more: false,
+                    });
+                }
+                // 多读一行：判断窗口之下本地还有没有行。
+                let rows = self
+                    .message_view_assembler
+                    .list(conversation_id, 0, limit as u32 + 1)
+                    .await?;
+                let conversation = self.view_assembler.get(conversation_id).await?;
+                let coverage = self
+                    .coverage_with_floor(conversation_id, conversation.as_ref())
+                    .await?;
+                let highest = coverage.highest_proven_seq();
+                let latest = coverage.latest_range();
+                let mut messages = Vec::with_capacity(limit.min(rows.len()));
+                let mut rows_below = false;
+                for row in rows {
+                    if messages.len() == limit {
+                        rows_below = true;
+                        break;
+                    }
+                    let seq = row.conversation_seq;
+                    let joins_latest = seq == 0
+                        || seq > highest
+                        || latest.is_some_and(|range| range.contains(seq));
+                    if !joins_latest {
+                        rows_below = true;
+                        break;
+                    }
+                    messages.push(row);
+                }
+                messages.sort_by(IMMessage::compare_for_timeline_asc);
+                let has_more =
+                    window_has_older(&messages, rows_below, &coverage, conversation.as_ref());
+                Ok(ConversationTimelineSnapshot {
+                    conversation,
+                    messages,
+                    has_more,
+                })
+            })
+            .await
     }
 
     /// 已证实区间，并入会话的可见下限：本地清空水位与服务端历史可见起点之下没有可见消息。
@@ -248,12 +295,15 @@ impl ConversationApi {
         &self,
         conversation_id: &str,
     ) -> Result<(Option<Conversation>, TimelineCoverage)> {
-        self.ensure_session_active().await?;
-        let conversation = self.view_assembler.get(conversation_id).await?;
-        let coverage = self
-            .coverage_with_floor(conversation_id, conversation.as_ref())
-            .await?;
-        Ok((conversation, coverage))
+        self.session_guard
+            .run(async {
+                let conversation = self.view_assembler.get(conversation_id).await?;
+                let coverage = self
+                    .coverage_with_floor(conversation_id, conversation.as_ref())
+                    .await?;
+                Ok((conversation, coverage))
+            })
+            .await
     }
 
     pub(crate) async fn hydrate_timeline_messages(
@@ -274,23 +324,26 @@ impl ConversationApi {
         before_seq: u64,
         limit: usize,
     ) -> Result<(Vec<IMMessage>, bool)> {
-        self.ensure_session_active().await?;
-        let conversation_id = conversation_id.trim();
-        let from_seq = from_seq.max(1);
-        if conversation_id.is_empty() || before_seq <= from_seq || limit == 0 {
-            return Ok((Vec::new(), false));
-        }
-        let rows = self
-            .message_view_assembler
-            .list(conversation_id, before_seq, limit as u32 + 1)
-            .await?;
-        let mut in_range = rows
-            .into_iter()
-            .filter(|message| (from_seq..before_seq).contains(&message.conversation_seq))
-            .collect::<Vec<_>>();
-        let more = in_range.len() > limit;
-        in_range.truncate(limit);
-        Ok((in_range, more))
+        self.session_guard
+            .run(async {
+                let conversation_id = conversation_id.trim();
+                let from_seq = from_seq.max(1);
+                if conversation_id.is_empty() || before_seq <= from_seq || limit == 0 {
+                    return Ok((Vec::new(), false));
+                }
+                let rows = self
+                    .message_view_assembler
+                    .list(conversation_id, before_seq, limit as u32 + 1)
+                    .await?;
+                let mut in_range = rows
+                    .into_iter()
+                    .filter(|message| (from_seq..before_seq).contains(&message.conversation_seq))
+                    .collect::<Vec<_>>();
+                let more = in_range.len() > limit;
+                in_range.truncate(limit);
+                Ok((in_range, more))
+            })
+            .await
     }
 
     /// 在窗口的 seq 范围内重读（事件触发的刷新）：seq 不小于 `oldest_seq` 的行与待发送行，
@@ -302,34 +355,42 @@ impl ConversationApi {
         oldest_seq: u64,
         limit: usize,
     ) -> Result<ConversationTimelineSnapshot> {
-        self.ensure_session_active().await?;
-        let conversation_id = conversation_id.trim();
-        let limit = limit.max(1);
-        let rows = self
-            .message_view_assembler
-            .latest_window_through(conversation_id, oldest_seq, limit.saturating_add(1) as u32)
-            .await?;
-        let conversation = self.view_assembler.get(conversation_id).await?;
-        let coverage = self
-            .coverage_with_floor(conversation_id, conversation.as_ref())
-            .await?;
-        let mut messages = Vec::with_capacity(limit.min(rows.len()));
-        let mut rows_below = false;
-        for row in rows {
-            let seq = row.conversation_seq;
-            if (seq != 0 && seq < oldest_seq) || messages.len() == limit {
-                rows_below = true;
-                break;
-            }
-            messages.push(row);
-        }
-        messages.sort_by(IMMessage::compare_for_timeline_asc);
-        let has_more = window_has_older(&messages, rows_below, &coverage, conversation.as_ref());
-        Ok(ConversationTimelineSnapshot {
-            conversation,
-            messages,
-            has_more,
-        })
+        self.session_guard
+            .run(async {
+                let conversation_id = conversation_id.trim();
+                let limit = limit.max(1);
+                let rows = self
+                    .message_view_assembler
+                    .latest_window_through(
+                        conversation_id,
+                        oldest_seq,
+                        limit.saturating_add(1) as u32,
+                    )
+                    .await?;
+                let conversation = self.view_assembler.get(conversation_id).await?;
+                let coverage = self
+                    .coverage_with_floor(conversation_id, conversation.as_ref())
+                    .await?;
+                let mut messages = Vec::with_capacity(limit.min(rows.len()));
+                let mut rows_below = false;
+                for row in rows {
+                    let seq = row.conversation_seq;
+                    if (seq != 0 && seq < oldest_seq) || messages.len() == limit {
+                        rows_below = true;
+                        break;
+                    }
+                    messages.push(row);
+                }
+                messages.sort_by(IMMessage::compare_for_timeline_asc);
+                let has_more =
+                    window_has_older(&messages, rows_below, &coverage, conversation.as_ref());
+                Ok(ConversationTimelineSnapshot {
+                    conversation,
+                    messages,
+                    has_more,
+                })
+            })
+            .await
     }
 
     /// 往新的方向在区间内读本地：seq 落在 `(after_seq, to_seq]` 的行，由旧到新最多 `limit` 行。
@@ -341,28 +402,31 @@ impl ConversationApi {
         to_seq: u64,
         limit: usize,
     ) -> Result<(Vec<IMMessage>, bool)> {
-        self.ensure_session_active().await?;
-        let conversation_id = conversation_id.trim();
-        if conversation_id.is_empty() || to_seq <= after_seq || limit == 0 {
-            return Ok((Vec::new(), false));
-        }
-        let rows = self
-            .message_view_assembler
-            .list_after(
-                conversation_id,
-                after_seq,
-                u32::try_from(limit.saturating_add(1)).unwrap_or(u32::MAX),
-            )
-            .await?;
-        let mut in_range = rows
-            .into_iter()
-            .filter(|message| {
-                message.conversation_seq > after_seq && message.conversation_seq <= to_seq
+        self.session_guard
+            .run(async {
+                let conversation_id = conversation_id.trim();
+                if conversation_id.is_empty() || to_seq <= after_seq || limit == 0 {
+                    return Ok((Vec::new(), false));
+                }
+                let rows = self
+                    .message_view_assembler
+                    .list_after(
+                        conversation_id,
+                        after_seq,
+                        u32::try_from(limit.saturating_add(1)).unwrap_or(u32::MAX),
+                    )
+                    .await?;
+                let mut in_range = rows
+                    .into_iter()
+                    .filter(|message| {
+                        message.conversation_seq > after_seq && message.conversation_seq <= to_seq
+                    })
+                    .collect::<Vec<_>>();
+                let more = in_range.len() > limit;
+                in_range.truncate(limit);
+                Ok((in_range, more))
             })
-            .collect::<Vec<_>>();
-        let more = in_range.len() > limit;
-        in_range.truncate(limit);
-        Ok((in_range, more))
+            .await
     }
 
     /// 按 id 批量重读视图里的几行：有客户端 id 的按客户端 id 读（行键就是它，发送确认前后不变），
@@ -372,130 +436,166 @@ impl ConversationApi {
         client_msg_ids: &[String],
         server_ids: &[String],
     ) -> Result<Vec<IMMessage>> {
-        self.ensure_session_active().await?;
-        self.message_view_assembler
-            .get_many(client_msg_ids, server_ids)
+        self.session_guard
+            .run(async {
+                self.message_view_assembler
+                    .get_many(client_msg_ids, server_ids)
+                    .await
+            })
             .await
     }
 
     /// 定位用：按服务端 id 或客户端 id 找本地的一条消息。
     pub(crate) async fn find_message(&self, message_id: &str) -> Result<Option<IMMessage>> {
-        self.ensure_session_active().await?;
-        let message_id = message_id.trim();
-        if message_id.is_empty() {
-            return Ok(None);
-        }
-        self.message_view_assembler.get_raw(message_id).await
+        self.session_guard
+            .run(async {
+                let message_id = message_id.trim();
+                if message_id.is_empty() {
+                    return Ok(None);
+                }
+                self.message_view_assembler.get_raw(message_id).await
+            })
+            .await
     }
 
     pub async fn mark_read(&self, conversation_id: &str, read_seq: u64) -> Result<()> {
-        self.ensure_session_active().await?;
-        let unread_count = self
-            .command_use_case
-            .mark_read(conversation_id, read_seq)
-            .await?;
-        self.bus.publish(SdkEvent::Conversation(
-            ConversationEvent::UnreadCountChanged {
-                conversation_id: conversation_id.to_string(),
-                unread_count,
-            },
-        ));
-        Ok(())
+        self.session_guard
+            .run(async {
+                let unread_count = self
+                    .command_use_case
+                    .mark_read(conversation_id, read_seq)
+                    .await?;
+                self.bus.publish(SdkEvent::Conversation(
+                    ConversationEvent::UnreadCountChanged {
+                        conversation_id: conversation_id.to_string(),
+                        unread_count,
+                    },
+                ));
+                Ok(())
+            })
+            .await
     }
 
     pub async fn delete(&self, conversation_id: &str) -> Result<()> {
-        self.ensure_session_active().await?;
-        self.command_use_case.delete(conversation_id).await?;
-        self.bus
-            .publish(SdkEvent::Conversation(ConversationEvent::Deleted {
-                conversation_id: conversation_id.to_string(),
-            }));
-        Ok(())
+        self.session_guard
+            .run(async {
+                self.command_use_case.delete(conversation_id).await?;
+                self.bus
+                    .publish(SdkEvent::Conversation(ConversationEvent::Deleted {
+                        conversation_id: conversation_id.to_string(),
+                    }));
+                Ok(())
+            })
+            .await
     }
 
     pub async fn set_pinned(&self, conversation_id: &str, pinned: bool) -> Result<()> {
-        self.ensure_session_active().await?;
-        self.command_use_case
-            .set_pinned(conversation_id, pinned)
-            .await?;
-        self.publish_updated(conversation_id);
-        Ok(())
+        self.session_guard
+            .run(async {
+                self.command_use_case
+                    .set_pinned(conversation_id, pinned)
+                    .await?;
+                self.publish_updated(conversation_id);
+                Ok(())
+            })
+            .await
     }
 
     pub async fn set_muted(&self, conversation_id: &str, muted: bool) -> Result<()> {
-        self.ensure_session_active().await?;
-        self.command_use_case
-            .set_muted(conversation_id, muted)
-            .await?;
-        self.publish_updated(conversation_id);
-        Ok(())
+        self.session_guard
+            .run(async {
+                self.command_use_case
+                    .set_muted(conversation_id, muted)
+                    .await?;
+                self.publish_updated(conversation_id);
+                Ok(())
+            })
+            .await
     }
 
     /// In a large group, turns notifications for every message on or off for the current user.
     /// The choice shows at once; when the server does not take it, it goes back and the error is
     /// returned. Either way the conversation is announced as updated.
     pub async fn set_notify_all(&self, conversation_id: &str, enabled: bool) -> Result<()> {
-        self.ensure_session_active().await?;
-        let result = self
-            .command_use_case
-            .set_notify_all(conversation_id, enabled)
-            .await;
-        self.publish_updated(conversation_id);
-        result
+        self.session_guard
+            .run(async {
+                let result = self
+                    .command_use_case
+                    .set_notify_all(conversation_id, enabled)
+                    .await;
+                self.publish_updated(conversation_id);
+                result
+            })
+            .await
     }
 
     pub async fn set_archived(&self, conversation_id: &str, archived: bool) -> Result<()> {
-        self.ensure_session_active().await?;
-        self.command_use_case
-            .set_archived(conversation_id, archived)
-            .await?;
-        self.publish_updated(conversation_id);
-        Ok(())
+        self.session_guard
+            .run(async {
+                self.command_use_case
+                    .set_archived(conversation_id, archived)
+                    .await?;
+                self.publish_updated(conversation_id);
+                Ok(())
+            })
+            .await
     }
 
     pub async fn mark_unread(&self, conversation_id: &str) -> Result<u32> {
-        self.ensure_session_active().await?;
-        let unread_count = self.command_use_case.mark_unread(conversation_id).await?;
-        self.bus.publish(SdkEvent::Conversation(
-            ConversationEvent::UnreadCountChanged {
-                conversation_id: conversation_id.to_string(),
-                unread_count,
-            },
-        ));
-        Ok(unread_count)
+        self.session_guard
+            .run(async {
+                let unread_count = self.command_use_case.mark_unread(conversation_id).await?;
+                self.bus.publish(SdkEvent::Conversation(
+                    ConversationEvent::UnreadCountChanged {
+                        conversation_id: conversation_id.to_string(),
+                        unread_count,
+                    },
+                ));
+                Ok(unread_count)
+            })
+            .await
     }
 
     /// 设置会话草稿（本地）
     pub async fn update_draft(&self, conversation_id: &str, draft: Option<&str>) -> Result<()> {
-        self.ensure_session_active().await?;
-        self.command_use_case
-            .update_draft(conversation_id, draft)
-            .await?;
-        self.publish_updated(conversation_id);
-        Ok(())
+        self.session_guard
+            .run(async {
+                self.command_use_case
+                    .update_draft(conversation_id, draft)
+                    .await?;
+                self.publish_updated(conversation_id);
+                Ok(())
+            })
+            .await
     }
 
     /// 清空本地聊天记录并更新会话摘要。
     pub async fn clear_local_chat_history(&self, conversation_id: &str) -> Result<()> {
-        self.ensure_session_active().await?;
-        self.command_use_case
-            .clear_local_chat_history(conversation_id)
-            .await?;
-        self.publish_updated(conversation_id);
-        Ok(())
+        self.session_guard
+            .run(async {
+                self.command_use_case
+                    .clear_local_chat_history(conversation_id)
+                    .await?;
+                self.publish_updated(conversation_id);
+                Ok(())
+            })
+            .await
     }
 
     /// Clear conversation history for the current account across devices.
     pub async fn clear_chat_history_for_self(&self, conversation_id: &str) -> Result<()> {
-        self.ensure_session_active().await?;
-        self.command_use_case
-            .clear_chat_history_for_self(conversation_id)
-            .await?;
-        self.bus
-            .publish(SdkEvent::Conversation(ConversationEvent::Synced {
-                conversation_ids: vec![conversation_id.to_string()],
-            }));
-        Ok(())
+        self.session_guard
+            .run(async {
+                self.command_use_case
+                    .clear_chat_history_for_self(conversation_id)
+                    .await?;
+                self.bus
+                    .publish(SdkEvent::Conversation(ConversationEvent::Synced {
+                        conversation_ids: vec![conversation_id.to_string()],
+                    }));
+                Ok(())
+            })
+            .await
     }
 
     fn publish_updated(&self, conversation_id: &str) {

@@ -447,7 +447,7 @@ mod tests {
                 .login(
                     "alice",
                     Some("old-connect-fixture"),
-                    LoginDbKind::Provided(in_memory_im_provider()),
+                    LoginDbKind::provided(in_memory_im_provider()),
                     |_, _| {},
                 )
                 .await;
@@ -519,7 +519,7 @@ mod tests {
                 .login(
                     next_user,
                     Some("next-connect-fixture"),
-                    LoginDbKind::Provided(in_memory_im_provider()),
+                    LoginDbKind::provided(in_memory_im_provider()),
                     |_, _| {},
                 )
                 .await;

@@ -198,6 +198,36 @@ pub async fn invoke_normalized_json(
     request_json: &str,
 ) -> Result<BindingResponse> {
     crate::dispatch_support::validate_json_request_size(route, request_json)?;
+    let dispatch = dispatch_normalized_json(session, route, request_json);
+    let family = route.split('.').next().unwrap_or_default();
+    if matches!(
+        family,
+        "message"
+            | "conversation"
+            | "media"
+            | "view"
+            | "sync"
+            | "capability"
+            | "plugin"
+            | "message_builder"
+            | "notification"
+            | "user"
+            | "presence"
+    ) || route == "sdk.update_access_token"
+    {
+        let client = session.client();
+        return client
+            .in_session_generation(client.session_generation_snapshot(), dispatch)
+            .await;
+    }
+    dispatch.await
+}
+
+async fn dispatch_normalized_json(
+    session: &impl InvokeSession,
+    route: &str,
+    request_json: &str,
+) -> Result<BindingResponse> {
     if crate::generated::direct_invoke::is_direct_invoke_route(route) {
         return crate::generated::direct_invoke::dispatch_direct_json(session, route, request_json)
             .await;

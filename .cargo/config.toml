@@ -3,3 +3,8 @@ xtask = "run -q -p xtask --"
 
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg", "wasm_js", "-C", "panic=abort"]
+
+[env]
+# Debug builds nest async futures deeply enough to overflow libtest's 2 MiB thread
+# stacks; release runtimes size their worker stacks explicitly (bindings/c ffi_runtime).
+RUST_MIN_STACK = "8388608"

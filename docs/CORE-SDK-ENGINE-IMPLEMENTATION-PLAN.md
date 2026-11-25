@@ -251,6 +251,14 @@ Engine 将入站来源传入 ApplyInbound。待发消息的实时自回声保留
 
 两种恢复方式共 8/8 条持久回执与唯一已提交行一致。既有跨会话同 ID 回归初次在释放 Writer 后等待网关持久回执超时。测试现于解除写锁前捕获 SDK 发出的重试帧，在确认提交后转发，避免同步先完成导致没有第二次上行。复测独立发送者与同账号双设备，另 8/8 条原始持久回执在到达时均可查到唯一匹配行。Transport 的入站观察器测试 6 项通过，摄入服务单测 73 项和幂等账本集成测试 7 项通过；1 项按既有 Hook 测试库配置忽略。[所有分轮计数、分位数、最慢 1% 及回执记录](assets/phase13-ack-stages.json) · [复测命令](../storage/README.md#16--32-并发分段复测)
 
+### 2026-11-25 · 空库长尾排查与统一验收安排
+
+在 `dev` 逐轮回看历史数据。两连接池 16 并发两轮网关 P99 为 316.17、270.30 ms，合并为 301.42 ms。四连接池首轮为 327.46 ms，1,024 条全部在线确认；在两个 32 并发窗口之后，末轮为 451.52 ms，997 条在线确认、27 次核验超时，合并 P99 为 409.55 ms。该末轮相对首轮，Writer 事务 P99 从 98.15 升至 295.63 ms，核验取连接 P99 从 115.21 升至 240.12 ms。在最慢 1% 已确认帧中，网关入站排队均值为 0.22 ms，发送至 Writer 提交观测点均值达 491.32 ms。历史样本定位了长尾发生的窗口及阶段，对宿主编译和连接池各自的因果贡献仍待对照。[历史分轮数据](assets/phase13-ack-stages.json)
+
+Server Writer 已将新写入台账的归档状态和时间合入 INSERT。单条与批量路径的消息、幂等账本及审计证明仍共用一个 PostgreSQL 事务。冲突行保持原状态。本轮已构建基线与候选 Writer、生产 WASM，以及针对台账重投、状态和回滚的真库测试程序。压测补充独立驱动编译、宿主编译监测和归档 UPDATE 次数采集。按要求在栈启动阶段停止，本轮没有性能样本、真库测试结果或新的重试 ACK 记录，Writer 变更的性能收益待测。[压测入口](../tests/storage_parity/ack_load.mjs) · [编译负载记录](../tests/storage_parity/quiet_host.py) · [复跑方法](../storage/README.md#排除宿主编译的空库对照)
+
+**验收顺序。** 完成 1.4、2.1–2.3、3.1–3.4 和阶段 4 的编码后，集中执行各工作包的完成条件，包括 1.3 空库 16/32 并发对照和 C／生产 WASM 原连接及冷重开重试。保留每轮的吞吐、P95/P99、超时、同步补偿数和逐条数据库身份。构建完成、历史通过和本次统一验收分别记账。
+
 ### 性能复测口径
 
 在 Engine 根目录运行 `python3 scripts/measure_sqlite_baseline.py`。脚本只编译一次测试程序，为每个冷启动启动独立进程并创建空数据目录。构建、测试进程启动和消息构造均在相应计时区间之外。SQLite 小批提交计入写消息、更新会话摘要及同步写入全文索引的耗时。离线峰值以持久队列的记录数计量。p95 取排序后第 ⌈0.95 × 样本数⌉ 项。[测量入口](../scripts/measure_sqlite_baseline.py) · [负载与断言](../tests/cold_start_baseline.rs#L154)
@@ -292,6 +300,64 @@ rtk cargo check --locked --target wasm32-unknown-unknown -p flare-im-core-sdk-wa
 | 1.4 已读与会话代次 | Engine 在单次本地提交中记录已读位置及待同步意图。凭证、网络、提交、媒体和回调都校验账号作用域与登录代次。 | 离线已读可跨重启重试。同账号重登、换租户和双链交接时，迟到回包不能写入新会话。 |
 
 1.1 是第一条纵向切片。1.3 的网关协议设计可与其并行，启用新的 ACK 语义前须通过双端联测。对跨版本部署，只有完成协商的链路才使用新确认语义。[当前发信窗口](../src/runtime/reliable_queue/actor.rs#L535) · [实时收信](../src/runtime/dispatcher/dispatch.rs#L62) · [Web 后端](../storage/indexeddb/src/provider.rs#L1528)
+
+### 阶段 1.4 编码记录与待验事项
+
+离线 `conversation.mark_read` 在同一次投影 CAS 内写读位、未读和待上报水位。部分已读扣除已落地的对端消息，保留尚未下载的未读。重启后的 ReadStates 同步优先重发该水位，收到覆盖该水位的权威摘要、快照或本人读回执事件才清理意图。过期快照的未读数不能覆盖更高的本地消息水位。[命令](../src/application/usecases/conversation/command.rs) · [重发](../src/application/adapters/sync_protocol_adapter.rs) · [快照与摘要](../src/application/usecases/sync/mod.rs)
+
+Native 与生产浏览器均由 prepare 选择租户和账号。开库前记录登录代次，发布新引擎前再比对。按账号打开的后端保留该账号自己的待发队列。登录、凭证续期、消息、会话和媒体门面绑定代次，旧事件订阅随引擎退休关闭。网关交接同时作废旧链路已排队的持久化及送达确认。[会话装配](../src/client/im_client/session_lifecycle.rs) · [浏览器适配](../storage/indexeddb/src/lib.rs) · [链路代次](../src/runtime/link/epoch.rs)
+
+统一验证时运行相同两条发信样本，在断网时只读第一条。先检查冷库的读位 1、未读 1、待上报 1、消息与发件箱，再联网等待权威确认清除待上报字段。另运行同账号慢开库、旧门面、旧事件订阅和双链交接用例。生产浏览器的会话投影改由宿主 `commitProjection` 在同一个 IndexedDB readwrite 事务内比对并写入；冲突时返回另一标签页已提交的行，Rust 侧据此替换内存镜像，避免两个标签页各按内存摘要覆盖对方的已读水位。统一验证时运行双客户端同版本只提交一次的用例。当前无本轮运行结果。[事务入口](../../flare-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.ts) · [双标签页用例](../../flare-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.test.ts)[双端脚本](../tests/storage_parity/offline_read.mjs) · [登录代次用例](../src/client/im_client/tests.rs)
+
+### Social 联动待办
+
+| 交接点 | Social 可接手时的改动 | 统一验收 |
+| --- | --- | --- |
+| 3.2 身份与成员投影 | Social 为资料、群角色、成员属性提供自己的 schema、迁移和同步 checkpoint，明确每个字段的权威写方 | 同账号不同群、不同查看者隔离，迁移中断后可继续 |
+| 3.3 商业与应用插件 | 核对 Social 宿主使用的旧卡、已授权页面、支付单与未完成继续动作，再切换相应消费入口 | 撤权、转发、未知信封回放和未完成订单逐笔对照 |
+| 3.4 群与好友 | 将建群、角色规则、好友备注及会话名称投影切至 Social；应用处理展示与通知交互 | 纯 Core 按已授权会话收发，Social 端再核对好友名、群权限和历史寻址 |
+| 4 旧入口 | 收齐 Social 的公开 SPI、生成绑定和存储读写调用清单后移除对应兼容入口 | 跨仓消费者编译、旧库回放、C / WASM 与性能统一验收 |
+| 3.1 扩展上下文 | Core 已移除不受授权约束的 `extension_context()`；Social 改用 `extension_context_for("social")` | 停用 Social 扩展后旧上下文写入被拒，已放行写入排空后才返回 |
+| 3.1 扩展注册 | Core 已移除 builder 的 `add_extension_lifecycle_arc`、`add_extension_migration_arc`；生命周期与迁移须随 `SdkExtension` 声明注册，回调拿到本 namespace 的授权上下文，扩展停用时跳过 | Social 的生命周期回调在停用后不再执行 |
+| 登录存储 | `LoginDbKind::Provided` 改为装箱，构造统一用 `LoginDbKind::provided(stores)` | Social 与示例登录路径编译通过 |
+
+### 阶段 2–3 编码记录 · 不依赖 Social 的部分
+
+本轮只编码，未编译、未运行测试，验证并入统一验收。2.1 与 2.2 新增的 `message.await_confirmation`、`conversation.member`、`media.resolve_attachment`、`media.cancel_transfer` 只改了契约源 `bindings/contract/apis.json` 与 `dispatch.json`，统一验证时先运行 `xtask core-codegen-check` 的生成步骤，重新生成 shared/C/WASM 分发与五端消费包。
+
+| 工作包 | 本轮改动 | 统一验证时核对 |
+| --- | --- | --- |
+| 2.1 发送阶段与身份 | `send` 的返回明确为本机已入队；新增 `message.await_confirmation`，先订阅再读本地行，等到服务端持久确认或终态失败，事件丢失时以已提交行为准，超时不影响队列重试。新增 `conversation.member`，按 `MemberRef` 返回服务端同步的参与者事实，名称沿用读取时投影，未装资料 provider 时为结构化「无名」。补 Core-only 收信样本：单聊文本与引用、群文本与转发，以及同批重放不重复计未读。[发送](../src/application/usecases/message/send.rs) · [成员](../src/client/api/conversation.rs) · [样本](../src/application/usecases/inbound.rs) | 入队后断网，`await_confirmation` 在重连并持久 ACK 后返回服务端 ID 与 seq；终态拒发返回 Failed；Core-only 样本两端结果一致 |
+| 2.2 媒体 | `MediaRef.message_seq` 改为 u64 并进入契约，新增 `media.resolve_attachment`，在 API 边界换算为端口与 wire 的 int64，越界拒绝。新增 `media.cancel_transfer`，同一 ID 取消上传（`transfer_id`）或下载（`download_key`）；原生下载先写临时文件再改名，取消即删除临时文件。上传恢复能力补字段说明，`requires_source_reselection` 即需重新授权文件。[模型](../src/model/media.rs) · [API](../src/client/api/media.rs) | 取消下载后目标目录无残缺文件、无下载记录；`resolve_attachment` 拒绝越界 seq |
+| 2.3 绑定一致性 | 新增 [三端一致性样本](../tests/storage_parity/bindings.mjs)：C ABI、生产 WASM 与 Tauri 命令路径执行同一组离线命令，比对结构化错误、超过 2^53 的 u64、字节数组、视图 revision、取消与超时结果。Tauri 经 [无窗口驱动](../bindings/tauri/examples/parity_driver.rs) 走与命令相同的 `invoke_api_id_json`。C 驱动出错时输出结构化错误行并继续，不再退出进程；harness 三端统一提供原始 JSON 进出的 `raw`。存储层新增 [契约样本](../tests/external-consumer/src/storage_contract.rs)，内存与 SQLite 两个独立实现跑同一组分页、按键查找、重放收敛与未读/读位。[运行方法](../storage/README.md#c--wasm--tauri-绑定一致性) | 三端结果全等；WASM 的 `serde_wasm_bindgen` JSON 兼容模式对超过 2^53 的 u64 可能报错或丢精度，若样本失败按结果修正序列化；新契约入口须先重新生成分发 |
+| 3.1 授权与生命周期 | `extension_context_for(namespace)` 返回带授权的上下文，会话、消息、资料和成员昵称写入前检查撤销，并在写入期间持有排空锁。Builder 拒绝互为前缀的 namespace，扩展注册的 codec、迁移和生命周期必须落在自己的 namespace 下。出站消息收到持久 ACK 并提交后，同样经 `CommitSubscription` 通知观察者。[上下文](../src/extension/mod.rs) · [注册校验](../src/client/builder.rs) · [出站提交](../src/runtime/reliable_queue/actor.rs) | 停用期间旧上下文写入失败；`a` 与 `a.b` 注册冲突；出站与入站各一条已提交通知 |
+| 3.1 迁移 | 登录准备完成后，按 namespace 依次执行高于已记录版本的 `ExtensionMigration`，版本记在账号游标存储，每步 30 秒超时并捕获 panic。失败停在已完成版本，下次登录续跑，其他 namespace 和 IM 会话不受影响。[执行](../src/extension/mod.rs) · [调用点](../src/client/im_client/session_lifecycle.rs) | 中途失败后重登只执行剩余版本；停用的 namespace 不执行 |
+| 3.2 外部 schema | `RecordBackend` 新增分区安装状态、按 namespace 清除。以更高 schema 打开会安装新版本并开启重写；旧版本句柄的写入在同一事务内被拒。`migrate_step` 分批重写旧行并推进独立书签，不占用扩展自己的同步 checkpoint。`purge_extension_records` 先撤权排空，再清除记录、索引、checkpoint 和安装状态。SQLite 与 IndexedDB 两端对等实现，IndexedDB 升至库版本 2，处理多标签页阻塞与配额错误。[分区](../src/extension/records.rs) · [SQLite](../storage/sqlite-im/src/extension_records.rs) · [IndexedDB](../storage/indexeddb/src/extension_records.mjs) · [外部用例](../tests/external-consumer/src/lib.rs) | 外部用例：v1 句柄升级后写入失败、重写后新索引可查、checkpoint 保持、卸载后重装为空；IndexedDB 端补同一组用例 |
+
+### 2026-11-25 · core 各仓统一验证
+
+Social 与上层业务扩展不在本轮范围；core 不为它们保留兼容旁路，Social 跟进点见上表。
+
+| 仓库 | 结果 |
+| --- | --- |
+| flare-core-sdk-engine | fmt、两组 clippy（1.97.1，`-D warnings`）通过。库测试 e2ee 1157、storage-sqlite 1304、lifecycle-sqlite 1312、SQLite 适配器 93、外部消费者 4 项通过；`--features storage-sqlite` 全量测试通过。11 道 xtask 门禁、生成物检查、依赖闭包检查通过。WASM gzip 1,765,186 B，预算内。运行时样本：C / 生产 WASM 重开、IndexedDB 扩展记录、C / WASM / Tauri 一致性全部一致。 |
+| flare-core-server | 迁移台账单测、文档与 README 数字、Hook 契约、面板指标、fmt、clippy 通过；`cargo test --workspace` 2375 项通过，115 项需数据库或外部环境按设计忽略。需独立 Redis 的序列恢复测试未在本机运行。 |
+| flare-core-sdk | TS 类型检查、架构守卫、vitest 298 项、sdk-spec JSON 通过；Dart 分析零问题，测试 135 项通过（含真实 FFI 库用例）；Swift 编译通过。更新中心已按边界移出 core（`ed9d5ed`），本轮删去其在 Swift、Kotlin、Dart 模板与产物中的残留编解码、事件分支和四端 `DefaultUpdateApi`；更新中心由应用宿主或插件宿主承担。ArkTS / 仓颉按约定未验证，Kotlin 未在 CI 中编译。 |
+
+验证中修复的既有问题：FFI 运行时线程栈在 debug 构建溢出（调为 8 MiB），测试进程栈经 `.cargo/config.toml` 设为 8 MiB；视图 API 后台任务缺字段、两处 `select!` 借用冲突；生成的 WireCodec 与模板漂移（模板改为生成器规范顺序）；过时门禁（failover、Flutter 多设备清单、Android lifecycle 路径）；server 的格式化、clippy、缺失的测试桩方法、环境变量登记与两处过时守卫。CI 已删去不存在的 `flare-access` 测试步骤。
+
+**范围裁决（2026-11-25）。** 不依赖 Social 的编码到此收口，剩余事项按目标边界裁决如下。
+
+| 事项 | 裁决 | 依据 |
+| --- | --- | --- |
+| 第三方持久后端 | 不新增"内存仓储 + 持久化回调"通用组合件。宿主自有打开器经 `AccountStoreOpener` 装配后端，与内存、SQLite 一起跑 [存储契约样本](../tests/external-consumer/src/storage_contract.rs)。 | 组合件目前只有 IndexedDB 一个使用方，抽出会改动生产 Web 路径；完成条件要求的是第三方只新增实现与装配，现有入口已满足。出现第二个同类后端时再抽取。 |
+| JS 宿主的 u64 | 契约规定 JS 宿主只保证 2^53−1 以内，一致性样本测该上限；WASM 序列化不改。 | seq、revision、毫秒时间均远低于上限，超过的标识以字符串传输。改用 BigInt 会改变全部 TS 消费者的类型。 |
+| 进行中调用的取消 | 不加 C ABI 取消令牌；跨调用的工作经 `media.cancel_transfer`、`view.close` 取消，或由 `message.await_confirmation` 自带超时约束。规则写入 [契约清单](../bindings/contract/manifest.json)。 | 令牌是五端 ABI 变更，而可取消的长任务已有显式入口。 |
+| 生命周期回调授权 | 已实现：已声明扩展的回调拿到按 namespace 授权的上下文，停用后写入被拒；未声明的回调保持共享上下文。 | 停用扩展须同时停止其生命周期写入，且不改变 Social 现有注册方式。 |
+| IndexedDB 扩展记录 | 已补 [浏览器用例](../tests/storage_parity/extension_records.mjs)：安装 CAS、旧 schema 写入被拒、与 SQLite BINARY 一致的 UTF-8 扫描顺序、前缀相同的 namespace 不被误删。 | 两端对等实现须有各自的运行证据。 |
+| 插件升级失败回退、可信内容来源证明 | 移出 Engine 范围，归插件宿主与协议适配层（阶段 3.3）。 | 目标边界中 Bundle、升级与卡片来源由插件宿主负责，Engine 只保留不透明的受保护信封。 |
+| Web 下载取消 | 浏览器保存由宿主完成，核心侧 `cancel_transfer` 在 WASM 只取消上传。 | 核心不持有浏览器下载任务。 |
+| capability `invoke` 超时 | 不加统一超时，由插件声明各自时限。 | 支付确认、文件选择需等待用户操作。 |
 
 ## 阶段 2　稳定核心 API 和平台适配
 

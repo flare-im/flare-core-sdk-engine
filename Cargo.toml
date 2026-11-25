@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     ".",
     "xtask",
+    "tests/external-consumer",
     "storage/sqlite",
     "storage/sqlite-im",
     "storage/indexeddb",

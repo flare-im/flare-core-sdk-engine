@@ -97,6 +97,11 @@ pub struct PresenceApi {
 }
 
 impl PresenceApi {
+    pub(crate) fn for_session(mut self, watch: crate::client::im_client::SessionEndWatch) -> Self {
+        self.session_guard.bind(watch);
+        self
+    }
+
     pub(crate) fn push_http(&self) -> HttpClient {
         self.http.clone()
     }

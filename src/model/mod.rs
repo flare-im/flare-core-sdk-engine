@@ -5,6 +5,8 @@ pub mod conversation_user_settings;
 pub mod event;
 pub mod media;
 pub mod message;
+pub mod references;
+pub use references::{ConfirmationRequest, MemberRef, MessageKey, SendConfirmation, UserRef};
 pub mod notification;
 pub mod receipt;
 pub mod search;

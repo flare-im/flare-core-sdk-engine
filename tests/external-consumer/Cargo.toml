@@ -1,0 +1,15 @@
+[package]
+name = "flare-core-external-consumer"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dev-dependencies]
+async-trait = "0.1"
+flare-im-core-sdk = { path = "../.." }
+flare-proto.workspace = true
+flare-im-core-sdk-sqlite-im = { path = "../../storage/sqlite-im" }
+serde_json.workspace = true
+sqlx.workspace = true
+tempfile = "3"
+tokio.workspace = true

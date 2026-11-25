@@ -174,7 +174,7 @@ impl Drop for SessionEndSignal {
 
 /// 会话监视器等待「本世代会话已结束」的句柄，见 [`IMClient::session_end_watch`]。
 #[derive(Clone)]
-struct SessionEndWatch {
+pub(crate) struct SessionEndWatch {
     notify: Arc<Notify>,
     generation_snapshot: Weak<AtomicU64>,
     generation: u64,
@@ -182,14 +182,14 @@ struct SessionEndWatch {
 
 impl SessionEndWatch {
     /// 会话世代已不是监视器所属的那一代，或客户端已销毁。
-    fn is_ended(&self) -> bool {
+    pub(crate) fn is_ended(&self) -> bool {
         self.generation_snapshot
             .upgrade()
             .is_none_or(|snapshot| snapshot.load(Ordering::Acquire) != self.generation)
     }
 
     /// 本世代会话结束时返回；已结束则立即返回。
-    async fn ended(&self) {
+    pub(crate) async fn ended(&self) {
         loop {
             let notified = self.notify.notified();
             tokio::pin!(notified);
@@ -407,27 +407,79 @@ impl IMClient {
             .map(|apis| (*apis).clone())
     }
 
-    fn connected_apis_from_inner(g: &IMClientInner) -> Result<ConnectedApis> {
+    /// Run one operation against its captured login, including same-account relogins.
+    /// Dropping the losing future cancels pending reads before they can publish a result.
+    pub async fn in_session_generation<T>(
+        &self,
+        generation: u64,
+        operation: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        let watch = self.session_end_watch(generation);
+        tokio::select! {
+            biased;
+            _ = watch.ended() => Err(Self::not_connected()),
+            result = operation => {
+                if watch.is_ended() { Err(Self::not_connected()) } else { result }
+            }
+        }
+    }
+
+    fn connected_apis_from_inner(&self, g: &IMClientInner) -> Result<ConnectedApis> {
+        let watch = self.session_end_watch(g.session_generation);
         Ok(ConnectedApis {
             session_generation: g.session_generation,
-            message_api: g.message_api.clone().ok_or_else(Self::not_connected)?,
+            message_api: g
+                .message_api
+                .clone()
+                .ok_or_else(Self::not_connected)?
+                .for_session(watch.clone()),
             conversation_api: g
                 .conversation_api
                 .as_ref()
-                .map(|a| a.as_ref().clone())
+                .map(|a| a.as_ref().clone().for_session(watch.clone()))
                 .ok_or_else(Self::not_connected)?,
-            media_api: g.media_api.clone().ok_or_else(Self::not_connected)?,
-            capability_api: g.capability_api.clone().ok_or_else(Self::not_connected)?,
-            presence_api: g.presence_api.clone().ok_or_else(Self::not_connected)?,
-            message_build_api: g
-                .message_build_api
-                .clone()
-                .ok_or_else(Self::not_connected)?,
-            view_api: g.view_api.clone().ok_or_else(Self::not_connected)?,
-            capability_registry: g
-                .capability_registry
-                .clone()
-                .ok_or_else(Self::not_connected)?,
+            media_api: Arc::new(
+                g.media_api
+                    .as_deref()
+                    .ok_or_else(Self::not_connected)?
+                    .clone()
+                    .for_session(watch.clone()),
+            ),
+            capability_api: Arc::new(
+                g.capability_api
+                    .as_deref()
+                    .ok_or_else(Self::not_connected)?
+                    .clone()
+                    .for_session(watch.clone()),
+            ),
+            presence_api: Arc::new(
+                g.presence_api
+                    .as_deref()
+                    .ok_or_else(Self::not_connected)?
+                    .clone()
+                    .for_session(watch.clone()),
+            ),
+            message_build_api: Arc::new(
+                g.message_build_api
+                    .as_deref()
+                    .ok_or_else(Self::not_connected)?
+                    .clone()
+                    .for_session(watch.clone()),
+            ),
+            view_api: Arc::new(
+                g.view_api
+                    .as_deref()
+                    .ok_or_else(Self::not_connected)?
+                    .clone()
+                    .for_session(watch.clone()),
+            ),
+            capability_registry: Arc::new(
+                g.capability_registry
+                    .as_deref()
+                    .ok_or_else(Self::not_connected)?
+                    .clone()
+                    .for_session(watch),
+            ),
         })
     }
 
@@ -437,7 +489,7 @@ impl IMClient {
         }
 
         let g = self.read_active_inner()?;
-        let apis = Self::connected_apis_from_inner(&g)?;
+        let apis = self.connected_apis_from_inner(&g)?;
         self.store_connected_apis_snapshot(apis.clone());
         drop(g);
         Ok(apis)
@@ -494,7 +546,7 @@ impl IMClient {
         if !self.inner_session_active(&g) {
             return Err(Self::not_connected());
         }
-        let apis = Self::connected_apis_from_inner(&g)?;
+        let apis = self.connected_apis_from_inner(&g)?;
         self.store_connected_apis_snapshot(apis.clone());
         drop(g);
         Ok(apis)
@@ -550,6 +602,9 @@ impl IMClient {
             direct,
             allow_cleartext,
         ));
+        // Invalidate an account open started against the preceding configuration.
+        g.session_generation = g.session_generation.wrapping_add(1);
+        self.store_session_generation_snapshot(g.session_generation);
         self.push_lifecycle.detach();
         g.environment = environment;
         if let Some(previous) = &g.connection {
@@ -594,6 +649,28 @@ impl IMClient {
             return Err(FlareError::localized(
                 ErrorCode::InvalidParameter,
                 "install bundle delivery once, before opening a session",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Install the composition's confirmation driver before publishing any account.
+    pub async fn install_confirmation_driver(
+        &self,
+        driver: Arc<dyn crate::client::api::ConfirmationDriver>,
+    ) -> Result<()> {
+        let inner = self.inner.write().await;
+        if inner.current_user_id.is_some()
+            || inner
+                .plugin_host
+                .capability_host
+                .confirmation_driver
+                .set(driver)
+                .is_err()
+        {
+            return Err(FlareError::localized(
+                ErrorCode::InvalidParameter,
+                "install confirmation driver once before login",
             ));
         }
         Ok(())

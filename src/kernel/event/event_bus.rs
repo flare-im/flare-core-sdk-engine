@@ -109,8 +109,42 @@ struct SharedRawSubscriber {
     dropped_events: Arc<AtomicU64>,
 }
 
+/// Shared by an engine, queued deliveries and binding receivers for its account.
+#[derive(Clone)]
+pub(crate) struct SessionLifetime(tokio::sync::watch::Sender<bool>);
+
+impl Default for SessionLifetime {
+    fn default() -> Self {
+        Self(tokio::sync::watch::channel(false).0)
+    }
+}
+
+impl SessionLifetime {
+    pub(crate) fn retired(&self) -> bool {
+        *self.0.borrow()
+    }
+    pub(crate) fn retire(&self) {
+        self.0.send_replace(true);
+    }
+    pub(crate) async fn until_retired<T>(
+        &self,
+        operation: impl std::future::Future<Output = T>,
+    ) -> Option<T> {
+        let mut rx = self.0.subscribe();
+        tokio::select! {
+            biased;
+            _ = rx.wait_for(|retired| *retired) => None,
+            value = operation => (!self.retired()).then_some(value),
+        }
+    }
+}
+
+type CommitSender = tokio::sync::broadcast::Sender<Arc<[crate::spi::CommittedMessage]>>;
+
 #[derive(Clone)]
 pub struct EventBus {
+    committed: Arc<std::sync::OnceLock<CommitSender>>,
+    lifetime: SessionLifetime,
     middleware: Arc<MiddlewareChain>,
     raw_subscriber_capacity: usize,
     subscribers: Arc<RwLock<Vec<RawSubscriber>>>,
@@ -223,6 +257,8 @@ impl EventBus {
         let on_any = Arc::new(RwLock::new(Vec::new()));
 
         Self {
+            committed: Default::default(),
+            lifetime: SessionLifetime::default(),
             middleware,
             raw_subscriber_capacity,
             subscribers,
@@ -266,7 +302,9 @@ impl EventBus {
     /// 名字投影的输入变了（身份缓存的资料名与别名、会话内成员昵称）：交给打开中的视图重读受影响
     /// 的行。只在进程内传递，不经 `publish`，宿主与绑定层都收不到。
     pub(crate) fn publish_name_change(&self, change: NameChange) {
-        self.name_changes.publish(change);
+        if !self.lifetime.retired() {
+            self.name_changes.publish(change);
+        }
     }
 
     pub(crate) fn subscribe_name_changes(&self) -> NameChangeReceiver {
@@ -370,6 +408,7 @@ impl EventBus {
             SdkEvent::Connection(ce) => match ce {
                 ConnectionEvent::Status(status) => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_connection_status,
                         || status.clone(),
                         |f, status| f(status.clone()),
@@ -377,14 +416,16 @@ impl EventBus {
                 }
                 ConnectionEvent::SyncStateChanged { state } => {
                     let s = *state;
-                    dispatched += dispatch_callbacks(&self.on_sync_state_changed, move |f| {
-                        f(s);
-                    });
+                    dispatched +=
+                        dispatch_callbacks(&self.lifetime, &self.on_sync_state_changed, move |f| {
+                            f(s);
+                        });
                 }
             },
             SdkEvent::Message(me) => match me {
                 MessageEvent::Received { message } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_message,
                         || message.as_ref().clone(),
                         |f, message| f(message.clone()),
@@ -392,6 +433,7 @@ impl EventBus {
                 }
                 MessageEvent::ReceivedBatch { messages } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_message_batch,
                         || messages.clone(),
                         |f, messages| f(messages.clone()),
@@ -399,6 +441,7 @@ impl EventBus {
                 }
                 MessageEvent::SendAck { ack } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_send_ack,
                         || ack.as_ref().clone(),
                         |f, ack| f(ack.clone()),
@@ -410,6 +453,7 @@ impl EventBus {
                     ..
                 } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_send_failed,
                         || (client_msg_id.clone(), reason.clone()),
                         |f, (client_msg_id, reason)| {
@@ -422,6 +466,7 @@ impl EventBus {
                     event,
                 } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_recalled,
                         || (conversation_id.clone(), event.clone()),
                         |f, (conversation_id, event)| {
@@ -434,6 +479,7 @@ impl EventBus {
                     event,
                 } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_typing,
                         || (conversation_id.clone(), event.clone()),
                         |f, (conversation_id, event)| {
@@ -446,6 +492,7 @@ impl EventBus {
                     event,
                 } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_typing_aggregate,
                         || (conversation_id.clone(), event.clone()),
                         |f, (conversation_id, event)| {
@@ -458,6 +505,7 @@ impl EventBus {
                     event,
                 } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_read_receipt,
                         || (conversation_id.clone(), event.clone()),
                         |f, (conversation_id, event)| {
@@ -482,6 +530,7 @@ impl EventBus {
             },
             SdkEvent::Notification(NotificationEvent::Received { message }) => {
                 dispatched += dispatch_callbacks_with(
+                    &self.lifetime,
                     &self.on_notification,
                     || message.as_ref().clone(),
                     |f, message| f(message.clone()),
@@ -495,6 +544,7 @@ impl EventBus {
             SdkEvent::Conversation(ce) => match ce {
                 ConversationEvent::Synced { conversation_ids } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_conversation_synced,
                         || conversation_ids.clone(),
                         |f, conversation_ids| f(conversation_ids.clone()),
@@ -502,6 +552,7 @@ impl EventBus {
                 }
                 ConversationEvent::Created { conversation_id } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_conversation_created,
                         || conversation_id.clone(),
                         |f, conversation_id| f(conversation_id.clone()),
@@ -509,6 +560,7 @@ impl EventBus {
                 }
                 ConversationEvent::Updated { conversation_id } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_conversation_updated,
                         || conversation_id.clone(),
                         |f, conversation_id| f(conversation_id.clone()),
@@ -519,6 +571,7 @@ impl EventBus {
                     unread_count,
                 } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_conversation_unread_count_changed,
                         || (conversation_id.clone(), *unread_count),
                         |f, (conversation_id, unread_count)| {
@@ -528,6 +581,7 @@ impl EventBus {
                 }
                 ConversationEvent::Deleted { conversation_id } => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_conversation_deleted,
                         || conversation_id.clone(),
                         |f, conversation_id| f(conversation_id.clone()),
@@ -536,10 +590,12 @@ impl EventBus {
             },
             SdkEvent::Sync(se) => match se {
                 SyncNotify::Started { run } if run.visibility.emits_status_events() => {
-                    dispatched += dispatch_callbacks(&self.on_sync_started, |f| f());
+                    dispatched +=
+                        dispatch_callbacks(&self.lifetime, &self.on_sync_started, |f| f());
                 }
                 SyncNotify::Finished { run, phase } if run.visibility.emits_status_events() => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_sync_finished,
                         || phase.clone(),
                         |f, phase| f(phase.clone()),
@@ -549,6 +605,7 @@ impl EventBus {
                     if run.visibility.emits_status_events() =>
                 {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_sync_failed,
                         || (task.clone(), message.clone()),
                         |f, (task, message)| f(task.clone(), message.clone()),
@@ -561,6 +618,7 @@ impl EventBus {
                     detail,
                 } if run.visibility.emits_status_events() => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_sync_progress,
                         || (task.clone(), *progress, detail.clone()),
                         |f, (task, progress, detail)| {
@@ -570,6 +628,7 @@ impl EventBus {
                 }
                 SyncNotify::TaskCompleted { run, task } if run.visibility.emits_status_events() => {
                     dispatched += dispatch_callbacks_with(
+                        &self.lifetime,
                         &self.on_sync_task_completed,
                         || task.clone(),
                         |f, task| f(task.clone()),
@@ -577,14 +636,16 @@ impl EventBus {
                 }
                 SyncNotify::StateChanged { run, state } if run.visibility.emits_status_events() => {
                     let s = *state;
-                    dispatched += dispatch_callbacks(&self.on_sync_state_changed, move |f| {
-                        f(s);
-                    });
+                    dispatched +=
+                        dispatch_callbacks(&self.lifetime, &self.on_sync_state_changed, move |f| {
+                            f(s);
+                        });
                 }
                 _ => {}
             },
             SdkEvent::Extension(ext) => {
                 dispatched += dispatch_callbacks_with(
+                    &self.lifetime,
                     &self.on_extension,
                     || {
                         (
@@ -638,7 +699,42 @@ impl EventBus {
         }));
     }
 
+    pub(crate) fn committed_receiver(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<Arc<[crate::spi::CommittedMessage]>> {
+        self.committed
+            .get_or_init(|| tokio::sync::broadcast::channel(self.raw_subscriber_capacity).0)
+            .subscribe()
+    }
+
+    /// Messages whose durable row is committed: inbound applies and acknowledged sends.
+    pub(crate) fn notify_committed(&self, messages: &[crate::model::IMMessage]) {
+        let Some(sender) = self.committed.get().filter(|s| s.receiver_count() > 0) else {
+            return;
+        };
+        if self.lifetime.retired() {
+            return;
+        }
+        let rows = messages
+            .iter()
+            .map(|m| crate::spi::CommittedMessage {
+                conversation_id: m.conversation_id.clone(),
+                server_id: m.server_id.clone(),
+                client_msg_id: m.client_msg_id.clone(),
+                seq: m.conversation_seq,
+            })
+            .collect::<Vec<_>>();
+        let _ = sender.send(rows.into());
+    }
+
+    pub(crate) fn lifetime(&self) -> &SessionLifetime {
+        &self.lifetime
+    }
+
     pub fn publish(&self, mut event: SdkEvent) -> PublishOutcome {
+        if self.lifetime.retired() {
+            return PublishOutcome::NoReceivers;
+        }
         if matches!(&event, SdkEvent::Sync(sync) if !sync.should_publish()) {
             return PublishOutcome::DroppedSilentSync;
         }
@@ -669,12 +765,12 @@ impl EventBus {
             0
         };
         let route_count = if self.has_route_callbacks() {
-            dispatch_route_callbacks(&self.routes, &event)
+            dispatch_route_callbacks(&self.lifetime, &self.routes, &event)
         } else {
             0
         };
         let any_count = if self.has_any_callbacks() {
-            dispatch_any_callbacks(&self.on_any, event)
+            dispatch_any_callbacks(&self.lifetime, &self.on_any, event)
         } else {
             0
         };
@@ -712,7 +808,7 @@ impl EventBus {
                 lagged: lagged.clone(),
                 dropped_events: dropped_events.clone(),
             });
-        EventReceiver::new(rx, filter, lagged, dropped_events)
+        EventReceiver::new(rx, filter, lagged, dropped_events).with_lifetime(self.lifetime.clone())
     }
 
     pub fn subscribe_shared_raw(&self) -> SharedEventReceiver {
@@ -733,6 +829,7 @@ impl EventBus {
                 dropped_events: dropped_events.clone(),
             });
         SharedEventReceiver::new(rx, filter, lagged, dropped_events)
+            .with_lifetime(self.lifetime.clone())
     }
 }
 
