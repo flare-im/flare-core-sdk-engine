@@ -126,10 +126,10 @@ cargo build -p flare-im-core-sdk-ffi --release
 
 ### Artifact sync for the Flutter reference app
 
-Check out `flare-core-examples` alongside this repository. From the engine root,
+Check out `flare-im-core-examples` alongside this repository. From the engine root,
 run `cargo xtask build host`, `cargo xtask build ios-universal`, or
 `cargo xtask build android` to build and sync C ABI artifacts into
-`../flare-core-examples/apps/flare-core-flutter-app` for the selected platform.
+`../flare-im-core-examples/apps/flare-core-flutter-app` for the selected platform.
 
 For full packaging instructions see [`docs/flutter-packaging.md`](docs/flutter-packaging.md).
 
@@ -143,7 +143,7 @@ For full packaging instructions see [`docs/flutter-packaging.md`](docs/flutter-p
 
 - iOS (Swift/Objective-C)
 - Android (Kotlin/Java)
-- Flutter (Dart): the full app is in the sibling **`flare-core-examples/apps/flare-core-flutter-app/`**; use the engine's `cargo xtask build` targets above to sync the dylib / `.a` / `.so` into its platform directories.
+- Flutter (Dart): the full app is in the sibling **`flare-im-core-examples/apps/flare-core-flutter-app/`**; use the engine's `cargo xtask build` targets above to sync the dylib / `.a` / `.so` into its platform directories.
 - HarmonyOS (ArkTS/C++)
 - C/C++
 - Node.js (N-API)

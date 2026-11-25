@@ -11,7 +11,7 @@ It exports:
 Build:
 
 ```bash
-cd flare-core-sdk-engine/bindings/wasm
+cd flare-im-core-engine/bindings/wasm
 npm install
 npm run build
 ```

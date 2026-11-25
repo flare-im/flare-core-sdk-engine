@@ -10,10 +10,10 @@
 
 | 分支用途 | 已建立本地 `core-engine` 的仓库 |
 | --- | --- |
-| 已切换并实施 | `flare-core-sdk-engine`、`flare-social-sdk`（阶段 0）、`flare-core-sdk`、`flare-core-examples` |
-| 协议与网关联调 | `flare-protocol`、`flare-protocol-grpc`、`flare-core-server` |
-| 后续插件与宿主迁移 | `flare-plugin-devkit`、`flare-commercial-client-runtime`、`flare-plugins-commercial`、`flare-plugin-call` |
-| 后续应用集成验收 | `flare-social-examples` |
+| 已切换并实施 | `flare-im-core-engine`、`flare-im-sdk`（阶段 0）、`flare-im-core-sdk`、`flare-im-core-examples` |
+| 协议与网关联调 | `flare-im-protocol`、`flare-im-protocol-grpc`、`flare-im-core-server` |
+| 后续插件与宿主迁移 | `flare-im-plugin-sdk`、`flare-im-client-runtime`、`flare-im-plugins-commercial`、`flare-im-plugin-call` |
+| 后续应用集成验收 | `flare-im-examples` |
 
 | 工作包 | 本批变更与验证 |
 | --- | --- |
@@ -21,7 +21,7 @@
 | 0.2 历史数据样本 | SQLite v1 schema、旧 reaction 表、磁盘重开后的撤回状态、可信卡的 wire 类型及未注册 Custom 的原始字节均有回归用例。新进程重开后，64 条离线消息的顺序和客户端 ID 全部匹配。生产 IndexedDB host 的 16 个 Vitest 用例通过，覆盖旧 pending 键迁移及升级中止重试，使用 fake-indexeddb。另在 Chrome 158.0.8127.37 实测 v7 → v8 和刷新，校验了 pending、分页及账号隔离。多 tab 与真实配额场景见阶段 4。 |
 | 1.1 发件箱 | 并发回归在旧实现复现同一待发记录返回两次。SQLite `pop` 改为在单事务内删除、取回并解码，解码失败保留原记录。可靠队列移除了每次入队仅为日志读取并解码最多 100 条消息的查询。后续批次的跨记录事务与验收结果见下方 1.1 实施记录。 |
 
-[SQLite 旧库](../storage/sqlite-im/src/repos/schema.rs#L875) · [历史消息重开样本](../storage/sqlite-im/src/repos/message_repo/tests.rs#L93) · [Web 升级样本](../../flare-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.test.ts#L227) · [并发取出与回滚测试](../storage/sqlite-im/src/repos/pending_send_repo.rs#L187)
+[SQLite 旧库](../storage/sqlite-im/src/repos/schema.rs#L875) · [历史消息重开样本](../storage/sqlite-im/src/repos/message_repo/tests.rs#L93) · [Web 升级样本](../../flare-im-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.test.ts#L227) · [并发取出与回滚测试](../storage/sqlite-im/src/repos/pending_send_repo.rs#L187)
 
 **本地验收。** `storage-sqlite,e2ee` 通过 1,285 项，`lifecycle-sqlite,e2ee` 通过 1,297 项，两组覆盖有重叠。架构检查通过 18 项。Core 生成物检查、shared/C/Tauri 构建检查、wasm32 构建检查及 Social SDK 原生编译全部通过。WASM 编译仍有 3 条推送回执 stub 的未使用告警。远端工作流尚未运行。Engine 工作流的 actionlint ShellCheck 在分支基点与本批均报告相同的 SC2018、SC2019、SC1087，Social 工作流的 actionlint 通过。
 
@@ -36,13 +36,13 @@
 | 终态 | 服务端持久确认和终态失败均先提交消息、更新摘要、移除待发，再对外发布。服务端暂时接受会保留待发记录。持久确认遇到本地写盘失败时，队列保留确认，在本地重试期间排除对应的网络重发。此时若进程退出，旧 outbox 用原客户端消息 ID 恢复。已确认消息可抵御迟到的失败结果。 |
 | Electron | SQLite OPFS worker 串行处理同一连接上的请求，在一个事务内提交三类数据。首次打开旧库时修复随机键的待发记录，优先保留已有规范键，再按账号和客户端消息 ID 完成确认。 |
 
-[提交契约](../src/domain/repository/pending_send_repository.rs) · [可靠队列](../src/runtime/reliable_queue/actor.rs) · [SQLite](../storage/sqlite-im/src/repos/message_repo/writer.rs) · [Memory](../src/infrastructure/persistence/memory_im.rs) · [Web 存储适配器](../storage/indexeddb/src/provider.rs) · [IndexedDB 宿主](../../flare-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.ts) · [OPFS worker](../../flare-core-examples/apps/flare-core-electron-app/src/storage/sqliteOpfsWorker.ts)
+[提交契约](../src/domain/repository/pending_send_repository.rs) · [可靠队列](../src/runtime/reliable_queue/actor.rs) · [SQLite](../storage/sqlite-im/src/repos/message_repo/writer.rs) · [Memory](../src/infrastructure/persistence/memory_im.rs) · [Web 存储适配器](../storage/indexeddb/src/provider.rs) · [IndexedDB 宿主](../../flare-im-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.ts) · [OPFS worker](../../flare-im-core-examples/apps/flare-core-electron-app/src/storage/sqliteOpfsWorker.ts)
 
 | 验收路径 | 结果及证据 |
 | --- | --- |
 | SQLite 故障与重开 | 分别在入队、确认的消息、摘要、outbox 写入处中止事务，共六个断点。每次关闭连接并重开文件库，检查三类记录全部回到旧态。重试、自身消息回放及两次确认最终得到一条服务端消息和空 outbox。另经公共 `MessageApi::send` 验证首条文本入队失败后，三张表均为空。[文件库和公开入口回归](../storage/sqlite-im/src/repos/message_repo/tests.rs) |
 | 队列事件与缓存 | 持久 ACK 到达后阻断 outbox 删除，观察到消息维持待发、终态事件未发布。解除故障后仅靠本地定时重试即可发布 ACK。Memory 的缓存故障测试覆盖了持久回调失败时三类旧记录的可见性。[队列回归](../src/runtime/reliable_queue/actor.rs) · [缓存回归](../src/infrastructure/persistence/memory_im.rs) |
-| Web 事务与公共 API | 生产 IndexedDB 宿主在 fake-indexeddb 上通过 19 项测试，含六个写入断点和失败时零通知。Chrome 158.0.8127.37 实测生产 WASM 的 `sdk.prepare → message.create_text → message.send`，IndexedDB 和 OPFS 都通过首次拒写、重新发送和刷新后按 ID 读取。另在真实 IndexedDB 中断确认时的 outbox 删除，并在两种宿主回放自己的消息、重复提交确认、刷新核对。OPFS 旧随机键和规范键并存的文件亦通过迁移与清理。[Web 回归](../../flare-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.test.ts) |
+| Web 事务与公共 API | 生产 IndexedDB 宿主在 fake-indexeddb 上通过 19 项测试，含六个写入断点和失败时零通知。Chrome 158.0.8127.37 实测生产 WASM 的 `sdk.prepare → message.create_text → message.send`，IndexedDB 和 OPFS 都通过首次拒写、重新发送和刷新后按 ID 读取。另在真实 IndexedDB 中断确认时的 outbox 删除，并在两种宿主回放自己的消息、重复提交确认、刷新核对。OPFS 旧随机键和规范键并存的文件亦通过迁移与清理。[Web 回归](../../flare-im-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.test.ts) |
 | 验证范围 | 宿主注入的写入异常代表事务失败。实际磁盘耗尽、多标签页交错写入和真实网关回执分别留给阶段 4 和 1.3。Electron 存储模块单独通过类型检查，完整示例的类型检查仍报告既有更新页面引用的三个缺失导出，分别是 `UpdateProgress`、`UpdateResourcePack`、`UpdateStatus`。Chrome 使用了示例的真实 OPFS worker，打包版 Electron 的验收仍待执行。 |
 
 本批本地回归通过 `lifecycle-sqlite,e2ee` 1,300 项、`storage-sqlite,e2ee` 1,287 项、架构边界 18 项，以及 TypeScript Web 适配器 82 项。两组 Rust 测试包含重叠用例。`xtask core-codegen-check` 通过，生产 WASM release 构建成功。
@@ -51,7 +51,7 @@
 
 - C 和 Tauri 绑定在账号准备时选择 SQLite。Engine 通过账号开库器接收按数据根、租户、用户打开的仓储，并校验原子发信端口与 outbox 读写端口。SQLite IM 适配器拥有 SQL、schema 迁移、队列事务及密钥装配，SQLite 连接底座仍可独立复用。Social 沿用 Native 的账号分区。 [账号契约](../src/client/lifecycle.rs) · [SQLite IM 适配器](../storage/sqlite-im/src/lib.rs)
 - 同一份样本固定两条消息的正文、发送者、会话、客户端 ID 和逻辑时间。C 退出进程后重新装配 SQLite，生产 WASM 关闭并重新启动 Chrome 后打开同一 IndexedDB。两端完整消息和会话 DTO 逐字段相等，待发身份和顺序与样本一致。测试同时断言发送态、未读数、摘要与时间，覆盖首次创建会话及第二条消息推进摘要。[样本及驱动](../tests/storage_parity/run.mjs) · [复跑命令](../storage/README.md#重开发信对测)
-- 对测发现并修正了新会话默认业务类型、创建和更新时间的端间差异。热缓存与 SQLite 共用默认类型规则，IndexedDB 在已有摘要上合并单调更新时间。[内存事务](../src/infrastructure/persistence/memory_im.rs) · [生产宿主](../../flare-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.ts)
+- 对测发现并修正了新会话默认业务类型、创建和更新时间的端间差异。热缓存与 SQLite 共用默认类型规则，IndexedDB 在已有摘要上合并单调更新时间。[内存事务](../src/infrastructure/persistence/memory_im.rs) · [生产宿主](../../flare-im-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.ts)
 - 依赖守卫使用 Cargo 普通依赖闭包覆盖所有 feature 和 target。Engine 的 SQLite 测试 feature 仅选择本仓的原生回归样本。真实网关 ACK、断网重连及服务端补偿列入 1.3。[依赖守卫](../tests/architecture_boundary_test.rs) · [缺失端口回归](../tests/prepare_local_first_test.rs)
 
 SQLite schema 版本仍为 v6，迁移 SQL 与拆分前一致。既有插件表随适配器保留，业务数据归属的迁移按后续阶段实施。Engine 的私有队列、同步回放回归在原生测试配置下编入同一份适配器源码，以便访问测试构建的类型。适配器也作为独立 crate 运行测试，两组结果有重叠。
@@ -79,7 +79,7 @@ SQLite schema 版本仍为 v6，迁移 SQL 与拆分前一致。既有插件表�
 
 **对照口径。** 跨端比较映射独立会话生成的身份和运行时钟；消息创建时刻逐条与数据库核对，排序时间与消息和摘要的关系另有断言。实测中两端恢复后的 `clientCreatedAt` 随服务端消息时刻。私有投影收据的 `summarySeq` 记录本设备最后一次从远端摘要计入的进度。复跑曾观察到 C 为 1、WASM 为 2；两端已应用区间均为 [1, 3]、物化位点均为 3，未读均为 1。驱动输出这个数值、检查其范围，并在本端冷重开时要求原值相同。[收据合并语义](../src/domain/conversation/message_projection.rs)
 
-**联测推动的修正。** 缺字段的摘要曾清空 WASM 单聊类型和排序时间，SQLite 会话读取曾固定返回成员版本 0。共享摘要合并现在保留已知分类和排序时刻，部分更新沿用已有成员预览，过期预览无法覆盖较新的版本。SQLite v7 单独持久化摘要宣告的成员版本，v6 旧行以 0 表示未知，后续同步填充。服务端历史读取现在保留字符串属性原文，实时发布由已校验的请求租户填入与存储一致的属性。联测同时核对消息属性内的会话标识、请求上下文和租户。[共享摘要](../src/domain/conversation/summary_merge.rs) · [SQLite 迁移](../storage/sqlite-im/src/repos/schema.rs) · [消息接入](../../flare-core-server/flare-message-ingest/src/application/handlers/message_ingest_handler.rs) · [历史读取](../../flare-core-server/flare-storage/reader/src/infrastructure/persistence/postgres_base.rs)
+**联测推动的修正。** 缺字段的摘要曾清空 WASM 单聊类型和排序时间，SQLite 会话读取曾固定返回成员版本 0。共享摘要合并现在保留已知分类和排序时刻，部分更新沿用已有成员预览，过期预览无法覆盖较新的版本。SQLite v7 单独持久化摘要宣告的成员版本，v6 旧行以 0 表示未知，后续同步填充。服务端历史读取现在保留字符串属性原文，实时发布由已校验的请求租户填入与存储一致的属性。联测同时核对消息属性内的会话标识、请求上下文和租户。[共享摘要](../src/domain/conversation/summary_merge.rs) · [SQLite 迁移](../storage/sqlite-im/src/repos/schema.rs) · [消息接入](../../flare-im-core-server/flare-message-ingest/src/application/handlers/message_ingest_handler.rs) · [历史读取](../../flare-im-core-server/flare-storage/reader/src/infrastructure/persistence/postgres_base.rs)
 
 最终版联测连续两轮更换账号通过，阶段 1.2 的离线重开样本也通过。Rust 默认配置 Engine 单测 1,142 项、SQLite IM 适配器 93 项通过。Server 的 Ingest 单测 73 项、Reader 单测 45 项通过，两套分别有 1 项和 3 项已标记忽略。生产 WASM 的 raw 4,973,867 B、gzip 1,769,301 B 均在仓库预算内。
 
@@ -119,7 +119,7 @@ WASM 场景的原生推送绑定在同账号另一台 C 测试设备上，浏览
 
 实时 `MessagePush`、消息事件及其批次、单会话增量页和快照消息共用 `ApplyInbound`。准备阶段按账号规范化消息身份，合并本机回声，检查会话可见下界，将临时通知从持久批次中分出。提交阶段先保存消息行和末条预览，再提交未读变化及本地投影完成记录。实时有界队列仍负责背压和送达确认，同步页仍按连续证据推进游标。操作类事件沿用各自的事件应用器。[共用用例](../src/application/usecases/inbound.rs) · [实时入口](../src/runtime/dispatcher/dispatch.rs) · [补偿入口](../src/application/usecases/sync/mod.rs)
 
-SQLite 已在消息事务中维护预览。浏览器现在在一个 IndexedDB 读写事务内保存消息行和受影响会话的预览，成功后才将已提交的预览写入内存。摘要的未读数、设置和投影记录保持各自的提交语义。宿主升级到数据库版本 9 时按会话探查一个时间线索引键，对旧库中消息尾部超出摘要水位的会话，在账号打开时使用 Rust 消息模型修补预览。[IndexedDB 适配器](../storage/indexeddb/src/provider.rs) · [生产 Web 宿主](../../flare-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.ts)
+SQLite 已在消息事务中维护预览。浏览器现在在一个 IndexedDB 读写事务内保存消息行和受影响会话的预览，成功后才将已提交的预览写入内存。摘要的未读数、设置和投影记录保持各自的提交语义。宿主升级到数据库版本 9 时按会话探查一个时间线索引键，对旧库中消息尾部超出摘要水位的会话，在账号打开时使用 Rust 消息模型修补预览。[IndexedDB 适配器](../storage/indexeddb/src/provider.rs) · [生产 Web 宿主](../../flare-im-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.ts)
 
 | 同一份发信样本，C / SQLite 与生产 WASM / IndexedDB | 消息序号 | 末条预览 / maxSeq | 未读数 / 已读位点 | 投影完成位点 / 实际同步游标 | 发件箱 |
 | --- | --- | --- | --- | --- | --- |
@@ -157,7 +157,7 @@ C 动态库与 Chromium 中的 release WASM 各使用独立会话，共用同一
 
 摄入服务曾在 WAL 与 JetStream 接受消息后同步返回 Persisted；Storage Writer 此时仍可能在排队。该复现中，提交后回执均属于原会话。同时，Engine 的实时自回声会在本地待发消息上合成 Persisted，实时推送本身缺少提交凭据。
 
-摄入服务现在先记录队列或 WAL 的实际阶段，按租户、发送者、会话和客户端 ID 查发送账本并联查 `messages`。持久回执取已提交消息行的服务端 ID 和正序号。查询和等待共用 350 ms 上限，最多四次点查；已受理发送在读取失败、未配置数据库或 Writer 落后时保留受理阶段，原 ID 重试可再确认。Redis 旧回执也须核对。签名卡片额外要求已提交 ID 与序号均符合原签名发送的受理结果。[发送处理器](../../flare-core-server/flare-message-ingest/src/application/handlers/message_ingest_handler.rs) · [提交凭据查询](../../flare-core-server/flare-message-ingest/src/infrastructure/persistence/postgres_idempotency_ledger.rs)
+摄入服务现在先记录队列或 WAL 的实际阶段，按租户、发送者、会话和客户端 ID 查发送账本并联查 `messages`。持久回执取已提交消息行的服务端 ID 和正序号。查询和等待共用 350 ms 上限，最多四次点查；已受理发送在读取失败、未配置数据库或 Writer 落后时保留受理阶段，原 ID 重试可再确认。Redis 旧回执也须核对。签名卡片额外要求已提交 ID 与序号均符合原签名发送的受理结果。[发送处理器](../../flare-im-core-server/flare-message-ingest/src/application/handlers/message_ingest_handler.rs) · [提交凭据查询](../../flare-im-core-server/flare-message-ingest/src/infrastructure/persistence/postgres_idempotency_ledger.rs)
 
 Engine 将入站来源传入 ApplyInbound。待发消息的实时自回声保留原发件箱，持久回执或已归档的同步记录负责完成发送。可靠队列核对本地待发会话，阻止其他会话同名客户端 ID 的回执或本地快照推进状态。[入站收敛](../src/application/services/incoming_message_converger.rs) · [可靠发送队列](../src/runtime/reliable_queue/actor.rs)
 
@@ -165,7 +165,7 @@ Engine 将入站来源传入 ApplyInbound。待发消息的实时自回声保留
 
 ### 阶段 1.3 实测 · PostgreSQL 持久 ACK 核验
 
-2026-11-25 在 `core-engine` 工作树上，使用同一真实 WebSocket 网关、摄入服务、JetStream、Storage Writer 和 PostgreSQL 16.15。主机为 Apple M1 Pro、16 GiB、macOS 26.6.2，数据库所在独立虚拟机分配 4 vCPU、5 GiB。Rust 服务与 C 动态库使用本地 dev 构建，浏览器验收使用 Chromium 加载 release WASM。摄入服务核验连接池上限为 2，单次核验的总预算为 350 ms，包含取连接、点查和重查间隔。[连接池](../../flare-core-server/flare-message-ingest/src/infrastructure/persistence/postgres_idempotency_ledger.rs) · [确认逻辑与计时点](../../flare-core-server/flare-message-ingest/src/application/handlers/message_ingest_handler.rs)
+2026-11-25 在 `core-engine` 工作树上，使用同一真实 WebSocket 网关、摄入服务、JetStream、Storage Writer 和 PostgreSQL 16.15。主机为 Apple M1 Pro、16 GiB、macOS 26.6.2，数据库所在独立虚拟机分配 4 vCPU、5 GiB。Rust 服务与 C 动态库使用本地 dev 构建，浏览器验收使用 Chromium 加载 release WASM。摄入服务核验连接池上限为 2，单次核验的总预算为 350 ms，包含取连接、点查和重查间隔。[连接池](../../flare-im-core-server/flare-message-ingest/src/infrastructure/persistence/postgres_idempotency_ledger.rs) · [确认逻辑与计时点](../../flare-im-core-server/flare-message-ingest/src/application/handlers/message_ingest_handler.rs)
 
 1、4、16、32 个已连接的 C 发送会话分别构成闭环负载。每个发送者在收到网关应答及 SDK 最终事件后才发下一条。先预热全部连接和会话，再按升序、降序各跑一轮，每档每轮 1,024 条。两条样本轮流发送，保留文字和原始创建时间，客户端 ID 追加轮次、并发档及序号，使每次逻辑发送都产生一条新消息。账号准备、预热、抓取指标和批后 SQL 对账位于计时窗口外。[同一份发信样本](../tests/storage_parity/send.json) · [负载驱动](../tests/storage_parity/ack_load.mjs)
 
@@ -219,7 +219,7 @@ Engine 将入站来源传入 ApplyInbound。待发消息的实时自回声保留
 | 4 | 16 | 0.33 / 0.95 | 45.76 / 59.70 | 12.93 / 19.89 | 35.09 / 46.06 | 67.49 / 82.19 | 17.23 / 22.82 | 154.94 / 179.59 |
 | 4 | 32 | 0.62 / 3.51 | 58.41 / 78.38 | 17.64 / 27.08 | 113.26 / 192.00 | 179.55 / 212.44 | 14.76 / 22.97 | 210.57 / 255.20 |
 
-**落地变更。** 摄入服务将历史回查与提交凭据核验共享的懒连接池默认上限调为 4。每个摄入实例可用正整数环境变量 `MESSAGE_INGEST_LEDGER_MAX_CONNECTIONS` 指定自己的连接预算。保留 SQLx 连接健康检查、350 ms 核验总预算、四次点查上限及账本与消息行 JOIN。对照中，上限 8 的 32 并发有 74/2,048 条由同步单独完成，SDK P99 为 637.53 ms。另一次减少热连接健康检查的试验也出现超时。最终构建保留完整健康检查。[池配置](../../flare-core-server/flare-message-ingest/src/infrastructure/persistence/postgres_idempotency_ledger.rs) · [装配入口](../../flare-core-server/flare-message-ingest/src/wire.rs)
+**落地变更。** 摄入服务将历史回查与提交凭据核验共享的懒连接池默认上限调为 4。每个摄入实例可用正整数环境变量 `MESSAGE_INGEST_LEDGER_MAX_CONNECTIONS` 指定自己的连接预算。保留 SQLx 连接健康检查、350 ms 核验总预算、四次点查上限及账本与消息行 JOIN。对照中，上限 8 的 32 并发有 74/2,048 条由同步单独完成，SDK P99 为 637.53 ms。另一次减少热连接健康检查的试验也出现超时。最终构建保留完整健康检查。[池配置](../../flare-im-core-server/flare-message-ingest/src/infrastructure/persistence/postgres_idempotency_ledger.rs) · [装配入口](../../flare-im-core-server/flare-message-ingest/src/wire.rs)
 
 **吞吐与端到端延迟。** 同栈组按 2、8、4 依次重启摄入服务。另对上限 2 和最终默认 4 各用一套从空数据库、空队列和空客户端状态启动的栈，使用同一服务二进制。吞吐只统计客户端中继实际收到的网关持久 ACK，分母包含由同步完成发送的耗时。网关分位数仅含收到该帧的样本，SDK 分位数包含全部 2,048 条。各轮独立查库，核验 SQL 次数取 PostgreSQL 执行计数差值。
 
@@ -307,7 +307,7 @@ rtk cargo check --locked --target wasm32-unknown-unknown -p flare-im-core-sdk-wa
 
 Native 与生产浏览器均由 prepare 选择租户和账号。开库前记录登录代次，发布新引擎前再比对。按账号打开的后端保留该账号自己的待发队列。登录、凭证续期、消息、会话和媒体门面绑定代次，旧事件订阅随引擎退休关闭。网关交接同时作废旧链路已排队的持久化及送达确认。[会话装配](../src/client/im_client/session_lifecycle.rs) · [浏览器适配](../storage/indexeddb/src/lib.rs) · [链路代次](../src/runtime/link/epoch.rs)
 
-统一验证时运行相同两条发信样本，在断网时只读第一条。先检查冷库的读位 1、未读 1、待上报 1、消息与发件箱，再联网等待权威确认清除待上报字段。另运行同账号慢开库、旧门面、旧事件订阅和双链交接用例。生产浏览器的会话投影改由宿主 `commitProjection` 在同一个 IndexedDB readwrite 事务内比对并写入；冲突时返回另一标签页已提交的行，Rust 侧据此替换内存镜像，避免两个标签页各按内存摘要覆盖对方的已读水位。统一验证时运行双客户端同版本只提交一次的用例。当前无本轮运行结果。[事务入口](../../flare-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.ts) · [双标签页用例](../../flare-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.test.ts)[双端脚本](../tests/storage_parity/offline_read.mjs) · [登录代次用例](../src/client/im_client/tests.rs)
+统一验证时运行相同两条发信样本，在断网时只读第一条。先检查冷库的读位 1、未读 1、待上报 1、消息与发件箱，再联网等待权威确认清除待上报字段。另运行同账号慢开库、旧门面、旧事件订阅和双链交接用例。生产浏览器的会话投影改由宿主 `commitProjection` 在同一个 IndexedDB readwrite 事务内比对并写入；冲突时返回另一标签页已提交的行，Rust 侧据此替换内存镜像，避免两个标签页各按内存摘要覆盖对方的已读水位。统一验证时运行双客户端同版本只提交一次的用例。当前无本轮运行结果。[事务入口](../../flare-im-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.ts) · [双标签页用例](../../flare-im-core-sdk/packages/flare-core-typescript-sdk/src/adapters/web/idbWasmStorageHost.test.ts)[双端脚本](../tests/storage_parity/offline_read.mjs) · [登录代次用例](../src/client/im_client/tests.rs)
 
 ### Social 联动待办
 
@@ -340,9 +340,9 @@ Social 与上层业务扩展不在本轮范围；core 不为它们保留兼容�
 
 | 仓库 | 结果 |
 | --- | --- |
-| flare-core-sdk-engine | fmt、两组 clippy（1.97.1，`-D warnings`）通过。库测试 e2ee 1157、storage-sqlite 1304、lifecycle-sqlite 1312、SQLite 适配器 93、外部消费者 4 项通过；`--features storage-sqlite` 全量测试通过。11 道 xtask 门禁、生成物检查、依赖闭包检查通过。WASM gzip 1,765,186 B，预算内。运行时样本：C / 生产 WASM 重开、IndexedDB 扩展记录、C / WASM / Tauri 一致性全部一致。 |
-| flare-core-server | 迁移台账单测、文档与 README 数字、Hook 契约、面板指标、fmt、clippy 通过；`cargo test --workspace` 2375 项通过，115 项需数据库或外部环境按设计忽略。需独立 Redis 的序列恢复测试未在本机运行。 |
-| flare-core-sdk | TS 类型检查、架构守卫、vitest 298 项、sdk-spec JSON 通过；Dart 分析零问题，测试 135 项通过（含真实 FFI 库用例）；Swift 编译通过。更新中心已按边界移出 core（`ed9d5ed`），本轮删去其在 Swift、Kotlin、Dart 模板与产物中的残留编解码、事件分支和四端 `DefaultUpdateApi`；更新中心由应用宿主或插件宿主承担。ArkTS / 仓颉按约定未验证，Kotlin 未在 CI 中编译。 |
+| flare-im-core-engine | fmt、两组 clippy（1.97.1，`-D warnings`）通过。库测试 e2ee 1157、storage-sqlite 1304、lifecycle-sqlite 1312、SQLite 适配器 93、外部消费者 4 项通过；`--features storage-sqlite` 全量测试通过。11 道 xtask 门禁、生成物检查、依赖闭包检查通过。WASM gzip 1,765,186 B，预算内。运行时样本：C / 生产 WASM 重开、IndexedDB 扩展记录、C / WASM / Tauri 一致性全部一致。 |
+| flare-im-core-server | 迁移台账单测、文档与 README 数字、Hook 契约、面板指标、fmt、clippy 通过；`cargo test --workspace` 2375 项通过，115 项需数据库或外部环境按设计忽略。需独立 Redis 的序列恢复测试未在本机运行。 |
+| flare-im-core-sdk | TS 类型检查、架构守卫、vitest 298 项、sdk-spec JSON 通过；Dart 分析零问题，测试 135 项通过（含真实 FFI 库用例）；Swift 编译通过。更新中心已按边界移出 core（`ed9d5ed`），本轮删去其在 Swift、Kotlin、Dart 模板与产物中的残留编解码、事件分支和四端 `DefaultUpdateApi`；更新中心由应用宿主或插件宿主承担。ArkTS / 仓颉按约定未验证，Kotlin 未在 CI 中编译。 |
 
 验证中修复的既有问题：FFI 运行时线程栈在 debug 构建溢出（调为 8 MiB），测试进程栈经 `.cargo/config.toml` 设为 8 MiB；视图 API 后台任务缺字段、两处 `select!` 借用冲突；生成的 WireCodec 与模板漂移（模板改为生成器规范顺序）；过时门禁（failover、Flutter 多设备清单、Android lifecycle 路径）；server 的格式化、clippy、缺失的测试桩方法、环境变量登记与两处过时守卫。CI 已删去不存在的 `flare-access` 测试步骤。
 

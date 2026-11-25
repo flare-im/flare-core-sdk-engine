@@ -122,9 +122,9 @@ cargo build -p flare-im-core-sdk-ffi --release
 
 ### Flutter 参考应用产物同步
 
-将 `flare-core-examples` 与本仓并列检出。从引擎根目录运行 `cargo xtask build host`、
+将 `flare-im-core-examples` 与本仓并列检出。从引擎根目录运行 `cargo xtask build host`、
 `cargo xtask build ios-universal` 或 `cargo xtask build android`，构建并同步对应平台的
-C ABI 产物到 `../flare-core-examples/apps/flare-core-flutter-app`。
+C ABI 产物到 `../flare-im-core-examples/apps/flare-core-flutter-app`。
 
 完整打包说明见 [`docs/flutter-packaging.md`](docs/flutter-packaging.md)。
 
@@ -138,7 +138,7 @@ C ABI 产物到 `../flare-core-examples/apps/flare-core-flutter-app`。
 
 - iOS (Swift/Objective-C)
 - Android (Kotlin/Java)
-- Flutter (Dart)：完整应用在同级 **`flare-core-examples/apps/flare-core-flutter-app/`**；使用上述引擎 `cargo xtask build` 目标将 dylib / `.a` / `.so` 同步到对应平台目录。
+- Flutter (Dart)：完整应用在同级 **`flare-im-core-examples/apps/flare-core-flutter-app/`**；使用上述引擎 `cargo xtask build` 目标将 dylib / `.a` / `.so` 同步到对应平台目录。
 - 鸿蒙 (ArkTS/C++)
 - C/C++
 - Node.js (N-API)

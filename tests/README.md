@@ -16,7 +16,7 @@ rtk cargo test --workspace
 - `core_sdk_contract_test.rs`：当前 `IMClient::builder()` 装配合同、未登录写侧拒绝语义、内存 message/conversation store 对当前 `IMMessage` / `Conversation` 模型的保存与查询。
 - `core_endpoints.rs`：用本地 WebSocket 服务验证地址组替换、版本更新、会话保持和发件箱恢复。
 - `link_lifecycle.rs`：验证当前地址的连接与重连、网络状态变化、网关排空、临时拒绝以及终止性会话错误。
-- 签名目录、商用探活和故障切换由 `flare-commercial-client-runtime` 的测试覆盖。
+- 签名目录、商用探活和故障切换由 `flare-im-client-runtime` 的测试覆盖。
 - `transient_send_rejection_retry.rs`：同样的回环服务端按脚本回 SendAck：暂时性拒绝（`UNAVAILABLE`）时 SDK 退避后用同一个 `client_msg_id` 重发直到接收，本地只有一条消息；次数以 `ack_max_retries` 为界；`TENANT_UNAVAILABLE` 立即判失败、不重发。
 - crate 内 `#[cfg(test)]` 单元测试：消息内容 oneof 映射、dispatcher、sync adapter、event applier、reliable queue、SQLite repository 等靠近领域和协议边界的行为。
 - `bindings/shared` crate test：binding contract route discovery 覆盖生成 API ids 与 vNext runtime routes。

@@ -122,7 +122,7 @@
   retryable, details }`：服务端拒发时 `machine_reason` 取 `ErrorDetail.reason`（例如 PreSend 拒绝码），
   `code` 为对应的核心错误码名，`details.remoteCode` 为服务端数字码；本地失败给本地 code，`machine_reason`
   为空。绑定层事件 `message.send_failed` 为 `{clientMsgId, reason, error}`；字符串 `reason` 照旧。
-- 链路在线时的提示决策（NotifyCenter）：实时到达的消息（同步拉回的不算）按 `flare-notify-rules` 决策——提示等级、
+- 链路在线时的提示决策（NotifyCenter）：实时到达的消息（同步拉回的不算）按 `flare-im-notify-rules` 决策——提示等级、
   是否点名（解析不出按说不清）、会话的免打扰与仅 @我、超过 1000 人的群没开「全部消息通知」时只提示 @我、用户的
   勿扰时段（设备当地时间）。本人发的、前台正在看的会话里的不提示。前台出应用内横幅，按会话合并、带条数；后台且
   本进程能自己提示（桌面、Web、接上了后台展示方的手机）出系统通知，过闸门（一个会话一条通知、响铃阶梯、设备预算、
@@ -337,7 +337,7 @@
 
 - `flare-proto` / `flare-grpc-proto` → 2.1.0，`flare-core` → 1.1.1。
   后者含三批 RUSTSEC 修复，**建议一并升级**。
-- 新增 `flare-notify-rules` 0.1.0（路径依赖，与推送服务端共用的提示规则，无 IO、可编进 wasm）。
+- 新增 `flare-im-notify-rules` 0.1.0（路径依赖，与推送服务端共用的提示规则，无 IO、可编进 wasm）。
 
 ## 1.1.0 — 2026-08-03
 

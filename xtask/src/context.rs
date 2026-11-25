@@ -5,11 +5,11 @@ pub(crate) fn workspace_root() -> Result<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let core_root = manifest_dir
         .parent()
-        .context("xtask manifest must live under flare-core-sdk-engine/xtask")?;
+        .context("xtask manifest must live under flare-im-core-engine/xtask")?;
     let client_root = core_root
         .parent()
         .context("flare-im-core-sdk must live under the monorepo root")?
-        .join("flare-core-sdk");
+        .join("flare-im-core-sdk");
     if !client_root.is_dir() {
         bail!(
             "failed to resolve client SDK root from xtask manifest: {}",
@@ -22,7 +22,7 @@ pub(crate) fn workspace_root() -> Result<PathBuf> {
 pub(crate) fn core_root(root: &Path) -> PathBuf {
     root.parent()
         .unwrap_or_else(|| Path::new(".."))
-        .join("flare-core-sdk-engine")
+        .join("flare-im-core-engine")
 }
 
 pub(crate) fn spec_dir(root: &Path) -> PathBuf {

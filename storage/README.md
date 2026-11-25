@@ -35,7 +35,7 @@ Native 绑定依赖 `sqlite-im` 选择 IM 仓储，Web 绑定依赖 `indexeddb` 
 
 ### 依赖
 
-- 使用 **workspace** 依赖（与 `flare-core-sdk-engine/Cargo.toml` 一致）：`anyhow`、`once_cell`、`sqlx`、`tokio`。
+- 使用 **workspace** 依赖（与 `flare-im-core-engine/Cargo.toml` 一致）：`anyhow`、`once_cell`、`sqlx`、`tokio`。
 
 ### 使用方式
 
@@ -106,7 +106,7 @@ node tests/storage_parity/bindings.mjs "$native_target/debug/libflare_im_core_sd
 沿用上节生成的 C 动态库和 release WASM 包。需要本机的 `psql`、`redis-cli`（故障对测使用 Redis 7 的 `EVAL_RO`），以及已构建的 Core 网关、消息、同步服务和 [隔离栈脚本](../scripts/live_stack.py) 所列的依赖。在同一个 shell 执行以下命令。若已有本次测试专用的运行栈，沿用它的 `LIVE_SMOKE_DIR`、`LIVE_STACK_PREFIX` 和端口配置，从导入环境变量一行开始。
 
 ```sh
-cargo build --manifest-path ../flare-core-server/Cargo.toml --locked -p flare-message-ingest -p flare-storage-reader --bins
+cargo build --manifest-path ../flare-im-core-server/Cargo.toml --locked -p flare-message-ingest -p flare-storage-reader --bins
 export LIVE_SMOKE_DIR="$(mktemp -d)" LIVE_STACK_SOCIAL=0
 export LIVE_STACK_PREFIX="flare-parity-$(basename "$LIVE_SMOKE_DIR" | tr A-Z a-z)"
 python3 scripts/live_stack.py up >/dev/null
@@ -146,7 +146,7 @@ node tests/storage_parity/ack_timeout.mjs "$native_target/debug/libflare_im_core
 在同级 Transport、Server、Engine 的 `core-engine` 工作树执行。使用迁移工具已审核的相同数据库镜像，两次从空库启动，固定 VM 配额、构建配置和服务线程数。可在启动前设置 `LIVE_STACK_POSTGRES_IMAGE` 指向本机已缓存的镜像引用。本轮使用 PostgreSQL 16.15、TimescaleDB 2.30.0。先编译包含计时点的三个服务，并按上节配置 `LIVE_STACK_ACK_PROFILE=1`。
 
 ```sh
-cargo build --manifest-path ../flare-core-server/Cargo.toml --locked --bins \
+cargo build --manifest-path ../flare-im-core-server/Cargo.toml --locked --bins \
   -p flare-signaling-gateway -p flare-storage-writer -p flare-message-ingest
 # 对照栈
 python3 scripts/live_stack.py ctl restart message-ingest --env MESSAGE_INGEST_LEDGER_MAX_CONNECTIONS=2
@@ -196,7 +196,7 @@ Runtime 的 `storage.encryption.key_namespace` 只选择密钥命名空间；数
 
 ```sh
 export ACK_NATIVE_DRIVER="$LIVE_SMOKE_DIR/native-driver"
-cc tests/storage_parity/native.c -I ../flare-core-sdk/native/abi \
+cc tests/storage_parity/native.c -I ../flare-im-core-sdk/native/abi \
   "$native_target/debug/libflare_im_core_sdk_ffi.dylib" -pthread \
   -Wl,-rpath,"$native_target/debug" -o "$ACK_NATIVE_DRIVER"
 ACK_BENCH_STAGES=1 ACK_BENCH_LEVELS=16,32 ACK_BENCH_MESSAGES=1024 ACK_BENCH_ROUNDS=2 \

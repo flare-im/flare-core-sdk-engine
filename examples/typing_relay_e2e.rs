@@ -19,7 +19,7 @@ fn default_token_secret_path() -> Option<String> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let root = manifest_dir.parent()?;
     Some(
-        root.join("flare-core-server")
+        root.join("flare-im-core-server")
             .join("logs")
             .join(".dev-token-secret")
             .to_string_lossy()
@@ -47,7 +47,7 @@ fn token_secret() -> std::result::Result<String, AnyErr> {
         }
     }
 
-    Err("missing TOKEN_SECRET / ACCESS_GATEWAY_TOKEN_SECRET and flare-core-server/logs/.dev-token-secret".into())
+    Err("missing TOKEN_SECRET / ACCESS_GATEWAY_TOKEN_SECRET and flare-im-core-server/logs/.dev-token-secret".into())
 }
 
 async fn login_client(

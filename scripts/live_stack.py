@@ -52,8 +52,8 @@ import urllib.request
 
 ENGINE = Path(__file__).resolve().parents[1]
 ROOT = ENGINE.parent
-CORE = ROOT / "flare-core-server"
-SOCIAL = ROOT / "flare-social-server"
+CORE = ROOT / "flare-im-core-server"
+SOCIAL = ROOT / "flare-im-server"
 # Overrides for a second stack on the same machine: its own binaries, containers and port block.
 TARGET = Path(os.environ.get("LIVE_STACK_TARGET") or ROOT / "target" / "debug")
 RUN = Path(os.environ.get("LIVE_SMOKE_DIR", "~/.flare-livesmoke")).expanduser()

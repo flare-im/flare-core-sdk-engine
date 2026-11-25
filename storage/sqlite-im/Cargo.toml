@@ -10,7 +10,7 @@ description = "Native SQLite IM storage adapter for the Flare Core SDK"
 flare-im-core-sdk = { version = "1.2", path = "../.." }
 flare-im-core-sdk-storage-sqlite = { version = "1.1", path = "../sqlite" }
 flare-proto.workspace = true
-flare-plugin-protocol = { version = "0.1", path = "../../../flare-plugin-devkit/flare-plugin-protocol" }
+flare-plugin-protocol = { version = "0.1", path = "../../../flare-im-plugin-sdk/flare-plugin-protocol" }
 async-trait = "0.1"
 base64 = "0.22"
 hex = "0.4"

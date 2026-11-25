@@ -80,7 +80,7 @@ extension/
   middleware/       platform-neutral message/event middleware pipeline
 ```
 
-Business SDKs such as `flare-social-sdk` should install sync tasks, middleware,
+Business SDKs such as `flare-im-sdk` should install sync tasks, middleware,
 and capability plugins through `extension`. Core IM behavior remains in
 `domain`, `application`, and `core`.
 

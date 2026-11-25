@@ -558,7 +558,7 @@ fn core_schema_model_groups(root: &Path) -> Result<Vec<Value>> {
             json!({
                 "group": group,
                 "description": core_schema_group_description(&group),
-                "source": "../flare-core-sdk-engine/bindings/contract/generated/model_schemas",
+                "source": "../flare-im-core-engine/bindings/contract/generated/model_schemas",
                 "enums": enums,
                 "models": models,
             })
@@ -1074,7 +1074,7 @@ fn sync_message_build_catalog(root: &Path, check: bool, drifted: &mut Vec<String
             .get("description")
             .and_then(Value::as_str)
             .unwrap_or("Canonical message build operations aligned with flare-im-core-sdk MessageBuildApi."),
-        "source": "../flare-core-sdk-engine/bindings/contract/apis.json#message_builder",
+        "source": "../flare-im-core-engine/bindings/contract/apis.json#message_builder",
         "entries": entries,
     });
     upsert_json_pretty(&catalog_path, &payload, check, drifted)?;
@@ -1120,7 +1120,7 @@ fn sync_shared_events(root: &Path, check: bool, drifted: &mut Vec<String>) -> Re
     let payload = json!({
         "generated": true,
         "description": GENERATED_SHARED_CONTRACT_HINT,
-        "source": "../flare-core-sdk-engine/bindings/contract/events.json",
+        "source": "../flare-im-core-engine/bindings/contract/events.json",
         "events": events,
     });
     upsert_json_pretty(&events_path, &payload, check, drifted)
@@ -1152,7 +1152,7 @@ fn sync_shared_errors(root: &Path, check: bool, drifted: &mut Vec<String>) -> Re
     let payload = json!({
         "generated": true,
         "description": GENERATED_SHARED_CONTRACT_HINT,
-        "source": "../flare-core-sdk-engine/bindings/contract/errors.json",
+        "source": "../flare-im-core-engine/bindings/contract/errors.json",
         "errorShape": existing.get("errorShape").cloned().unwrap_or_else(default_error_shape),
         "errorCodes": error_codes.into_iter().collect::<Vec<_>>(),
         "cAbi": core_errors.get("cAbi").cloned().unwrap_or_else(|| json!({})),

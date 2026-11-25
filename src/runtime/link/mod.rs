@@ -1,6 +1,6 @@
 //! 客户端链路：连接状态机（[`LinkHandle`]）、故障转移决策、连接代数与对外的连接状态。
 //!
-//! 依赖方向：`client → runtime::link → flare-access / flare-transport`。选路、健康簿、熔断在
+//! 依赖方向：`client → runtime::link → flare-access / flare-im-transport`。选路、健康簿、熔断在
 //! `flare-access`；这里决定生命周期（何时连、何时等、何时切、何时停），并把结果回写健康簿。
 
 pub(crate) mod connection;

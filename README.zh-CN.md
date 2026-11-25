@@ -6,16 +6,16 @@
 
 > ## ⚠ 请与同级仓库一起 clone
 
-本 crate 通过**路径依赖**引用 `../flare-transport`、`../flare-protocol`、`../flare-protocol-grpc`。
+本 crate 通过**路径依赖**引用 `../flare-im-transport`、`../flare-im-protocol`、`../flare-im-protocol-grpc`。
 单独 clone 这一个仓是编译不过的——失败发生在 `cargo metadata`，还没读到你的代码，
 所以报错指向一个内部工作区成员，完全看不出真正的原因。
 
 ```bash
 mkdir flare && cd flare
-git clone https://github.com/flare-im/flare-transport.git
-git clone https://github.com/flare-im/flare-protocol.git
-git clone https://github.com/flare-im/flare-protocol-grpc.git
-git clone https://github.com/flare-im/flare-core-sdk-engine.git
+git clone https://github.com/flare-im/flare-im-transport.git
+git clone https://github.com/flare-im/flare-im-protocol.git
+git clone https://github.com/flare-im/flare-im-protocol-grpc.git
+git clone https://github.com/flare-im/flare-im-core-engine.git
 cd flare-im-core-sdk && cargo check
 ```
 
@@ -31,7 +31,7 @@ cd flare-im-core-sdk && cargo check
 > - **`HttpHookTokenValidator`** —— 把 token POST 到你自己的接口，
 >   **这是接入自有用户体系的入口**。
 >
-> 业务规则同理：`flare-core-server/crates/flare-im-hooks` 提供 9 个扩展点
+> 业务规则同理：`flare-im-core-server/crates/flare-im-hooks` 提供 9 个扩展点
 > （PreSend / PostSend / Delivery / Recall / MessageRead / MessageReaction /
 > ConversationLifecycle / ConversationMember / GetConversationParticipants）。
 >
@@ -215,10 +215,10 @@ rtk cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 ## 服务端联调
 
-本地服务端全栈由 `../flare-core-server/scripts/start_server.sh` 启动，并可用 `../flare-core-server/scripts/check_services.sh` 检查。当前 live gateway E2E 需要按 `SocketTransport` / `PacketSender` / typed API 重建；不要恢复旧 `memory://local` route facade 测试。
+本地服务端全栈由 `../flare-im-core-server/scripts/start_server.sh` 启动，并可用 `../flare-im-core-server/scripts/check_services.sh` 检查。当前 live gateway E2E 需要按 `SocketTransport` / `PacketSender` / typed API 重建；不要恢复旧 `memory://local` route facade 测试。
 
 ```bash
-rtk bash ../flare-core-server/scripts/check_services.sh
+rtk bash ../flare-im-core-server/scripts/check_services.sh
 ```
 
 ## 许可
@@ -231,7 +231,7 @@ Apache License 2.0，与底层 `flare-core` 一致，见对应仓库许可文件
 
 | 想做什么 | 去哪里 |
 |---|---|
-| **五分钟跑起来** | [QUICKSTART](https://github.com/flare-im/flare-core-server/blob/main/docs/QUICKSTART.zh-CN.md) —— 起服务、手签 token、调通接口，**不需要自建用户体系** |
+| **五分钟跑起来** | [QUICKSTART](https://github.com/flare-im/flare-im-core-server/blob/main/docs/QUICKSTART.zh-CN.md) —— 起服务、手签 token、调通接口，**不需要自建用户体系** |
 | 接入自己的用户系统 | 实现 `TokenValidator`（`CoreJwtTokenValidator` 本地验签 / `HttpHookTokenValidator` 调你的接口） |
 | 加自己的业务规则 | `flare-im-hooks` 的 9 个扩展点：PreSend / PostSend / Delivery / Recall / MessageRead / MessageReaction / ConversationLifecycle / ConversationMember / GetConversationParticipants |
 | 做界面 | [`@flare-im/vue-ui`](https://www.npmjs.com/package/@flare-im/vue-ui) —— 107 个组件，四端一致的契约 |
@@ -246,9 +246,9 @@ Apache License 2.0，与底层 `flare-core` 一致，见对应仓库许可文件
 
 咨询：`flare1522@163.com`
 
-> 边界划分与不变承诺见 [GOVERNANCE](https://github.com/flare-im/flare-core-server/blob/main/.github/GOVERNANCE.md)。
+> 边界划分与不变承诺见 [GOVERNANCE](https://github.com/flare-im/flare-im-core-server/blob/main/.github/GOVERNANCE.md)。
 > 简言之：**已开源的不会被收回，鉴权与 hooks 契约永远开源、不会为逼迫付费而阉割。**
 
 ## 变更归属
 
-发送、存储、排序和同步行为由 Rust 引擎统一维护。平台包与集成验证分别见 [flare-core-sdk](https://github.com/flare-im/flare-core-sdk) 和[示例应用](https://github.com/flare-im/flare-core-examples)。
+发送、存储、排序和同步行为由 Rust 引擎统一维护。平台包与集成验证分别见 [flare-im-core-sdk](https://github.com/flare-im/flare-im-core-sdk) 和[示例应用](https://github.com/flare-im/flare-im-core-examples)。

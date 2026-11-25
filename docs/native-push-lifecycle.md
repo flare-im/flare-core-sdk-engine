@@ -136,7 +136,7 @@ the extension, which cannot open the main store:
 ```
 
 - `locale` is the configured app locale (`zh` when none is configured); `strings` are the engine's own
-  notification phrases (`flare-notify-rules` text) in that language. `preview` is the user's setting
+  notification phrases (`flare-im-notify-rules` text) in that language. `preview` is the user's setting
   (`full`, `sender_only`, `hidden`).
 - `conversations` holds the 500 most recently active conversations: `t` the title as shown locally (empty
   when there is no local name yet), `m` muted, `o` alerts only on mentions (including a large group
@@ -226,7 +226,7 @@ Revocation cannot recall a vendor request already sent, or undo a notification a
 
 ## Flutter composition
 
-Flutter apps use the plugin `flare_core_flutter_push` (`flare-commercial-client-runtime/packages/push/flare-core-flutter-push`).
+Flutter apps use the plugin `flare_core_flutter_push` (`flare-im-client-runtime/packages/push/flare-core-flutter-push`).
 It is a thin bridge over the native platform push modules, `FlarePlatformPush` on iOS and
 `flare-core-android-push` on Android, and carries no `firebase_messaging` and no Dart background
 isolate. The native modules own the OS side: notification permission (three states), APNs/FCM/Getui

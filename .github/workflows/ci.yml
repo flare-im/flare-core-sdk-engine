@@ -27,14 +27,14 @@ jobs:
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
           }
-          clone https://github.com/flare-im/flare-transport.git "../flare-transport"
-          clone https://github.com/flare-im/flare-protocol.git "../flare-protocol"
-          clone https://github.com/flare-im/flare-plugin-devkit.git "../flare-plugin-devkit"
-          clone https://github.com/flare-im/flare-notify-rules.git "../flare-notify-rules"
-          clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
+          clone https://github.com/flare-im/flare-im-transport.git "../flare-im-transport"
+          clone https://github.com/flare-im/flare-im-protocol.git "../flare-im-protocol"
+          clone https://github.com/flare-im/flare-im-plugin-sdk.git "../flare-im-plugin-sdk"
+          clone https://github.com/flare-im/flare-im-notify-rules.git "../flare-im-notify-rules"
+          clone https://github.com/flare-im/flare-im-protocol-grpc.git "../flare-im-protocol-grpc"
           # 架构边界测试会跨仓校验七端 SDK 的事件分发实现，需要它在场
-          clone https://github.com/flare-im/flare-core-sdk.git "../flare-core-sdk"
-          clone https://github.com/flare-im/flare-core-examples.git "../flare-core-examples"
+          clone https://github.com/flare-im/flare-im-core-sdk.git "../flare-im-core-sdk"
+          clone https://github.com/flare-im/flare-im-core-examples.git "../flare-im-core-examples"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -99,13 +99,13 @@ jobs:
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
           }
-          clone https://github.com/flare-im/flare-transport.git "../flare-transport"
-          clone https://github.com/flare-im/flare-plugin-devkit.git "../flare-plugin-devkit"
-          clone https://github.com/flare-im/flare-notify-rules.git "../flare-notify-rules"
-          clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
+          clone https://github.com/flare-im/flare-im-transport.git "../flare-im-transport"
+          clone https://github.com/flare-im/flare-im-plugin-sdk.git "../flare-im-plugin-sdk"
+          clone https://github.com/flare-im/flare-im-notify-rules.git "../flare-im-notify-rules"
+          clone https://github.com/flare-im/flare-im-protocol-grpc.git "../flare-im-protocol-grpc"
           # 架构边界测试会跨仓校验七端 SDK 的事件分发实现，需要它在场
-          clone https://github.com/flare-im/flare-core-sdk.git "../flare-core-sdk"
-          clone https://github.com/flare-im/flare-core-examples.git "../flare-core-examples"
+          clone https://github.com/flare-im/flare-im-core-sdk.git "../flare-im-core-sdk"
+          clone https://github.com/flare-im/flare-im-core-examples.git "../flare-im-core-examples"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -152,10 +152,10 @@ jobs:
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
           }
-          clone https://github.com/flare-im/flare-transport.git "../flare-transport"
-          clone https://github.com/flare-im/flare-plugin-devkit.git "../flare-plugin-devkit"
-          clone https://github.com/flare-im/flare-notify-rules.git "../flare-notify-rules"
-          clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
+          clone https://github.com/flare-im/flare-im-transport.git "../flare-im-transport"
+          clone https://github.com/flare-im/flare-im-plugin-sdk.git "../flare-im-plugin-sdk"
+          clone https://github.com/flare-im/flare-im-notify-rules.git "../flare-im-notify-rules"
+          clone https://github.com/flare-im/flare-im-protocol-grpc.git "../flare-im-protocol-grpc"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -322,10 +322,10 @@ jobs:
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
           }
-          clone https://github.com/flare-im/flare-transport.git "../flare-transport"
-          clone https://github.com/flare-im/flare-plugin-devkit.git "../flare-plugin-devkit"
-          clone https://github.com/flare-im/flare-notify-rules.git "../flare-notify-rules"
-          clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
+          clone https://github.com/flare-im/flare-im-transport.git "../flare-im-transport"
+          clone https://github.com/flare-im/flare-im-plugin-sdk.git "../flare-im-plugin-sdk"
+          clone https://github.com/flare-im/flare-im-notify-rules.git "../flare-im-notify-rules"
+          clone https://github.com/flare-im/flare-im-protocol-grpc.git "../flare-im-protocol-grpc"
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -361,17 +361,17 @@ jobs:
             git clone --depth 1 -b "$BR" "$1" "$2" 2>/dev/null \
               || git clone --depth 1 "$1" "$2"
           }
-          clone https://github.com/flare-im/flare-transport.git "../flare-transport"
-          clone https://github.com/flare-im/flare-protocol.git "../flare-protocol"
-          clone https://github.com/flare-im/flare-plugin-devkit.git "../flare-plugin-devkit"
-          clone https://github.com/flare-im/flare-notify-rules.git "../flare-notify-rules"
-          clone https://github.com/flare-im/flare-protocol-grpc.git "../flare-protocol-grpc"
+          clone https://github.com/flare-im/flare-im-transport.git "../flare-im-transport"
+          clone https://github.com/flare-im/flare-im-protocol.git "../flare-im-protocol"
+          clone https://github.com/flare-im/flare-im-plugin-sdk.git "../flare-im-plugin-sdk"
+          clone https://github.com/flare-im/flare-im-notify-rules.git "../flare-im-notify-rules"
+          clone https://github.com/flare-im/flare-im-protocol-grpc.git "../flare-im-protocol-grpc"
           # 判据要读客户端 SDK 的 packages / sdk-spec / examples；xtask 解析根目录时
           # 找不到它会直接 bail，不是跳过。
-          clone https://github.com/flare-im/flare-core-sdk.git "../flare-core-sdk"
-          clone https://github.com/flare-im/flare-core-examples.git "../flare-core-examples"
+          clone https://github.com/flare-im/flare-im-core-sdk.git "../flare-im-core-sdk"
+          clone https://github.com/flare-im/flare-im-core-examples.git "../flare-im-core-examples"
           # e2ee / 多端状态两道要读服务端源码（推送可见性、扇出实现）。
-          clone https://github.com/flare-im/flare-core-server.git "../flare-core-server"
+          clone https://github.com/flare-im/flare-im-core-server.git "../flare-im-core-server"
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -387,7 +387,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo tree --locked -p flare-im-core-sdk --edges normal --prefix none > "$RUNNER_TEMP/core-deps"
-          if grep -E '^(sqlx|rusqlite|flare-im-core-sdk-(sqlite-im|storage-indexeddb)|flare-social-sdk|flare-commercial-client-composition) v' "$RUNNER_TEMP/core-deps"; then
+          if grep -E '^(sqlx|rusqlite|flare-im-core-sdk-(sqlite-im|storage-indexeddb)|flare-im-sdk|flare-commercial-client-composition) v' "$RUNNER_TEMP/core-deps"; then
             exit 1
           fi
 

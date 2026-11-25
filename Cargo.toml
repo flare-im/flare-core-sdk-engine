@@ -23,9 +23,9 @@ authors = ["Flare Team"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
-flare-proto = { version = "2.2.0", path = "../flare-protocol-grpc/crates/flare-proto" }
-flare-grpc-proto = { version = "2.1.0", path = "../flare-protocol-grpc" }
-flare-core = { version = "1.1.1", path = "../flare-transport", default-features = false }
+flare-proto = { version = "2.2.0", path = "../flare-im-protocol-grpc/crates/flare-proto" }
+flare-grpc-proto = { version = "2.1.0", path = "../flare-im-protocol-grpc" }
+flare-core = { version = "1.1.1", path = "../flare-im-transport", default-features = false }
 tonic = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -56,8 +56,8 @@ description = "Flare IM Client SDK — event-driven cross-platform IM client cor
 # crates.io 上没有关键词几乎等于搜不到；上限 5 个，按别人真正会搜的词选。
 keywords = ["instant-messaging", "im", "websocket", "client-sdk", "realtime"]
 categories = ["network-programming", "asynchronous", "api-bindings"]
-repository = "https://github.com/flare-im/flare-core-sdk-engine"
-homepage = "https://github.com/flare-im/flare-core-sdk-engine"
+repository = "https://github.com/flare-im/flare-im-core-engine"
+homepage = "https://github.com/flare-im/flare-im-core-engine"
 documentation = "https://docs.rs/flare-im-core-sdk"
 readme = "README.md"
 
@@ -99,15 +99,15 @@ link-preview = ["rich-doc-html"]
 [dependencies]
 flare-core = { workspace = true, default-features = false, features = ["client", "websocket", "compression-gzip", "encryption-aes-gcm"] }
 flare-proto = { workspace = true }
-flare-access-contract = { version = "0.1.0", path = "../flare-protocol-grpc/crates/flare-access-contract" }
+flare-access-contract = { version = "0.1.0", path = "../flare-im-protocol-grpc/crates/flare-access-contract" }
 chrono = { workspace = true }
 
 serde = { workspace = true }
 serde_json = "1.0"
 schemars = { workspace = true }
-flare-plugin-protocol = { version = "0.1.0", path = "../flare-plugin-devkit/flare-plugin-protocol" }
+flare-plugin-protocol = { version = "0.1.0", path = "../flare-im-plugin-sdk/flare-plugin-protocol" }
 # 提示规则（决策、会话槽位与设备预算、通知文案）：与推送服务端同一份实现，无 IO、可编进 wasm。
-flare-notify-rules = { version = "0.1.0", path = "../flare-notify-rules" }
+flare-notify-rules = { version = "0.1.0", path = "../flare-im-notify-rules" }
 # `std` only off the browser: see the native entry below.
 anyhow = { version = "1.0", default-features = false }
 thiserror = "2.0"
@@ -185,7 +185,7 @@ web-sys = { version = "0.3", features = [
 ] }
 
 [dev-dependencies]
-flare-plugin-protocol = { version = "0.1.0", path = "../flare-plugin-devkit/flare-plugin-protocol", features = ["bundle-archive"] }
+flare-plugin-protocol = { version = "0.1.0", path = "../flare-im-plugin-sdk/flare-plugin-protocol", features = ["bundle-archive"] }
 # 仅测试：本机回环起 flare-core 服务端，驱动 SDK 走完整的建连 / 重连循环
 flare-core = { workspace = true, default-features = false, features = ["client", "server", "websocket", "compression-gzip", "encryption-aes-gcm"] }
 rcgen = "0.14"

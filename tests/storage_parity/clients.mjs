@@ -11,8 +11,8 @@ import {fileURLToPath} from 'node:url';
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const workspace = path.resolve(dir, '../../..');
-const sdk = path.join(workspace, 'flare-core-sdk');
-export const webRequire = createRequire(path.join(workspace, 'flare-core-examples/apps/flare-core-web-app/package.json'));
+const sdk = path.join(workspace, 'flare-im-core-sdk');
+export const webRequire = createRequire(path.join(workspace, 'flare-im-core-examples/apps/flare-core-web-app/package.json'));
 const {chromium} = webRequire('playwright');
 const {build} = webRequire('esbuild');
 export const sample = JSON.parse(await readFile(path.join(dir, 'send.json')));
