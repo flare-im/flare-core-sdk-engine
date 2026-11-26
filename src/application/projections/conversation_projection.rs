@@ -331,7 +331,8 @@ impl ConversationProjectionApplier {
         current_user_id: &str,
     ) -> Result<()> {
         let conversation_id = message.conversation_id.trim();
-        if conversation_id.is_empty() || conversation_id.starts_with("sync:") {
+        if conversation_id.is_empty() || crate::domain::conversation::is_user_inbox(conversation_id)
+        {
             return Ok(());
         }
         if let Some(mut existing) = self.stores.conversations.get(conversation_id).await? {

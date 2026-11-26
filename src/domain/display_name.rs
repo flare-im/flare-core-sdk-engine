@@ -178,9 +178,9 @@ pub fn member_nicknames_apply(conversation_type: ConversationType) -> bool {
 /// Names one account can go by, as the caller knows them. Empty means unknown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PersonNameCandidates<'a> {
-    /// The current user's private label for the account (a friend remark).
+    /// The current user's private label for the account (a contact remark).
     pub alias: &'a str,
-    /// The account's name in the conversation (a group nickname).
+    /// The account's name in the conversation (a member nickname).
     pub member_nickname: &'a str,
     /// The account's own name.
     pub profile_name: &'a str,

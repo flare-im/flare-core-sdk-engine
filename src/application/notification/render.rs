@@ -495,7 +495,7 @@ mod tests {
             message(Some(Elem::Notification(NotificationElem {
                 title: title.into(),
                 body: body.into(),
-                notification_type: "social.relation.friend_request_created".into(),
+                notification_type: "example.contact.request_created".into(),
                 data: Default::default(),
                 target_user_ids: vec![],
                 target_role_id: String::new(),

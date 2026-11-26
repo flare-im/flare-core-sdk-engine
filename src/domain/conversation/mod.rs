@@ -9,7 +9,10 @@ mod summary_merge;
 mod unread_total;
 
 pub use id::*;
-pub use identity::{ConversationIdRewrite, ConversationIdentityService};
+pub use identity::{
+    ConversationIdRewrite, ConversationIdentityService, USER_INBOX_PREFIX, is_user_inbox,
+    user_inbox_id, user_inbox_owner,
+};
 pub use local_clear::{
     EXT_LOCAL_CLEARED_THROUGH_SEQ, filter_messages_after_clear, local_cleared_through_seq,
     message_visible_after_clear, set_local_cleared_through_seq, sync_visibility_floor,

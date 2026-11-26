@@ -264,7 +264,7 @@ mod tests {
         struct FriendsDomain;
         impl SyncDomain for FriendsDomain {
             fn id(&self) -> DomainId {
-                DomainId::new("social.friends")
+                DomainId::new("example.items")
             }
             fn lane(&self) -> LaneSpec {
                 LaneSpec {
@@ -297,7 +297,7 @@ mod tests {
         manager.register_domain(Arc::new(FriendsDomain));
         assert_eq!(
             manager.registered_domain_ids(),
-            vec![DomainId::new("social.friends")]
+            vec![DomainId::new("example.items")]
         );
     }
 

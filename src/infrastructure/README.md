@@ -108,7 +108,7 @@ SQLite 表结构（消息本地状态列）：
 
 - **会话列表**：以「会话」为聚合，每条会话有 last_message、未读、置顶/静音/归档等；列表顺序：置顶优先，再按 `last_message_at` 倒序。
 - **会话同步**：连接后同步引擎拉取会话列表（SyncConversations），服务端返回的会话通过 **ConversationStore.save_batch** 落库。
-- **单会话消息同步**：按会话拉取消息（SyncRequest/SyncResponse），消息落 **MessageStore**，同时用本批消息的「最后一条」更新该会话的 **last_message_* 与 max_seq**，保证列表预览与排序正确；游标存 **SyncCursorStore**（如 `sync:{conversation_id}` → max_seq）。
+- **单会话消息同步**：按会话拉取消息（SyncRequest/SyncResponse），消息落 **MessageStore**，同时用本批消息的「最后一条」更新该会话的 **last_message_* 与 max_seq**，保证列表预览与排序正确；游标存 **SyncCursorStore**（按 `conversation_id` → max_seq）。
 
 ### 2.2 会话生命周期与存储调用链
 
@@ -125,7 +125,7 @@ SQLite 表结构（消息本地状态列）：
 
 [单会话消息同步]
     → SessionSyncRunner.request_message_sync(conversation_id) → SyncHandler.sync_conversation
-    → 从 SyncCursorStore.get("sync:{conversation_id}") 取 last_seq
+    → 从 SyncCursorStore.get(conversation_id) 取 last_seq
     → 发 SyncRequest(conversation_id, last_seq, limit)
     → 收 SyncResponse → handle_sync_response → apply_sync_response_and_transition
     → 解析 events 得到 Vec<IMMessage>
@@ -134,7 +134,7 @@ SQLite 表结构（消息本地状态列）：
           conversation_id, latest.server_id(), latest.sender_id(), latest.created_at,
           latest.text_for_storage().as_deref(), max_seq)
     → 实现: storage/sqlite-im/src/repos/conversation_repo.rs (SqliteConversationRepo.update_last_message)
-    → SyncCursorStore.save("sync:{conversation_id}", envelope.max_seq)
+    → SyncCursorStore.save(conversation_id, envelope.max_seq)
     → EventBus MessageEvent::Received（逐条）
 ```
 

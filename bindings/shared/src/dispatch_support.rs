@@ -977,7 +977,7 @@ mod tests {
             send_ack::Result::Error(error) => error,
         };
         error.code = 13;
-        error.message = "pre_send rejected: SOCIAL_BLOCKED".to_string();
+        error.message = "pre_send rejected: EXAMPLE_BLOCKED".to_string();
 
         let response = json_send_ack(SendAck {
             client_msg_id: "client-1".to_string(),
@@ -995,7 +995,7 @@ mod tests {
         assert_eq!(response.payload["errorCode"], 13);
         assert_eq!(
             response.payload["errorMessage"],
-            "pre_send rejected: SOCIAL_BLOCKED"
+            "pre_send rejected: EXAMPLE_BLOCKED"
         );
     }
 

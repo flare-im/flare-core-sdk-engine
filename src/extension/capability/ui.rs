@@ -330,7 +330,7 @@ pub struct PluginAccountEntry {
 }
 
 /// One approved, exact scan route. This is generic plugin infrastructure;
-/// payload parsing and business decisions remain with the plugin and Social SDK.
+/// payload parsing and business decisions remain with the plugin and the business SDK.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginScanHandler {

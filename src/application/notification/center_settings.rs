@@ -148,7 +148,7 @@ impl NotifyCenter {
         settings
     }
 
-    /// 别的设备改了设置（`sync:<用户>` 收件箱上的信号）：用户级的去重新读，会话级的「全部消息通知」
+    /// 别的设备改了设置（用户收件箱 `inbox:<用户>` 上的信号）：用户级的去重新读，会话级的「全部消息通知」
     /// 写进本地会话。信号只是提示，内容以读取结果为准。
     pub(crate) fn on_user_settings_changed(&self, payload: &[u8]) {
         let changed = match UserSettingsChanged::decode(payload) {

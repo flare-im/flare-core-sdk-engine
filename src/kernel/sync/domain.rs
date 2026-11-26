@@ -1,6 +1,6 @@
-//! 领域无关同步 SPI：任意业务领域（消息/会话/好友/群/自定义业务）实现 [SyncDomain] 并注册进收敛内核，
+//! 领域无关同步 SPI：任意领域（消息/会话/业务扩展的自定义领域）实现 [SyncDomain] 并注册进收敛内核，
 //! 即复用冷启/热启/重连/追赶/优先级/缺口修复。**内核只提供机制；领域提供语义**（守 flare-im-spec 4/5：
-//! `im.messages`/`im.conversations` 为内置领域，`social.friends`/`social.groups` 由 Social 实现注册，core 不认识其业务规则）。
+//! `im.messages`/`im.conversations` 为内置领域，`example.items` 之类业务领域由扩展实现注册，core 不认识其业务规则）。
 
 use std::future::Future;
 use std::pin::Pin;
@@ -11,7 +11,7 @@ use crate::shared::error::Result;
 
 use super::task::{SyncTrigger, SyncVisibility};
 
-/// 领域标识：**开放集**稳定字符串（如 `im.messages`、`social.friends`、`biz.orders`），
+/// 领域标识：**开放集**稳定字符串（如 `im.messages`、`example.items`、`biz.orders`），
 /// 取代闭枚举 SyncScope，使新业务零改引擎接入。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DomainId(pub String);
@@ -128,7 +128,7 @@ impl SyncDomainContext {
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// 同步领域：任意业务领域实现本 trait 并经 `IMClientBuilder::add_sync_domain` 注册即接入收敛内核。
-/// `im.messages`/`im.conversations` 为内置实现；`social.friends`/`social.groups` 由 Social 实现。
+/// `im.messages`/`im.conversations` 为内置实现；`example.items` 之类业务领域由扩展实现。
 pub trait SyncDomain: Send + Sync {
     /// 稳定领域标识（开放集）。
     fn id(&self) -> DomainId;
@@ -180,8 +180,8 @@ mod tests {
         use std::collections::HashSet;
         let mut set = HashSet::new();
         set.insert(DomainId::new("im.messages"));
-        set.insert(DomainId::new("social.friends"));
-        set.insert(DomainId::new("social.friends"));
+        set.insert(DomainId::new("example.items"));
+        set.insert(DomainId::new("example.items"));
         assert_eq!(set.len(), 2);
         assert!(set.contains(&DomainId::new("im.messages")));
     }

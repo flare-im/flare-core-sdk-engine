@@ -55,7 +55,7 @@ use crate::shared::util::{
     BackgroundTask, delay, now_millis, spawn_background, spawn_background_task, timeout,
 };
 
-/// 服务端经 `sync:<用户>` 收件箱下发的「用户设置变了」信号（`RealtimeControlPacket.custom.type`）。
+/// 服务端经用户收件箱 `inbox:<用户>` 下发的「用户设置变了」信号（`RealtimeControlPacket.custom.type`）。
 pub(crate) const USER_SETTINGS_CHANGED_TYPE: &str = "flare.user_settings_changed";
 /// 摘要通知的合并键：每台设备一条，与会话的合并键（`c:` 开头）不会撞。
 pub(crate) const DIGEST_COLLAPSE_ID: &str = "d:digest";

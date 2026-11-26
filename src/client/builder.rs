@@ -228,7 +228,6 @@ impl IMClientBuilder {
         self
     }
 
-    /// 注入共享 HTTP 鉴权上下文（与 Social Gateway / 媒体 HTTP 共用 Bearer 与链路头）。
     /// 使用已有的接入运行时（跨会话共用健康簿与熔断状态）。
     /// Use the named environment when validating the deployment endpoints.
     pub fn environment(mut self, environment: Option<String>) -> Self {
@@ -262,6 +261,7 @@ impl IMClientBuilder {
         self
     }
 
+    /// 注入共享 HTTP 鉴权上下文（与扩展的按域凭据客户端、媒体 HTTP 共用身份与链路头）。
     pub fn http_request_context(mut self, context: Arc<HttpRequestContext>) -> Self {
         self.http_request_context = Some(context);
         self
@@ -714,7 +714,7 @@ impl IMClientBuilder {
         let capability_http_client = core_http_client.clone();
         let media_http_client = core_http_client
             .for_media()
-            .with_gateway_context(http_request_context.clone())
+            .with_request_context(http_request_context.clone())
             .with_core_bearer();
         let default_media_service: Arc<dyn MediaServicePort> = Arc::new(MediaService::new(
             media_http_client,

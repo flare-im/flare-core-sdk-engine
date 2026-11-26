@@ -2,7 +2,7 @@
 //! 按 [DomainId] 路由到已注册的 [SyncDomain]，按 `entity_seq` 有序应用，并汇总缺口（Deferred）供修复。
 //!
 //! 注册在 builder 期完成（不可变后），路由热路径**无锁**（性能红线）。`im.messages`/`im.conversations`
-//! 为内置领域；`social.friends`/`social.groups` 及任意业务领域实现 [SyncDomain] 注册即接入，
+//! 为内置领域；`example.items` 等任意业务领域实现 [SyncDomain] 注册即接入，
 //! 白拿冷启/热启/重连/追赶/优先级/缺口修复——core 不认识其业务规则。
 
 use std::collections::HashMap;
@@ -295,14 +295,14 @@ mod tests {
         let applied = Arc::new(Mutex::new(Vec::new()));
         let mut registry = SyncDomainRegistry::new();
         registry.register(Arc::new(ToyDomain {
-            id: DomainId::new("social.friends"),
+            id: DomainId::new("example.items"),
             applied: applied.clone(),
         }));
 
         // 乱序投喂，路由应按 entity_seq 升序应用。
         let report = registry
             .route(
-                &DomainId::new("social.friends"),
+                &DomainId::new("example.items"),
                 &[item(3), item(1), item(0), item(2)],
             )
             .await;

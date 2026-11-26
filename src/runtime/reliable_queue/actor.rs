@@ -2623,7 +2623,7 @@ mod tests {
                 conversation_id: "conv-card".to_string(),
                 result: Some(send_ack::Result::Error(ErrorDetail {
                     code: ProtoErrorCode::PermissionDenied as i32,
-                    reason: "SOCIAL_CARD_SCOPE_FRIENDS".to_string(),
+                    reason: "EXAMPLE_POLICY_REJECTED".to_string(),
                     message: "only friends can share this card".to_string(),
                     track: String::new(),
                 })),
@@ -2645,7 +2645,7 @@ mod tests {
             }) => {
                 assert_eq!(client_msg_id, "client-card");
                 assert_eq!(reason, "only friends can share this card");
-                assert_eq!(error.machine_reason, "SOCIAL_CARD_SCOPE_FRIENDS");
+                assert_eq!(error.machine_reason, "EXAMPLE_POLICY_REJECTED");
                 assert_eq!(error.code, "PERMISSION_DENIED");
                 assert_eq!(error.message, "only friends can share this card");
             }

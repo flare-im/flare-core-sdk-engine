@@ -1580,7 +1580,13 @@ mod credential_family_tests {
     async fn grpc_fallback_metadata_selects_connect_and_does_not_fall_back_to_access() {
         let context = Arc::new(HttpRequestContext::new());
         context
-            .set_gateway_context("access-fixture".into(), "app".into(), "alice".into(), None)
+            .set_scoped_context(
+                "example",
+                "access-fixture".into(),
+                "app".into(),
+                "alice".into(),
+                None,
+            )
             .await;
         context
             .set_auth_context("connect-fixture".into(), None)

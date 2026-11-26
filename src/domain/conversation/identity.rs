@@ -118,7 +118,7 @@ impl ConversationIdentityService {
         peer_hint: Option<&str>,
     ) -> bool {
         if !conversation.conversation_type.is_single_chat_conversation()
-            || is_reserved_sync_inbox(&conversation.conversation_id)
+            || is_user_inbox(&conversation.conversation_id)
         {
             return false;
         }
@@ -162,7 +162,7 @@ impl ConversationIdentityService {
         // 同 canonicalize_single_chat_message：会话 ID 的类型前缀比 conversation_type
         // 字段更可信，后者会被下发链路上的任何一环填错。
         if conversation_id::is_group_chat_conversation(&conversation.conversation_id)
-            || is_reserved_sync_inbox(&conversation.conversation_id)
+            || is_user_inbox(&conversation.conversation_id)
         {
             return None;
         }
@@ -204,7 +204,7 @@ impl ConversationIdentityService {
         // 单聊会话（实测群会话连同消息一起从列表里消失，moved=1）。
         // ID 是会话身份本身，不会因为某条消息填错而改变——用它兜住这类误判。
         if conversation_id::is_group_chat_conversation(&message.conversation_id)
-            || is_reserved_sync_inbox(&message.conversation_id)
+            || is_user_inbox(&message.conversation_id)
         {
             return None;
         }
@@ -281,12 +281,28 @@ impl ConversationIdentityService {
     }
 }
 
-/// `sync:<owner>` is an internal delivery route, not a chat between sender and owner.
-/// Preserve even a foreign/empty owner: rewriting would conceal a misrouted notification and
-/// manufacture a single-chat merge. Recipient authorization belongs to the server/handler,
-/// not to this identity repair operation, which can only return an optional rewrite.
-fn is_reserved_sync_inbox(conversation_id: &str) -> bool {
-    conversation_id.trim().starts_with("sync:")
+/// Prefix of a user inbox id (`inbox:<user_id>`).
+///
+/// A user inbox is a per-user delivery channel for notices that have no conversation yet.
+/// It is never listed as a conversation and never repaired or merged into a single chat.
+pub const USER_INBOX_PREFIX: &str = "inbox:";
+
+/// Whether `conversation_id` names a user inbox (any owner, including a foreign or empty one).
+///
+/// Identity repair keeps every inbox route as-is: rewriting would conceal a misrouted notice
+/// and manufacture a single-chat merge. Recipient authorization belongs to the server/handler.
+pub fn is_user_inbox(conversation_id: &str) -> bool {
+    conversation_id.trim().starts_with(USER_INBOX_PREFIX)
+}
+
+/// The inbox id of `user_id`.
+pub fn user_inbox_id(user_id: &str) -> String {
+    format!("{USER_INBOX_PREFIX}{user_id}")
+}
+
+/// The owner of a user inbox id, or `None` when `conversation_id` is not an inbox.
+pub fn user_inbox_owner(conversation_id: &str) -> Option<&str> {
+    conversation_id.trim().strip_prefix(USER_INBOX_PREFIX)
 }
 
 fn single_chat_peer_from_parts(
@@ -471,7 +487,7 @@ mod tests {
         use flare_proto::common::message_content::Content;
         use flare_proto::common::{Message, MessageContent, NotificationContent};
 
-        for route in ["sync:me-1", "sync:other-user", "sync:", " sync:me-1 "] {
+        for route in ["inbox:me-1", "inbox:other-user", "inbox:", " inbox:me-1 "] {
             let mut message = IMMessage::new(Message {
                 server_id: "notification-1".into(),
                 conversation_id: route.into(),
@@ -514,7 +530,7 @@ mod tests {
 
     #[test]
     fn sync_conversation_never_repairs_a_peer_or_requests_a_merge() {
-        for route in ["sync:me-1", "sync:other-user", "sync:", " sync:me-1 "] {
+        for route in ["inbox:me-1", "inbox:other-user", "inbox:", " inbox:me-1 "] {
             let mut conversation = Conversation::from_conversation_id(route.into());
             conversation.conversation_type = ConversationType::Single;
             conversation.channel_id = "original-route-channel".into();

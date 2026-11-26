@@ -116,7 +116,7 @@ mod tests {
     fn local_storage_partition_separates_namespace_tenant_and_user() {
         let a = local_storage_scope("core", "app-a", "same-user");
         assert_ne!(a, local_storage_scope("core", "app-b", "same-user"));
-        assert_ne!(a, local_storage_scope("social", "app-a", "same-user"));
+        assert_ne!(a, local_storage_scope("example", "app-a", "same-user"));
         assert_ne!(a, local_storage_scope("core", "app-a", "other-user"));
         assert_ne!(
             local_storage_scope("a:b", "c", "u"),

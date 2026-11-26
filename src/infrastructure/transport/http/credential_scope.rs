@@ -157,7 +157,7 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
-    async fn core_selection_discards_social_lease_and_never_falls_back() {
+    async fn core_selection_discards_scoped_lease_and_never_falls_back() {
         use crate::infrastructure::transport::http::{HttpClient, HttpRequestContext};
         let source = Arc::new(Source(RwLock::new(Some(credentials(
             "alice",
@@ -171,7 +171,8 @@ mod tests {
             .set_auth_context("connect-fixture".into(), None)
             .await;
         context
-            .set_gateway_context(
+            .set_scoped_context(
+                "example",
                 "access-fixture".into(),
                 "app-a".into(),
                 "alice".into(),
@@ -180,7 +181,7 @@ mod tests {
             .await;
         let (url, head) = endpoint().await;
         let client = HttpClient::with_context(url, context.clone())
-            .with_gateway_credentials(lease)
+            .with_credential_lease(lease)
             .with_core_bearer();
         *source.0.write().await = None;
         let _: serde_json::Value = client.get("/", None).await.unwrap();
@@ -196,16 +197,21 @@ mod tests {
         );
         assert!(
             context
-                .build_headers()
+                .build_scoped_headers(Some("example"))
                 .await
                 .get("Authorization")
                 .is_some_and(|value| value == "Bearer access-fixture")
         );
-        context.clear_gateway_context().await;
+        context.clear_scoped_context().await;
         context
             .set_auth_context("connect-fixture".into(), None)
             .await;
-        assert!(!context.build_headers().await.contains_key("Authorization"));
+        assert!(
+            !context
+                .build_scoped_headers(Some("example"))
+                .await
+                .contains_key("Authorization")
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -221,19 +227,18 @@ mod tests {
         let lease = HttpCredentialLease::capture(source.clone()).await.unwrap();
         let context = Arc::new(HttpRequestContext::new());
         context
-            .set_gateway_context(
+            .set_scoped_context(
+                "example",
                 "access-fixture".into(),
                 "app-a".into(),
                 "alice".into(),
                 None,
             )
             .await;
-        context
-            .set_gateway_session_id("session-fixture".into())
-            .await;
+        context.set_session_id("session-fixture".into()).await;
         let (url, head) = endpoint().await;
         let client = HttpClient::with_context(url, context)
-            .with_gateway_credentials(lease)
+            .with_credential_lease(lease)
             .without_request_context();
         *source.0.write().await = None;
         let _: serde_json::Value = client.get("/", None).await.unwrap();
@@ -280,7 +285,7 @@ mod tests {
             let _ = released.await;
             stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
         });
-        let client = HttpClient::new(url).with_gateway_credentials(lease);
+        let client = HttpClient::new(url).with_credential_lease(lease);
         let pending = tokio::spawn(async move { client.get::<serde_json::Value>("/", None).await });
         arrival.await.unwrap();
         *source.0.write().await = Some(credentials("alice", "app-a", 2, "new-session-fixture"));
@@ -302,18 +307,17 @@ mod tests {
         let lease = HttpCredentialLease::capture(source.clone()).await.unwrap();
         let context = Arc::new(HttpRequestContext::new());
         context
-            .set_gateway_context(
+            .set_scoped_context(
+                "example",
                 "access-fixture".into(),
                 "app-a".into(),
                 "alice".into(),
                 None,
             )
             .await;
-        context
-            .set_gateway_session_id("session-fixture".into())
-            .await;
+        context.set_session_id("session-fixture".into()).await;
         let client =
-            HttpClient::with_context("http://127.0.0.1", context).with_gateway_credentials(lease);
+            HttpClient::with_context("http://127.0.0.1", context).with_credential_lease(lease);
         *source.0.write().await = None;
         let (url, head) = endpoint().await;
         let grant = HashMap::from([("X-Private-Grant".to_string(), "object-fixture".to_string())]);
@@ -573,7 +577,7 @@ mod tests {
             "access-fixture",
         )))));
         let lease = HttpCredentialLease::capture(source.clone()).await.unwrap();
-        let http = HttpClient::new("http://127.0.0.1").with_gateway_credentials(lease);
+        let http = HttpClient::new("http://127.0.0.1").with_credential_lease(lease);
         let (send, receive) = tokio::sync::oneshot::channel();
         send.send(b"{}".to_vec()).unwrap();
         *source.0.write().await = Some(credentials("alice", "app-a", 2, "new-session-fixture"));

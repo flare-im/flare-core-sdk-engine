@@ -586,8 +586,8 @@ mod tests {
 
     #[test]
     fn sync_scope_accepts_custom_domain_id() {
-        let scope = SyncScope::domain("social.friends");
-        assert_eq!(scope.as_str(), "social.friends");
+        let scope = SyncScope::domain("example.items");
+        assert_eq!(scope.as_str(), "example.items");
 
         let run = SyncRunContext::silent_background(
             SyncScope::domain("biz.orders"),

@@ -437,8 +437,8 @@ mod tests {
                 "http://[0:0:0:0:0:0:0:1]:25200/private/file?grant=opaque",
             ),
             (
-                "https://example.test/social/",
-                "https://example.test/social/private/file?grant=opaque",
+                "https://example.test/ext/",
+                "https://example.test/ext/private/file?grant=opaque",
             ),
         ] {
             assert!(same_private_upload_origin(base, target));

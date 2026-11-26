@@ -107,7 +107,7 @@ node tests/storage_parity/bindings.mjs "$native_target/debug/libflare_im_core_sd
 
 ```sh
 cargo build --manifest-path ../flare-im-core-server/Cargo.toml --locked -p flare-message-ingest -p flare-storage-reader --bins
-export LIVE_SMOKE_DIR="$(mktemp -d)" LIVE_STACK_SOCIAL=0
+export LIVE_SMOKE_DIR="$(mktemp -d)"
 export LIVE_STACK_PREFIX="flare-parity-$(basename "$LIVE_SMOKE_DIR" | tr A-Z a-z)"
 python3 scripts/live_stack.py up >/dev/null
 eval "$(python3 scripts/live_stack.py env)"
@@ -174,7 +174,7 @@ ACK_BENCH_STAGES=1 ACK_BENCH_LEVELS=16,32 ACK_BENCH_MESSAGES=1024 ACK_BENCH_ROUN
 
 `build_web_store_provider(namespace, tenant_id, user_id)` 返回 `Result<StoreProvider>`。分区由 Core 的 `local_storage_scope` 生成，覆盖消息、待发和游标；插件存储继续使用显式的 tenant / user / plugin 身份，不把消息缓存的分区键当作真实用户；JS 宿主的 `userId` 是该不透明分区键，不是消息发送者的用户 ID。
 
-SQLite 的 `resolve_user_db_path(base, namespace, tenant_id, user_id)` 使用 `scopes/v2-<SHA-256>/flare_im_core_sdk.db`，媒体缓存与库同目录；加密和非加密路径都使用同一组身份，Social 也共享该分区。长度前缀与完整摘要避免分隔符和文件名净化导致的身份碰撞。
+SQLite 的 `resolve_user_db_path(base, namespace, tenant_id, user_id)` 使用 `scopes/v2-<SHA-256>/flare_im_core_sdk.db`，媒体缓存与库同目录；加密和非加密路径都使用同一组身份，业务扩展也共享该分区。长度前缀与完整摘要避免分隔符和文件名净化导致的身份碰撞。
 
 旧 `users/<user>/flare_im_core_sdk.db` 和 IndexedDB 中未分区的行保留原位，不自动导入或删除。它们没有可信租户归属，不能因为当前登录者同名就迁移。恢复旧离线草稿时应先停止 SDK、备份原数据，并从宿主配置 / 创建记录核实来源租户，再迁入对应分区；无法核实的旧数据保持隔离。新分区中的服务端历史由正常同步恢复。
 

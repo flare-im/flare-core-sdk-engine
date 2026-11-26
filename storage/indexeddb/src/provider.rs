@@ -465,7 +465,9 @@ fn hydrate_conversation_latest(
 fn batch_previews(rows: &[IMMessage]) -> Vec<Conversation> {
     let mut latest = HashMap::<&str, &IMMessage>::new();
     for row in rows {
-        if row.conversation_id.trim().is_empty() || row.conversation_id.starts_with("sync:") {
+        if row.conversation_id.trim().is_empty()
+            || flare_im_core_sdk::model::is_user_inbox(&row.conversation_id)
+        {
             continue;
         }
         let current = latest.entry(&row.conversation_id).or_insert(row);

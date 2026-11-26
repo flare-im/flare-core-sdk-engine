@@ -363,11 +363,12 @@ async fn the_server_clock_handed_to_hosts_is_the_engine_estimate() {
 }
 
 #[tokio::test]
-async fn update_access_token_refreshes_core_bearer_without_overwriting_bff_bearer() {
+async fn update_access_token_refreshes_core_bearer_without_overwriting_scoped_bearer() {
     let context = Arc::new(HttpRequestContext::new());
     context
-        .set_gateway_context(
-            "old-gateway-token".to_string(),
+        .set_scoped_context(
+            "example",
+            "old-scoped-token".to_string(),
             "tenant-a".to_string(),
             "alice".to_string(),
             None,
@@ -390,10 +391,10 @@ async fn update_access_token_refreshes_core_bearer_without_overwriting_bff_beare
         .await
         .expect("update token");
 
-    let headers = context.build_headers().await;
+    let headers = context.build_scoped_headers(Some("example")).await;
     assert_eq!(
         headers.get("Authorization").map(String::as_str),
-        Some("Bearer old-gateway-token")
+        Some("Bearer old-scoped-token")
     );
     assert_eq!(
         headers.get("x-tenant-id").map(String::as_str),
@@ -412,8 +413,9 @@ async fn update_access_token_refreshes_core_bearer_without_overwriting_bff_beare
 async fn update_access_token_rejects_prepared_but_disconnected_session() {
     let context = Arc::new(HttpRequestContext::new());
     context
-        .set_gateway_context(
-            "old-gateway-token".to_string(),
+        .set_scoped_context(
+            "example",
+            "old-scoped-token".to_string(),
             "tenant-a".to_string(),
             "alice".to_string(),
             None,
@@ -431,15 +433,15 @@ async fn update_access_token_rejects_prepared_but_disconnected_session() {
     }
 
     let err = client
-        .update_access_token("new-gateway-token", Some("tenant-b"))
+        .update_access_token("new-im-token", Some("tenant-b"))
         .await
         .expect_err("prepared but disconnected session must not refresh HTTP auth");
     assert_eq!(err.code(), Some(ErrorCode::NotConnected));
 
-    let headers = context.build_headers().await;
+    let headers = context.build_scoped_headers(Some("example")).await;
     assert_eq!(
         headers.get("Authorization").map(String::as_str),
-        Some("Bearer old-gateway-token")
+        Some("Bearer old-scoped-token")
     );
     assert_eq!(
         headers.get("x-tenant-id").map(String::as_str),
@@ -460,8 +462,9 @@ async fn disconnect_clears_shared_http_auth_context() {
     let context = Arc::new(HttpRequestContext::new());
     context.set_auth_context("im-token".to_string(), None).await;
     context
-        .set_gateway_context(
-            "gateway-token".to_string(),
+        .set_scoped_context(
+            "example",
+            "scoped-token".to_string(),
             "tenant-a".to_string(),
             "alice".to_string(),
             None,
@@ -477,7 +480,7 @@ async fn disconnect_clears_shared_http_auth_context() {
 
     client.disconnect().await.expect("disconnect");
 
-    let headers = context.build_headers().await;
+    let headers = context.build_scoped_headers(Some("example")).await;
     assert_eq!(headers.get("Authorization"), None);
     assert_eq!(headers.get("x-user-id"), None);
     assert_eq!(headers.get("x-tenant-id").map(String::as_str), Some("0"));

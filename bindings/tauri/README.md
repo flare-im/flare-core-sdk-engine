@@ -84,7 +84,7 @@ For generated PNGs, keep rendering in the UI kit and use the reusable TypeScript
 import { createTauriGeneratedFileSaver } from '@flare-im/sdk/tauri';
 
 // Supply the current SDK's existing typed save operation, for example
-// request => social.media.saveToDevice(request).
+// request => sdk.media.saveToDevice(request).
 const saveFile = createTauriGeneratedFileSaver(saveToDevice);
 await saveFile(pngBlob, 'flare-code.png', { signal });
 ```

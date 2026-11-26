@@ -33,7 +33,7 @@ pub const SEND_FAILURE_OPERATION: &str = "message.send";
 ///   `ErrorDetail.code` (`PERMISSION_DENIED`), for a local failure it says what went
 ///   wrong on this side (`OPERATION_TIMEOUT`, `MESSAGE_SEND_FAILED`).
 /// - `machineReason`: the server's typed reason, `ErrorDetail.reason` as sent (for
-///   example a PreSend rejection `SOCIAL_CARD_SCOPE_FRIENDS`); empty for local failures.
+///   example a PreSend rejection `EXAMPLE_POLICY_REJECTED`); empty for local failures.
 /// - `message`: for people, never to be parsed.
 /// - `details`: `remoteCode` (the server's numeric code) when the server rejected.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -531,7 +531,7 @@ mod tests {
             result: Some(send_ack::Result::Error(flare_proto::common::ErrorDetail {
                 code: 13,
                 reason: "MESSAGE_SEND_FAILED".to_string(),
-                message: "pre_send rejected: SOCIAL_BLOCKED".to_string(),
+                message: "pre_send rejected: EXAMPLE_BLOCKED".to_string(),
                 track: String::new(),
             })),
             ..Default::default()
@@ -672,7 +672,7 @@ mod tests {
         assert!(MessageDeliveryService::durable_accepted_from_ack(&ack).is_none());
         assert_eq!(
             MessageDeliveryService::error_message_from_ack(&ack).as_deref(),
-            Some("pre_send rejected: SOCIAL_BLOCKED")
+            Some("pre_send rejected: EXAMPLE_BLOCKED")
         );
     }
 
@@ -682,11 +682,11 @@ mod tests {
     fn a_rejected_ack_keeps_the_server_reason_as_the_machine_reason() {
         let ack = error_ack_with(
             21,
-            "SOCIAL_CARD_SCOPE_FRIENDS",
+            "EXAMPLE_POLICY_REJECTED",
             "only friends can share this card",
         );
         let failure = MessageDeliveryService::send_failure_from_ack(&ack).expect("a rejection");
-        assert_eq!(failure.machine_reason, "SOCIAL_CARD_SCOPE_FRIENDS");
+        assert_eq!(failure.machine_reason, "EXAMPLE_POLICY_REJECTED");
         assert_eq!(failure.code, "PERMISSION_DENIED");
         assert_eq!(failure.message, "only friends can share this card");
         assert_eq!(failure.operation, "message.send");
@@ -699,7 +699,7 @@ mod tests {
             serde_json::to_value(&failure).unwrap(),
             serde_json::json!({
                 "code": "PERMISSION_DENIED",
-                "machineReason": "SOCIAL_CARD_SCOPE_FRIENDS",
+                "machineReason": "EXAMPLE_POLICY_REJECTED",
                 "message": "only friends can share this card",
                 "operation": "message.send",
                 "retryable": false,

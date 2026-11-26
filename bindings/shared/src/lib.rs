@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn generate_core_token_is_gone_from_every_binding_surface() {
         // 客户端本地签发 = 签名密钥进客户端。契约里不能再有这条路：token 由网关签发/刷新
-        //（SDK 托管）或由应用拿（social / 自建业务）。
+        //（SDK 托管）或由应用拿（业务后端）。
         assert!(super::find_api_operation("sdk.generate_core_token").is_none());
         let contract: serde_json::Value = serde_json::from_str(&super::contract_json()).unwrap();
         assert!(

@@ -526,9 +526,16 @@ fn platform_bindings_do_not_construct_resync_markers_directly() {
 #[test]
 fn core_source_does_not_depend_on_business_or_plugin_crates() {
     let core_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // Business-layer crates; the engine's own crates are named flare_im_core_*.
     let forbidden = [
-        "flare_im",
-        "flare-im",
+        "flare_im_sdk",
+        "flare-im-sdk",
+        "flare_im_contracts",
+        "flare-im-contracts",
+        "flare_im_proto",
+        "flare-im-proto",
+        "flare_im_events",
+        "flare-im-events",
         "flare_sdk_plugin",
         "flare-sdk-plugin",
     ];

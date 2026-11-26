@@ -258,22 +258,18 @@ mod tests {
     #[test]
     fn localizable_system_with_i18n_key() {
         let mut data = HashMap::new();
-        data.insert(
-            "i18n_key".into(),
-            "social.relation.friendship_established".into(),
-        );
+        data.insert("i18n_key".into(), "example.contact.linked".into());
         data.insert("i18n_params".into(), json!({"user_a": "a"}).to_string());
-        let p =
-            localizable_system_preview("relation.friendship_established", "你们已成为好友", &data);
+        let p = localizable_system_preview("contact.linked", "你们已建立联系", &data);
         assert_eq!(p.k, keys::SYSTEM);
         assert_eq!(
             p.a.get("ik").and_then(|v| v.as_str()),
-            Some("social.relation.friendship_established")
+            Some("example.contact.linked")
         );
         assert!(p.a.contains_key("p"));
         assert_eq!(
             p.a.get("fb").and_then(|v| v.as_str()),
-            Some("你们已成为好友")
+            Some("你们已建立联系")
         );
     }
 
@@ -330,7 +326,7 @@ mod tests {
             payload(keys::CUSTOM, json!({})),
             payload(
                 keys::SYSTEM,
-                json!({"ik": "social.group.created", "fb": "群已创建"}),
+                json!({"ik": "example.space.created", "fb": "空间已创建"}),
             ),
             payload(keys::QUOTE, json!({"inner": {"k": keys::IMAGE}})),
         ] {
@@ -342,15 +338,15 @@ mod tests {
     fn localizable_notification_fallback_type() {
         let data = HashMap::new();
         let p = localizable_notification_preview(
-            "social.relation.friend_request",
-            "好友申请",
-            "有人申请加你为好友",
+            "example.contact.request",
+            "联系人申请",
+            "有人请求添加你",
             &data,
         );
         assert_eq!(p.k, keys::NOTIFICATION);
         assert_eq!(
             p.a.get("ik").and_then(|v| v.as_str()),
-            Some("social.relation.friend_request")
+            Some("example.contact.request")
         );
     }
 }

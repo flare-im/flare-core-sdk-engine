@@ -68,7 +68,7 @@ impl NotificationInboundPipeline {
         self
     }
 
-    /// 服务端经 `sync:<用户>` 收件箱发来「用户设置变了」：交给提示决策点去重新读。
+    /// 服务端经用户收件箱 `inbox:<用户>` 发来「用户设置变了」：交给提示决策点去重新读。
     pub(crate) fn user_settings_changed(&self, payload: &[u8]) {
         if let Some(notify) = &self.notify {
             notify.on_user_settings_changed(payload);
@@ -215,7 +215,7 @@ mod tests {
         message.content = Some(Elem::Notification(NotificationElem {
             title: String::new(),
             body: String::new(),
-            notification_type: "social.relation.friend_request_created".into(),
+            notification_type: "example.contact.request_created".into(),
             data: Default::default(),
             target_user_ids: Vec::new(),
             target_role_id: String::new(),

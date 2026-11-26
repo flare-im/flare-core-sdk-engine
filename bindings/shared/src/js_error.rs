@@ -1,4 +1,4 @@
-//! The errors browser runtimes throw (core and Social wasm bindings): real `Error`
+//! The errors browser runtimes throw (core and business-SDK wasm bindings): real `Error`
 //! objects whose properties carry the structured error, so hosts never parse the
 //! message.
 

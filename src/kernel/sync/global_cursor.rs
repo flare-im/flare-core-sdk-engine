@@ -107,7 +107,7 @@ mod tests {
         let mut point = DeviceGlobalSyncPoint::new("u1", 42, 1000);
         point.set_domain_cursor(DomainId::new("im.messages"), DomainCursor::at("msg-42"));
         point.set_domain_cursor(
-            DomainId::new("social.friends"),
+            DomainId::new("example.items"),
             DomainCursor::at("friends-7"),
         );
 
@@ -122,7 +122,7 @@ mod tests {
             DomainCursor::at("msg-42")
         );
         assert_eq!(
-            loaded.domain_cursor(&DomainId::new("social.friends")),
+            loaded.domain_cursor(&DomainId::new("example.items")),
             DomainCursor::at("friends-7")
         );
         assert!(

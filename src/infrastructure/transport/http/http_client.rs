@@ -102,8 +102,9 @@ struct CoreAuthState {
 pub struct HttpRequestContext {
     /// Token, owner boundary and renewal authority are installed atomically.
     core_auth: RwLock<CoreAuthState>,
-    /// Social Gateway 等业务 BFF 使用的 Bearer（与 IM token 分离，避免建连时互相覆盖）
-    gateway_token: RwLock<String>,
+    /// Bearers of route scopes an extension owns (scope name → bearer), kept apart from
+    /// the Core bearer so that installing one never overwrites the other.
+    scoped_bearers: RwLock<HashMap<String, String>>,
     tenant_id: RwLock<String>,
     user_id: RwLock<String>,
     session_id: RwLock<String>,
@@ -200,15 +201,21 @@ impl HttpRequestContext {
         }
     }
 
-    /// Gateway / BFF 会话：Bearer + `x-tenant-id` / `x-user-id` / `x-trace-id`
-    pub async fn set_gateway_context(
+    /// Install the bearer of credential `scope` with the request identity
+    /// (`x-tenant-id` / `x-user-id` / `x-trace-id`). Clients bound to the scope
+    /// ([`HttpClient::with_credential_scope`]) send it; Core HTTP never does.
+    pub async fn set_scoped_context(
         &self,
-        token: String,
+        scope: &str,
+        bearer: String,
         tenant_id: String,
         user_id: String,
         language: Option<String>,
     ) {
-        *self.gateway_token.write().await = token;
+        self.scoped_bearers
+            .write()
+            .await
+            .insert(scope.to_string(), bearer);
         *self.tenant_id.write().await = tenant_id;
         *self.user_id.write().await = user_id;
         if self.trace_id.read().await.is_empty() {
@@ -219,25 +226,21 @@ impl HttpRequestContext {
         }
     }
 
-    pub async fn clear_gateway_context(&self) {
-        *self.gateway_token.write().await = String::new();
+    /// Drop every scoped bearer and the request identity and session installed with them.
+    pub async fn clear_scoped_context(&self) {
+        self.scoped_bearers.write().await.clear();
         *self.tenant_id.write().await = String::new();
         *self.user_id.write().await = String::new();
         *self.session_id.write().await = String::new();
     }
 
-    /// Set the refresh-token session represented by the current Gateway bearer.
-    /// The Gateway forwards this as request context so device management can
-    /// distinguish this session from the account's other active sessions.
-    pub async fn set_gateway_session_id(&self, session_id: String) {
+    /// The session represented by the scoped bearers, sent as `x-session-id` so the
+    /// backend can tell this session from the account's other active sessions.
+    pub async fn set_session_id(&self, session_id: String) {
         *self.session_id.write().await = session_id.trim().to_string();
     }
 
-    pub async fn gateway_token_is_empty(&self) -> bool {
-        self.gateway_token.read().await.trim().is_empty()
-    }
-
-    /// 补齐或刷新 `x-user-id` / `x-tenant-id`（IM `login` 后 Background 社交同步依赖此字段）。
+    /// 补齐或刷新 `x-user-id` / `x-tenant-id`（IM `login` 后扩展的后台请求依赖此字段）。
     pub async fn ensure_identity(&self, user_id: &str, tenant_id: &str) {
         let uid = user_id.trim();
         let tid = if tenant_id.trim().is_empty() {
@@ -257,7 +260,7 @@ impl HttpRequestContext {
                 }
             }
         }
-        // Legacy explicitly injected Gateway contexts keep their own identity.
+        // Explicitly installed scoped contexts keep their own identity.
         if !uid.is_empty() {
             *self.user_id.write().await = uid.to_string();
         }
@@ -266,14 +269,13 @@ impl HttpRequestContext {
         }
     }
 
-    /// 从当前 Gateway/IM Bearer 解析 `sub` 并写回 `user_id`（JWT 形态：`a.b.c`）。
-    pub async fn sync_user_id_from_token(&self) {
-        let gateway_token = self.gateway_token.read().await.clone();
-        let im_token = self.core_auth.read().await.token.clone();
-        let token = if !gateway_token.trim().is_empty() {
-            gateway_token
+    /// 从 `scope` 的 Bearer（为空时用 IM Bearer）解析 `sub` 并写回 `user_id`（JWT 形态：`a.b.c`）。
+    pub async fn sync_user_id_from_token(&self, scope: Option<&str>) {
+        let scoped = self.scoped_bearer(scope).await;
+        let token = if !scoped.trim().is_empty() {
+            scoped
         } else {
-            im_token
+            self.core_auth.read().await.token.clone()
         };
         if let Some(sub) = jwt_sub_unverified(token.trim()) {
             *self.user_id.write().await = sub;
@@ -284,13 +286,21 @@ impl HttpRequestContext {
         *self.trace_id.write().await = trace_id;
     }
 
-    /// Headers for business gateway (BFF) requests: the gateway Bearer when set.
-    pub async fn build_headers(&self) -> HashMap<String, String> {
-        self.build_headers_preferring(false).await
+    async fn scoped_bearer(&self, scope: Option<&str>) -> String {
+        match scope {
+            Some(scope) => self
+                .scoped_bearers
+                .read()
+                .await
+                .get(scope)
+                .cloned()
+                .unwrap_or_default(),
+            None => String::new(),
+        }
     }
 
-    /// Headers for Core HTTP (media, presence): the IM Bearer when set. The
-    /// gateway token belongs to the business backend and Core does not accept it.
+    /// Headers for Core HTTP (media, presence): the IM Bearer when set. Scoped
+    /// bearers belong to extension backends and Core does not accept them.
     pub async fn build_core_headers(&self) -> HashMap<String, String> {
         self.core_headers_for_epoch(None).await.unwrap_or_default()
     }
@@ -324,12 +334,10 @@ impl HttpRequestContext {
         Ok(headers)
     }
 
-    async fn build_headers_preferring(&self, im_first: bool) -> HashMap<String, String> {
-        let token = if im_first {
-            self.core_auth.read().await.token.clone()
-        } else {
-            self.gateway_token.read().await.clone()
-        };
+    /// Headers for a request in credential `scope`: that scope's bearer when set,
+    /// none without a scope. Identity and session headers are shared by all scopes.
+    pub async fn build_scoped_headers(&self, scope: Option<&str>) -> HashMap<String, String> {
+        let token = self.scoped_bearer(scope).await;
         let mut tenant_id =
             crate::shared::util::normalize_tenant_id(self.tenant_id.read().await.trim());
         let mut user_id = self.user_id.read().await.trim().to_string();
@@ -358,7 +366,7 @@ impl HttpRequestContext {
         if !user_id.is_empty() {
             headers.insert("x-user-id".to_string(), user_id);
         }
-        if !im_first && !session_id.is_empty() {
+        if !session_id.is_empty() {
             headers.insert("x-session-id".to_string(), session_id);
         }
         headers
@@ -425,7 +433,8 @@ mod tests {
             .await;
         context.ensure_identity("alice", "app-a").await;
         context
-            .set_gateway_context(
+            .set_scoped_context(
+                "example",
                 "access-fixture".into(),
                 "app-a".into(),
                 "alice".into(),
@@ -559,8 +568,9 @@ mod tests {
             .set_auth_context("synthetic-im-token".into(), None)
             .await;
         context
-            .set_gateway_context(
-                "synthetic-gateway-token".into(),
+            .set_scoped_context(
+                "example",
+                "synthetic-scoped-token".into(),
                 "synthetic-app".into(),
                 "synthetic-user".into(),
                 None,
@@ -674,16 +684,15 @@ mod tests {
             .set_auth_context("synthetic-im-secret".into(), Some("en".into()))
             .await;
         context
-            .set_gateway_context(
-                "synthetic-gateway-secret".into(),
+            .set_scoped_context(
+                "example",
+                "synthetic-scoped-secret".into(),
                 "synthetic-app".into(),
                 "synthetic-user".into(),
                 None,
             )
             .await;
-        context
-            .set_gateway_session_id("synthetic-session".into())
-            .await;
+        context.set_session_id("synthetic-session".into()).await;
         let client = super::HttpClient::with_context("http://unused", context);
         let explicit = std::collections::HashMap::from([(
             "x-object-capability".into(),
@@ -876,25 +885,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clearing_gateway_context_never_falls_back_to_im_auth() {
+    async fn clearing_scoped_context_never_falls_back_to_im_auth() {
         let context = HttpRequestContext::new();
         context.set_auth_context("im-token".to_string(), None).await;
         context
-            .set_gateway_context(
-                "old-gateway-token".to_string(),
+            .set_scoped_context(
+                "example",
+                "old-scoped-token".to_string(),
                 "tenant-a".to_string(),
                 "alice".to_string(),
                 None,
             )
             .await;
-        context
-            .set_gateway_session_id("session-a".to_string())
-            .await;
+        context.set_session_id("session-a".to_string()).await;
 
-        let headers = context.build_headers().await;
+        let headers = context.build_scoped_headers(Some("example")).await;
         assert_eq!(
             headers.get("Authorization").map(String::as_str),
-            Some("Bearer old-gateway-token")
+            Some("Bearer old-scoped-token")
         );
         assert_eq!(
             headers.get("x-tenant-id").map(String::as_str),
@@ -907,7 +915,7 @@ mod tests {
         );
 
         context.ensure_identity("alice", "tenant-a").await;
-        // Core HTTP never receives the business gateway's token.
+        // Core HTTP never receives a scoped bearer.
         let core = context.build_core_headers().await;
         assert_eq!(
             core.get("Authorization").map(String::as_str),
@@ -918,9 +926,9 @@ mod tests {
             Some("tenant-a")
         );
 
-        context.clear_gateway_context().await;
+        context.clear_scoped_context().await;
 
-        let headers = context.build_headers().await;
+        let headers = context.build_scoped_headers(Some("example")).await;
         assert!(!headers.contains_key("Authorization"));
         assert_eq!(
             context
@@ -967,23 +975,26 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
-    async fn core_clients_send_the_im_token_beside_a_gateway_session() {
+    async fn core_clients_send_the_im_token_beside_a_scoped_session() {
         let context = std::sync::Arc::new(HttpRequestContext::new());
         context.set_auth_context("im-token".into(), None).await;
         context
-            .set_gateway_context(
-                "gateway-token".into(),
+            .set_scoped_context(
+                "example",
+                "scoped-token".into(),
                 "tenant-a".into(),
                 "alice".into(),
                 None,
             )
             .await;
-        for (core, expected) in [(true, "Bearer im-token"), (false, "Bearer gateway-token")] {
+        for (core, expected) in [(true, "Bearer im-token"), (false, "Bearer scoped-token")] {
             let (url, server) = authorization_of_one_request().await;
-            let mut client = super::HttpClient::with_context(url, std::sync::Arc::clone(&context));
-            if core {
-                client = client.with_core_bearer();
-            }
+            let client = super::HttpClient::with_context(url, std::sync::Arc::clone(&context));
+            let client = if core {
+                client.with_core_bearer()
+            } else {
+                client.with_credential_scope("example")
+            };
             let _: serde_json::Value = client.get("/x", None).await.expect("request");
             assert_eq!(server.await.unwrap().as_deref(), Some(expected));
         }
@@ -1084,7 +1095,7 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
-    async fn other_rejections_and_gateway_clients_are_not_renewed() {
+    async fn other_rejections_and_scoped_clients_are_not_renewed() {
         let context = std::sync::Arc::new(HttpRequestContext::new());
         context.set_auth_context("im-token".into(), None).await;
         let renewal = std::sync::Arc::new(CountingRenewal(Default::default()));
@@ -1104,7 +1115,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(server.await.unwrap().len(), 1);
-        // Business gateway clients carry their own session and never renew the Core bearer.
+        // Scoped clients carry their own session and never renew the Core bearer.
         let (url, server) = scripted_server(vec![(
             401,
             r#"{"code":401,"reason":"TOKEN_EXPIRED","message":""}"#,
@@ -1334,8 +1345,10 @@ pub struct HttpClient {
     /// 按服务路由：每次请求向选路器取接入点（REST 跟随 IM 当前接入点）并按 §3.9 重试。
     /// 没有时 `base_url` 是固定入口（显式端点：令牌签发、测试替身）。
     router: Option<super::router::HttpRouter>,
-    /// Core HTTP client: send the IM Bearer rather than the business gateway's.
+    /// Core HTTP client: send the IM Bearer rather than a scoped one.
     core_bearer: bool,
+    /// The context credential scope whose bearer this non-Core client sends.
+    credential_scope: Option<String>,
     retry_enabled: bool,
     #[cfg(not(target_arch = "wasm32"))]
     client: reqwest::Client,
@@ -1411,6 +1424,7 @@ impl HttpClient {
             credential_lease: None,
             router: None,
             core_bearer: false,
+            credential_scope: None,
             retry_enabled: true,
             #[cfg(not(target_arch = "wasm32"))]
             client,
@@ -1435,6 +1449,7 @@ impl HttpClient {
             credential_lease: None,
             router: None,
             core_bearer: false,
+            credential_scope: None,
             retry_enabled: true,
             #[cfg(not(target_arch = "wasm32"))]
             client,
@@ -1461,6 +1476,7 @@ impl HttpClient {
             credential_lease: None,
             router: None,
             core_bearer: false,
+            credential_scope: None,
             retry_enabled: true,
             client,
             tls_config_error,
@@ -1483,6 +1499,7 @@ impl HttpClient {
             credential_lease: None,
             router: None,
             core_bearer: false,
+            credential_scope: None,
             retry_enabled: true,
             client,
             tls_config_error,
@@ -1506,6 +1523,7 @@ impl HttpClient {
             credential_lease: None,
             router: Some(router),
             core_bearer: false,
+            credential_scope: None,
             retry_enabled: true,
             client,
             tls_config_error,
@@ -1567,24 +1585,33 @@ impl HttpClient {
     }
 
     /// Authenticate with the IM token: for Core HTTP endpoints sharing a request
-    /// context with a business gateway client.
+    /// context with a scoped extension client.
     pub fn with_core_bearer(mut self) -> Self {
         self.core_bearer = true;
         self.credential_lease = None;
         self
     }
 
-    /// Bind an explicitly owned Gateway session to this request client.
-    pub fn with_gateway_credentials(mut self, lease: HttpCredentialLease) -> Self {
+    /// Bind an explicitly owned credential session to this request client.
+    pub fn with_credential_lease(mut self, lease: HttpCredentialLease) -> Self {
         self.credential_lease = Some(lease);
         self.core_bearer = false;
         self
     }
 
     /// Rebind routing without inheriting the transport's authentication lifecycle.
-    pub fn with_gateway_context(mut self, context: Arc<HttpRequestContext>) -> Self {
+    pub fn with_request_context(mut self, context: Arc<HttpRequestContext>) -> Self {
         self.context = Some(context);
         self.credential_lease = None;
+        self.core_bearer = false;
+        self.credential_scope = None;
+        self
+    }
+
+    /// Send the context bearer of credential `scope` (installed with
+    /// [`HttpRequestContext::set_scoped_context`]) instead of none.
+    pub fn with_credential_scope(mut self, scope: impl Into<String>) -> Self {
+        self.credential_scope = Some(scope.into());
         self.core_bearer = false;
         self
     }
@@ -1606,6 +1633,7 @@ impl HttpClient {
         client.context = Some(context);
         client.core_bearer = true;
         client.credential_lease = None;
+        client.credential_scope = None;
         client
     }
     pub(crate) fn anonymous_clone(&self) -> Self {
@@ -1613,6 +1641,7 @@ impl HttpClient {
         client.context = None;
         client.credential_lease = None;
         client.core_bearer = false;
+        client.credential_scope = None;
         client
     }
 
@@ -1634,7 +1663,9 @@ impl HttpClient {
         if self.core_bearer {
             context.build_core_headers().await
         } else {
-            context.build_headers().await
+            context
+                .build_scoped_headers(self.credential_scope.as_deref())
+                .await
         }
     }
 
@@ -1885,11 +1916,12 @@ impl HttpClient {
         }
     }
 
-    /// 发 Social Gateway 请求前补齐身份（先写显式 user/tenant，再从 JWT 回填）。
+    /// 发扩展后端请求前补齐身份（先写显式 user/tenant，再从本客户端凭据域的 JWT 回填）。
     pub async fn ensure_request_identity(&self, user_id: &str, tenant_id: &str) {
         if let Some(ctx) = &self.context {
             ctx.ensure_identity(user_id, tenant_id).await;
-            ctx.sync_user_id_from_token().await;
+            ctx.sync_user_id_from_token(self.credential_scope.as_deref())
+                .await;
         }
     }
 

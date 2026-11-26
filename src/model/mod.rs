@@ -20,6 +20,9 @@ pub use crate::content::{
     derive_from_json_str, derive_from_value, normalize_from_doc_json, normalize_from_html,
     normalize_from_markdown, validate_doc_json,
 };
+pub use crate::domain::conversation::{
+    USER_INBOX_PREFIX, is_user_inbox, user_inbox_id, user_inbox_owner,
+};
 pub use crate::domain::{
     MediaCacheEntryVo, MediaCacheStatsVo, total_unread, unread_counted_in_total,
 };

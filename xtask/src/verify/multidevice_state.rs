@@ -124,8 +124,9 @@ pub(crate) fn verify_multidevice_state_gate(root: &Path) -> Result<()> {
     );
     require_contains_all(
         &mut errors,
-        &monorepo_root
-            .join("flare-im-core-server/flare-signaling/gateway/src/domain/service/sync_service.rs"),
+        &monorepo_root.join(
+            "flare-im-core-server/flare-signaling/gateway/src/domain/service/sync_service.rs",
+        ),
         "signaling sync gateway settings forwarding",
         &["SyncPayload::ConversationUserSettings"],
     );

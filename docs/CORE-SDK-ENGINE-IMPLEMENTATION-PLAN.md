@@ -320,6 +320,9 @@ Native 与生产浏览器均由 prepare 选择租户和账号。开库前记录�
 | 3.1 扩展上下文 | Core 已移除不受授权约束的 `extension_context()`；Social 改用 `extension_context_for("social")` | 停用 Social 扩展后旧上下文写入被拒，已放行写入排空后才返回 |
 | 3.1 扩展注册 | Core 已移除 builder 的 `add_extension_lifecycle_arc`、`add_extension_migration_arc`；生命周期与迁移须随 `SdkExtension` 声明注册，回调拿到本 namespace 的授权上下文，扩展停用时跳过 | Social 的生命周期回调在停用后不再执行 |
 | 登录存储 | `LoginDbKind::Provided` 改为装箱，构造统一用 `LoginDbKind::provided(stores)` | Social 与示例登录路径编译通过 |
+| 用户收件箱 | Core 两端把无会话通知的收件箱统一为 `inbox:<user_id>`（引擎 `model::user_inbox_id` / `is_user_inbox`，服务端 contracts `user_inbox_conversation_id`）；业务契约与 IM SDK 已改投 `inbox:` | 好友申请、入群申请等收件箱通知在线与离线都能收到，且不进会话列表 |
+| 按作用域的 HTTP 凭证 | `gateway_token` 删除，改为 `set_scoped_context(scope, …)` 与 `HttpClient::with_credential_scope(scope)`；IM SDK 已以扩展 namespace 为作用域接入 | 业务网关请求带业务令牌，Core 请求不带 |
+| 部署配置 | Core 源码不再写死业务服务名与业务类型：部署须设 `FLARE_TRUSTED_INTEGRATION_PRINCIPALS`（业务集成主体）与 `FLARE_EXTERNAL_ROSTER_BUSINESS_TYPES`（外部成员策略的会话类型），业务 Hook 注册文件由业务仓 `deploy/core-hooks.toml` 提供；flare-im-deploy 单机模板已设置 | 撤回、清历史、吊销会话、集成系统消息在设置后放行，未设置时拒绝 |
 
 ### 阶段 2–3 编码记录 · 不依赖 Social 的部分
 

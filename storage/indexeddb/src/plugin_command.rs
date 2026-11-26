@@ -1,5 +1,5 @@
 //! Browser-owned, atomic durable commands. This is independent of optional
-//! message-cache host callbacks: a Social WASM host must be safe as well.
+//! message-cache host callbacks: a business-SDK WASM host must be safe as well.
 use async_trait::async_trait;
 use flare_im_core_sdk::spi::{
     PluginCommand, PluginCommandRecord, PluginCommandScope, PluginCommandStore,

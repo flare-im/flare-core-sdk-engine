@@ -170,7 +170,7 @@ impl ConversationCommandUseCase {
         // 否则服务端会话只含先动作的一方,首发方的消息读扩散时跳过对端 → 单聊单向不达(对端收不到)。
         // Explicit opening is also a request to restore this user's hidden single
         // conversation. A cached establishment flag cannot represent current
-        // server visibility after deleting/blocking/re-adding a friend.
+        // server visibility after the conversation was hidden and reopened elsewhere.
         // Failure still falls back to first-message roster establishment.
         if *conversation_type == ConversationType::Single
             && let Some(sync) = &self.settings_sync

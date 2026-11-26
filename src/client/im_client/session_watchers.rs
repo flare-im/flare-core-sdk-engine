@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::FlareError;
-use crate::client::token_provider::{GatewayTokenProvider, jwt_exp_secs};
+use crate::client::token_provider::{AccessTokenIssuer, jwt_exp_secs};
 use crate::kernel::SyncRunContext;
 use crate::kernel::event::{
     ConnectionEvent, ConnectionEventType, EventBus, SdkEvent, SdkEventType,
@@ -119,7 +119,7 @@ impl IMClient {
                     .clone()
                     .filter(|token| !token.trim().is_empty()),
                 g.current_user_id.clone(),
-                Self::gateway_token_provider_from_inner(&g),
+                Self::access_token_issuer_from_inner(&g),
                 server_clock_of(&g),
             )
         };
@@ -171,7 +171,7 @@ impl IMClient {
         &self,
         generation: u64,
         user_id: &str,
-        provider: &GatewayTokenProvider,
+        provider: &AccessTokenIssuer,
     ) -> ConnectToken {
         let issued = match provider.issue(user_id).await {
             Ok(issued) => issued,
@@ -208,7 +208,7 @@ impl IMClient {
         &self,
         generation: u64,
         user_id: &str,
-        provider: &GatewayTokenProvider,
+        provider: &AccessTokenIssuer,
     ) -> Option<ConnectToken> {
         let vault = {
             let g = self.inner.read().await;
@@ -261,7 +261,7 @@ impl IMClient {
     ) -> Option<String> {
         let sdk_managed = Self::sdk_auth_from_inner(&*self.inner.read().await).is_some();
         if sdk_managed {
-            let provider = self.gateway_token_provider().await?;
+            let provider = self.access_token_issuer().await?;
             return match self.refresh_tokens_via_gateway(generation, &provider).await {
                 Ok(issued) if issued.token != rejected => Some(issued.token),
                 Ok(_) => None,
@@ -312,9 +312,9 @@ impl IMClient {
     }
 
     /// SDK 托管形态下的网关签发器；应用托管（显式 token）时为 `None`。
-    pub(super) async fn gateway_token_provider(&self) -> Option<GatewayTokenProvider> {
+    pub(super) async fn access_token_issuer(&self) -> Option<AccessTokenIssuer> {
         let g = self.inner.read().await;
-        Self::gateway_token_provider_from_inner(&g)
+        Self::access_token_issuer_from_inner(&g)
     }
 
     /// SDK 托管连接令牌的配置（构建期配置叠 init 覆盖项）；`None` 表示令牌由宿主给。
@@ -329,9 +329,9 @@ impl IMClient {
     }
 
     /// 连接令牌签发与续期使用当前 `endpoints.baseUrl` 和部署的信任根。
-    pub(super) fn gateway_token_provider_from_inner(
+    pub(super) fn access_token_issuer_from_inner(
         g: &super::IMClientInner,
-    ) -> Option<GatewayTokenProvider> {
+    ) -> Option<AccessTokenIssuer> {
         use crate::infrastructure::transport::http::router::HttpRouter;
         use crate::infrastructure::transport::http::{HttpClient, HttpRequestContext};
 
@@ -359,7 +359,7 @@ impl IMClient {
         };
         #[cfg(target_arch = "wasm32")]
         let http = HttpClient::routed(router, context);
-        Some(GatewayTokenProvider::new(
+        Some(AccessTokenIssuer::new(
             http,
             path,
             Some(Self::resolve_tenant_id(g)),
@@ -379,7 +379,7 @@ impl IMClient {
     pub(super) async fn refresh_tokens_via_gateway(
         &self,
         generation: u64,
-        provider: &GatewayTokenProvider,
+        provider: &AccessTokenIssuer,
     ) -> Result<crate::client::token_provider::IssuedAccessToken> {
         let bearer = {
             let g = self.inner.read().await;
@@ -448,7 +448,7 @@ impl IMClient {
                 }
                 let (provider, token, lead_secs, clock) = {
                     let g = c.inner.read().await;
-                    let provider = Self::gateway_token_provider_from_inner(&g);
+                    let provider = Self::access_token_issuer_from_inner(&g);
                     let lead = Self::sdk_auth_from_inner(&g)
                         .map(|auth| auth.refresh_lead().as_secs())
                         .unwrap_or(crate::client::config::SdkAuthConfig::DEFAULT_REFRESH_LEAD_SECS);

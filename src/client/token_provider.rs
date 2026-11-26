@@ -12,8 +12,8 @@ use crate::shared::error::{ErrorCode, FlareError, Result};
 
 /// 宿主托管令牌时的连接令牌续期回调。
 ///
-/// 核心自己只会向 SDK 托管的签发端点换令牌（[`GatewayTokenProvider`]，要配
-/// `auth`）。令牌由宿主递进来时（例如社交网关连同 IM 连接令牌一起签发），
+/// 核心自己只会向 SDK 托管的签发端点换令牌（[`AccessTokenIssuer`]，要配
+/// `auth`）。令牌由宿主递进来时（例如业务后端连同 IM 连接令牌一起签发），
 /// 核心没有渠道换新：连接一断，重连就一直拿着那枚过期令牌去撞网关，网关回通用的鉴权失败，
 /// 核心只记日志、不发任何事件，宿主也就无从知道该续期了。实测 web 端因此两个多小时重连
 /// 三百多次、始终连不上。
@@ -82,22 +82,22 @@ struct IssueBody<'a> {
 /// 请求经按服务路由的 Core API 客户端发出（换接入点与重试照 §3.9），基址来自接入配置；这里只有路径：
 /// 签发是配置的路径（默认 `/api/v1/auth/tokens`），换新是它后面加 `/refresh`。
 #[derive(Clone)]
-pub struct GatewayTokenProvider {
+pub struct AccessTokenIssuer {
     issue_path: String,
     tenant_id: Option<String>,
     device_id: Option<String>,
     http: HttpClient,
 }
 
-impl std::fmt::Debug for GatewayTokenProvider {
+impl std::fmt::Debug for AccessTokenIssuer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GatewayTokenProvider")
+        f.debug_struct("AccessTokenIssuer")
             .field("issue_path", &self.issue_path)
             .finish()
     }
 }
 
-impl GatewayTokenProvider {
+impl AccessTokenIssuer {
     /// `http` 是 Core API 的路由客户端，不该带会话鉴权头：签发与换新各自给出凭据。
     pub fn new(
         http: HttpClient,
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn refresh_follows_the_issue_path() {
-        let p = GatewayTokenProvider::new(
+        let p = AccessTokenIssuer::new(
             HttpClient::new(""),
             crate::client::config::SdkAuthConfig::DEFAULT_TOKEN_PATH,
             None,

@@ -329,10 +329,13 @@ impl Dispatcher {
                     Some(flare_proto::common::realtime_control_packet::Payload::Custom(data))
                         if data.r#type == USER_SETTINGS_CHANGED_TYPE =>
                     {
-                        // 只认自己 sync 收件箱上的这一帧：网关丢弃客户端发往 `sync:` 收件箱的实时帧，
+                        // 只认自己用户收件箱上的这一帧：网关丢弃客户端发往用户收件箱的实时帧，
                         // 它只可能来自服务端。信号只给引擎，不作为扩展事件外发。
                         let user_id = self.current_user_id.read().await.clone();
-                        if !user_id.is_empty() && conversation_id == format!("sync:{user_id}") {
+                        if !user_id.is_empty()
+                            && crate::domain::conversation::user_inbox_owner(&conversation_id)
+                                == Some(user_id.as_str())
+                        {
                             self.notification_pipeline
                                 .user_settings_changed(&data.payload);
                         }

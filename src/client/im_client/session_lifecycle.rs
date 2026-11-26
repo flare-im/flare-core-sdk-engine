@@ -231,7 +231,7 @@ impl IMClient {
         }
         if let Some(context) = http_request_context.as_ref() {
             context.set_auth_context(String::new(), None).await;
-            context.clear_gateway_context().await;
+            context.clear_scoped_context().await;
         }
         let result = match engine {
             Some(mut engine) => engine.disconnect().await,
@@ -341,7 +341,7 @@ impl IMClient {
         }
         if let Some(context) = http_request_context.as_ref() {
             context.set_auth_context(String::new(), None).await;
-            context.clear_gateway_context().await;
+            context.clear_scoped_context().await;
         }
         if let Some(mut e) = engine {
             match timeout(DISCONNECT_TIMEOUT, e.disconnect()).await {
@@ -667,7 +667,7 @@ impl IMClient {
                 return Err(Self::not_connected());
             }
             if let Some(context) = http_request_context.as_ref() {
-                context.clear_gateway_context().await;
+                context.clear_scoped_context().await;
                 context
                     .set_auth_context(token.clone().unwrap_or_default(), None)
                     .await;
@@ -721,7 +721,7 @@ impl IMClient {
         self.reconcile_push_in_background();
         if let Some(context) = http_request_context.as_ref() {
             context.set_auth_context(String::new(), None).await;
-            context.clear_gateway_context().await;
+            context.clear_scoped_context().await;
         }
         if let Some(mut e) = engine {
             e.disconnect().await?;

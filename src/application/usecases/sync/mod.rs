@@ -748,10 +748,9 @@ fn should_sync_messages_for_unread_delta(previous_unread: u32, next_unread: u32)
     next_unread > previous_unread
 }
 
-/// Social SyncSignal 内部路由会话；不得进入本地会话列表。
+/// 空 id 与用户收件箱不是会话；不得进入本地会话列表。
 fn is_hidden_internal_conversation(conversation_id: &str) -> bool {
-    let conversation_id = conversation_id.trim();
-    conversation_id.is_empty() || conversation_id.starts_with("sync:")
+    conversation_id.trim().is_empty() || crate::domain::conversation::is_user_inbox(conversation_id)
 }
 
 fn now_ms() -> u64 {
@@ -825,7 +824,7 @@ mod tests {
     fn hidden_conversation_filter_rejects_blank_and_internal_ids() {
         assert!(is_hidden_internal_conversation(""));
         assert!(is_hidden_internal_conversation("   "));
-        assert!(is_hidden_internal_conversation("sync:conversation"));
+        assert!(is_hidden_internal_conversation("inbox:user-1"));
         assert!(!is_hidden_internal_conversation("conv-1"));
     }
 }

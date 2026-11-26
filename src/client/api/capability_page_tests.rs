@@ -293,7 +293,13 @@ async fn file_upload_uses_declared_purpose_private_put_and_strict_completed_refe
         .set_auth_context("core-test-token".into(), None)
         .await;
     context
-        .set_gateway_context("gateway-test-token".into(), "201".into(), "u1".into(), None)
+        .set_scoped_context(
+            "example",
+            "scoped-test-token".into(),
+            "201".into(),
+            "u1".into(),
+            None,
+        )
         .await;
     f.api.http = Some(HttpClient::with_context(base, context));
     f.answer(

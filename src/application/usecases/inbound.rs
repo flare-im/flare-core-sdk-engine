@@ -91,7 +91,7 @@ impl ApplyInbound {
     }
 }
 
-/// Core-only receive: no profile provider, no Social, no plugins. Single chat, group,
+/// Core-only receive: no profile provider, no business extension, no plugins. Single chat, group,
 /// quote and forward land through the one inbound path with the same unread rules.
 #[cfg(test)]
 mod core_only_tests {
