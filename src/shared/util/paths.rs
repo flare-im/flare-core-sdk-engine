@@ -138,6 +138,9 @@ mod tests {
         let path = parse_data_url_to_path("file:///tmp/Application%20Support/flare_im_core_sdk")
             .expect("parse file url");
 
-        assert_eq!(path, PathBuf::from("/tmp/Application Support/flare_im_core_sdk"));
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/Application Support/flare_im_core_sdk")
+        );
     }
 }
