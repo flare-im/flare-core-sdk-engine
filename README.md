@@ -67,7 +67,16 @@ ABI / IPC / language boundary.
 
 ![Target engine boundary: callers enter through the stable API, the extension contract and the generated contract; the engine holds Message, Conversation, Media and Extension over a shared runtime; storage adapters and bindings sit behind ports](docs/assets/engine-boundary.png)
 
-The Social SDK, plugin hosts, the commerce runtime and applications stay outside the engine. They hold no repository, no global EventBus publishing right and no transport credential. The engine accepts commands locally, works offline and converges recoverably; the server remains the authority for membership, visibility and final ordering.
+The Flare IM SDK, plugin hosts, the commerce runtime and applications stay outside the engine. They hold no repository, no global EventBus publishing right and no transport credential. The engine accepts commands locally, works offline and converges recoverably; the server remains the authority for membership, visibility and final ordering.
+
+Every change to the engine keeps to these rules:
+
+- **No business vocabulary.** No friend, group role, business event type, notification text or sync domain lives in engine source. Business packs register them through extension points.
+- **Extensions write only through a granted context.** `extension_context_for(namespace)` is the only write path; namespaces may not overlap, and lifecycles, migrations and codecs stay under their own namespace.
+- **One of each per app.** One `IMClient`, one connection, one account database, one event bus. An extension opens no connection and creates no private tables; its state lives in extension record partitions.
+- **Bindings translate only.** Every API change starts in `bindings/contract` and is regenerated for C, WASM, Tauri and the platform packages.
+
+The business layer built on these extension points is described in the [Flare IM SDK target boundary](https://github.com/flare-im/flare-im-sdk/blob/dev/docs/TARGET-BOUNDARY.md).
 
 ## Current production modules
 

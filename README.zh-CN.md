@@ -60,7 +60,16 @@ cd flare-im-core-sdk && cargo check
 
 ![目标引擎边界：调用方经稳定 API、扩展契约与生成契约进入；Engine 在共享运行时之上持有 Message、Conversation、Media 与 Extension；存储适配与绑定依附端口](docs/assets/engine-boundary.zh-CN.png)
 
-Social SDK、插件宿主、商业 runtime 与应用都在 Engine 之外，不持有 repository、全量 EventBus 发布权或 transport 凭证。Engine 负责本地接受、离线处理和可恢复收敛，成员资格、可见性与最终顺序以服务端为准。
+Flare IM SDK、插件宿主、商业 runtime 与应用都在 Engine 之外，不持有 repository、全量 EventBus 发布权或 transport 凭证。Engine 负责本地接受、离线处理和可恢复收敛，成员资格、可见性与最终顺序以服务端为准。
+
+对 Engine 的每一处改动都遵守下面的规则：
+
+- **不含业务名词**：好友、群角色、业务事件类型、通知文案、同步域都不进 Engine 源码，由业务扩展包经扩展点注册。
+- **扩展只经授权上下文写入**：`extension_context_for(namespace)` 是唯一写入途径；namespace 不得互为前缀，生命周期、迁移与 codec 落在自己的 namespace 下。
+- **每个应用各只有一个**：一个 `IMClient`、一条连接、一个账号库、一条事件总线。扩展不开连接、不建私有表，状态放在扩展记录分区。
+- **绑定只做翻译**：每个 API 变更从 `bindings/contract` 开始，再为 C、WASM、Tauri 与各平台包重新生成。
+
+建在这些扩展点上的业务层见 [Flare IM SDK 目标边界](https://github.com/flare-im/flare-im-sdk/blob/dev/docs/TARGET-BOUNDARY.md)。
 
 ## 当前生产模块
 
