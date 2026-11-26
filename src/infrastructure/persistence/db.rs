@@ -28,6 +28,8 @@ pub struct StoreProvider {
     pub user_file_download_store: Option<Arc<dyn UserFileDownloadStore>>,
     pub user_profiles_reader: Option<Arc<dyn UserReader>>,
     pub user_profiles_writer: Option<Arc<dyn UserWriter>>,
+    /// Record backend for partitions extensions declare, in the account's own storage.
+    pub extension_records: Option<Arc<dyn crate::extension::records::RecordBackend>>,
 }
 
 impl StoreProvider {
@@ -120,6 +122,7 @@ impl Clone for StoreProvider {
             user_file_download_store: self.user_file_download_store.clone(),
             user_profiles_reader: self.user_profiles_reader.clone(),
             user_profiles_writer: self.user_profiles_writer.clone(),
+            extension_records: self.extension_records.clone(),
         }
     }
 }

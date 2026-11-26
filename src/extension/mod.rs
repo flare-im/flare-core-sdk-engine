@@ -46,6 +46,7 @@ pub struct ExtensionRegistry {
     pub conversation_projection_sources: Vec<Arc<dyn ConversationProjectionSource>>,
     pub content_codecs: Vec<Arc<dyn ContentCodec>>,
     pub migrations: Vec<Arc<dyn ExtensionMigration>>,
+    pub partitions: Vec<records::PartitionDecl>,
 }
 
 impl ExtensionRegistry {
@@ -91,6 +92,12 @@ impl ExtensionRegistry {
     pub fn add_migration(&mut self, migration: Arc<dyn ExtensionMigration>) {
         self.migrations.push(migration);
     }
+
+    /// Declares a record partition under this extension's own namespace. Its contexts
+    /// open it with [`ExtensionContext::partition`]; Core supplies the backend.
+    pub fn add_partition(&mut self, partition: records::PartitionDecl) {
+        self.partitions.push(partition);
+    }
 }
 
 /// Installation identity within one host. The descriptor version describes
@@ -99,6 +106,8 @@ impl ExtensionRegistry {
 pub struct ExtensionDescriptor {
     pub namespace: String,
     pub contract_version: u32,
+    /// Partitions the extension declared at install time, all under `namespace`.
+    pub partitions: Vec<records::PartitionDecl>,
 }
 
 impl ExtensionDescriptor {
@@ -127,6 +136,7 @@ impl ExtensionDescriptor {
         Ok(Self {
             namespace: ns.into(),
             contract_version: 1,
+            partitions: Vec::new(),
         })
     }
 }
@@ -339,17 +349,10 @@ impl ExtensionRuntime {
     async fn notify(&self, scope: &LifecycleScope, event: LifecycleEvent) -> Result<()> {
         let results = futures::future::join_all(self.lifecycles.iter().map(|hook| async move {
             // Disabled: the extension may not act for this account until re-enabled.
-            let Ok(grant) = self.projection_grant(hook.namespace()) else {
+            let Ok(context) = self.granted_context(hook.namespace(), scope) else {
                 return Ok(());
             };
-            let context = ExtensionLifecycleContext::new(
-                ExtensionContext::from_core_granted(
-                    scope.stores.clone(),
-                    scope.bus.clone(),
-                    Some(grant),
-                ),
-                scope.current_user_id.clone(),
-            );
+            let context = ExtensionLifecycleContext::new(context, scope.current_user_id.clone());
             let context = &context;
             let work = match event {
                 LifecycleEvent::Login => hook.on_login(context),
@@ -379,18 +382,89 @@ impl ExtensionRuntime {
         results.into_iter().collect()
     }
 
-    /// Applies each namespace's registered migrations above its recorded version, in
-    /// order. A failure stops that namespace at its last applied version so the next
-    /// login retries it; migrations must therefore be idempotent. Other namespaces and
-    /// the IM session continue.
-    pub(crate) async fn run_migrations(&self, stores: &StoreProvider, bus: &EventBus) {
-        let mut namespaces: Vec<&str> = self.migrations.iter().map(|m| m.namespace()).collect();
+    /// A context granted to `namespace`; Err while the extension is disabled.
+    pub(crate) fn granted_context(
+        &self,
+        namespace: &str,
+        scope: &LifecycleScope,
+    ) -> Result<ExtensionContext> {
+        let grant = self.projection_grant(namespace)?;
+        let records = match (&scope.records, &scope.current_user_id) {
+            (Some(account), Some(user)) => Some(PartitionSource {
+                backend: scope.stores.extension_records.clone(),
+                scope: records::RecordScope {
+                    tenant: account.tenant.clone(),
+                    user: user.clone(),
+                    namespace: namespace.to_owned(),
+                    partition: String::new(),
+                },
+                declared: self
+                    .descriptors
+                    .iter()
+                    .find(|d| d.namespace == namespace)
+                    .map(|d| d.partitions.clone())
+                    .unwrap_or_default(),
+                session: account.session.clone(),
+                grant: grant.clone(),
+            }),
+            _ => None,
+        };
+        let mut context = ExtensionContext::from_core_granted(
+            scope.stores.clone(),
+            scope.bus.clone(),
+            Some(grant),
+        );
+        context.records = records;
+        Ok(context)
+    }
+
+    pub(crate) fn has_migrations(&self) -> bool {
+        !self.migrations.is_empty() || self.descriptors.iter().any(|d| !d.partitions.is_empty())
+    }
+
+    /// First rewrites each declared writable partition whose schema version increased,
+    /// then applies the namespace's registered migrations above its recorded version, in
+    /// order. A failure stops that namespace (the rewrite keeps its bookmark, a migration
+    /// its last applied version) so the next login resumes it; migrations must therefore
+    /// be idempotent. Other namespaces and the IM session continue.
+    pub(crate) async fn run_migrations(&self, scope: &LifecycleScope) {
+        let stores = &scope.stores;
+        let mut namespaces: Vec<&str> = self
+            .migrations
+            .iter()
+            .map(|m| m.namespace())
+            .chain(
+                self.descriptors
+                    .iter()
+                    .filter(|d| !d.partitions.is_empty())
+                    .map(|d| d.namespace.as_str()),
+            )
+            .collect();
         namespaces.sort_unstable();
         namespaces.dedup();
-        for namespace in namespaces {
-            let Ok(grant) = self.projection_grant(namespace) else {
+        'namespaces: for namespace in namespaces {
+            let Ok(context) = self.granted_context(namespace, scope) else {
                 continue; // disabled or undeclared: nothing may write on its behalf
             };
+            let declared = context
+                .records
+                .as_ref()
+                .map(|r| r.declared.clone())
+                .unwrap_or_default();
+            for decl in declared
+                .iter()
+                .filter(|d| d.access == records::RecordAccess::Write)
+            {
+                let work = async {
+                    let partition = context.partition(&decl.name).await?;
+                    while !partition.migrate_step(256).await? {}
+                    Ok::<_, FlareError>(())
+                };
+                if let Some(reason) = guarded(work, std::time::Duration::from_secs(30)).await {
+                    tracing::warn!(target = "flare_sdk.extension", namespace, partition = %decl.name, reason = %reason, "extension partition rewrite stopped");
+                    continue 'namespaces;
+                }
+            }
             let key = format!("extension.migration.{namespace}");
             let mut applied = match stores.cursors.get_raw(&key).await {
                 Ok(value) => value.and_then(|v| v.parse::<u32>().ok()).unwrap_or(0),
@@ -405,21 +479,9 @@ impl ExtensionRuntime {
                 .filter(|m| m.namespace() == namespace && m.version() > applied)
                 .collect();
             pending.sort_by_key(|m| m.version());
-            let context =
-                ExtensionContext::from_core_granted(stores.clone(), bus.clone(), Some(grant));
             for migration in pending {
-                use futures::FutureExt;
-                let work = std::panic::AssertUnwindSafe(migration.migrate(&context)).catch_unwind();
-                let outcome =
-                    crate::shared::util::time::timeout(std::time::Duration::from_secs(30), work)
-                        .await;
-                let failure = match outcome {
-                    Ok(Ok(Ok(()))) => None,
-                    Ok(Ok(Err(err))) => Some(err.to_string()),
-                    Ok(Err(_)) => Some("panicked".to_owned()),
-                    Err(_) => Some("timed out".to_owned()),
-                };
-                if let Some(reason) = failure {
+                let work = migration.migrate(&context);
+                if let Some(reason) = guarded(work, std::time::Duration::from_secs(30)).await {
                     tracing::warn!(target = "flare_sdk.extension", namespace, version = migration.version(), reason = %reason, "extension migration stopped");
                     break;
                 }
@@ -443,6 +505,21 @@ impl ExtensionRuntime {
     }
     pub(crate) async fn notify_logout(&self, scope: &LifecycleScope) -> Result<()> {
         self.notify(scope, LifecycleEvent::Logout).await
+    }
+}
+
+/// Runs extension work with a timeout and panic guard; Some(reason) when it did not succeed.
+async fn guarded(
+    work: impl std::future::Future<Output = Result<()>> + Send,
+    limit: std::time::Duration,
+) -> Option<String> {
+    use futures::FutureExt;
+    let work = std::panic::AssertUnwindSafe(work).catch_unwind();
+    match crate::shared::util::time::timeout(limit, work).await {
+        Ok(Ok(Ok(()))) => None,
+        Ok(Ok(Err(err))) => Some(err.to_string()),
+        Ok(Err(_)) => Some("panicked".to_owned()),
+        Err(_) => Some("timed out".to_owned()),
     }
 }
 
@@ -525,11 +602,67 @@ pub trait ExtensionStore: Send + Sync {
 pub struct ExtensionContext {
     store: Arc<dyn ExtensionStore>,
     bus: EventBus,
+    records: Option<PartitionSource>,
+}
+
+/// What a granted context needs to open its extension's declared partitions.
+#[derive(Clone)]
+pub(crate) struct PartitionSource {
+    pub(crate) backend: Option<Arc<dyn records::RecordBackend>>,
+    /// The account and namespace; `partition` is filled per open.
+    pub(crate) scope: records::RecordScope,
+    pub(crate) declared: Vec<records::PartitionDecl>,
+    pub(crate) session: crate::client::im_client::SessionEndWatch,
+    pub(crate) grant: ProjectionGrant,
 }
 
 impl ExtensionContext {
     pub fn new(store: Arc<dyn ExtensionStore>, bus: EventBus) -> Self {
-        Self { store, bus }
+        Self {
+            store,
+            bus,
+            records: None,
+        }
+    }
+
+    /// Opens a partition this extension declared, on the account's record backend, with
+    /// the declared schema and access. Its writes stop once the extension is disabled or
+    /// the session ends. Opening a newer schema installs it and starts the rewrite Core
+    /// finishes at login.
+    pub async fn partition(&self, name: &str) -> Result<records::ExtensionPartition> {
+        let source = self.records.as_ref().ok_or_else(|| {
+            FlareError::localized(
+                ErrorCode::NotConnected,
+                "no account for extension partitions",
+            )
+        })?;
+        let decl = source
+            .declared
+            .iter()
+            .find(|d| d.name == name)
+            .ok_or_else(|| {
+                FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    "undeclared extension partition",
+                )
+            })?;
+        let backend = source.backend.clone().ok_or_else(|| {
+            FlareError::localized(
+                ErrorCode::ConfigurationError,
+                "account store has no extension record backend",
+            )
+        })?;
+        let mut scope = source.scope.clone();
+        scope.partition = decl.name.clone();
+        records::ExtensionPartition::open(
+            backend,
+            scope,
+            decl.schema.clone(),
+            source.session.clone(),
+            decl.access,
+            source.grant.clone(),
+        )
+        .await
     }
 
     /// Ungranted, for tests that drive the store directly.
@@ -591,6 +724,14 @@ pub struct LifecycleScope {
     pub(crate) stores: StoreProvider,
     pub(crate) bus: EventBus,
     pub(crate) current_user_id: Option<String>,
+    /// The signed-in session partitions are opened for; None outside a session.
+    pub(crate) records: Option<AccountRecords>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AccountRecords {
+    pub(crate) tenant: String,
+    pub(crate) session: crate::client::im_client::SessionEndWatch,
 }
 
 impl LifecycleScope {
@@ -620,6 +761,11 @@ impl ExtensionLifecycleContext {
 
     pub fn bus(&self) -> EventBus {
         self.extension_context.bus()
+    }
+
+    /// See [`ExtensionContext::partition`].
+    pub async fn partition(&self, name: &str) -> Result<records::ExtensionPartition> {
+        self.extension_context.partition(name).await
     }
 
     pub fn current_user_id(&self) -> Option<&str> {
@@ -920,11 +1066,13 @@ mod tests {
         .with_descriptors(vec![ExtensionDescriptor {
             namespace: "test.lifecycle".into(),
             contract_version: 1,
+            partitions: Vec::new(),
         }]);
         let context = LifecycleScope {
             stores: in_memory_empty_im_provider(),
             bus: EventBus::new(),
             current_user_id: Some("u1".to_string()),
+            records: None,
         };
 
         runtime.notify_login(&context).await.unwrap();

@@ -78,8 +78,9 @@ pub use metrics::{
 };
 
 pub use crate::extension::records::{
-    CheckpointUpdate, ExtensionPartition, ExtensionRecord, FieldType, PartitionState, RecordAccess,
-    RecordBackend, RecordSchema, RecordScope,
+    CheckpointUpdate, CheckpointWrite, ExtensionPartition, ExtensionRecord, FieldType,
+    PartitionBatch, PartitionDecl, PartitionState, RecordAccess, RecordBackend, RecordSchema,
+    RecordScope, RecordWrite,
 };
 
 pub use crate::extension::committed::{CommitNotice, CommitSubscription, CommittedMessage};

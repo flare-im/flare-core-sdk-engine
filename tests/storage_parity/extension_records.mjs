@@ -1,6 +1,7 @@
 // The IndexedDB extension-record backend in a real browser: installed-schema CAS, stale
-// schema writers rejected inside the transaction, scan order equal to SQLite BINARY
-// (UTF-8 bytes), index lookups and namespace purge. Run: node tests/storage_parity/extension_records.mjs
+// schema writers rejected inside the transaction, batch commits across partitions that
+// land whole or not at all, scan order equal to SQLite BINARY (UTF-8 bytes), index
+// lookups and namespace purge. Run: node tests/storage_parity/extension_records.mjs
 import assert from 'node:assert/strict';
 import {once} from 'node:events';
 import {readFile} from 'node:fs/promises';
@@ -35,8 +36,10 @@ try {
       catch (error) { return {error: String(error.message)}; }
     };
     const record = (id, schemaVersion) => ({id, revision: 1, schema_version: schemaVersion, fields: {label: id}});
-    const commit = (s, id, schemaVersion, expected = 0) => call(s, {op: 'commit', id, expected, schemaVersion,
-      recordJson: JSON.stringify(record(id, schemaVersion)), indexes: {label: JSON.stringify(id)}, checkpoint: null});
+    const row = (s, id, schemaVersion, expected = 0) => ({scope: s, id, expected, schemaVersion,
+      recordJson: JSON.stringify(record(id, schemaVersion)), indexes: {label: JSON.stringify(id)}});
+    const batch = (rows, checkpoints = []) => call(rows[0]?.scope ?? checkpoints[0].scope, {op: 'commit', rows, checkpoints});
+    const commit = (s, id, schemaVersion, expected = 0) => batch([row(s, id, schemaVersion, expected)]);
     const v1 = {schema_version: 1, migrating_after: null};
     const v2 = {schema_version: 2, migrating_after: ''};
     const out = {};
@@ -46,6 +49,13 @@ try {
     out.commits = [];
     for (const id of ids) out.commits.push(await commit(scope, id, 1));
     out.duplicate = await commit(scope, 'a', 1);
+    const side = {...scope, partition: 'side'};
+    await call(side, {op: 'install', expected: null, next: v1});
+    out.batch = await batch([row(side, 's1', 1)], [{scope: side, expected: null, next: 'e1'}]);
+    // A later row whose revision moved rolls back the earlier row and the checkpoint.
+    out.staleRow = await batch([row(side, 's2', 1), row(scope, 'a', 1)], [{scope: side, expected: 'e1', next: 'e2'}]);
+    out.staleCheckpoint = await batch([row(side, 's3', 1)], [{scope: side, expected: null, next: 'e3'}]);
+    out.afterStale = [await call(side, {op: 'scan', after: '', limit: 10}), await call(side, {op: 'checkpoint'})];
     out.scan = await call(scope, {op: 'scan', after: '', limit: 10});
     out.find = await call(scope, {op: 'find', index: 'label', value: JSON.stringify('é'), after: '', limit: 10});
     await call(other, {op: 'install', expected: null, next: v1});
@@ -64,6 +74,10 @@ try {
   assert.deepEqual(observed.installed, {schema_version: 1, migrating_after: null});
   assert.deepEqual(observed.commits, ids.map(() => true));
   assert.equal(observed.duplicate, false, 'a second insert at revision 0 conflicts');
+  assert.equal(observed.batch, true);
+  assert.equal(observed.staleRow, false);
+  assert.equal(observed.staleCheckpoint, false);
+  assert.deepEqual(observed.afterStale, [['s1'], 'e1'], 'a failed batch writes nothing');
   const byUtf8 = [...ids].sort((x, y) => Buffer.compare(Buffer.from(x), Buffer.from(y)));
   assert.deepEqual(observed.scan, byUtf8, 'scan order matches SQLite BINARY');
   assert.deepEqual(observed.find, ['é']);

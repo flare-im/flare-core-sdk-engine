@@ -1825,6 +1825,9 @@ pub async fn build_web_store_provider(
         user_file_download_store: None,
         user_profiles_reader: Some(user_profiles.clone()),
         user_profiles_writer: Some(user_profiles),
+        extension_records: Some(Arc::new(
+            crate::extension_records::IndexedDbExtensionRecords,
+        )),
     })
 }
 

@@ -10,6 +10,7 @@ pub mod db;
 
 pub mod empty_stores;
 pub mod memory;
+mod memory_extension_records;
 pub mod memory_im;
 pub mod minimal_provider;
 pub mod plugin_bundle_storage_memory;

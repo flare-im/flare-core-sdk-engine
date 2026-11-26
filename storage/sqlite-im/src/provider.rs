@@ -3,8 +3,8 @@ use flare_im_core_sdk::storage::StoreProvider;
 use std::sync::{Arc, OnceLock};
 
 use flare_im_core_sdk_storage_sqlite::{
-    SqliteSecurityConfig, database_url_from_path, open_pool, open_pool_with_security,
-    register_schema_init_with,
+    SqliteSecurityConfig, create_pool_with_security, database_url_from_path, open_pool,
+    open_pool_with_security, register_schema_init_with,
 };
 
 use super::repos::{
@@ -143,6 +143,7 @@ pub async fn open_sqlite_store_provider_with_security(
         user_file_download_store: Some(user_download_repo as Arc<dyn UserFileDownloadStore>),
         user_profiles_reader: Some(user_repo.clone()),
         user_profiles_writer: Some(user_repo),
+        extension_records: None,
     })
 }
 
@@ -211,7 +212,23 @@ pub async fn open_sqlite_store_for_user_with_security(
         "Opening SQLite store"
     );
     let database_url = sqlite_database_url_from_path(&db_path);
-    open_sqlite_store_provider_with_security(&database_url, Some(&cache_dir), security).await
+    let records_url =
+        sqlite_database_url_from_path(&db_path.with_file_name("extension_records.db"));
+    let mut stores =
+        open_sqlite_store_provider_with_security(&database_url, Some(&cache_dir), security.clone())
+            .await?;
+    let records = create_pool_with_security(&records_url, security)
+        .await
+        .map_err(|e| {
+            FlareError::localized(
+                ErrorCode::ConfigurationError,
+                format!("extension records pool failed: {e}"),
+            )
+        })?;
+    stores.extension_records = Some(Arc::new(
+        super::extension_records::SqliteExtensionRecords::open(records).await?,
+    ));
+    Ok(stores)
 }
 
 /// 在 `data_root` 下按用户目录打开加密 SQLite 库，并从平台 `SecureKeyStore` 首启生成/后续复用 DB key。

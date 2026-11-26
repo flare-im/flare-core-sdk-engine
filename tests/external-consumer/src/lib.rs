@@ -1,5 +1,7 @@
 //! Consumer contract using only public SDK and adapter APIs.
 #[cfg(test)]
+mod declared_partitions;
+#[cfg(test)]
 mod storage_contract;
 
 #[cfg(test)]

@@ -566,6 +566,7 @@ fn make_stores() -> StoreProvider {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     }
 }
 

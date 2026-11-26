@@ -1,10 +1,9 @@
 use async_trait::async_trait;
 use flare_im_core_sdk::spi::{
-    CheckpointUpdate, ExtensionRecord, PartitionState, RecordBackend, RecordScope,
+    CheckpointWrite, ExtensionRecord, PartitionState, RecordBackend, RecordScope, RecordWrite,
 };
 use flare_im_core_sdk::{FlareError, Result};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(module = "/src/extension_records.mjs")]
@@ -46,15 +45,29 @@ impl RecordBackend for IndexedDbExtensionRecords {
     async fn checkpoint(&self, scope: &RecordScope) -> Result<Option<String>> {
         call(scope, json!({"op":"checkpoint"})).await
     }
-    async fn commit(
-        &self,
-        scope: &RecordScope,
-        expected: u32,
-        record: &ExtensionRecord,
-        indexes: &BTreeMap<String, String>,
-        checkpoint: Option<&CheckpointUpdate>,
-    ) -> Result<bool> {
-        call(scope, json!({"op":"commit","id":record.id,"recordJson":serde_json::to_string(record).map_err(|e| FlareError::system(e.to_string()))?,"indexes":indexes,"expected":expected,"schemaVersion":record.schema_version,"checkpoint":checkpoint})).await
+    async fn commit(&self, rows: &[RecordWrite], checkpoints: &[CheckpointWrite]) -> Result<bool> {
+        let Some(scope) = rows
+            .first()
+            .map(|w| &w.scope)
+            .or(checkpoints.first().map(|c| &c.scope))
+        else {
+            return Ok(true);
+        };
+        let mut encoded = Vec::with_capacity(rows.len());
+        for w in rows {
+            let record =
+                serde_json::to_string(&w.record).map_err(|e| FlareError::system(e.to_string()))?;
+            encoded.push(json!({"scope":w.scope,"id":w.record.id,"recordJson":record,"indexes":w.indexes,"expected":w.expected,"schemaVersion":w.record.schema_version}));
+        }
+        let checkpoints: Vec<_> = checkpoints
+            .iter()
+            .map(|c| json!({"scope":c.scope,"expected":c.update.expected,"next":c.update.next}))
+            .collect();
+        call(
+            scope,
+            json!({"op":"commit","rows":encoded,"checkpoints":checkpoints}),
+        )
+        .await
     }
     async fn installed(&self, scope: &RecordScope) -> Result<Option<PartitionState>> {
         call(scope, json!({"op":"installed"})).await

@@ -415,6 +415,22 @@ impl IMClientBuilder {
                     ),
                 ));
             }
+            // Partitions are owned by construction: Core opens them under this namespace.
+            let mut names = std::collections::BTreeSet::new();
+            if let Some(bad) = registry.partitions.iter().find(|p| {
+                !crate::extension::records::valid_partition(&p.name, &p.schema)
+                    || !names.insert(p.name.as_str())
+            }) {
+                return Err(FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    format!(
+                        "extension {} declared an invalid or duplicate partition: {}",
+                        descriptor.namespace, bad.name
+                    ),
+                ));
+            }
+            let mut descriptor = descriptor;
+            descriptor.partitions = std::mem::take(&mut registry.partitions);
             Ok(descriptor)
         });
         match installation {

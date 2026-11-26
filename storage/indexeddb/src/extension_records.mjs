@@ -1,6 +1,6 @@
-// One connection per operation. A write transaction compares the row, the installed
-// schema and the checkpoint before touching any of them. Closing the tab cannot
-// split that commit.
+// One connection per operation. A commit compares every row, installed schema and
+// checkpoint it names before touching any of them, in one transaction across all three
+// stores. Closing the tab cannot split that commit.
 const STORES = ["records", "checkpoints", "partitions"];
 
 function openDb() {
@@ -79,34 +79,43 @@ export async function extensionRecords(encoded) {
         // Every key of this account's namespace starts with [tenant, user, namespace].
         const range = IDBKeyRange.bound([tenant, user, namespace], [tenant, user, namespace, []]);
         for (const store of [rows, cursors, partitions]) store.delete(range);
-      } else {
-        const key = [...scope, sortKey(p.id)];
-        const read = rows.get(key);
-        read.onsuccess = () => {
-          const old = read.result;
-          if (p.op === "get") { result = old?.recordJson ?? null; return; }
-          result = false;
-          if ((old?.revision ?? 0) !== p.expected) return;
-          const installed = partitions.get(scope);
-          installed.onsuccess = () => {
-            const state = installed.result;
-            if (state && state.schema_version !== p.schemaVersion) {
-              failure = new Error("extension handle schema is not the installed schema");
-              tx.abort();
-              return;
-            }
-            const write = () => {
-              const indexes = Object.entries(p.indexes).map(([name, value]) => [...scope, name, value, sortKey(p.id)]);
-              rows.put({id: p.id, recordJson: p.recordJson, revision: p.expected + 1, indexes}, key);
-              if (p.checkpoint) cursors.put(p.checkpoint.next, scope);
-              result = true;
-            };
-            if (p.checkpoint) {
-              const check = cursors.get(scope);
-              check.onsuccess = () => { if ((check.result ?? null) === p.checkpoint.expected) write(); };
-            } else write();
-          };
+      } else if (p.op === "commit") {
+        // Read every row, installed schema and checkpoint first; write only if all match.
+        const scopeOf = s => [s.tenant, s.user, s.namespace, s.partition];
+        let waiting = 0;
+        const read = (store, key) => {
+          const slot = {};
+          waiting++;
+          const request = store.get(key);
+          request.onsuccess = () => { slot.value = request.result; if (--waiting === 0) decide(); };
+          return slot;
         };
+        const puts = p.rows.map(w => {
+          const key = [...scopeOf(w.scope), sortKey(w.id)];
+          return {w, key, old: read(rows, key), state: read(partitions, scopeOf(w.scope))};
+        });
+        const marks = p.checkpoints.map(c => ({c, current: read(cursors, scopeOf(c.scope))}));
+        result = false;
+        const decide = () => {
+          if (puts.some(({w, state}) => state.value && state.value.schema_version !== w.schemaVersion)) {
+            failure = new Error("extension handle schema is not the installed schema");
+            tx.abort();
+            return;
+          }
+          if (puts.some(({w, old}) => (old.value?.revision ?? 0) !== w.expected)) return;
+          if (marks.some(({c, current}) => (current.value ?? null) !== (c.expected ?? null))) return;
+          for (const {w, key} of puts) {
+            const scope = scopeOf(w.scope);
+            const indexes = Object.entries(w.indexes).map(([name, value]) => [...scope, name, value, sortKey(w.id)]);
+            rows.put({id: w.id, recordJson: w.recordJson, revision: w.expected + 1, indexes}, key);
+          }
+          for (const {c} of marks) cursors.put(c.next, scopeOf(c.scope));
+          result = true;
+        };
+        if (waiting === 0) decide();
+      } else {
+        const read = rows.get([...scope, sortKey(p.id)]);
+        read.onsuccess = () => { result = read.result?.recordJson ?? null; };
       }
     });
   } finally { db.close(); }

@@ -16,7 +16,7 @@ pub struct RecordScope {
     pub partition: String,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldType {
     Text,
     Integer,
@@ -32,7 +32,7 @@ impl FieldType {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordSchema {
     pub version: u32,
     pub fields: BTreeMap<String, FieldType>,
@@ -54,6 +54,31 @@ pub struct CheckpointUpdate {
     pub next: String,
 }
 
+/// A partition an extension declares at install time. Core opens it on the account's own
+/// record backend, under the declaring extension's namespace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartitionDecl {
+    pub name: String,
+    pub schema: RecordSchema,
+    pub access: RecordAccess,
+}
+
+/// One prepared row write: compare the previous revision (zero for an absent row), then
+/// replace the record and its index entries.
+#[derive(Clone, Debug, Serialize)]
+pub struct RecordWrite {
+    pub scope: RecordScope,
+    pub expected: u32,
+    pub record: ExtensionRecord,
+    pub indexes: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CheckpointWrite {
+    pub scope: RecordScope,
+    pub update: CheckpointUpdate,
+}
+
 /// The schema a partition is installed at, separate from the extension's own sync
 /// checkpoint. `migrating_after` is Some while existing rows are being rewritten to
 /// that schema: the last ID already rewritten, empty when the rewrite has not begun.
@@ -63,22 +88,15 @@ pub struct PartitionState {
     pub migrating_after: Option<String>,
 }
 
-/// A commit compares the previous revision (zero for an absent row) and optional
-/// checkpoint, then replaces the record, its index entries and checkpoint atomically.
 #[async_trait]
 pub trait RecordBackend: Send + Sync {
     async fn get(&self, scope: &RecordScope, id: &str) -> Result<Option<ExtensionRecord>>;
     async fn checkpoint(&self, scope: &RecordScope) -> Result<Option<String>>;
-    /// In the same transaction it must also reject, with an error, a writer whose
-    /// schema version differs from the partition's installed version.
-    async fn commit(
-        &self,
-        scope: &RecordScope,
-        expected: u32,
-        record: &ExtensionRecord,
-        indexes: &BTreeMap<String, String>,
-        checkpoint: Option<&CheckpointUpdate>,
-    ) -> Result<bool>;
+    /// Applies every row and checkpoint write in one transaction, or none: false when a
+    /// row revision or checkpoint is not its expected value. In the same transaction it
+    /// must reject, with an error, a row whose schema version differs from its
+    /// partition's installed version. Writes may span partitions of one namespace.
+    async fn commit(&self, rows: &[RecordWrite], checkpoints: &[CheckpointWrite]) -> Result<bool>;
     async fn installed(&self, scope: &RecordScope) -> Result<Option<PartitionState>>;
     /// Compare-and-set of the installed state; `expected` None means not installed.
     async fn install(
@@ -122,6 +140,12 @@ fn invalid(message: &str) -> FlareError {
 }
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 256 && id.trim() == id && !id.chars().any(char::is_control)
+}
+pub(crate) fn valid_partition(name: &str, schema: &RecordSchema) -> bool {
+    valid_id(name)
+        && schema.version != 0
+        && schema.fields.keys().all(|k| valid_id(k))
+        && schema.indexed.iter().all(|k| schema.fields.contains_key(k))
 }
 impl ExtensionPartition {
     /// Opening at a newer schema installs it and starts a rewrite of existing rows,
@@ -213,14 +237,7 @@ impl ExtensionPartition {
         access: RecordAccess,
         grant: super::ProjectionGrant,
     ) -> Result<Self> {
-        if !valid_id(&scope.partition)
-            || schema.version == 0
-            || schema.fields.keys().any(|k| !valid_id(k))
-            || schema
-                .indexed
-                .iter()
-                .any(|k| !schema.fields.contains_key(k))
-        {
+        if !valid_partition(&scope.partition, &schema) {
             return Err(invalid("invalid extension partition or schema"));
         }
         Ok(Self {
@@ -295,13 +312,30 @@ impl ExtensionPartition {
         changes: Option<BTreeMap<String, Option<Value>>>,
         checkpoint: Option<CheckpointUpdate>,
     ) -> Result<bool> {
-        self.active()?;
-        if self.access != RecordAccess::Write {
-            return Err(invalid("read-only extension partition"));
-        }
+        let Some(row) = self.prepare(id, expected, changes).await? else {
+            return Ok(false);
+        };
+        let checkpoints = checkpoint
+            .map(|update| CheckpointWrite {
+                scope: self.scope.clone(),
+                update,
+            })
+            .into_iter()
+            .collect();
+        self.submit(vec![row], checkpoints).await
+    }
+
+    /// The write for one row, or None when its revision is already not `expected`.
+    async fn prepare(
+        &self,
+        id: &str,
+        expected: u32,
+        changes: Option<BTreeMap<String, Option<Value>>>,
+    ) -> Result<Option<RecordWrite>> {
+        self.writable()?;
         let old = self.get(id).await?;
         if old.as_ref().map_or(0, |r| r.revision) != expected {
-            return Ok(false);
+            return Ok(None);
         }
         if old
             .as_ref()
@@ -339,31 +373,135 @@ impl ExtensionPartition {
                 }
             }
         }
-        let record = ExtensionRecord {
-            id: id.into(),
-            revision: expected
-                .checked_add(1)
-                .ok_or_else(|| invalid("record revision exhausted"))?,
-            schema_version: self.schema.version,
-            fields,
-        };
+        Ok(Some(RecordWrite {
+            scope: self.scope.clone(),
+            expected,
+            record: ExtensionRecord {
+                id: id.into(),
+                revision: expected
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("record revision exhausted"))?,
+                schema_version: self.schema.version,
+                fields,
+            },
+            indexes,
+        }))
+    }
+
+    fn writable(&self) -> Result<()> {
+        self.active()?;
+        if self.access != RecordAccess::Write {
+            return Err(invalid("read-only extension partition"));
+        }
+        Ok(())
+    }
+
+    async fn submit(
+        &self,
+        rows: Vec<RecordWrite>,
+        checkpoints: Vec<CheckpointWrite>,
+    ) -> Result<bool> {
         self.active()?;
         let permit = self.grant.writes.clone().read_owned().await;
         self.active()?;
         let backend = self.backend.clone();
-        let scope = self.scope.clone();
         let (done, result) = tokio::sync::oneshot::channel();
         // A dropped caller cannot cancel a transaction already submitted to IndexedDB.
         // Keep ownership until the adapter has actually committed or aborted it.
         crate::shared::util::background::spawn_background(async move {
-            let result = backend
-                .commit(&scope, expected, &record, &indexes, checkpoint.as_ref())
-                .await;
+            let result = backend.commit(&rows, &checkpoints).await;
             drop(permit);
             let _ = done.send(result);
         });
         result
             .await
             .map_err(|_| FlareError::system("extension commit interrupted"))?
+    }
+}
+
+type Changes = BTreeMap<String, Option<Value>>;
+
+/// Row and checkpoint writes across partitions of one namespace, committed in one
+/// transaction: every write lands, or none does. Each row keeps its own revision CAS.
+#[derive(Default)]
+pub struct PartitionBatch {
+    rows: Vec<(ExtensionPartition, String, u32, Option<Changes>)>,
+    checkpoints: Vec<(ExtensionPartition, CheckpointUpdate)>,
+}
+
+impl PartitionBatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Same meaning as [`ExtensionPartition::patch`]; one row may appear only once.
+    pub fn patch(
+        &mut self,
+        partition: &ExtensionPartition,
+        id: impl Into<String>,
+        expected: u32,
+        changes: Option<BTreeMap<String, Option<Value>>>,
+    ) -> &mut Self {
+        self.rows
+            .push((partition.clone(), id.into(), expected, changes));
+        self
+    }
+
+    /// Compare-and-set of a partition's checkpoint; one per partition.
+    pub fn checkpoint(
+        &mut self,
+        partition: &ExtensionPartition,
+        update: CheckpointUpdate,
+    ) -> &mut Self {
+        self.checkpoints.push((partition.clone(), update));
+        self
+    }
+
+    /// False, with nothing written, when any row revision or checkpoint has moved.
+    pub async fn commit(self) -> Result<bool> {
+        let Some(first) = self
+            .rows
+            .first()
+            .map(|r| &r.0)
+            .or(self.checkpoints.first().map(|c| &c.0))
+            .cloned()
+        else {
+            return Ok(true);
+        };
+        let same_namespace = |p: &ExtensionPartition| {
+            Arc::ptr_eq(&p.backend, &first.backend)
+                && p.scope.tenant == first.scope.tenant
+                && p.scope.user == first.scope.user
+                && p.scope.namespace == first.scope.namespace
+        };
+        let mut rows_seen = BTreeSet::new();
+        let mut checkpoints_seen = BTreeSet::new();
+        if !self.rows.iter().all(|(p, id, ..)| {
+            same_namespace(p) && rows_seen.insert((p.scope.partition.clone(), id.clone()))
+        }) || !self
+            .checkpoints
+            .iter()
+            .all(|(p, _)| same_namespace(p) && checkpoints_seen.insert(p.scope.partition.clone()))
+        {
+            return Err(invalid(
+                "a batch writes each row and checkpoint once, within one namespace",
+            ));
+        }
+        let mut rows = Vec::with_capacity(self.rows.len());
+        for (partition, id, expected, changes) in self.rows {
+            match partition.prepare(&id, expected, changes).await? {
+                Some(row) => rows.push(row),
+                None => return Ok(false),
+            }
+        }
+        let mut checkpoints = Vec::with_capacity(self.checkpoints.len());
+        for (partition, update) in self.checkpoints {
+            partition.writable()?;
+            checkpoints.push(CheckpointWrite {
+                scope: partition.scope.clone(),
+                update,
+            });
+        }
+        first.submit(rows, checkpoints).await
     }
 }

@@ -791,6 +791,7 @@ mod tests {
             user_file_download_store: None,
             user_profiles_reader: None,
             user_profiles_writer: None,
+            extension_records: None,
         };
         let deduper = EventDeduper::new(Some(32));
         let applier = SyncEventApplier::new(stores, EventBus::new(), deduper.clone());
@@ -886,6 +887,7 @@ mod tests {
                 user_file_download_store: None,
                 user_profiles_reader: None,
                 user_profiles_writer: None,
+                extension_records: None,
             },
             bus,
             EventDeduper::new(Some(32)),
@@ -958,6 +960,7 @@ mod tests {
                 user_file_download_store: None,
                 user_profiles_reader: None,
                 user_profiles_writer: None,
+                extension_records: None,
             },
             EventBus::new(),
             EventDeduper::new(Some(32)),
@@ -1060,6 +1063,7 @@ mod tests {
                 user_file_download_store: None,
                 user_profiles_reader: None,
                 user_profiles_writer: None,
+                extension_records: None,
             },
             bus,
             EventDeduper::new(Some(32)),

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::extension::{ExtensionContext, ExtensionRuntime, LifecycleScope};
+use crate::extension::{AccountRecords, ExtensionContext, ExtensionRuntime, LifecycleScope};
 use crate::shared::error::Result;
 
 use super::IMClient;
@@ -15,30 +15,36 @@ impl IMClient {
         if runtime.lifecycle_count() == 0 {
             return None;
         }
+        Some((runtime, self.lifecycle_scope(&g, current_user_id)?))
+    }
+
+    fn lifecycle_scope(
+        &self,
+        g: &super::IMClientInner,
+        current_user_id: Option<String>,
+    ) -> Option<LifecycleScope> {
         let engine = g.engine.as_ref()?;
-        let current_user_id = current_user_id.or_else(|| g.current_user_id.clone());
-        Some((
-            runtime,
-            LifecycleScope {
-                stores: engine.stores().clone(),
-                bus: engine.bus().clone(),
-                current_user_id,
-            },
-        ))
+        Some(LifecycleScope {
+            stores: engine.stores().clone(),
+            bus: engine.bus().clone(),
+            current_user_id: current_user_id.or_else(|| g.current_user_id.clone()),
+            records: Some(AccountRecords {
+                tenant: Self::resolve_tenant_id(g),
+                session: self.session_end_watch(g.session_generation),
+            }),
+        })
     }
 
     pub(super) async fn run_extension_migrations_best_effort(&self) {
         let snapshot = {
             let g = self.inner.read().await;
-            match (g.extension_runtime.clone(), g.engine.as_ref()) {
-                (Some(runtime), Some(engine)) if runtime.migration_count() > 0 => {
-                    Some((runtime, engine.stores().clone(), engine.bus().clone()))
-                }
-                _ => None,
-            }
+            g.extension_runtime
+                .clone()
+                .filter(|runtime| runtime.has_migrations())
+                .and_then(|runtime| Some((runtime, self.lifecycle_scope(&g, None)?)))
         };
-        if let Some((runtime, stores, bus)) = snapshot {
-            runtime.run_migrations(&stores, &bus).await;
+        if let Some((runtime, scope)) = snapshot {
+            runtime.run_migrations(&scope).await;
         }
     }
 
@@ -152,14 +158,15 @@ impl IMClient {
         crate::spi::ExtensionPartition::open(backend, scope, schema, session, access, grant).await
     }
 
-    /// Uninstall an extension's records for the current account. Its grant is revoked
+    /// Uninstall an extension's records for the current account, on `backend` and on the
+    /// account's own backend that holds its declared partitions. Its grant is revoked
     /// first and admitted writes drain, so no handle can write while rows are removed.
     pub async fn purge_extension_records(
         &self,
         namespace: &str,
         backend: Arc<dyn crate::spi::RecordBackend>,
     ) -> Result<()> {
-        let (runtime, scope) = {
+        let (runtime, scope, declared) = {
             let g = self.inner.read().await;
             let user = g.current_user_id.clone().ok_or_else(Self::not_connected)?;
             let runtime = g
@@ -172,10 +179,20 @@ impl IMClient {
                 namespace: namespace.to_owned(),
                 partition: String::new(),
             };
-            (runtime, scope)
+            let declared = g
+                .engine
+                .as_ref()
+                .and_then(|engine| engine.stores().extension_records.clone());
+            (runtime, scope, declared)
         };
         runtime.set_projection_enabled(namespace, false).await?;
-        backend.purge_namespace(&scope).await
+        backend.purge_namespace(&scope).await?;
+        match declared {
+            Some(declared) if !Arc::ptr_eq(&declared, &backend) => {
+                declared.purge_namespace(&scope).await
+            }
+            _ => Ok(()),
+        }
     }
 
     /// 获取扩展运行时快照。
@@ -189,20 +206,14 @@ impl IMClient {
     /// 按扩展 namespace 授权的上下文：停用后写入被拒，停用会等已放行的写入完成。
     pub async fn extension_context_for(&self, namespace: &str) -> Result<ExtensionContext> {
         let g = self.inner.read().await;
-        let engine = g
-            .engine
+        let runtime = g
+            .extension_runtime
             .as_ref()
             .filter(|_| g.current_user_id.is_some())
             .ok_or_else(Self::not_connected)?;
-        let grant = g
-            .extension_runtime
-            .as_ref()
-            .ok_or_else(Self::not_connected)?
-            .projection_grant(namespace)?;
-        Ok(ExtensionContext::from_core_granted(
-            engine.stores().clone(),
-            engine.bus().clone(),
-            Some(grant),
-        ))
+        let scope = self
+            .lifecycle_scope(&g, None)
+            .ok_or_else(Self::not_connected)?;
+        runtime.granted_context(namespace, &scope)
     }
 }

@@ -592,6 +592,7 @@ async fn pending_send_requires_a_matching_receipt_or_storage_backed_sync() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let sender = Arc::new(PacketSender::new(
         Arc::new(Mutex::new(None)),
@@ -861,6 +862,7 @@ async fn realtime_and_sync_replay_share_event_deduper() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let dispatcher = Dispatcher::new(
         bus.clone(),
@@ -941,6 +943,7 @@ async fn realtime_and_sync_message_replay_share_message_deduper() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let notification_pipeline =
         test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
@@ -1052,6 +1055,7 @@ async fn sync_page_cursor_stops_before_failed_event_seq() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let notification_pipeline =
         test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
@@ -1157,6 +1161,7 @@ async fn clamped_cursor_save_proves_only_window_above_prior_cursor() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let notification_pipeline =
         test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
@@ -1240,6 +1245,7 @@ async fn cursor_advances_past_seqs_the_server_proved_have_no_message() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let notification_pipeline =
         test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
@@ -1322,6 +1328,7 @@ async fn cursor_still_stops_at_messages_that_failed_to_persist() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let notification_pipeline =
         test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
@@ -1390,6 +1397,7 @@ async fn watermark_cursor_save_persists_pseudo_keys_that_clamped_save_skips() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let notification_pipeline =
         test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
@@ -1449,6 +1457,7 @@ async fn snapshot_row_apply_persists_messages_and_returns_cutover_seq() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let notification_pipeline =
         test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
@@ -1508,6 +1517,7 @@ async fn message_push_delivers_to_view_even_when_persist_fails() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let notification_pipeline =
         test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
@@ -1597,6 +1607,7 @@ async fn concurrent_message_push_dispatch_is_lossless_for_slow_subscriber() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let dispatcher = Arc::new(Dispatcher::new(
         bus.clone(),
@@ -1708,6 +1719,7 @@ async fn persist_worker_persists_asynchronously_when_started() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let notification_pipeline =
         test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
@@ -1793,6 +1805,7 @@ async fn persist_worker_under_concurrent_dispatch_loses_nothing() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let notification_pipeline =
         test_notification_pipeline_with_deduper(bus.clone(), message_deduper.clone());
@@ -2229,6 +2242,7 @@ fn waterline_fixture() -> (
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     (message_store, cursor_store, stores)
 }
@@ -2593,6 +2607,7 @@ async fn recall_event_without_outer_conversation_id_publishes_local_message_conv
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let dispatcher = Dispatcher::new(
         bus.clone(),
@@ -2658,6 +2673,7 @@ async fn recall_event_before_message_arrival_is_forgotten_and_replayable() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let dispatcher = Dispatcher::new(
         bus.clone(),
@@ -2756,6 +2772,7 @@ async fn waterline_uses_materialized_message_seq_not_cursor_seq() {
         user_file_download_store: None,
         user_profiles_reader: None,
         user_profiles_writer: None,
+        extension_records: None,
     };
     let dispatcher = Dispatcher::new(
         bus.clone(),

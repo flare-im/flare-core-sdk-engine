@@ -1,12 +1,11 @@
-//! Extension-owned database. Hosts supply a pool with their selected encryption
-//! and lifetime policy. Core IM migrations never open this database.
+//! Extension-owned database. The account opener keeps it in its own file next to the
+//! account database, with the same encryption. Core IM migrations never open it.
 use async_trait::async_trait;
 use flare_im_core_sdk::spi::{
-    CheckpointUpdate, ExtensionRecord, PartitionState, RecordBackend, RecordScope,
+    CheckpointWrite, ExtensionRecord, PartitionState, RecordBackend, RecordScope, RecordWrite,
 };
 use flare_im_core_sdk::{ErrorCode, FlareError, Result};
 use sqlx::SqlitePool;
-use std::collections::BTreeMap;
 
 pub struct SqliteExtensionRecords(SqlitePool);
 
@@ -66,66 +65,49 @@ impl RecordBackend for SqliteExtensionRecords {
             .await
             .map_err(db)
     }
-    async fn commit(
-        &self,
-        scope: &RecordScope,
-        expected: u32,
-        record: &ExtensionRecord,
-        indexes: &BTreeMap<String, String>,
-        checkpoint: Option<&CheckpointUpdate>,
-    ) -> Result<bool> {
-        let scope = partition(scope)?;
-        let body = serde_json::to_string(record).map_err(db)?;
+    async fn commit(&self, rows: &[RecordWrite], checkpoints: &[CheckpointWrite]) -> Result<bool> {
         let mut tx = self.0.begin().await.map_err(db)?;
-        let installed: Option<String> =
-            sqlx::query_scalar("SELECT body FROM extension_partitions WHERE scope=?")
-                .bind(&scope)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db)?;
-        let installed = installed
-            .map(|s| serde_json::from_str::<PartitionState>(&s).map_err(db))
-            .transpose()?;
-        if installed.is_some_and(|state| state.schema_version != record.schema_version) {
-            tx.rollback().await.map_err(db)?;
-            return Err(FlareError::localized(
-                ErrorCode::InvalidParameter,
-                "extension handle schema is not the installed schema",
-            ));
-        }
-        let changed = if expected == 0 {
-            sqlx::query("INSERT INTO extension_records(scope,id,revision,body) VALUES(?,?,?,?) ON CONFLICT(scope,id) DO NOTHING")
-                .bind(&scope).bind(&record.id).bind(record.revision).bind(body).execute(&mut *tx).await
-        } else {
-            sqlx::query("UPDATE extension_records SET revision=?,body=? WHERE scope=? AND id=? AND revision=?")
-                .bind(record.revision).bind(body).bind(&scope).bind(&record.id).bind(expected).execute(&mut *tx).await
-        }.map_err(db)?;
-        if changed.rows_affected() == 0 {
-            tx.rollback().await.map_err(db)?;
-            return Ok(false);
-        }
-        if let Some(update) = checkpoint {
-            let current: Option<String> =
-                sqlx::query_scalar("SELECT value FROM extension_checkpoints WHERE scope=?")
+        for write in rows {
+            let scope = partition(&write.scope)?;
+            let record = &write.record;
+            let body = serde_json::to_string(record).map_err(db)?;
+            let installed: Option<String> =
+                sqlx::query_scalar("SELECT body FROM extension_partitions WHERE scope=?")
                     .bind(&scope)
                     .fetch_optional(&mut *tx)
                     .await
                     .map_err(db)?;
-            if current != update.expected {
+            let installed = installed
+                .map(|s| serde_json::from_str::<PartitionState>(&s).map_err(db))
+                .transpose()?;
+            if installed.is_some_and(|state| state.schema_version != record.schema_version) {
+                tx.rollback().await.map_err(db)?;
+                return Err(FlareError::localized(
+                    ErrorCode::InvalidParameter,
+                    "extension handle schema is not the installed schema",
+                ));
+            }
+            let changed = if write.expected == 0 {
+                sqlx::query("INSERT INTO extension_records(scope,id,revision,body) VALUES(?,?,?,?) ON CONFLICT(scope,id) DO NOTHING")
+                    .bind(&scope).bind(&record.id).bind(record.revision).bind(body).execute(&mut *tx).await
+            } else {
+                sqlx::query("UPDATE extension_records SET revision=?,body=? WHERE scope=? AND id=? AND revision=?")
+                    .bind(record.revision).bind(body).bind(&scope).bind(&record.id).bind(write.expected).execute(&mut *tx).await
+            }.map_err(db)?;
+            if changed.rows_affected() == 0 {
                 tx.rollback().await.map_err(db)?;
                 return Ok(false);
             }
-            sqlx::query("INSERT INTO extension_checkpoints(scope,value) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET value=excluded.value")
-                .bind(&scope).bind(&update.next).execute(&mut *tx).await.map_err(db)?;
-        }
-        sqlx::query("DELETE FROM extension_record_index WHERE scope=? AND id=?")
-            .bind(&scope)
-            .bind(&record.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(db)?;
-        for (field, value) in indexes {
-            sqlx::query("INSERT INTO extension_record_index(scope,field,value,id) VALUES(?,?,?,?)")
+            sqlx::query("DELETE FROM extension_record_index WHERE scope=? AND id=?")
+                .bind(&scope)
+                .bind(&record.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(db)?;
+            for (field, value) in &write.indexes {
+                sqlx::query(
+                    "INSERT INTO extension_record_index(scope,field,value,id) VALUES(?,?,?,?)",
+                )
                 .bind(&scope)
                 .bind(field)
                 .bind(value)
@@ -133,6 +115,22 @@ impl RecordBackend for SqliteExtensionRecords {
                 .execute(&mut *tx)
                 .await
                 .map_err(db)?;
+            }
+        }
+        for write in checkpoints {
+            let scope = partition(&write.scope)?;
+            let current: Option<String> =
+                sqlx::query_scalar("SELECT value FROM extension_checkpoints WHERE scope=?")
+                    .bind(&scope)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            if current != write.update.expected {
+                tx.rollback().await.map_err(db)?;
+                return Ok(false);
+            }
+            sqlx::query("INSERT INTO extension_checkpoints(scope,value) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET value=excluded.value")
+                .bind(&scope).bind(&write.update.next).execute(&mut *tx).await.map_err(db)?;
         }
         tx.commit().await.map_err(db)?;
         Ok(true)

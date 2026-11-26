@@ -27,5 +27,8 @@ pub fn in_memory_empty_im_provider() -> StoreProvider {
         user_file_download_store: None,
         user_profiles_reader: Some(user_profiles.clone()),
         user_profiles_writer: Some(user_profiles),
+        extension_records: Some(Arc::new(
+            super::memory_extension_records::MemoryExtensionRecords::default(),
+        )),
     }
 }
